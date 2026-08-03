@@ -1,0 +1,110 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Configuration xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="https://raw.githubusercontent.com/PowerShell/PowerShell/master/src/Schemas/Format.xsd">
+  <ViewDefinitions>
+
+    <!-- CopilotSession: Get-CopilotSession -->
+    <View>
+      <Name>CopilotSession</Name>
+      <ViewSelectedBy>
+        <TypeName>CopilotSession</TypeName>
+      </ViewSelectedBy>
+      <TableControl>
+        <TableHeaders>
+          <TableColumnHeader><Label>Id</Label><Width>10</Width></TableColumnHeader>
+          <TableColumnHeader><Label>Summary</Label></TableColumnHeader>
+          <TableColumnHeader><Label>UpdatedAt</Label><Width>20</Width></TableColumnHeader>
+          <TableColumnHeader><Label>Events</Label><Width>7</Width><Alignment>Right</Alignment></TableColumnHeader>
+          <TableColumnHeader><Label>Size</Label><Width>10</Width><Alignment>Right</Alignment></TableColumnHeader>
+        </TableHeaders>
+        <TableRowEntries>
+          <TableRowEntry>
+            <TableColumnItems>
+              <TableColumnItem><ScriptBlock>$_.Id.Substring(0, [Math]::Min(8, $_.Id.Length))</ScriptBlock></TableColumnItem>
+              <TableColumnItem><PropertyName>Summary</PropertyName></TableColumnItem>
+              <TableColumnItem><ScriptBlock>if ($_.UpdatedAt) { $_.UpdatedAt.LocalDateTime.ToString('yyyy-MM-dd HH:mm') }</ScriptBlock></TableColumnItem>
+              <TableColumnItem><PropertyName>EventCount</PropertyName></TableColumnItem>
+              <TableColumnItem><ScriptBlock>if ($_.EventSize -ge 1MB) { '{0:N1} MB' -f ($_.EventSize / 1MB) } elseif ($_.EventSize -ge 1KB) { '{0:N0} KB' -f ($_.EventSize / 1KB) } else { '{0} B' -f $_.EventSize }</ScriptBlock></TableColumnItem>
+            </TableColumnItems>
+          </TableRowEntry>
+        </TableRowEntries>
+      </TableControl>
+    </View>
+
+    <!-- AgencyPlugin: Get-AgencyPlugin -->
+    <View>
+      <Name>AgencyPlugin</Name>
+      <ViewSelectedBy>
+        <TypeName>AgencyPlugin</TypeName>
+      </ViewSelectedBy>
+      <TableControl>
+        <TableHeaders>
+          <TableColumnHeader><Label>Name</Label><Width>30</Width></TableColumnHeader>
+          <TableColumnHeader><Label>Engines</Label><Width>14</Width></TableColumnHeader>
+          <TableColumnHeader><Label>Scope</Label><Width>10</Width></TableColumnHeader>
+          <TableColumnHeader><Label>Marketplace</Label></TableColumnHeader>
+        </TableHeaders>
+        <TableRowEntries>
+          <TableRowEntry>
+            <TableColumnItems>
+              <TableColumnItem><PropertyName>Name</PropertyName></TableColumnItem>
+              <TableColumnItem><PropertyName>Engines</PropertyName></TableColumnItem>
+              <TableColumnItem><PropertyName>Scope</PropertyName></TableColumnItem>
+              <TableColumnItem><PropertyName>Marketplace</PropertyName></TableColumnItem>
+            </TableColumnItems>
+          </TableRowEntry>
+        </TableRowEntries>
+      </TableControl>
+    </View>
+
+    <!-- AgencyPluginCacheEntry: Get-AgencyPluginCache -->
+    <View>
+      <Name>AgencyPluginCacheEntry</Name>
+      <ViewSelectedBy>
+        <TypeName>AgencyPluginCacheEntry</TypeName>
+      </ViewSelectedBy>
+      <TableControl>
+        <TableHeaders>
+          <TableColumnHeader><Label>Name</Label><Width>30</Width></TableColumnHeader>
+          <TableColumnHeader><Label>Engines</Label><Width>14</Width></TableColumnHeader>
+          <TableColumnHeader><Label>Fetch</Label><Width>12</Width></TableColumnHeader>
+          <TableColumnHeader><Label>Flags</Label></TableColumnHeader>
+        </TableHeaders>
+        <TableRowEntries>
+          <TableRowEntry>
+            <TableColumnItems>
+              <TableColumnItem><PropertyName>Name</PropertyName></TableColumnItem>
+              <TableColumnItem><PropertyName>Engines</PropertyName></TableColumnItem>
+              <TableColumnItem><PropertyName>Fetch</PropertyName></TableColumnItem>
+              <TableColumnItem><PropertyName>Flags</PropertyName></TableColumnItem>
+            </TableColumnItems>
+          </TableRowEntry>
+        </TableRowEntries>
+      </TableControl>
+    </View>
+
+    <!-- AgencyProfile: Get-AgencyProfile -->
+    <View>
+      <Name>AgencyProfile</Name>
+      <ViewSelectedBy>
+        <TypeName>AgencyProfile</TypeName>
+      </ViewSelectedBy>
+      <TableControl>
+        <TableHeaders>
+          <TableColumnHeader><Label>Name</Label><Width>12</Width></TableColumnHeader>
+          <TableColumnHeader><Label>PluginCount</Label><Width>12</Width><Alignment>Right</Alignment></TableColumnHeader>
+          <TableColumnHeader><Label>Plugins</Label></TableColumnHeader>
+        </TableHeaders>
+        <TableRowEntries>
+          <TableRowEntry>
+            <TableColumnItems>
+              <TableColumnItem><PropertyName>Name</PropertyName></TableColumnItem>
+              <TableColumnItem><PropertyName>PluginCount</PropertyName></TableColumnItem>
+              <TableColumnItem><ScriptBlock>($_.Plugins | ForEach-Object { ($_ -replace '^market:([^@]+)@.*$', '$1') }) -join ', '</ScriptBlock></TableColumnItem>
+            </TableColumnItems>
+          </TableRowEntry>
+        </TableRowEntries>
+      </TableControl>
+    </View>
+
+  </ViewDefinitions>
+</Configuration>

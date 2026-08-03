@@ -1,0 +1,18 @@
+name: Validate modules
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  validate:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Build and import modules
+        shell: pwsh
+        run: ./build/Test-Modules.ps1

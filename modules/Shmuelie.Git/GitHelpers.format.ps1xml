@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Configuration xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="https://raw.githubusercontent.com/PowerShell/PowerShell/master/src/Schemas/Format.xsd">
+  <ViewDefinitions>
+
+    <!-- Worktree: Get-Worktrees -->
+    <View>
+      <Name>Worktree</Name>
+      <ViewSelectedBy>
+        <TypeName>Worktree</TypeName>
+      </ViewSelectedBy>
+      <TableControl>
+        <TableHeaders>
+          <TableColumnHeader><Label>Branch</Label></TableColumnHeader>
+          <TableColumnHeader><Label>Path</Label></TableColumnHeader>
+          <TableColumnHeader><Label>Commit</Label><Width>12</Width></TableColumnHeader>
+        </TableHeaders>
+        <TableRowEntries>
+          <TableRowEntry>
+            <TableColumnItems>
+              <TableColumnItem><PropertyName>Branch</PropertyName></TableColumnItem>
+              <TableColumnItem><PropertyName>Path</PropertyName></TableColumnItem>
+              <TableColumnItem><ScriptBlock>if ($_.Commit) { $_.Commit.Substring(0, [Math]::Min(12, $_.Commit.Length)) }</ScriptBlock></TableColumnItem>
+            </TableColumnItems>
+          </TableRowEntry>
+        </TableRowEntries>
+      </TableControl>
+    </View>
+
+    <!-- StaleBranchInfo: Find-StaleBranch -->
+    <View>
+      <Name>StaleBranchInfo</Name>
+      <ViewSelectedBy>
+        <TypeName>StaleBranchInfo</TypeName>
+      </ViewSelectedBy>
+      <TableControl>
+        <TableHeaders>
+          <TableColumnHeader><Label>Branch</Label></TableColumnHeader>
+          <TableColumnHeader><Label>Path</Label></TableColumnHeader>
+          <TableColumnHeader><Label>PR Status</Label><Width>12</Width></TableColumnHeader>
+          <TableColumnHeader><Label>PR</Label><Width>8</Width><Alignment>Right</Alignment></TableColumnHeader>
+          <TableColumnHeader><Label>PR Title</Label></TableColumnHeader>
+        </TableHeaders>
+        <TableRowEntries>
+          <TableRowEntry>
+            <TableColumnItems>
+              <TableColumnItem><PropertyName>Branch</PropertyName></TableColumnItem>
+              <TableColumnItem><PropertyName>Path</PropertyName></TableColumnItem>
+              <TableColumnItem><ScriptBlock>if ($_.PrStatus) { $_.PrStatus } else { '—' }</ScriptBlock></TableColumnItem>
+              <TableColumnItem><ScriptBlock>if ($_.PrId) { $_.PrId } else { '' }</ScriptBlock></TableColumnItem>
+              <TableColumnItem><ScriptBlock>if ($_.PrTitle) { $_.PrTitle } else { '' }</ScriptBlock></TableColumnItem>
+            </TableColumnItems>
+          </TableRowEntry>
+        </TableRowEntries>
+      </TableControl>
+    </View>
+
+    <!-- WorktreeUpdateResult: Update-Worktrees -->
+    <View>
+      <Name>WorktreeUpdateResult</Name>
+      <ViewSelectedBy>
+        <TypeName>WorktreeUpdateResult</TypeName>
+      </ViewSelectedBy>
+      <TableControl>
+        <TableHeaders>
+          <TableColumnHeader><Label>Repository</Label></TableColumnHeader>
+          <TableColumnHeader><Label>Branch</Label></TableColumnHeader>
+          <TableColumnHeader><Label>Status</Label><Width>10</Width></TableColumnHeader>
+          <TableColumnHeader><Label>Behind</Label><Width>7</Width><Alignment>Right</Alignment></TableColumnHeader>
+          <TableColumnHeader><Label>Stashed</Label><Width>8</Width></TableColumnHeader>
+        </TableHeaders>
+        <TableRowEntries>
+          <TableRowEntry>
+            <TableColumnItems>
+              <TableColumnItem><ScriptBlock>if ($_.Repository) { $_.Repository } else { '' }</ScriptBlock></TableColumnItem>
+              <TableColumnItem><PropertyName>Branch</PropertyName></TableColumnItem>
+              <TableColumnItem><PropertyName>Status</PropertyName></TableColumnItem>
+              <TableColumnItem><PropertyName>BehindBy</PropertyName></TableColumnItem>
+              <TableColumnItem><PropertyName>Stashed</PropertyName></TableColumnItem>
+            </TableColumnItems>
+          </TableRowEntry>
+        </TableRowEntries>
+      </TableControl>
+    </View>
+
+  </ViewDefinitions>
+</Configuration>
