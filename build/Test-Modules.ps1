@@ -18,7 +18,7 @@ foreach ($module in $modules) {
 # The build/ scripts and build artifacts are excluded (this script defines the
 # forbidden markers as literals).
 # ---------------------------------------------------------------------------
-$forbidden = 'dev\.azure\.com/microsoft|msazure\.pkgs\.visualstudio\.com|OS\.Developer|WindowsHiveMind|SFC\.|SFS\.|SFU\.|os\.2020|OSClient|IXPTools|StoreFundementals|user/senglard|SEnglard|\\\\redmond\\|D:\\wsd\\|agency|winpx|bluebird|workiq'
+$forbidden = 'dev\.azure\.com/microsoft|msazure\.pkgs\.visualstudio\.com|OS\.Developer|WindowsHiveMind|SFC\.|SFS\.|SFU\.|os\.2020|OSClient|IXPTools|StoreFundementals|user/senglard|SEnglard|\\\\redmond\\|D:\\wsd\\|agency|winpx|bluebird|workiq|@microsoft\.com'
 
 $scanFiles = Get-ChildItem $repoRoot -Recurse -File |
     Where-Object {

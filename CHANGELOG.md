@@ -16,3 +16,4 @@ between releases this file tracks catalog-level changes under `[Unreleased]`.
 ### Notes
 - Public modules export no command aliases (they are added downstream by a
   profile or overlay); the build enforces this.
+- The public-content scan now also blocks corporate email addresses.
