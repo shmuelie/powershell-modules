@@ -46,6 +46,10 @@ if (Test-Path $predictorPath) {
     $predictorRegistered = (Get-PSSubsystem -Kind CommandPredictor).Implementations.Name -contains 'Worktree'
     if (-not $predictorRegistered) {
         $script:predictorModule = Import-Module $predictorPath -Force -PassThru -ErrorAction Stop
+    } else {
+        # Already registered (e.g. this module re-imported in the same session):
+        # capture the existing module handle so OnRemove can still clean it up.
+        $script:predictorModule = Get-Module -Name ([IO.Path]::GetFileNameWithoutExtension($predictorPath))
     }
 }
 

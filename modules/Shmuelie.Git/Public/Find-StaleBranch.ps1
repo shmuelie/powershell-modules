@@ -53,7 +53,10 @@ function Find-StaleBranch {
         $userPrefix = if (-not $All -and $User) { "user/$User/" } else { $null }
 
         # Get all local branches
-        $localBranches = git --no-pager for-each-ref --format='%(refname:short)|%(upstream:short)|%(upstream:track)' refs/heads/ 2>&1
+        $localBranches = git --no-pager for-each-ref --format='%(refname:short)|%(upstream:short)|%(upstream:track)' refs/heads/ 2>$null
+        if ($LASTEXITCODE -ne 0) {
+            throw "Not a git repository (or git failed) in '$((Get-Location).Path)'."
+        }
         $candidates = @()
         foreach ($line in $localBranches) {
             $parts = $line -split '\|', 3

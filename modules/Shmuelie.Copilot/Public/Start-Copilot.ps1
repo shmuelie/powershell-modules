@@ -8,7 +8,8 @@ function Start-Copilot {
         Wraps the GitHub Copilot CLI executable with automatic session resume
         and sensible defaults (--allow-all --experimental), each of which can be
         turned off with -NoAllowAll / -NoExperimental. Destructive git operations
-        (force push, hard reset, rebase, amend, and similar) are denied by default.
+        (force push, hard reset, rebase, amend, and similar) are denied by
+        default; pass -NoDefaultDenyTools to opt out of those deny rules.
 
         When a Prompt is provided, runs in non-interactive autopilot mode (-p --autopilot).
         When no Prompt is provided, starts interactively.
@@ -42,6 +43,12 @@ function Start-Copilot {
     .PARAMETER NoAllowAll
         Do not pass --allow-all. By default Start-Copilot enables all permissions;
         use this switch to start with normal permission prompting.
+
+    .PARAMETER NoDefaultDenyTools
+        Do not add the built-in deny rules for destructive git operations (force
+        push, hard reset, rebase, amend, git pull, and similar). Use this if your
+        workflow relies on those commands; you can still add your own via
+        -DenyTool.
 
     .PARAMETER ResumeLatest
         When multiple sessions exist for the current folder, automatically resume
@@ -330,6 +337,8 @@ function Start-Copilot {
 
         [switch]$NoAllowAll,
 
+        [switch]$NoDefaultDenyTools,
+
         [Parameter(ParameterSetName = 'CopilotResumeLatest', Mandatory)]
         [switch]$ResumeLatest,
 
@@ -515,22 +524,24 @@ function Start-Copilot {
     if (-not $NoAllowAll) { $copilotArgs += '--allow-all' }
 
     # Block destructive git force operations (--deny-tool takes precedence over --allow-all)
-    $copilotArgs += @(
-        '--deny-tool', 'shell(git push --force)',
-        '--deny-tool', 'shell(git push -f)',
-        '--deny-tool', 'shell(git push --force-with-lease)',
-        '--deny-tool', 'shell(git checkout --force)',
-        '--deny-tool', 'shell(git checkout -f)',
-        '--deny-tool', 'shell(git clean --force)',
-        '--deny-tool', 'shell(git clean -f)',
-        '--deny-tool', 'shell(git reset --hard)',
-        '--deny-tool', 'shell(git commit --amend)',
-        '--deny-tool', 'shell(git commit -a --amend)',
-        '--deny-tool', 'shell(git rebase)',
-        '--deny-tool', 'shell(git rebase -i)',
-        '--deny-tool', 'shell(git rebase --interactive)',
-        '--deny-tool', 'shell(git pull)'
-    )
+    if (-not $NoDefaultDenyTools) {
+        $copilotArgs += @(
+            '--deny-tool', 'shell(git push --force)',
+            '--deny-tool', 'shell(git push -f)',
+            '--deny-tool', 'shell(git push --force-with-lease)',
+            '--deny-tool', 'shell(git checkout --force)',
+            '--deny-tool', 'shell(git checkout -f)',
+            '--deny-tool', 'shell(git clean --force)',
+            '--deny-tool', 'shell(git clean -f)',
+            '--deny-tool', 'shell(git reset --hard)',
+            '--deny-tool', 'shell(git commit --amend)',
+            '--deny-tool', 'shell(git commit -a --amend)',
+            '--deny-tool', 'shell(git rebase)',
+            '--deny-tool', 'shell(git rebase -i)',
+            '--deny-tool', 'shell(git rebase --interactive)',
+            '--deny-tool', 'shell(git pull)'
+        )
+    }
 
     # Disable MCP servers based on autoConnect policy:
     #   false        -> handled natively by the CLI (lazy/dormant)
