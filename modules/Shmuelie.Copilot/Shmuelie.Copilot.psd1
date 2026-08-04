@@ -20,7 +20,7 @@
     )
     CmdletsToExport   = @()
     VariablesToExport = @()
-    AliasesToExport   = @('copilot')
+    AliasesToExport   = @()
     FormatsToProcess  = @('CopilotHelpers.format.ps1xml')
     PrivateData = @{
         PSData = @{

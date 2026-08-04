@@ -9,5 +9,5 @@ Versions change only when a release is cut; unreleased work stays under
 ### Added
 - Initial `Shmuelie.Git`: git repository, worktree, status, completion, and
   PSReadLine prediction helpers, including `New-Repository`, the worktree
-  lifecycle cmdlets (aliases `cw`/`lw`/`mw`/`rw`), `Update-Worktrees`,
-  `Find-StaleBranch`, `Get-GitStatusSummary`, and a bundled worktree predictor.
+  lifecycle cmdlets, `Update-Worktrees`, `Find-StaleBranch`,
+  `Get-GitStatusSummary`, and a bundled worktree predictor.

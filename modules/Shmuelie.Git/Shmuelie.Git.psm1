@@ -3,12 +3,7 @@ foreach ($script in Get-ChildItem $publicRoot -Filter '*.ps1' | Sort-Object Name
     . $script.FullName
 }
 
-Set-Alias -Name cw -Value Set-Worktree
-Set-Alias -Name lw -Value Get-Worktrees
-Set-Alias -Name mw -Value New-Worktree
-Set-Alias -Name rw -Value Remove-Worktree
-
-Register-ArgumentCompleter -CommandName Set-Worktree, Remove-Worktree, cw, rw -ParameterName BranchName -ScriptBlock {
+Register-ArgumentCompleter -CommandName Set-Worktree, Remove-Worktree -ParameterName BranchName -ScriptBlock {
     param($commandName, $parameterName, $wordToComplete)
     Get-Worktrees |
         Select-Object -ExpandProperty Branch |
@@ -87,4 +82,4 @@ Export-ModuleMember -Function @(
     'New-Repository',
     'Repair-RepositoryLayout',
     'Update-WorktreePrediction'
-) -Alias @('cw', 'lw', 'mw', 'rw')
+)

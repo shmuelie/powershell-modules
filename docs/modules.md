@@ -18,7 +18,7 @@ Highlights:
 
 - `New-Repository` clones into a standard `<root>/<org>/<repo>/<branch>` layout.
 - Worktree lifecycle: `New-Worktree`, `Add-Worktree`, `Set-Worktree`,
-  `Remove-Worktree`, `Update-Worktrees` (aliases `mw`, `cw`, `rw`, `lw`).
+  `Remove-Worktree`, `Update-Worktrees`.
 - `Get-GitStatusSummary` returns a typed status object.
 - A bundled `WorktreePredictor.dll` suggests branch names for worktree commands.
 
@@ -30,7 +30,7 @@ GitHub Copilot CLI sessions, plugins, marketplaces, MCP servers, and the
 
 Highlights:
 
-- `Start-Copilot` (alias `copilot`) adds session resume, a multi-session picker,
+- `Start-Copilot` adds session resume, a multi-session picker,
   safe git deny rules, and full Copilot CLI flag mapping.
 - `Start-Copilot -PassThru` returns the resolved launch plan without launching,
   so other tools can reuse the built arguments.

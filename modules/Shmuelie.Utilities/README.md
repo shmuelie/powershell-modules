@@ -27,8 +27,6 @@ Import-Module Shmuelie.Utilities
 | Diagnostics | `Start-WindowsPerformanceRecorder`, `Stop-WindowsPerformanceRecorder` |
 | Inventory | `Get-InstalledApplications` |
 
-Aliases: `code` (Start-VsCode), `Get-GlobalDotNetTools` (Get-DotNetTool).
-
 ## Highlights
 
 - `Reset-TerminalModes` recovers a terminal left in a bad state (mouse tracking,

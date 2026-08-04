@@ -30,9 +30,6 @@ Import-Module Shmuelie.Git
 | `Get-GitStatusSummary` | Parse `git status` into a typed object (branch, ahead/behind, conflicts, stash, operation) |
 | `Update-WorktreePrediction` | Refresh the bundled predictor for the current directory |
 
-Aliases: `cw` (Set-Worktree), `lw` (Get-Worktrees), `mw` (New-Worktree),
-`rw` (Remove-Worktree).
-
 ## Worktree predictor
 
 The module ships a compiled PSReadLine command predictor

@@ -17,7 +17,7 @@
     )
     CmdletsToExport   = @()
     VariablesToExport = @()
-    AliasesToExport   = @('cw', 'lw', 'mw', 'rw')
+    AliasesToExport   = @()
     FormatsToProcess  = @('GitHelpers.format.ps1xml')
     PrivateData = @{
         PSData = @{

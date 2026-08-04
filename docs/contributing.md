@@ -13,7 +13,7 @@ Each module is a self-contained directory under `modules/`:
 ```text
 modules/<Module>/
 ├── <Module>.psd1     # manifest and exported members
-├── <Module>.psm1     # loader, aliases, and Export-ModuleMember
+├── <Module>.psm1     # loader and Export-ModuleMember
 ├── README.md
 ├── CHANGELOG.md
 └── Public/*.ps1      # one file per topic; functions are dot-sourced
@@ -49,6 +49,12 @@ A release is the only time a `ModuleVersion` changes:
 Public modules must not reference internal-only tooling, private endpoints,
 organization-specific systems, or credentials. Prefer parameters and
 environment variables over hardcoded hosts or feeds.
+
+Public modules **do not export command aliases**. Aliases are a personal
+preference and are added downstream by a profile or overlay, not shipped by the
+module (so `AliasesToExport` stays empty and the `.psm1` defines no `Set-Alias`).
+Parameter `[Alias()]` attributes are unaffected — those are part of a command's
+contract, not command aliases.
 
 ## Validate
 

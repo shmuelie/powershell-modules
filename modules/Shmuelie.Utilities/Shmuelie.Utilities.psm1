@@ -3,9 +3,6 @@ foreach ($script in Get-ChildItem $publicRoot -Filter '*.ps1' | Sort-Object Name
     . $script.FullName
 }
 
-Set-Alias -Name code -Value Start-VsCode
-Set-Alias -Name Get-GlobalDotNetTools -Value Get-DotNetTool
-
 Export-ModuleMember -Function @(
     'Get-DotNetTool', 'Update-DotNetTool', 'Install-DotNetTool',
     'Uninstall-DotNetTool', 'Get-InstalledApplications', 'Get-PipPackages',
@@ -17,4 +14,4 @@ Export-ModuleMember -Function @(
     'Uninstall-VsCodeExtension', 'Update-VsCodeExtension',
     'Get-WindowsTerminalSettings', 'Get-WindowsTerminalProfile',
     'Start-WindowsPerformanceRecorder', 'Stop-WindowsPerformanceRecorder'
-) -Alias @('code', 'Get-GlobalDotNetTools')
+)

@@ -1,8 +1,7 @@
 # Shmuelie.Copilot
 
 GitHub Copilot CLI session, plugin, marketplace, and MCP helpers, plus the
-`Start-Copilot` launcher (alias `copilot`). Depends only on the public `copilot`
-executable.
+`Start-Copilot` launcher. Depends only on the public `copilot` executable.
 
 **Version:** 0.1.0
 
@@ -18,7 +17,7 @@ Start-Copilot
 
 | Area | Commands |
 |---|---|
-| Launcher | `Start-Copilot` (alias `copilot`) |
+| Launcher | `Start-Copilot` |
 | Sessions | `Get-CopilotSession`, `Resume-CopilotSession`, `Rename-CopilotSession`, `Remove-CopilotSession` |
 | Session maintenance | `Merge-CopilotSession`, `Compress-CopilotSession`, `Repair-CopilotSessionEvents` |
 | Plugins | `Get-CopilotPlugin`, `Install-CopilotPlugin`, `Update-CopilotPlugin`, `Uninstall-CopilotPlugin` |

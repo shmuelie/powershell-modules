@@ -22,7 +22,7 @@
     )
     CmdletsToExport   = @()
     VariablesToExport = @()
-    AliasesToExport   = @('code', 'Get-GlobalDotNetTools')
+    AliasesToExport   = @()
     FormatsToProcess  = @('Utilities.format.ps1xml')
     PrivateData = @{
         PSData = @{

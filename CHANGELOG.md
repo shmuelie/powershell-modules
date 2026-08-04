@@ -12,3 +12,7 @@ between releases this file tracks catalog-level changes under `[Unreleased]`.
 - Independent build, validation, publishing, and documentation infrastructure,
   including a public-content scan, per-module `CHANGELOG.md` and version checks,
   and a Markdown documentation site with a Jekyll build.
+
+### Notes
+- Public modules export no command aliases (they are added downstream by a
+  profile or overlay); the build enforces this.

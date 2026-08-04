@@ -3,8 +3,6 @@ foreach ($script in Get-ChildItem $publicRoot -Filter '*.ps1' | Sort-Object Name
     . $script.FullName
 }
 
-Set-Alias -Name copilot -Value Start-Copilot
-
 Register-ArgumentCompleter -CommandName Get-CopilotSession, Remove-CopilotSession, Rename-CopilotSession, Resume-CopilotSession, Merge-CopilotSession, Compress-CopilotSession, Repair-CopilotSessionEvents -ParameterName Id -ScriptBlock {
     param($commandName, $parameterName, $wordToComplete)
     $sessionStateDir = Join-Path $env:USERPROFILE '.copilot\session-state'
@@ -24,4 +22,4 @@ Export-ModuleMember -Function @(
     'Uninstall-CopilotPlugin', 'Merge-CopilotSession', 'Compress-CopilotSession',
     'Repair-CopilotSessionEvents', 'Get-CopilotSession', 'Remove-CopilotSession',
     'Rename-CopilotSession', 'Resume-CopilotSession', 'Start-Copilot'
-) -Alias 'copilot'
+)

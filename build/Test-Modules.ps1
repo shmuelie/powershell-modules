@@ -80,6 +80,9 @@ foreach ($module in $modules) {
         throw "Changelog is missing an [Unreleased] section: modules/$module/CHANGELOG.md"
     }
     $manifest = Test-ModuleManifest (Join-Path $moduleDir "$module.psd1")
+    if ($manifest.ExportedAliases.Count -gt 0) {
+        throw "Public modules must not export command aliases: $module exports $($manifest.ExportedAliases.Keys -join ', ')."
+    }
     $readme = Get-Content (Join-Path $moduleDir 'README.md') -Raw
     if ($readme -notmatch '\*\*Version:\*\*\s+([0-9]+\.[0-9]+\.[0-9]+)') {
         throw "Missing README version for $module."
