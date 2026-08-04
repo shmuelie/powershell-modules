@@ -14,5 +14,10 @@ Versions change only when a release is cut; unreleased work stays under
   `Passthrough`) without launching, so other tools can reuse the built arguments
   and the session-resume decision.
 
+### Fixed
+- `Start-Copilot -Remote:$false` no longer emits `--remote`. The launcher tested
+  parameter presence instead of the switch value, so explicitly forcing the flag
+  off still passed `--remote`.
+
 ### Notes
 - Depends only on the public `copilot` CLI.

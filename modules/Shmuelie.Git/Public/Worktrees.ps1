@@ -25,7 +25,11 @@ function Get-Worktrees {
             continue
         }
         if ($line.StartsWith('worktree ')) {
-            $entry['Path'] = Resolve-Path ($line -replace '^worktree ')
+            $rawPath = $line -replace '^worktree '
+            # git lists worktrees whose directory was deleted manually; keep the
+            # git-reported path when it no longer resolves rather than storing $null.
+            $resolved = Resolve-Path -LiteralPath $rawPath -ErrorAction SilentlyContinue
+            $entry['Path'] = if ($resolved) { $resolved.Path } else { $rawPath }
         } elseif ($line.StartsWith('HEAD ')) {
             $entry['Commit'] = $line -replace '^HEAD '
         } elseif ($line.StartsWith('branch refs/heads/')) {

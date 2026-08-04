@@ -593,7 +593,7 @@ function Start-Copilot {
     if ($EnableMemory) { $copilotArgs += '--enable-memory' }
     if ($ChangeDir) { $copilotArgs += '-C', $ChangeDir }
     if ($Attachment) { foreach ($a in $Attachment) { $copilotArgs += '--attachment', $a } }
-    if ($PSBoundParameters.ContainsKey('Remote')) { $copilotArgs += '--remote' }
+    if ($Remote) { $copilotArgs += '--remote' }
     if ($NoRemote) { $copilotArgs += '--no-remote' }
     if ($Mouse) { $copilotArgs += '--mouse', $Mouse }
     if ($PSBoundParameters.ContainsKey('Connect')) {

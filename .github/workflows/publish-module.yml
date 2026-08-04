@@ -25,6 +25,9 @@ jobs:
       - uses: actions/setup-dotnet@v5
         with:
           dotnet-version: 8.0.x
+      - name: Validate modules
+        shell: pwsh
+        run: ./build/Test-Modules.ps1
       - name: Resolve module
         id: module
         shell: pwsh
