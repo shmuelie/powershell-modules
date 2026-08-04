@@ -1,29 +1,14 @@
 # Changelog
 
-This repository contains independently versioned modules. Detailed changes live
-in each module's `CHANGELOG.md`.
+This repository contains independently versioned modules; detailed changes live
+in each module's `CHANGELOG.md`. Versions change only when a release is cut, so
+between releases this file tracks catalog-level changes under `[Unreleased]`.
 
 ## [Unreleased]
 
-### Changed
-- Removed the internal orchestration-CLI integration from `Shmuelie.Copilot`
-  (now 0.2.0); the module depends only on the public `copilot` CLI.
-- Simplified the root README to point at the documentation site; each module
-  README now documents its own commands and features in full.
-- Authored a Markdown documentation site under `docs/` with a Jekyll build.
-
-### Added
-- `Shmuelie.Copilot` 0.3.0 adds `Start-Copilot -PassThru`, which returns the
-  resolved launch plan without launching so other tools can reuse the built
-  arguments and session-resume decision.
-- Public-content scan in `build/Test-Modules.ps1` covering module sources,
-  documentation, and READMEs, plus docs presence, link, and version checks.
-- Per-module `CHANGELOG.md` enforcement in `build/Test-Modules.ps1` (each module
-  already ships its own changelog).
-
-## [Private preview] - 2026-08-03
-
 ### Added
 - Initial `Shmuelie.Git`, `Shmuelie.Copilot`, `Shmuelie.Node`, and
-  `Shmuelie.Utilities` module sources.
-- Independent build, validation, publishing, and documentation infrastructure.
+  `Shmuelie.Utilities` modules (all at 0.1.0, not yet released).
+- Independent build, validation, publishing, and documentation infrastructure,
+  including a public-content scan, per-module `CHANGELOG.md` and version checks,
+  and a Markdown documentation site with a Jekyll build.

@@ -4,7 +4,7 @@ GitHub Copilot CLI session, plugin, marketplace, and MCP helpers, plus the
 `Start-Copilot` launcher (alias `copilot`). Depends only on the public `copilot`
 executable.
 
-**Version:** 0.3.0
+**Version:** 0.1.0
 
 ## Install
 

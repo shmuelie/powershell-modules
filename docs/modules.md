@@ -25,7 +25,7 @@ Highlights:
 ## Shmuelie.Copilot
 
 GitHub Copilot CLI sessions, plugins, marketplaces, MCP servers, and the
-`Start-Copilot` launcher. **Version 0.3.0.**
+`Start-Copilot` launcher. **Version 0.1.0.**
 [README](https://github.com/shmuelie/powershell-modules/blob/main/modules/Shmuelie.Copilot/README.md)
 
 Highlights:

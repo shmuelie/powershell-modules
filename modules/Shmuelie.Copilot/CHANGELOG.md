@@ -1,23 +1,18 @@
 # Changelog
 
+The format is based on [Keep a Changelog](https://keepachangelog.com/).
+Versions change only when a release is cut; unreleased work stays under
+`[Unreleased]`.
+
 ## [Unreleased]
 
-## [0.3.0] - 2026-08-04
-
 ### Added
+- Initial `Shmuelie.Copilot`: GitHub Copilot CLI session, plugin, marketplace,
+  and MCP helpers, plus the `Start-Copilot` launcher (alias `copilot`) with
+  session resume, safe git deny rules, full flag mapping, and terminal recovery.
 - `Start-Copilot -PassThru` returns the resolved launch plan (`Exe`, `Args`,
-  `Passthrough`) without launching, so callers can reuse the built arguments and
-  the session-resume decision to wrap the launch with a different engine.
+  `Passthrough`) without launching, so other tools can reuse the built arguments
+  and the session-resume decision.
 
-## [0.2.0] - 2026-08-03
-
-### Removed
-- Removed the internal orchestration-CLI integration (its plugins, profiles,
-  marketplaces, and `Start-Copilot` code path) so the module depends only on the
-  public `copilot` CLI.
-
-## [0.1.0] - 2026-08-03
-
-### Added
-- Initial private preview.
-- Copilot CLI session, plugin, marketplace, and MCP helpers.
+### Notes
+- Depends only on the public `copilot` CLI.

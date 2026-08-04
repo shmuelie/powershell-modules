@@ -66,12 +66,18 @@ foreach ($markdown in $markdownFiles) {
 
 # ---------------------------------------------------------------------------
 # Version consistency and per-module changelog: each module README header must
-# match its manifest, and each module must ship its own CHANGELOG.md.
+# match its manifest, each module must ship its own CHANGELOG.md, and every
+# changelog (module + repository) must carry an [Unreleased] section so content
+# changes land there instead of forcing a version bump between releases.
 # ---------------------------------------------------------------------------
 foreach ($module in $modules) {
     $moduleDir = Join-Path $repoRoot "modules\$module"
-    if (-not (Test-Path (Join-Path $moduleDir 'CHANGELOG.md'))) {
+    $moduleChangelog = Join-Path $moduleDir 'CHANGELOG.md'
+    if (-not (Test-Path $moduleChangelog)) {
         throw "Each module must have its own CHANGELOG.md: missing modules/$module/CHANGELOG.md"
+    }
+    if ((Get-Content $moduleChangelog -Raw) -notmatch '(?m)^##\s*\[Unreleased\]') {
+        throw "Changelog is missing an [Unreleased] section: modules/$module/CHANGELOG.md"
     }
     $manifest = Test-ModuleManifest (Join-Path $moduleDir "$module.psd1")
     $readme = Get-Content (Join-Path $moduleDir 'README.md') -Raw
@@ -81,4 +87,8 @@ foreach ($module in $modules) {
     if ($Matches[1] -ne "$($manifest.Version)") {
         throw "README version mismatch for ${module}: README $($Matches[1]), manifest $($manifest.Version)."
     }
+}
+
+if ((Get-Content (Join-Path $repoRoot 'CHANGELOG.md') -Raw) -notmatch '(?m)^##\s*\[Unreleased\]') {
+    throw 'Repository CHANGELOG.md is missing an [Unreleased] section.'
 }

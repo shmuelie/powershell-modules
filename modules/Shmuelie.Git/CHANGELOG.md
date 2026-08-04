@@ -1,10 +1,13 @@
 # Changelog
 
+The format is based on [Keep a Changelog](https://keepachangelog.com/).
+Versions change only when a release is cut; unreleased work stays under
+`[Unreleased]`.
+
 ## [Unreleased]
 
-## [0.1.0] - 2026-08-03
-
 ### Added
-- Initial private preview.
-- Git worktree, repository-layout, remote-sync, status, and completion helpers.
-- Bundled PSReadLine worktree predictor.
+- Initial `Shmuelie.Git`: git repository, worktree, status, completion, and
+  PSReadLine prediction helpers, including `New-Repository`, the worktree
+  lifecycle cmdlets (aliases `cw`/`lw`/`mw`/`rw`), `Update-Worktrees`,
+  `Find-StaleBranch`, `Get-GitStatusSummary`, and a bundled worktree predictor.
