@@ -14,6 +14,8 @@ in each module's `CHANGELOG.md`.
 ### Added
 - Public-content scan in `build/Test-Modules.ps1` covering module sources,
   documentation, and READMEs, plus docs presence, link, and version checks.
+- Per-module `CHANGELOG.md` enforcement in `build/Test-Modules.ps1` (each module
+  already ships its own changelog).
 
 ## [Private preview] - 2026-08-03
 

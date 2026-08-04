@@ -65,11 +65,16 @@ foreach ($markdown in $markdownFiles) {
 }
 
 # ---------------------------------------------------------------------------
-# Version consistency: each module README header must match its manifest.
+# Version consistency and per-module changelog: each module README header must
+# match its manifest, and each module must ship its own CHANGELOG.md.
 # ---------------------------------------------------------------------------
 foreach ($module in $modules) {
-    $manifest = Test-ModuleManifest (Join-Path $repoRoot "modules\$module\$module.psd1")
-    $readme = Get-Content (Join-Path $repoRoot "modules\$module\README.md") -Raw
+    $moduleDir = Join-Path $repoRoot "modules\$module"
+    if (-not (Test-Path (Join-Path $moduleDir 'CHANGELOG.md'))) {
+        throw "Each module must have its own CHANGELOG.md: missing modules/$module/CHANGELOG.md"
+    }
+    $manifest = Test-ModuleManifest (Join-Path $moduleDir "$module.psd1")
+    $readme = Get-Content (Join-Path $moduleDir 'README.md') -Raw
     if ($readme -notmatch '\*\*Version:\*\*\s+([0-9]+\.[0-9]+\.[0-9]+)') {
         throw "Missing README version for $module."
     }
