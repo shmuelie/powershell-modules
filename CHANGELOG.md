@@ -8,7 +8,8 @@ in each module's `CHANGELOG.md`.
 ### Changed
 - Removed the internal orchestration-CLI integration from `Shmuelie.Copilot`
   (now 0.2.0); the module depends only on the public `copilot` CLI.
-- Simplified the root and per-module READMEs to point at the documentation site.
+- Simplified the root README to point at the documentation site; each module
+  README now documents its own commands and features in full.
 - Authored a Markdown documentation site under `docs/` with a Jekyll build.
 
 ### Added
