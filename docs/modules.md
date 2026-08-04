@@ -25,13 +25,15 @@ Highlights:
 ## Shmuelie.Copilot
 
 GitHub Copilot CLI sessions, plugins, marketplaces, MCP servers, and the
-`Start-Copilot` launcher. **Version 0.2.0.**
+`Start-Copilot` launcher. **Version 0.3.0.**
 [README](https://github.com/shmuelie/powershell-modules/blob/main/modules/Shmuelie.Copilot/README.md)
 
 Highlights:
 
 - `Start-Copilot` (alias `copilot`) adds session resume, a multi-session picker,
   safe git deny rules, and full Copilot CLI flag mapping.
+- `Start-Copilot -PassThru` returns the resolved launch plan without launching,
+  so other tools can reuse the built arguments.
 - Session tools: `Get-CopilotSession`, `Resume-CopilotSession`,
   `Merge-CopilotSession`, `Compress-CopilotSession`, `Repair-CopilotSessionEvents`.
 - Plugin, marketplace, and MCP management wrap the public `copilot` CLI.

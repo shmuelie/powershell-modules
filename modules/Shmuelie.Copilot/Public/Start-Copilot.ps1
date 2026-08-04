@@ -267,6 +267,15 @@ function Start-Copilot {
         Change the working directory before doing anything else (maps to -C).
         Aliased as -C.
 
+    .PARAMETER PassThru
+        Do not launch. Compute the full launch plan — including the resolved
+        executable and the complete argument vector (with the session-resume
+        decision already applied) — and return it as a CopilotLaunchPlan object
+        with Exe, Args, and Passthrough properties. Interactive session selection
+        still runs so the returned plan reflects the real decision. Use this to
+        build on top of Start-Copilot (for example, to wrap the launch with a
+        different engine) without duplicating the argument or resume logic.
+
     .PARAMETER RemainingArgs
         Any additional arguments are passed through to the copilot executable.
 
@@ -289,8 +298,14 @@ function Start-Copilot {
     .EXAMPLE
         Start-Copilot -NoResume -WhatIf
         # Renders the full copilot command line without launching a session.
+
+    .EXAMPLE
+        $plan = Start-Copilot -PassThru -Model claude-opus-4.7
+        # Returns @{ Exe; Args; Passthrough } without launching, so a caller can
+        # reuse the built arguments (e.g. to launch a different engine).
     #>
     [CmdletBinding(SupportsShouldProcess, DefaultParameterSetName = 'Copilot')]
+    [OutputType('CopilotLaunchPlan')]
     param(
         [Parameter(Position = 0)]
         [string]$Prompt,
@@ -471,6 +486,8 @@ function Start-Copilot {
 
         [Alias('C')]
         [string]$ChangeDir,
+
+        [switch]$PassThru,
 
         [Parameter(ValueFromRemainingArguments)]
         [string[]]$RemainingArgs
@@ -748,12 +765,10 @@ function Start-Copilot {
         $copilotArgs += '--name', $Name
     }
 
-    $exitCode = $null
+    # Compute the final argument vector for both the passthrough (update/help) and
+    # normal launch paths, so -PassThru and the launcher share one code path.
     if ($isPassthrough) {
-        if ($PSCmdlet.ShouldProcess("$copilotExe $($passthroughArgs -join ' ')", 'Execute')) {
-            & $copilotExe @passthroughArgs
-            $exitCode = $LASTEXITCODE
-        }
+        $finalArgs = $passthroughArgs
     } else {
         if ($Prompt) {
             $copilotArgs += '--autopilot', '-p', $Prompt
@@ -765,10 +780,25 @@ function Start-Copilot {
             $copilotArgs += $RemainingArgs
         }
 
-        if ($PSCmdlet.ShouldProcess("$copilotExe $($copilotArgs -join ' ')", 'Execute')) {
-            & $copilotExe @copilotArgs
-            $exitCode = $LASTEXITCODE
+        $finalArgs = $copilotArgs
+    }
+
+    # -PassThru: return the resolved launch plan without executing. The session
+    # resume decision is already baked into $finalArgs. Callers (e.g. an overlay
+    # that launches a different engine) reuse Exe/Args without duplicating logic.
+    if ($PassThru) {
+        return [pscustomobject]@{
+            PSTypeName  = 'CopilotLaunchPlan'
+            Exe         = $copilotExe
+            Args        = $finalArgs
+            Passthrough = [bool]$isPassthrough
         }
+    }
+
+    $exitCode = $null
+    if ($PSCmdlet.ShouldProcess("$copilotExe $($finalArgs -join ' ')", 'Execute')) {
+        & $copilotExe @finalArgs
+        $exitCode = $LASTEXITCODE
     }
 
     # If the engine exited non-zero it may have crashed out of its TUI and left the

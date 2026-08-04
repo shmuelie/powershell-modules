@@ -13,6 +13,9 @@ in each module's `CHANGELOG.md`.
 - Authored a Markdown documentation site under `docs/` with a Jekyll build.
 
 ### Added
+- `Shmuelie.Copilot` 0.3.0 adds `Start-Copilot -PassThru`, which returns the
+  resolved launch plan without launching so other tools can reuse the built
+  arguments and session-resume decision.
 - Public-content scan in `build/Test-Modules.ps1` covering module sources,
   documentation, and READMEs, plus docs presence, link, and version checks.
 - Per-module `CHANGELOG.md` enforcement in `build/Test-Modules.ps1` (each module

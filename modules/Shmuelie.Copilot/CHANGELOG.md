@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-04
+
+### Added
+- `Start-Copilot -PassThru` returns the resolved launch plan (`Exe`, `Args`,
+  `Passthrough`) without launching, so callers can reuse the built arguments and
+  the session-resume decision to wrap the launch with a different engine.
+
 ## [0.2.0] - 2026-08-03
 
 ### Removed

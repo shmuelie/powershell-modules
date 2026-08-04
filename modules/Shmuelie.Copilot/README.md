@@ -4,7 +4,7 @@ GitHub Copilot CLI session, plugin, marketplace, and MCP helpers, plus the
 `Start-Copilot` launcher (alias `copilot`). Depends only on the public `copilot`
 executable.
 
-**Version:** 0.2.0
+**Version:** 0.3.0
 
 ## Install
 
@@ -40,6 +40,9 @@ Start-Copilot
 - **Full flag mapping** — model, reasoning effort, MCP enable/disable, plan mode,
   attachments, remote control, and the rest of the Copilot CLI surface.
 - **Autopilot mode** when a prompt is provided; interactive otherwise.
+- **`-PassThru`** returns the resolved launch plan (`Exe`, `Args`,
+  `Passthrough`) without launching, so other tools can reuse the built arguments
+  and session-resume decision.
 - **Terminal recovery** after a non-zero exit (via `Reset-TerminalModes` when
   available).
 - **`update` / `help` passthrough** straight to the executable.
