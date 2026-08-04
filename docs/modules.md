@@ -33,7 +33,11 @@ Highlights:
 - `Start-Copilot` adds session resume, a multi-session picker,
   safe git deny rules, and full Copilot CLI flag mapping.
 - `Start-Copilot -PassThru` returns the resolved launch plan without launching,
-  so other tools can reuse the built arguments.
+  so other tools can reuse the built arguments (`-DeferResume` also skips the
+  resume picker so an overlay owns session selection).
+- Path-aware MCP startup: a server's `autoConnect` value (`true`/absent, `false`,
+  or an array of path globs) decides whether `Start-Copilot` enables it for the
+  current directory. See the module README.
 - Session tools: `Get-CopilotSession`, `Resume-CopilotSession`,
   `Merge-CopilotSession`, `Compress-CopilotSession`, `Repair-CopilotSessionEvents`.
 - Plugin, marketplace, and MCP management wrap the public `copilot` CLI.

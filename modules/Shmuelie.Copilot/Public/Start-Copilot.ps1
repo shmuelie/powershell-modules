@@ -272,9 +272,17 @@ function Start-Copilot {
         executable and the complete argument vector (with the session-resume
         decision already applied) — and return it as a CopilotLaunchPlan object
         with Exe, Args, and Passthrough properties. Interactive session selection
-        still runs so the returned plan reflects the real decision. Use this to
-        build on top of Start-Copilot (for example, to wrap the launch with a
-        different engine) without duplicating the argument or resume logic.
+        still runs so the returned plan reflects the real decision (pair with
+        -DeferResume to skip it). Use this to build on top of Start-Copilot (for
+        example, to wrap the launch with a different engine) without duplicating
+        the argument or resume logic.
+
+    .PARAMETER DeferResume
+        Skip the automatic session-resume decision entirely: no interactive
+        picker runs and no --resume argument is added, leaving session selection
+        to the caller. Intended for -PassThru overlays that own their own
+        multi-session orchestration. An explicit -ResumeSession still takes
+        effect; -NoResume and the resume-mode switches are unaffected.
 
     .PARAMETER RemainingArgs
         Any additional arguments are passed through to the copilot executable.
@@ -303,6 +311,11 @@ function Start-Copilot {
         $plan = Start-Copilot -PassThru -Model claude-opus-4.7
         # Returns @{ Exe; Args; Passthrough } without launching, so a caller can
         # reuse the built arguments (e.g. to launch a different engine).
+
+    .EXAMPLE
+        $plan = Start-Copilot -PassThru -DeferResume
+        # Returns the plan with no --resume and no picker, so an overlay can make
+        # the session-resume decision itself.
     #>
     [CmdletBinding(SupportsShouldProcess, DefaultParameterSetName = 'Copilot')]
     [OutputType('CopilotLaunchPlan')]
@@ -488,6 +501,8 @@ function Start-Copilot {
         [string]$ChangeDir,
 
         [switch]$PassThru,
+
+        [switch]$DeferResume,
 
         [Parameter(ValueFromRemainingArguments)]
         [string[]]$RemainingArgs
@@ -676,7 +691,7 @@ function Start-Copilot {
         Write-Verbose "Resuming session: $ResumeSession"
         $copilotArgs += '--resume', $ResumeSession
     }
-    elseif (-not $isNoResume -and -not $isPassthrough) {
+    elseif (-not $isNoResume -and -not $isPassthrough -and -not $DeferResume) {
         $sessionStateDir = Join-Path $env:USERPROFILE '.copilot' 'session-state'
         # Auto-generated maintenance sessions to skip when auto-resuming
         $ignoredSessionNames = @(

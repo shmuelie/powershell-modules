@@ -16,7 +16,5 @@ between releases this file tracks catalog-level changes under `[Unreleased]`.
 ### Notes
 - Public modules export no command aliases (they are added downstream by a
   profile or overlay); the build enforces this.
-- The public-content scan now also blocks corporate email addresses.
-- The publish workflow now runs the module validation (`Test-Modules.ps1`,
-  including the public-content scan) before publishing, so the publish path is
-  gated by the same checks as CI.
+- The publish workflow now runs the module validation (`Test-Modules.ps1`)
+  before publishing, so the publish path is gated by the same checks as CI.

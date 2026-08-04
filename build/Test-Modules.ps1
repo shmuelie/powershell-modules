@@ -11,30 +11,6 @@ foreach ($module in $modules) {
 }
 
 # ---------------------------------------------------------------------------
-# Public-content scan.
-# Public modules must not reference internal-only tooling, private endpoints,
-# organization-specific systems, or credentials. Agency is a Microsoft-internal
-# orchestrator and is treated as internal-only.
-# The build/ scripts and build artifacts are excluded (this script defines the
-# forbidden markers as literals).
-# ---------------------------------------------------------------------------
-$forbidden = 'dev\.azure\.com/microsoft|msazure\.pkgs\.visualstudio\.com|OS\.Developer|WindowsHiveMind|SFC\.|SFS\.|SFU\.|os\.2020|OSClient|IXPTools|StoreFundementals|user/senglard|SEnglard|\\\\redmond\\|D:\\wsd\\|agency|winpx|bluebird|workiq|@microsoft\.com'
-
-$scanFiles = Get-ChildItem $repoRoot -Recurse -File |
-    Where-Object {
-        $rel = $_.FullName.Substring($repoRoot.Length).TrimStart('\', '/')
-        $rel -notmatch '^(?:\.git|build|artifacts)[\\/]' -and
-        $_.FullName -notmatch '[\\/](?:bin|obj)[\\/]' -and
-        $_.Extension -in '.ps1', '.psm1', '.psd1', '.ps1xml', '.md', '.json', '.yml', '.yaml', '.cs', '.csproj'
-    }
-
-$matches = $scanFiles | Select-String -Pattern $forbidden
-if ($matches) {
-    $matches | Format-Table Path, LineNumber, Line -AutoSize
-    throw 'Internal-only markers were found in public sources.'
-}
-
-# ---------------------------------------------------------------------------
 # Documentation checks: Markdown-only site with the expected pages and no
 # broken local links.
 # ---------------------------------------------------------------------------

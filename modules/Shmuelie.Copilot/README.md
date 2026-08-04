@@ -41,7 +41,8 @@ Start-Copilot
 - **Autopilot mode** when a prompt is provided; interactive otherwise.
 - **`-PassThru`** returns the resolved launch plan (`Exe`, `Args`,
   `Passthrough`) without launching, so other tools can reuse the built arguments
-  and session-resume decision.
+  and session-resume decision. Add **`-DeferResume`** to skip the resume picker
+  and emit no `--resume`, letting an overlay own session selection.
 - **Terminal recovery** after a non-zero exit (via `Reset-TerminalModes` when
   available).
 - **`update` / `help` passthrough** straight to the executable.
@@ -52,6 +53,26 @@ Start-Copilot -Model claude-opus-4.7 -ReasoningEffort high
 Start-Copilot -ResumeLatest
 Start-Copilot -NoResume -WhatIf   # preview the command line without launching
 ```
+
+## MCP autoConnect policy
+
+`Start-Copilot` reads the `autoConnect` field on each server in your Copilot CLI
+MCP configuration and decides which servers to disable at startup (passing
+`--disable-mcp-server` for the ones that should stay off). This is an extension
+`Start-Copilot` layers on top of the base CLI — the `[path globs]` form below is
+interpreted by `Start-Copilot`, not by `copilot` itself.
+
+| `autoConnect` value | Behavior |
+|---|---|
+| `true` or omitted | Server is always enabled. |
+| `false` | Left to the CLI's native lazy/dormant handling (not force-disabled). |
+| `["glob", ...]` | Enabled **only** when the current directory matches one of the path globs; otherwise disabled for this launch. |
+
+The path-glob form is useful for MCP servers that are only relevant in certain
+repositories. For example, a server configured with
+`"autoConnect": ["D:\\work\\*"]` connects only when you launch from under
+`D:\work`. Use `-EnableMcpServer <name>` to force a server on regardless of its
+`autoConnect` policy, or `-DisableMcpServer <name>` to force one off.
 
 ## Requirements
 

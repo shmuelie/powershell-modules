@@ -13,6 +13,8 @@ Versions change only when a release is cut; unreleased work stays under
 - `Start-Copilot -PassThru` returns the resolved launch plan (`Exe`, `Args`,
   `Passthrough`) without launching, so other tools can reuse the built arguments
   and the session-resume decision.
+- `Start-Copilot -DeferResume` skips the automatic session-resume decision (no
+  picker, no `--resume`), so a `-PassThru` overlay can own session selection.
 
 ### Fixed
 - `Start-Copilot -Remote:$false` no longer emits `--remote`. The launcher tested
