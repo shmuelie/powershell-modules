@@ -16,25 +16,8 @@ Register-ArgumentCompleter -CommandName Get-CopilotSession, Remove-CopilotSessio
         }
 }
 
-Register-ArgumentCompleter -CommandName Start-Copilot -ParameterName AgencyProfile -ScriptBlock {
-    param($commandName, $parameterName, $wordToComplete)
-    try {
-        Get-AgencyProfile |
-            Where-Object { $_.Name -like "$wordToComplete*" } |
-            ForEach-Object {
-                [System.Management.Automation.CompletionResult]::new($_.Name, $_.Name, 'ParameterValue', $_.Name)
-            }
-    } catch {
-    }
-}
-
 Export-ModuleMember -Function @(
-    'Register-AgencyMarketplace',
-    'Get-AgencyPlugin', 'Install-AgencyPlugin', 'Uninstall-AgencyPlugin',
-    'Get-AgencyPluginCache', 'Clear-AgencyPluginCache', 'Remove-AgencyPluginCache',
-    'Optimize-AgencyPluginCache', 'Get-AgencyProfilePath', 'Get-AgencyGlobalConfigPath',
-    'Get-AgencyProfile', 'Update-AgencyProfile', 'Add-AgencyProfilePlugin',
-    'Remove-AgencyProfilePlugin', 'Get-CopilotMarketplace', 'Register-CopilotMarketplace',
+    'Get-CopilotMarketplace', 'Register-CopilotMarketplace',
     'Unregister-CopilotMarketplace', 'Get-CopilotMarketplacePlugin',
     'Get-CopilotMcpServer', 'Register-CopilotMcpServer', 'Unregister-CopilotMcpServer',
     'Get-CopilotPlugin', 'Update-CopilotPlugin', 'Install-CopilotPlugin',

@@ -1,117 +1,3 @@
-function Get-AgencyPluginName {
-    <#
-    .SYNOPSIS
-        Extract the plugin name from an Agency plugin spec.
-    .DESCRIPTION
-        Handles 'market:<name>@<url>', 'local:<path>', 'github:owner/repo:path',
-        a bare name, or a spec object with a .plugin property. Returns the lowercased
-        name, or $null when it can't be determined.
-    #>
-    [CmdletBinding()]
-    param([Parameter(ValueFromPipeline)] $Spec)
-    process {
-        if ($null -eq $Spec) { return }
-        $s = if ($Spec -is [string]) { $Spec } elseif ($Spec.PSObject.Properties['plugin']) { $Spec.plugin } else { "$Spec" }
-        $s = $s.Trim()
-        if ($s -match '^market:([^@]+)@') { return $Matches[1].Trim().ToLowerInvariant() }
-        if ($s -match '^local:(.+)$') { return (Split-Path $Matches[1].Trim() -Leaf).ToLowerInvariant() }
-        if ($s -match '^github:[^:]+/([^:/]+)') { return $Matches[1].Trim().ToLowerInvariant() }
-        return $s.ToLowerInvariant()
-    }
-}
-
-function Get-RepoLocalPlugin {
-    <#
-    .SYNOPSIS
-        Map the plugin names a repo defines locally to their 'local:<abs path>' specs.
-    .DESCRIPTION
-        A repo is a plugin-dev source when its root agency.toml declares `local:`
-        plugin paths, or it contains plugin manifests (plugins/*/*/plugin.json,
-        .github/plugin/plugin.json, or .github/plugin/*/plugin.json for a
-        multi-plugin marketplace). Returns a hashtable of lowercased plugin name ->
-        'local:<absolute dir>' spec. Empty when the repo defines no local plugins.
-    .PARAMETER RepoRoot
-        The repository root to inspect.
-    #>
-    [CmdletBinding()]
-    param([Parameter(Mandatory)] [string]$RepoRoot)
-
-    $result = @{}
-
-    # Resolve a plugin directory to its manifest name (matches the CLI's manifest
-    # search order: plugin.json, .github/plugin/plugin.json, .claude-plugin/plugin.json).
-    $readName = {
-        param($dir)
-        foreach ($rel in @('plugin.json', '.github\plugin\plugin.json', '.claude-plugin\plugin.json')) {
-            $mf = Join-Path $dir $rel
-            if (Test-Path $mf) {
-                try { $n = (Get-Content $mf -Raw | ConvertFrom-Json).name; if ($n) { return $n } } catch { }
-            }
-        }
-        return $null
-    }
-
-    # 1) Prefer the root agency.toml `local:` entries (the author's declared dev set).
-    $agencyToml = Join-Path $RepoRoot 'agency.toml'
-    if (Test-Path $agencyToml) {
-        $toml = Get-Content $agencyToml -Raw
-        foreach ($m in [regex]::Matches($toml, 'local:([^"'',\s\]]+)')) {
-            $rel = $m.Groups[1].Value.Trim()
-            $dir = if ([System.IO.Path]::IsPathRooted($rel)) { $rel } else { Join-Path $RepoRoot $rel }
-            if (Test-Path $dir) {
-                $name = & $readName $dir
-                if ($name) { $result[$name.ToLowerInvariant()] = "local:$((Resolve-Path $dir).Path)" }
-            }
-        }
-    }
-
-    # 2) Fallback: discover plugin manifests under the repo.
-    if ($result.Count -eq 0) {
-        $manifests = @()
-        $pluginsDir = Join-Path $RepoRoot 'plugins'
-        if (Test-Path $pluginsDir) { $manifests += Get-ChildItem $pluginsDir -Recurse -Filter plugin.json -File -ErrorAction SilentlyContinue }
-        $ghPluginDir = Join-Path $RepoRoot '.github\plugin'
-        if (Test-Path $ghPluginDir) {
-            # legacy single-plugin manifest at .github/plugin/plugin.json
-            $legacy = Join-Path $ghPluginDir 'plugin.json'
-            if (Test-Path $legacy) { $manifests += Get-Item $legacy }
-            # multi-plugin marketplace: .github/plugin/<name>/plugin.json
-            foreach ($sub in (Get-ChildItem $ghPluginDir -Directory -ErrorAction SilentlyContinue)) {
-                $mf = Join-Path $sub.FullName 'plugin.json'
-                if (Test-Path $mf) { $manifests += Get-Item $mf }
-            }
-        }
-        foreach ($mf in $manifests) {
-            try { $name = (Get-Content $mf.FullName -Raw | ConvertFrom-Json).name } catch { $name = $null }
-            if ($name) { $result[$name.ToLowerInvariant()] = "local:$($mf.Directory.FullName)" }
-        }
-    }
-
-    return $result
-}
-
-function Get-AgencyEffectivePluginSpec {
-    <#
-    .SYNOPSIS
-        Resolve the effective plugins.default specs Agency would load for a directory.
-    .DESCRIPTION
-        Runs `agency config get plugins.default` (from -WorkingDirectory) and returns
-        the plugin spec strings. Used to determine which marketplace plugins are active
-        when no profile is selected.
-    .PARAMETER WorkingDirectory
-        The directory to resolve config from (a plugin-dev repo root).
-    #>
-    [CmdletBinding()]
-    param([string]$WorkingDirectory)
-    $exe = Resolve-CliExe -Name agency
-    if (-not $exe) { return @() }
-    Push-Location $WorkingDirectory -ErrorAction SilentlyContinue
-    try {
-        $out = & $exe config get plugins.default 2>$null | ForEach-Object { $_.ToString() }
-    } finally { Pop-Location -ErrorAction SilentlyContinue }
-    $out | ForEach-Object { if ($_ -match 'plugin:\s*(.+?)\s*$') { $Matches[1].Trim() } }
-}
-
 function Start-Copilot {
     <#
     .SYNOPSIS
@@ -121,7 +7,8 @@ function Start-Copilot {
     .DESCRIPTION
         Wraps the GitHub Copilot CLI executable with automatic session resume
         and sensible defaults (--allow-all --experimental), each of which can be
-        turned off with -NoAllowAll / -NoExperimental.
+        turned off with -NoAllowAll / -NoExperimental. Destructive git operations
+        (force push, hard reset, rebase, amend, and similar) are denied by default.
 
         When a Prompt is provided, runs in non-interactive autopilot mode (-p --autopilot).
         When no Prompt is provided, starts interactively.
@@ -134,8 +21,8 @@ function Start-Copilot {
         '(no summary)' sessions are hidden if any named session exists; pass
         -IncludeUnnamed to list them too. Use -NoResume to skip session resume
         entirely, or -ResumeLatest to automatically resume the most recent
-        session without prompting. Auto-generated context_board maintenance
-        sessions are ignored when choosing a session to resume.
+        session without prompting. Auto-generated maintenance sessions are
+        ignored when choosing a session to resume.
 
         The prompt values "update" and "help" are treated as passthrough
         commands, forwarding all arguments directly to the copilot executable
@@ -186,10 +73,8 @@ function Start-Copilot {
 
     .PARAMETER Version
         Run a specific Copilot CLI engine version for this session, e.g. '1.0.55'.
-        Maps to the engine's (currently undocumented) --prefer-version flag and is
-        forwarded on both the bare-copilot and Agency launch paths. When set,
-        --no-auto-update is also added so an auto-update can't replace the pinned
-        version mid-session.
+        Maps to the engine's --prefer-version flag. When set, --no-auto-update is
+        also added so an auto-update can't replace the pinned version mid-session.
 
     .PARAMETER Agent
         Specify a custom agent to use.
@@ -252,118 +137,10 @@ function Start-Copilot {
     .PARAMETER DisableMcpServer
         One or more MCP server names to disable at startup, in addition to
         any servers disabled by path-based autoConnect policy in the config.
-        Servers with autoConnect: false use native CLI lazy loading.
 
     .PARAMETER EnableMcpServer
         One or more MCP server names to force-enable at startup, overriding
-        path-based autoConnect policy in the config. Under -Agency, this also
-        keeps the mcp-config.json version of an overlapping server instead of
-        swapping to the Agency built-in.
-
-    .PARAMETER Agency
-        Force use of Agency regardless of the git remote URL. Under Agency,
-        overlapping MCP servers (EngHub, MicrosoftLearn, MicrosoftFabricRTI,
-        AzureDevops, and the Microsoft 365 suite) are swapped for Agency's
-        built-in MCPs (--mcp); bare copilot keeps the mcp-config.json servers.
-
-    .PARAMETER DetectAgency
-        Auto-detect whether to use Agency based on the git remote URL
-        (matches Azure DevOps remotes).
-
-    .PARAMETER AgencyAgent
-        (Agency only) Load a named agent. Supports plugin:agent syntax (e.g., my-plugin:my-agent).
-
-    .PARAMETER AgencyProfile
-        (Agency only) Activate a named plugin profile (see Get-AgencyProfile).
-        Default semantics are profile-only (lean: the profile's
-        plugins replace the base set). 'full' loads every installed plugin. When omitted,
-        a profile is auto-selected from the current repo/cwd unless -NoAutoProfile is set.
-
-    .PARAMETER MergeProfile
-        (Agency only) Activate the profile with --profile (deep-merge over the base
-        plugin set) instead of the default --profile-only (replace).
-
-    .PARAMETER NoAutoProfile
-        (Agency only) Disable auto-selecting a plugin profile from the current repo/cwd.
-
-    .PARAMETER NoLocalPluginSwap
-        (Agency only) Disable the automatic local-plugin swap. By default, when the
-        current repo is a plugin-dev source (its root agency.toml declares local:
-        plugins, or it has plugins/*/*/plugin.json manifests), any active plugin whose
-        name matches a local plugin is loaded from the working tree instead of its
-        marketplace copy — so your local edits are used. This switch keeps the plain
-        profile/config behavior (marketplace copies).
-
-    .PARAMETER IncludeLocalOnlyPlugins
-        (Agency only) When the local-plugin swap runs, also load the repo's local
-        plugins that are NOT already in the active plugin set (local-only plugins),
-        not just the ones that shadow a marketplace copy.
-
-    .PARAMETER AgencyMcp
-        (Agency only) Add built-in Agency MCP servers (e.g., ado, bluebird, icm, watson).
-        Can be specified multiple times.
-
-    .PARAMETER NoDefaultMcps
-        (Agency only) Skip loading default Agency MCP servers (bluebird, workiq).
-
-    .PARAMETER NoInstalledPlugins
-        (Agency only) Skip auto-loading installed plugins from the registry
-        (emits Agency's --no-config-plugins; env AGENCY_NO_INSTALLED_PLUGINS).
-
-    .PARAMETER NoInputProcessing
-        (Agency only) Skip input-variable processing when loading an agent, keeping
-        the agent instructions unchanged.
-
-    .PARAMETER CopilotSessionFile
-        (Agency only) Custom name for the Copilot session file (include the .jsonl
-        extension). Defaults to '{session_id}.jsonl'.
-
-    .PARAMETER CopilotLogName
-        (Agency only) Custom name for the Copilot CLI log file (include the .log
-        extension). Advanced; defaults to 'session-{session_id}.log'.
-
-    .PARAMETER GenerateResult
-        (Agency only) Generate a result classification after execution. Combine with
-        -ResultPath for a custom output path and -ResultType to choose the type.
-
-    .PARAMETER ResultPath
-        (Agency only) Custom output path for -GenerateResult (must end in .json;
-        relative paths resolve against the session log directory).
-
-    .PARAMETER ResultType
-        (Agency only) Result classification type for -GenerateResult: standard or pr.
-
-    .PARAMETER NoOrgConfig
-        (Agency only) Skip org-hierarchy config loading for this invocation (bypasses
-        the Graph API call, index download, and org config merge).
-
-    .PARAMETER Organization
-        (Agency only) ADO organization name (required for -AgencySource organization).
-
-    .PARAMETER Project
-        (Agency only) ADO project name (for -AgencySource organization).
-
-    .PARAMETER Repository
-        (Agency only) ADO repository name (for -AgencySource organization).
-
-    .PARAMETER Branch
-        (Agency only) ADO branch name (optional; defaults to the repo's default branch).
-
-    .PARAMETER AgencyPlugin
-        (Agency only) Load specific plugin specs (e.g., local:./path, github:owner/repo, cat:catalog).
-
-    .PARAMETER AgencySource
-        (Agency only) Override agent resolution source: personal, repo, organization, company, playground, spec.
-
-    .PARAMETER AgencyInput
-        (Agency only) Input variable assignments in VAR=VALUE format for agent templates.
-
-    .PARAMETER NoAgencyConfigCache
-        (Agency only) Bypass the on-disk cache for remote config fetches.
-
-    .PARAMETER AgencyVerbosity
-        (Agency only) Override the Agency log verbosity level. Default is 'warn'
-        to suppress startup noise. Set to 'info' or 'debug' for troubleshooting.
+        path-based autoConnect policy in the config.
 
     .PARAMETER Name
         Set a name for the new session. Cannot be combined with session resume.
@@ -391,35 +168,6 @@ function Start-Copilot {
 
     .PARAMETER Mouse
         Enable or disable mouse support in alt screen mode ('on' or 'off').
-
-    .PARAMETER MaxAiCredits
-        Set the maximum AI credits to spend in this session.
-
-    .PARAMETER AllowAllMcpServerInstructions
-        Include initialization instructions from all MCP servers in the system
-        prompt, instead of only allowlisted servers.
-
-    .PARAMETER BashEnv
-        Enable or disable BASH_ENV support for bash shells ('on' or 'off').
-
-    .PARAMETER NoBashEnv
-        Disable BASH_ENV support for bash shells.
-
-    .PARAMETER RemoteExport
-        Export the session to GitHub web and mobile (read-only; does not enable
-        remote control).
-
-    .PARAMETER NoRemoteExport
-        Disable exporting the session to GitHub web and mobile (also disables
-        remote control).
-
-    .PARAMETER ExtensionSdkPath
-        Override the bundled @github/copilot-sdk injected into extension
-        subprocesses with a local copilot-sdk/ folder (advanced; invalid paths
-        fall back to the bundled SDK).
-
-    .PARAMETER Acp
-        Start as an Agent Client Protocol (ACP) server.
 
     .PARAMETER PlainDiff
         Disable rich diff rendering (syntax highlighting via git's diff tool).
@@ -474,15 +222,42 @@ function Start-Copilot {
 
     .PARAMETER AllowAllPaths
         Disable file path verification and allow access to any path.
-        More granular than -NoAllowAll (which enables all permissions).
 
     .PARAMETER AllowAllUrls
         Allow access to all URLs without confirmation.
-        More granular than -NoAllowAll (which enables all permissions).
 
     .PARAMETER EnableMemory
         Enable the memory tools in prompt (-Prompt) mode. Memory is disabled by
         default in non-interactive mode.
+
+    .PARAMETER MaxAiCredits
+        Set the maximum AI credits to spend in this session.
+
+    .PARAMETER AllowAllMcpServerInstructions
+        Include initialization instructions from all MCP servers in the system
+        prompt, instead of only allowlisted servers.
+
+    .PARAMETER BashEnv
+        Enable or disable BASH_ENV support for bash shells ('on' or 'off').
+
+    .PARAMETER NoBashEnv
+        Disable BASH_ENV support for bash shells.
+
+    .PARAMETER RemoteExport
+        Export the session to GitHub web and mobile (read-only; does not enable
+        remote control).
+
+    .PARAMETER NoRemoteExport
+        Disable exporting the session to GitHub web and mobile (also disables
+        remote control).
+
+    .PARAMETER ExtensionSdkPath
+        Override the bundled @github/copilot-sdk injected into extension
+        subprocesses with a local copilot-sdk/ folder (advanced; invalid paths
+        fall back to the bundled SDK).
+
+    .PARAMETER Acp
+        Start as an Agent Client Protocol (ACP) server.
 
     .PARAMETER NoExperimental
         Do not pass --experimental. By default Start-Copilot opts into
@@ -504,113 +279,16 @@ function Start-Copilot {
         # Runs the prompt in autopilot mode and exits on completion.
 
     .EXAMPLE
-        Start-Copilot -Model claude-opus-4.6 -ReasoningEffort high
+        Start-Copilot -Model claude-opus-4.7 -ReasoningEffort high
         # Starts with a specific model and high reasoning effort.
-
-    .EXAMPLE
-        Start-Copilot -Version 1.0.55
-        # Pins the Copilot CLI engine to version 1.0.55 for this session (via --prefer-version).
-
-    .EXAMPLE
-        Start-Copilot -Interactive "Fix the bug in main.js"
-        # Starts interactive mode, runs the prompt, then stays interactive.
 
     .EXAMPLE
         Start-Copilot -ResumeLatest
         # Resumes the most recent session for this folder, even if multiple exist.
 
     .EXAMPLE
-        Start-Copilot -ResumeSession my-feature
-        # Resumes the session named (or id-prefixed) 'my-feature' directly, skipping the picker.
-
-    .EXAMPLE
-        Start-Copilot -NoAutoResume
-        # Disables auto-resume and always shows the session picker for this folder,
-        # even if only one session exists. (-ShowPicker is a back-compat alias.)
-
-    .EXAMPLE
-        Start-Copilot -NoAutoResume -IncludeUnnamed
-        # Shows the picker listing every session, including unnamed '(no summary)' stubs.
-
-    .EXAMPLE
-        Start-Copilot -NoResume
-        # Starts a fresh interactive session, ignoring any previous sessions.
-
-    .EXAMPLE
-        Start-Copilot -NoResume "Refactor the database layer"
-        # Runs the prompt in autopilot mode without resuming a prior session.
-
-    .EXAMPLE
-        Start-Copilot -DisableMcpServer EngHub
-        # Starts with EngHub disabled in addition to autoConnect: false servers.
-
-    .EXAMPLE
-        Start-Copilot -EnableMcpServer Playwright, NuGet
-        # Starts with Playwright and NuGet enabled despite autoConnect: false.
-
-    .EXAMPLE
-        Start-Copilot -Silent -Prompt "Explain this repo" -Share
-        # Runs silently and exports the session to markdown.
-
-    .EXAMPLE
-        Start-Copilot -AddDir ~/other-project -AllowTool 'shell(git:*)'
-        # Grants access to another directory and allows all git commands.
-
-    .EXAMPLE
-        Start-Copilot update
-        # Passes "update" directly to the copilot executable (copilot update).
-
-    .EXAMPLE
-        Start-Copilot help
-        # Passes "help" directly to the copilot executable (copilot help).
-
-    .EXAMPLE
-        Start-Copilot help update
-        # Passes "help update" directly to the copilot executable.
-
-    .EXAMPLE
-        Start-Copilot -NoResume -Name "Auth refactor"
-        # Starts a fresh named session.
-
-    .EXAMPLE
-        Start-Copilot -Plan
-        # Starts in plan mode (backward compat — equivalent to -Mode plan).
-
-    .EXAMPLE
-        Start-Copilot -Mode autopilot
-        # Starts in autopilot mode.
-
-    .EXAMPLE
-        Start-Copilot -Connect
-        # Connects to a remote session (shows session picker).
-
-    .EXAMPLE
-        Start-Copilot -PlainDiff
-        # Starts with rich diff rendering disabled.
-
-    .EXAMPLE
-        Start-Copilot -Remote
-        # Starts with remote control enabled from GitHub web and mobile.
-
-    .EXAMPLE
-        Start-Copilot -Prompt "Add tests" -Attachment screenshot.png
-        # Runs a non-interactive prompt with an attached image.
-
-    .EXAMPLE
-        Start-Copilot -Prompt "Refactor the parser" -EnableMemory
-        # Runs a non-interactive prompt with memory tools enabled.
-
-    .EXAMPLE
-        Start-Copilot -NoExperimental
-        # Starts without opting into experimental features.
-
-    .EXAMPLE
-        Start-Copilot -MaxAiCredits 50 -BashEnv off
-        # Caps AI credit usage and disables BASH_ENV support for this session.
-
-    .EXAMPLE
-        Start-Copilot -Agency -GenerateResult -ResultType pr
-        # Runs under Agency and produces a PR-style result classification afterward.
+        Start-Copilot -NoResume -WhatIf
+        # Renders the full copilot command line without launching a session.
     #>
     [CmdletBinding(SupportsShouldProcess, DefaultParameterSetName = 'Copilot')]
     param(
@@ -620,17 +298,14 @@ function Start-Copilot {
         [string]$Interactive,
 
         [Parameter(ParameterSetName = 'CopilotNoResume', Mandatory)]
-        [Parameter(ParameterSetName = 'AgencyNoResume', Mandatory)]
         [switch]$NoResume,
 
         [switch]$NoAllowAll,
 
         [Parameter(ParameterSetName = 'CopilotResumeLatest', Mandatory)]
-        [Parameter(ParameterSetName = 'AgencyResumeLatest', Mandatory)]
         [switch]$ResumeLatest,
 
         [Parameter(ParameterSetName = 'CopilotResumeSession', Mandatory)]
-        [Parameter(ParameterSetName = 'AgencyResumeSession', Mandatory)]
         [ArgumentCompleter({
             param($commandName, $parameterName, $wordToComplete)
             $sessionStateDir = Join-Path $env:USERPROFILE '.copilot' 'session-state'
@@ -652,7 +327,6 @@ function Start-Copilot {
         [string]$ResumeSession,
 
         [Parameter(ParameterSetName = 'CopilotShowPicker', Mandatory)]
-        [Parameter(ParameterSetName = 'AgencyShowPicker', Mandatory)]
         [Alias('ShowPicker')]
         [switch]$NoAutoResume,
 
@@ -717,195 +391,6 @@ function Start-Copilot {
         [string[]]$DisableMcpServer,
 
         [string[]]$EnableMcpServer,
-
-        [Parameter(ParameterSetName = 'Agency', Mandatory)]
-        [Parameter(ParameterSetName = 'AgencyNoResume', Mandatory)]
-        [Parameter(ParameterSetName = 'AgencyResumeLatest', Mandatory)]
-        [Parameter(ParameterSetName = 'AgencyResumeSession', Mandatory)]
-        [Parameter(ParameterSetName = 'AgencyShowPicker', Mandatory)]
-        [switch]$Agency,
-
-        [switch]$DetectAgency,
-
-        # --- Agency-specific parameters (only valid with -Agency) ---
-
-        [Parameter(ParameterSetName = 'Agency')]
-        [Parameter(ParameterSetName = 'AgencyNoResume')]
-        [Parameter(ParameterSetName = 'AgencyResumeLatest')]
-        [Parameter(ParameterSetName = 'AgencyResumeSession')]
-        [Parameter(ParameterSetName = 'AgencyShowPicker')]
-        [string]$AgencyAgent,
-
-        [Parameter(ParameterSetName = 'Agency')]
-        [Parameter(ParameterSetName = 'AgencyNoResume')]
-        [Parameter(ParameterSetName = 'AgencyResumeLatest')]
-        [Parameter(ParameterSetName = 'AgencyResumeSession')]
-        [Parameter(ParameterSetName = 'AgencyShowPicker')]
-        [string]$AgencyProfile,
-
-        [Parameter(ParameterSetName = 'Agency')]
-        [Parameter(ParameterSetName = 'AgencyNoResume')]
-        [Parameter(ParameterSetName = 'AgencyResumeLatest')]
-        [Parameter(ParameterSetName = 'AgencyResumeSession')]
-        [Parameter(ParameterSetName = 'AgencyShowPicker')]
-        [switch]$MergeProfile,
-
-        [Parameter(ParameterSetName = 'Agency')]
-        [Parameter(ParameterSetName = 'AgencyNoResume')]
-        [Parameter(ParameterSetName = 'AgencyResumeLatest')]
-        [Parameter(ParameterSetName = 'AgencyResumeSession')]
-        [Parameter(ParameterSetName = 'AgencyShowPicker')]
-        [switch]$NoAutoProfile,
-
-        [Parameter(ParameterSetName = 'Agency')]
-        [Parameter(ParameterSetName = 'AgencyNoResume')]
-        [Parameter(ParameterSetName = 'AgencyResumeLatest')]
-        [Parameter(ParameterSetName = 'AgencyResumeSession')]
-        [Parameter(ParameterSetName = 'AgencyShowPicker')]
-        [switch]$NoLocalPluginSwap,
-
-        [Parameter(ParameterSetName = 'Agency')]
-        [Parameter(ParameterSetName = 'AgencyNoResume')]
-        [Parameter(ParameterSetName = 'AgencyResumeLatest')]
-        [Parameter(ParameterSetName = 'AgencyResumeSession')]
-        [Parameter(ParameterSetName = 'AgencyShowPicker')]
-        [switch]$IncludeLocalOnlyPlugins,
-
-        [Parameter(ParameterSetName = 'Agency')]
-        [Parameter(ParameterSetName = 'AgencyNoResume')]
-        [Parameter(ParameterSetName = 'AgencyResumeLatest')]
-        [Parameter(ParameterSetName = 'AgencyResumeSession')]
-        [Parameter(ParameterSetName = 'AgencyShowPicker')]
-        [string[]]$AgencyMcp,
-
-        [Parameter(ParameterSetName = 'Agency')]
-        [Parameter(ParameterSetName = 'AgencyNoResume')]
-        [Parameter(ParameterSetName = 'AgencyResumeLatest')]
-        [Parameter(ParameterSetName = 'AgencyResumeSession')]
-        [Parameter(ParameterSetName = 'AgencyShowPicker')]
-        [switch]$NoDefaultMcps,
-
-        [Parameter(ParameterSetName = 'Agency')]
-        [Parameter(ParameterSetName = 'AgencyNoResume')]
-        [Parameter(ParameterSetName = 'AgencyResumeLatest')]
-        [Parameter(ParameterSetName = 'AgencyResumeSession')]
-        [Parameter(ParameterSetName = 'AgencyShowPicker')]
-        [switch]$NoInstalledPlugins,
-
-        [Parameter(ParameterSetName = 'Agency')]
-        [Parameter(ParameterSetName = 'AgencyNoResume')]
-        [Parameter(ParameterSetName = 'AgencyResumeLatest')]
-        [Parameter(ParameterSetName = 'AgencyResumeSession')]
-        [Parameter(ParameterSetName = 'AgencyShowPicker')]
-        [string[]]$AgencyPlugin,
-
-        [Parameter(ParameterSetName = 'Agency')]
-        [Parameter(ParameterSetName = 'AgencyNoResume')]
-        [Parameter(ParameterSetName = 'AgencyResumeLatest')]
-        [Parameter(ParameterSetName = 'AgencyResumeSession')]
-        [Parameter(ParameterSetName = 'AgencyShowPicker')]
-        [ValidateSet('personal', 'repo', 'organization', 'company', 'playground', 'spec')]
-        [string]$AgencySource,
-
-        [Parameter(ParameterSetName = 'Agency')]
-        [Parameter(ParameterSetName = 'AgencyNoResume')]
-        [Parameter(ParameterSetName = 'AgencyResumeLatest')]
-        [Parameter(ParameterSetName = 'AgencyResumeSession')]
-        [Parameter(ParameterSetName = 'AgencyShowPicker')]
-        [string[]]$AgencyInput,
-
-        [Parameter(ParameterSetName = 'Agency')]
-        [Parameter(ParameterSetName = 'AgencyNoResume')]
-        [Parameter(ParameterSetName = 'AgencyResumeLatest')]
-        [Parameter(ParameterSetName = 'AgencyResumeSession')]
-        [Parameter(ParameterSetName = 'AgencyShowPicker')]
-        [switch]$NoInputProcessing,
-
-        [Parameter(ParameterSetName = 'Agency')]
-        [Parameter(ParameterSetName = 'AgencyNoResume')]
-        [Parameter(ParameterSetName = 'AgencyResumeLatest')]
-        [Parameter(ParameterSetName = 'AgencyResumeSession')]
-        [Parameter(ParameterSetName = 'AgencyShowPicker')]
-        [string]$CopilotSessionFile,
-
-        [Parameter(ParameterSetName = 'Agency')]
-        [Parameter(ParameterSetName = 'AgencyNoResume')]
-        [Parameter(ParameterSetName = 'AgencyResumeLatest')]
-        [Parameter(ParameterSetName = 'AgencyResumeSession')]
-        [Parameter(ParameterSetName = 'AgencyShowPicker')]
-        [string]$CopilotLogName,
-
-        [Parameter(ParameterSetName = 'Agency')]
-        [Parameter(ParameterSetName = 'AgencyNoResume')]
-        [Parameter(ParameterSetName = 'AgencyResumeLatest')]
-        [Parameter(ParameterSetName = 'AgencyResumeSession')]
-        [Parameter(ParameterSetName = 'AgencyShowPicker')]
-        [switch]$GenerateResult,
-
-        [Parameter(ParameterSetName = 'Agency')]
-        [Parameter(ParameterSetName = 'AgencyNoResume')]
-        [Parameter(ParameterSetName = 'AgencyResumeLatest')]
-        [Parameter(ParameterSetName = 'AgencyResumeSession')]
-        [Parameter(ParameterSetName = 'AgencyShowPicker')]
-        [string]$ResultPath,
-
-        [Parameter(ParameterSetName = 'Agency')]
-        [Parameter(ParameterSetName = 'AgencyNoResume')]
-        [Parameter(ParameterSetName = 'AgencyResumeLatest')]
-        [Parameter(ParameterSetName = 'AgencyResumeSession')]
-        [Parameter(ParameterSetName = 'AgencyShowPicker')]
-        [ValidateSet('standard', 'pr')]
-        [string]$ResultType,
-
-        [Parameter(ParameterSetName = 'Agency')]
-        [Parameter(ParameterSetName = 'AgencyNoResume')]
-        [Parameter(ParameterSetName = 'AgencyResumeLatest')]
-        [Parameter(ParameterSetName = 'AgencyResumeSession')]
-        [Parameter(ParameterSetName = 'AgencyShowPicker')]
-        [switch]$NoOrgConfig,
-
-        [Parameter(ParameterSetName = 'Agency')]
-        [Parameter(ParameterSetName = 'AgencyNoResume')]
-        [Parameter(ParameterSetName = 'AgencyResumeLatest')]
-        [Parameter(ParameterSetName = 'AgencyResumeSession')]
-        [Parameter(ParameterSetName = 'AgencyShowPicker')]
-        [string]$Organization,
-
-        [Parameter(ParameterSetName = 'Agency')]
-        [Parameter(ParameterSetName = 'AgencyNoResume')]
-        [Parameter(ParameterSetName = 'AgencyResumeLatest')]
-        [Parameter(ParameterSetName = 'AgencyResumeSession')]
-        [Parameter(ParameterSetName = 'AgencyShowPicker')]
-        [string]$Project,
-
-        [Parameter(ParameterSetName = 'Agency')]
-        [Parameter(ParameterSetName = 'AgencyNoResume')]
-        [Parameter(ParameterSetName = 'AgencyResumeLatest')]
-        [Parameter(ParameterSetName = 'AgencyResumeSession')]
-        [Parameter(ParameterSetName = 'AgencyShowPicker')]
-        [string]$Repository,
-
-        [Parameter(ParameterSetName = 'Agency')]
-        [Parameter(ParameterSetName = 'AgencyNoResume')]
-        [Parameter(ParameterSetName = 'AgencyResumeLatest')]
-        [Parameter(ParameterSetName = 'AgencyResumeSession')]
-        [Parameter(ParameterSetName = 'AgencyShowPicker')]
-        [string]$Branch,
-
-        [Parameter(ParameterSetName = 'Agency')]
-        [Parameter(ParameterSetName = 'AgencyNoResume')]
-        [Parameter(ParameterSetName = 'AgencyResumeLatest')]
-        [Parameter(ParameterSetName = 'AgencyResumeSession')]
-        [Parameter(ParameterSetName = 'AgencyShowPicker')]
-        [switch]$NoAgencyConfigCache,
-
-        [Parameter(ParameterSetName = 'Agency')]
-        [Parameter(ParameterSetName = 'AgencyNoResume')]
-        [Parameter(ParameterSetName = 'AgencyResumeLatest')]
-        [Parameter(ParameterSetName = 'AgencyResumeSession')]
-        [Parameter(ParameterSetName = 'AgencyShowPicker')]
-        [ValidateSet('off', 'trace', 'debug', 'info', 'warn', 'error')]
-        [string]$AgencyVerbosity,
 
         [string]$Name,
 
@@ -991,156 +476,7 @@ function Start-Copilot {
         [string[]]$RemainingArgs
     )
 
-    # Use plain copilot by default.
-    # -Agency forces agency on; -DetectAgency auto-detects from git remote URL.
-    $useAgency = $false
-    if ($Agency) {
-        $agencyExe = (Get-Command agency -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
-        $useAgency = $true
-    } elseif ($DetectAgency) {
-        $remoteUrl = git remote get-url origin 2>$null
-        if ($remoteUrl -and ($remoteUrl -match 'dev\.azure\.com|ssh\.dev\.azure\.com|visualstudio\.com')) {
-            $agencyExe = (Get-Command agency -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source
-            if ($agencyExe) { $useAgency = $true }
-        }
-    }
-    if (-not $useAgency) {
-        $copilotExe = (Get-Command copilot -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
-    }
-
-    # Build Agency-specific args (root-level and copilot-level)
-    $agencyVerbosityLevel = if ($AgencyVerbosity) { $AgencyVerbosity } else { 'warn' }
-    $agencyRootArgs = @('--verbosity', $agencyVerbosityLevel)
-    $agencyCopilotArgs = @()
-    if ($useAgency) {
-        if ($NoAgencyConfigCache) { $agencyRootArgs += '--no-config-cache' }
-        if ($AgencyAgent) { $agencyCopilotArgs += '--agent', $AgencyAgent }
-        # Plugin profile selection: explicit -AgencyProfile wins; otherwise
-        # auto-select from the current repo/cwd (unless -NoAutoProfile or an
-        # explicit plugin override is given). Default semantics are profile-only
-        # (lean: the profile's plugins replace the base set); -MergeProfile uses
-        # --profile (the profile adds on top of the base set). The virtual 'full'
-        # profile maps to no flag (= the base plugins.default, i.e. every plugin).
-        $activeProfile = $null
-        if ($AgencyProfile) {
-            $activeProfile = $AgencyProfile
-        } elseif (-not $NoAutoProfile -and -not $NoInstalledPlugins -and -not $AgencyPlugin) {
-            $activeProfile = $env:SHMUELIE_AGENCY_PROFILE
-            if ($activeProfile) { Write-Verbose "Selected agency profile '$activeProfile' from SHMUELIE_AGENCY_PROFILE." }
-        }
-        # Local-plugin swap: in a plugin-dev repo, prefer working-tree plugins over
-        # their marketplace copies so local edits are used. For each active-set plugin
-        # whose name matches a plugin the repo defines locally, drop the marketplace
-        # copy and load local:<path> instead. Agency has no per-plugin exclude, so this
-        # reconstructs the plugin set (--no-config-plugins + explicit --plugin), which
-        # replaces the --profile-only/--profile flag for this launch.
-        $localSwapApplied = $false
-        if (-not $NoLocalPluginSwap -and -not $NoInstalledPlugins -and -not $AgencyPlugin) {
-            $swapRepoRoot = (git rev-parse --show-toplevel 2>$null)
-            if ($swapRepoRoot) {
-                $localPlugins = Get-RepoLocalPlugin -RepoRoot $swapRepoRoot
-                if ($localPlugins.Count -gt 0) {
-                    $activeSpecs = if ($activeProfile -and $activeProfile -ne 'full') {
-                        @((Get-AgencyProfile $activeProfile -ErrorAction SilentlyContinue).Plugins)
-                    } else {
-                        @(Get-AgencyEffectivePluginSpec -WorkingDirectory $swapRepoRoot)
-                    }
-                    # Agency stages local: plugins by their folder LEAF name, so two
-                    # working-tree plugins with the same leaf (e.g. plugins/os/dev and
-                    # plugins/shared/dev, both leaf 'dev') can't both be swapped. Used to
-                    # de-collide the reconstructed set below. (Only guards local:-vs-local:
-                    # collisions — a local: leaf clashing with a *kept* marketplace plugin's
-                    # own staging folder is out of scope; Agency's market folder names aren't
-                    # reliably predictable from the spec.)
-                    $leafOf = { param($localSpec) (Split-Path ($localSpec -replace '^local:') -Leaf).ToLowerInvariant() }
-
-                    $swapNames = [System.Collections.Generic.List[string]]::new()
-                    $keptSpecs = [System.Collections.Generic.List[string]]::new()
-                    $swapOriginal = @{}
-                    foreach ($spec in $activeSpecs) {
-                        if (-not $spec) { continue }
-                        $nm = Get-AgencyPluginName $spec
-                        if ($nm -and $localPlugins.ContainsKey($nm)) {
-                            if ($swapNames -notcontains $nm) { $swapNames.Add($nm); $swapOriginal[$nm] = $spec }
-                        }
-                        else { $keptSpecs.Add($spec) }
-                    }
-
-                    # De-collide swap targets by folder leaf name. For any leaf shared by
-                    # >=2 plugins, keep the marketplace/config copy for all of them (revert
-                    # out of the swap) — Agency stages market plugins by full name, so their
-                    # staging folders stay distinct. Non-colliding plugins still swap to the
-                    # working-tree copy. Lossless: every plugin still loads.
-                    $swapLeaf = @{}
-                    foreach ($nm in $swapNames) { $swapLeaf[$nm] = & $leafOf $localPlugins[$nm] }
-                    $revertedColliders = [System.Collections.Generic.List[string]]::new()
-                    foreach ($g in ($swapNames | Group-Object { $swapLeaf[$_] })) {
-                        if ($g.Count -gt 1) {
-                            foreach ($nm in $g.Group) {
-                                $keptSpecs.Add($swapOriginal[$nm])
-                                $revertedColliders.Add($nm)
-                            }
-                        }
-                    }
-                    foreach ($nm in $revertedColliders) { [void]$swapNames.Remove($nm) }
-
-                    if ($swapNames.Count -gt 0) {
-                        $localSwapApplied = $true
-                        $agencyCopilotArgs += '--no-config-plugins'
-                        foreach ($spec in $keptSpecs) { $agencyCopilotArgs += '--plugin', $spec }
-                        $usedLeaves = [System.Collections.Generic.HashSet[string]]::new()
-                        foreach ($nm in $swapNames) {
-                            $agencyCopilotArgs += '--plugin', $localPlugins[$nm]
-                            [void]$usedLeaves.Add((& $leafOf $localPlugins[$nm]))
-                        }
-                        if ($IncludeLocalOnlyPlugins) {
-                            # Add repo-local plugins not already in the active set, keeping
-                            # folder-leaf uniqueness (local-only plugins have no marketplace
-                            # fallback, so first-wins; skip and warn on a leaf clash).
-                            $skippedLocalOnly = [System.Collections.Generic.List[string]]::new()
-                            foreach ($nm in $localPlugins.Keys) {
-                                if (($swapNames -contains $nm) -or ($revertedColliders -contains $nm)) { continue }
-                                if ($usedLeaves.Add((& $leafOf $localPlugins[$nm]))) {
-                                    $agencyCopilotArgs += '--plugin', $localPlugins[$nm]
-                                } else {
-                                    $skippedLocalOnly.Add($nm)
-                                }
-                            }
-                            if ($skippedLocalOnly.Count -gt 0) {
-                                Write-Warning "Local-plugin swap: skipped local-only plugin(s) with a duplicate folder leaf name: [$(($skippedLocalOnly | Sort-Object) -join ', ')] (Agency stages local plugins by folder leaf name)."
-                            }
-                        }
-                        if ($revertedColliders.Count -gt 0) {
-                            Write-Warning "Local-plugin swap: kept marketplace copies for folder-name-colliding plugin(s) [$(($revertedColliders | Sort-Object) -join ', ')] (Agency stages local plugins by folder leaf name); working-tree edits for these won't be used."
-                        }
-                        Write-Verbose "Local-plugin swap: using working-tree copies for [$($swapNames -join ', ')] from $swapRepoRoot (marketplace copies excluded)"
-                    }
-                }
-            }
-        }
-        if (-not $localSwapApplied -and $activeProfile -and $activeProfile -ne 'full') {
-            $profileFlag = if ($MergeProfile) { '--profile' } else { '--profile-only' }
-            $agencyCopilotArgs += $profileFlag, $activeProfile
-        }
-        if ($AgencyMcp) { foreach ($m in $AgencyMcp) { $agencyCopilotArgs += '--mcp', $m } }
-        if ($NoDefaultMcps) { $agencyCopilotArgs += '--no-default-mcps' }
-        if ($NoInstalledPlugins) { $agencyCopilotArgs += '--no-config-plugins' }
-        if ($AgencyPlugin) { foreach ($p in $AgencyPlugin) { $agencyCopilotArgs += '--plugin', $p } }
-        if ($AgencySource) { $agencyCopilotArgs += '--source', $AgencySource }
-        if ($AgencyInput) { foreach ($i in $AgencyInput) { $agencyCopilotArgs += '--input', $i } }
-        if ($NoInputProcessing) { $agencyCopilotArgs += '--no-input-processing' }
-        if ($CopilotSessionFile) { $agencyCopilotArgs += '--copilot-session-file', $CopilotSessionFile }
-        if ($CopilotLogName) { $agencyCopilotArgs += '--copilot-log-name', $CopilotLogName }
-        if ($GenerateResult) {
-            if ($ResultPath) { $agencyCopilotArgs += '--generate-result', $ResultPath } else { $agencyCopilotArgs += '--generate-result' }
-        }
-        if ($ResultType) { $agencyCopilotArgs += '--result-type', $ResultType }
-        if ($NoOrgConfig) { $agencyCopilotArgs += '--no-org-config' }
-        if ($Organization) { $agencyCopilotArgs += '--organization', $Organization }
-        if ($Project) { $agencyCopilotArgs += '--project', $Project }
-        if ($Repository) { $agencyCopilotArgs += '--repository', $Repository }
-        if ($Branch) { $agencyCopilotArgs += '--branch', $Branch }
-    }
+    $copilotExe = (Get-Command copilot -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
 
     $copilotArgs = @()
     if (-not $NoExperimental) { $copilotArgs += '--experimental' }
@@ -1165,25 +501,22 @@ function Start-Copilot {
     )
 
     # Disable MCP servers based on autoConnect policy:
-    #   false        → handled natively by the CLI (lazy/dormant)
-    #   true/absent  → always enabled
-    #   [path globs] → enabled only when CWD matches a pattern (custom extension)
+    #   false        -> handled natively by the CLI (lazy/dormant)
+    #   true/absent  -> always enabled
+    #   [path globs] -> enabled only when CWD matches a pattern (custom extension)
     # Manual overrides from -DisableMcpServer and -EnableMcpServer apply after.
     $enableSet = [System.Collections.Generic.HashSet[string]]::new(
         [StringComparer]::OrdinalIgnoreCase)
     if ($EnableMcpServer) { foreach ($s in $EnableMcpServer) { [void]$enableSet.Add($s) } }
 
     $mcpConfigPath = Join-Path $env:USERPROFILE '.copilot' 'mcp-config.json'
-    $configServerNames = [System.Collections.Generic.HashSet[string]]::new(
-        [StringComparer]::OrdinalIgnoreCase)
     if (Test-Path $mcpConfigPath) {
         $mcpConfig = Get-Content $mcpConfigPath -Raw | ConvertFrom-Json
         $cwd = (Get-Location).Path
         foreach ($server in $mcpConfig.mcpServers.PSObject.Properties) {
-            [void]$configServerNames.Add($server.Name)
             if ($enableSet.Contains($server.Name)) { continue }
             $autoConnect = $server.Value.autoConnect
-            # Only handle path-glob arrays — boolean false is native lazy loading
+            # Only handle path-glob arrays -- boolean false is native lazy loading
             if ($autoConnect -is [array]) {
                 if (-not ($autoConnect | Where-Object { $cwd -like $_ })) {
                     $copilotArgs += '--disable-mcp-server', $server.Name
@@ -1195,37 +528,6 @@ function Start-Copilot {
     if ($DisableMcpServer) {
         foreach ($s in $DisableMcpServer) {
             $copilotArgs += '--disable-mcp-server', $s
-        }
-    }
-
-    # Under Agency, prefer Agency's built-in MCP servers over the equivalent ones
-    # from mcp-config.json: disable the JSON version (engine passthrough) and add
-    # the Agency built-in via --mcp. Bare copilot sessions are unaffected.
-    # The map is a union over the work and consumer MCP configs; the --mcp add is
-    # unconditional (always use Agency's version), while --disable-mcp-server is
-    # only emitted for servers actually present in the active mcp-config.json so we
-    # don't pass disable flags for names the config doesn't contain.
-    $agencyMcpEquivalents = [ordered]@{
-        EngHub                  = 'enghub'
-        MicrosoftLearn          = 'msft-learn'
-        MicrosoftFabricRTI      = 'kusto'
-        AzureDevops             = 'ado'
-        Microsoft365Calendar    = 'calendar'
-        Microsoft365Mail        = 'mail'
-        Microsoft365CopilotChat = 'm365-copilot'
-        Microsoft365User        = 'm365-user'
-        MicrosoftTeams          = 'teams'
-        MicrosoftWord           = 'word'
-        OneDriveAndSharePoint   = 'onedrive'
-        SharePointLists         = 'sharepoint'
-    }
-    if ($useAgency) {
-        foreach ($jsonName in $agencyMcpEquivalents.Keys) {
-            if ($enableSet.Contains($jsonName)) { continue }   # respect -EnableMcpServer override
-            if ($configServerNames.Contains($jsonName)) {
-                $copilotArgs += '--disable-mcp-server', $jsonName
-            }
-            $agencyCopilotArgs += '--mcp', $agencyMcpEquivalents[$jsonName]
         }
     }
 
@@ -1302,7 +604,7 @@ function Start-Copilot {
         if ($NoResume) {
             $copilotArgs += '--name', $Name
         } else {
-            # Defer — only apply if we don't end up resuming
+            # Defer -- only apply if we don't end up resuming
             $applyName = $true
         }
     }
@@ -1313,11 +615,11 @@ function Start-Copilot {
         $Prompt = $null
     }
 
-    # Resume-mode flags derived from the active parameter set (engine×resume matrix).
+    # Resume-mode flags derived from the active parameter set.
     $isNoResume     = $PSCmdlet.ParameterSetName -like '*NoResume'
     $isResumeLatest = $PSCmdlet.ParameterSetName -like '*ResumeLatest'
     # User-facing switch is -NoAutoResume (back-compat alias -ShowPicker); the internal
-    # parameter-set names are kept as *ShowPicker, so this match covers both.
+    # parameter-set name is kept as *ShowPicker, so this match covers both.
     $isShowPicker   = $PSCmdlet.ParameterSetName -like '*ShowPicker'
 
     # Renders the interactive session picker and returns the chosen session object
@@ -1448,13 +750,8 @@ function Start-Copilot {
 
     $exitCode = $null
     if ($isPassthrough) {
-        $exe = if ($useAgency) { $agencyExe } else { $copilotExe }
-        if ($PSCmdlet.ShouldProcess("$exe copilot $($passthroughArgs -join ' ')", 'Execute')) {
-            if ($useAgency) {
-                & $agencyExe @agencyRootArgs copilot @agencyCopilotArgs @passthroughArgs
-            } else {
-                & $copilotExe @passthroughArgs
-            }
+        if ($PSCmdlet.ShouldProcess("$copilotExe $($passthroughArgs -join ' ')", 'Execute')) {
+            & $copilotExe @passthroughArgs
             $exitCode = $LASTEXITCODE
         }
     } else {
@@ -1468,22 +765,15 @@ function Start-Copilot {
             $copilotArgs += $RemainingArgs
         }
 
-        $exe = if ($useAgency) { $agencyExe } else { $copilotExe }
-        $displayArgs = if ($useAgency) { "copilot $($agencyCopilotArgs -join ' ') $($copilotArgs -join ' ')" } else { $copilotArgs -join ' ' }
-        if ($PSCmdlet.ShouldProcess("$exe $displayArgs", 'Execute')) {
-            if ($useAgency) {
-                & $agencyExe @agencyRootArgs copilot @agencyCopilotArgs @copilotArgs
-            } else {
-                & $copilotExe @copilotArgs
-            }
+        if ($PSCmdlet.ShouldProcess("$copilotExe $($copilotArgs -join ' ')", 'Execute')) {
+            & $copilotExe @copilotArgs
             $exitCode = $LASTEXITCODE
         }
     }
 
     # If the engine exited non-zero it may have crashed out of its TUI and left the
     # terminal in a bad state. Reset it via the shared helper (guarded so the built
-    # Shmuelie.Copilot doesn't require Shmuelie.Utilities;
-    # the prompt also resets on every render as the primary safety net).
+    # Shmuelie.Copilot doesn't require Shmuelie.Utilities).
     if ($null -ne $exitCode -and $exitCode -ne 0 -and (Get-Command Reset-TerminalModes -ErrorAction SilentlyContinue)) {
         Reset-TerminalModes
     }

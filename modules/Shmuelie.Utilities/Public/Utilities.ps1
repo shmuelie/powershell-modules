@@ -102,7 +102,7 @@ function Reset-TerminalModes {
     .SYNOPSIS
     Reset the terminal's DEC private modes and kitty keyboard flags after a crashed TUI.
     .DESCRIPTION
-    A TUI program (e.g. the Copilot/agency engine) that crashes can leave the terminal
+    A TUI program (e.g. the Copilot engine) that crashes can leave the terminal
     with mouse tracking, focus reporting, the alternate screen buffer, bracketed paste,
     synchronized output, and the kitty keyboard protocol still enabled — making the
     shell unusable. This emits a DECRST sequence that disables all of them so the shell

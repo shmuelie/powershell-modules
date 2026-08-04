@@ -10,11 +10,70 @@ foreach ($module in $modules) {
     & (Join-Path $PSScriptRoot 'Build-Module.ps1') -Module $module | Out-Null
 }
 
-$forbidden = 'dev\.azure\.com/microsoft|msazure\.pkgs\.visualstudio\.com|OS\.Developer|WindowsHiveMind|SFC\.|SFS\.|SFU\.|os\.2020|OSClient|IXPTools|StoreFundementals|user/senglard|SEnglard|\\\\redmond\\|D:\\wsd\\'
-$matches = Get-ChildItem (Join-Path $repoRoot 'modules') -Recurse -File |
-    Where-Object { $_.FullName -notmatch '\\(?:bin|obj)\\' } |
-    Select-String -Pattern $forbidden
+# ---------------------------------------------------------------------------
+# Public-content scan.
+# Public modules must not reference internal-only tooling, private endpoints,
+# organization-specific systems, or credentials. Agency is a Microsoft-internal
+# orchestrator and is treated as internal-only.
+# The build/ scripts and build artifacts are excluded (this script defines the
+# forbidden markers as literals).
+# ---------------------------------------------------------------------------
+$forbidden = 'dev\.azure\.com/microsoft|msazure\.pkgs\.visualstudio\.com|OS\.Developer|WindowsHiveMind|SFC\.|SFS\.|SFU\.|os\.2020|OSClient|IXPTools|StoreFundementals|user/senglard|SEnglard|\\\\redmond\\|D:\\wsd\\|agency|winpx|bluebird|workiq'
+
+$scanFiles = Get-ChildItem $repoRoot -Recurse -File |
+    Where-Object {
+        $rel = $_.FullName.Substring($repoRoot.Length).TrimStart('\', '/')
+        $rel -notmatch '^(?:\.git|build|artifacts)[\\/]' -and
+        $_.FullName -notmatch '[\\/](?:bin|obj)[\\/]' -and
+        $_.Extension -in '.ps1', '.psm1', '.psd1', '.ps1xml', '.md', '.json', '.yml', '.yaml', '.cs', '.csproj'
+    }
+
+$matches = $scanFiles | Select-String -Pattern $forbidden
 if ($matches) {
     $matches | Format-Table Path, LineNumber, Line -AutoSize
-    throw 'Internal-only markers were found in public module sources.'
+    throw 'Internal-only markers were found in public sources.'
+}
+
+# ---------------------------------------------------------------------------
+# Documentation checks: Markdown-only site with the expected pages and no
+# broken local links.
+# ---------------------------------------------------------------------------
+foreach ($docFile in @('index.md', 'modules.md', 'installation.md', 'contributing.md', '_config.yml')) {
+    if (-not (Test-Path (Join-Path $repoRoot "docs\$docFile"))) {
+        throw "Missing documentation site file: docs/$docFile"
+    }
+}
+
+if (Get-ChildItem (Join-Path $repoRoot 'docs') -Filter '*.html' -File -ErrorAction SilentlyContinue) {
+    throw 'Documentation must be authored in Markdown; remove HTML files from docs/.'
+}
+
+$markdownFiles = @()
+$markdownFiles += Get-Item (Join-Path $repoRoot 'README.md')
+$markdownFiles += Get-ChildItem (Join-Path $repoRoot 'modules') -Recurse -Filter '*.md' -File
+$markdownFiles += Get-ChildItem (Join-Path $repoRoot 'docs') -Filter '*.md' -File
+foreach ($markdown in $markdownFiles) {
+    $content = Get-Content $markdown.FullName -Raw
+    foreach ($match in [regex]::Matches($content, '\[[^\]]*\]\(([^)]+)\)')) {
+        $target = $match.Groups[1].Value.Trim()
+        if ($target -match '^(?:https?:|mailto:|#)') { continue }
+        $localPath = ($target -split '#', 2)[0]
+        if ($localPath -and -not (Test-Path (Join-Path $markdown.DirectoryName $localPath))) {
+            throw "Broken local link in $($markdown.FullName): $target"
+        }
+    }
+}
+
+# ---------------------------------------------------------------------------
+# Version consistency: each module README header must match its manifest.
+# ---------------------------------------------------------------------------
+foreach ($module in $modules) {
+    $manifest = Test-ModuleManifest (Join-Path $repoRoot "modules\$module\$module.psd1")
+    $readme = Get-Content (Join-Path $repoRoot "modules\$module\README.md") -Raw
+    if ($readme -notmatch '\*\*Version:\*\*\s+([0-9]+\.[0-9]+\.[0-9]+)') {
+        throw "Missing README version for $module."
+    }
+    if ($Matches[1] -ne "$($manifest.Version)") {
+        throw "README version mismatch for ${module}: README $($Matches[1]), manifest $($manifest.Version)."
+    }
 }

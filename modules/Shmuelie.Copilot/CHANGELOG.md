@@ -2,8 +2,15 @@
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-03
+
+### Removed
+- Removed the internal orchestration-CLI integration (its plugins, profiles,
+  marketplaces, and `Start-Copilot` code path) so the module depends only on the
+  public `copilot` CLI.
+
 ## [0.1.0] - 2026-08-03
 
 ### Added
 - Initial private preview.
-- Copilot CLI session, plugin, marketplace, MCP, and Agency helpers.
+- Copilot CLI session, plugin, marketplace, and MCP helpers.
