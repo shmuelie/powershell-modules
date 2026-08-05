@@ -19,8 +19,7 @@ function Repair-RepositoryLayout {
     Returns a RepositoryLayoutResult object per repository describing the action.
     Use -WhatIf to preview the full From->To plan without moving anything.
     .PARAMETER Root
-    The repos root to scan. Defaults to $env:SOURCE_REPOS, falling back to
-    'D:\source\repos'.
+    The repos root to scan. Defaults to $env:SOURCE_REPOS. Fails if neither is set.
     .PARAMETER Organization
     Optional organization-folder filter(s). Supports wildcards.
     .PARAMETER Name
@@ -46,7 +45,10 @@ function Repair-RepositoryLayout {
     )
 
     if (-not $Root) { $Root = $env:SOURCE_REPOS }
-    if (-not $Root) { $Root = 'D:\source\repos' }
+    if (-not $Root) {
+        Write-Error 'No repository root specified. Pass -Root or set $env:SOURCE_REPOS.'
+        return
+    }
     if (-not (Test-Path $Root)) {
         Write-Error "Repos root not found: $Root"
         return

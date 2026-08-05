@@ -4,11 +4,14 @@ function New-Repository {
     Clone a git repository into the standard worktree-ready directory layout.
     .DESCRIPTION
     Clones a repository from a GitHub or Azure DevOps URL into
-    $env:SOURCE_REPOS\<org>\<repo>\<branch>, ready for worktree use.
-    The org and repo name are extracted automatically from the URL.
-    Submodules are recursively initialized by default.
+    <root>\<org>\<repo>\<branch>, ready for worktree use, where <root> comes from
+    -Root, falling back to $env:SOURCE_REPOS. The org and repo name are extracted
+    automatically from the URL. Submodules are recursively initialized by default.
     .PARAMETER Url
     The clone URL (HTTPS or SSH) for the repository.
+    .PARAMETER Root
+    The repos root to clone into. Defaults to $env:SOURCE_REPOS. Cloning fails if
+    neither is set.
     .PARAMETER Org
     Override the auto-detected organization/owner name.
     .PARAMETER Name
@@ -39,6 +42,8 @@ function New-Repository {
         [Parameter(Mandatory, Position = 0)]
         [ValidateNotNullOrEmpty()]
         [string]$Url,
+
+        [string]$Root,
 
         [string]$Org,
 
@@ -99,9 +104,10 @@ function New-Repository {
         }
     }
 
-    $reposRoot = $env:SOURCE_REPOS
+    $reposRoot = if ($Root) { $Root } else { $env:SOURCE_REPOS }
     if (-not $reposRoot) {
-        $reposRoot = 'D:\source\repos'
+        Write-Error 'No repository root specified. Pass -Root or set $env:SOURCE_REPOS.'
+        return
     }
 
     # Clone to a temp directory first, then determine the branch name for the final path
