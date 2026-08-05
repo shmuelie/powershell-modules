@@ -13,6 +13,9 @@ Versions change only when a release is cut; unreleased work stays under
 - `Start-Copilot -PassThru` returns the resolved launch plan (`Exe`, `Args`,
   `Passthrough`) without launching, so other tools can reuse the built arguments
   and the session-resume decision.
+- `Get-CopilotLaunchPlan` computes that launch plan directly. It is the shared
+  core `Start-Copilot` delegates to, so an overlay can build identical command
+  lines by calling it (instead of shadowing and re-invoking `Start-Copilot`).
 - `Start-Copilot -DeferResume` skips the automatic session-resume decision (no
   picker, no `--resume`), so a `-PassThru` overlay can own session selection.
 - `Start-Copilot -NoDefaultDenyTools` opts out of the built-in destructive-git

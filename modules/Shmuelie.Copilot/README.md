@@ -17,7 +17,7 @@ Start-Copilot
 
 | Area | Commands |
 |---|---|
-| Launcher | `Start-Copilot` |
+| Launcher | `Start-Copilot`, `Get-CopilotLaunchPlan` |
 | Sessions | `Get-CopilotSession`, `Resume-CopilotSession`, `Rename-CopilotSession`, `Remove-CopilotSession` |
 | Session maintenance | `Merge-CopilotSession`, `Compress-CopilotSession`, `Repair-CopilotSessionEvents` |
 | Plugins | `Get-CopilotPlugin`, `Install-CopilotPlugin`, `Update-CopilotPlugin`, `Uninstall-CopilotPlugin` |
@@ -43,6 +43,9 @@ Start-Copilot
   `Passthrough`) without launching, so other tools can reuse the built arguments
   and session-resume decision. Add **`-DeferResume`** to skip the resume picker
   and emit no `--resume`, letting an overlay own session selection.
+  `Get-CopilotLaunchPlan` exposes the same plan directly — it is the shared core
+  `Start-Copilot` delegates to, so an overlay can build identical command lines
+  without re-invoking `Start-Copilot`.
 - **Terminal recovery** after a non-zero exit (via `Reset-TerminalModes` when
   available).
 - **`update` / `help` passthrough** straight to the executable.

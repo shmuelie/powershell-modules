@@ -16,7 +16,7 @@
         'Update-CopilotPlugin', 'Install-CopilotPlugin', 'Uninstall-CopilotPlugin',
         'Merge-CopilotSession', 'Compress-CopilotSession', 'Repair-CopilotSessionEvents',
         'Get-CopilotSession', 'Remove-CopilotSession', 'Rename-CopilotSession',
-        'Resume-CopilotSession', 'Start-Copilot'
+        'Resume-CopilotSession', 'Get-CopilotLaunchPlan', 'Start-Copilot'
     )
     CmdletsToExport   = @()
     VariablesToExport = @()
