@@ -27,7 +27,6 @@
             Tags         = @('GitHubCopilot', 'CopilotCLI', 'MCP', 'Plugins', 'DeveloperTools')
             LicenseUri   = 'https://github.com/shmuelie/powershell-modules/blob/main/LICENSE'
             ProjectUri   = 'https://github.com/shmuelie/powershell-modules'
-            ReleaseNotes = 'Initial private preview.'
         }
     }
 }
