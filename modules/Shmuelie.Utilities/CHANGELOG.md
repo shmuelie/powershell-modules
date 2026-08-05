@@ -6,6 +6,8 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-08-05
+
 ### Added
 - Initial `Shmuelie.Utilities`: general developer utilities for PowerShell, .NET
   tools, Python packages, VS Code, Windows Terminal, Windows services, installed

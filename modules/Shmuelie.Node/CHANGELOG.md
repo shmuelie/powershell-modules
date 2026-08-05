@@ -6,6 +6,8 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-08-05
+
 ### Added
 - Initial `Shmuelie.Node`: Node.js and nvm-windows version management, npm
   package helpers, and `Update-AdoNpmToken` for an explicit Azure DevOps feed.

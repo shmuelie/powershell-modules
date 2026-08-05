@@ -6,6 +6,8 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-08-05
+
 ### Added
 - Initial `Shmuelie.Git`: git repository, worktree, status, completion, and
   PSReadLine prediction helpers, including `New-Repository`, the worktree

@@ -6,9 +6,11 @@ between releases this file tracks catalog-level changes under `[Unreleased]`.
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-08-05
+
 ### Added
 - Initial `Shmuelie.Git`, `Shmuelie.Copilot`, `Shmuelie.Node`, and
-  `Shmuelie.Utilities` modules (all at 0.1.0, not yet released).
+  `Shmuelie.Utilities` modules, all published at 0.1.0.
 - Independent build, validation, publishing, and documentation infrastructure,
   including a public-content scan, per-module `CHANGELOG.md` and version checks,
   and a Markdown documentation site with a Jekyll build.
