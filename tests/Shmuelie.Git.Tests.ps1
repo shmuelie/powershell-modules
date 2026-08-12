@@ -1,25 +1,52 @@
-#Requires -Modules @{ ModuleName = 'Pester'; ModuleVersion = '5.0.0' }
+#Requires -Modules @{ ModuleName = 'Pester'; ModuleVersion = '5.2.0' }
 
 BeforeAll {
     $repoRoot = Split-Path (Split-Path $PSCommandPath -Parent) -Parent
     Import-Module (Join-Path $repoRoot 'modules\Shmuelie.Git\Shmuelie.Git.psd1') -Force
 
-    # Create an isolated git repository with a deterministic default branch and a
-    # single initial commit. Returns the repository path.
+    # Run a git command and throw on failure. $ErrorActionPreference does not turn
+    # a native non-zero exit into a terminating error, so setup failures would
+    # otherwise surface as a confusing later assertion rather than at the source.
+    # Pass all tokens as a single array so leading switches (e.g. -C) are not
+    # mistaken for parameters of this function.
+    function Invoke-Git {
+        param([Parameter(Mandatory, Position = 0)][string[]]$Arguments)
+        $output = & git @Arguments 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            throw "git $($Arguments -join ' ') failed (exit $LASTEXITCODE): $output"
+        }
+        $output
+    }
+
+    # Neutralize ambient/global git config so the repo behaves identically on any
+    # contributor's machine and on CI: a global status.showUntrackedFiles=no,
+    # core.autocrlf, GPG signing, or inherited hooks would otherwise perturb the
+    # status output the tests assert on.
+    function Set-TestRepoConfig {
+        param([Parameter(Mandatory)][string]$Path)
+        Invoke-Git @('-C', $Path, 'config', 'user.email', 'test@example.com')
+        Invoke-Git @('-C', $Path, 'config', 'user.name', 'Test User')
+        Invoke-Git @('-C', $Path, 'config', 'commit.gpgsign', 'false')
+        Invoke-Git @('-C', $Path, 'config', 'tag.gpgsign', 'false')
+        Invoke-Git @('-C', $Path, 'config', 'core.autocrlf', 'false')
+        Invoke-Git @('-C', $Path, 'config', 'core.hooksPath', (Join-Path $Path '.no-such-hooks'))
+        Invoke-Git @('-C', $Path, 'config', 'status.showUntrackedFiles', 'normal')
+    }
+
+    # Create an isolated git repository with a deterministic default branch, no
+    # inherited template hooks, and a single initial commit. Returns the path.
     function New-TestRepo {
         param(
             [Parameter(Mandatory)][string]$Path,
             [switch]$NoCommit
         )
         New-Item -ItemType Directory -Path $Path -Force | Out-Null
-        git -C $Path init -b main --quiet
-        git -C $Path config user.email 'test@example.com'
-        git -C $Path config user.name 'Test User'
-        git -C $Path config commit.gpgsign false
+        Invoke-Git @('-C', $Path, '-c', 'init.templateDir=', 'init', '-b', 'main', '--quiet')
+        Set-TestRepoConfig $Path
         if (-not $NoCommit) {
             Set-Content -Path (Join-Path $Path 'README.md') -Value 'initial'
-            git -C $Path add README.md
-            git -C $Path commit -m 'init' --quiet
+            Invoke-Git @('-C', $Path, 'add', 'README.md')
+            Invoke-Git @('-C', $Path, 'commit', '-m', 'init', '--quiet')
         }
         $Path
     }
@@ -63,14 +90,14 @@ Describe 'Get-GitStatusSummary' {
         $changeCases = @(
             @{
                 Name     = 'staged addition'
-                Setup    = { param($r) Set-Content (Join-Path $r 'added.txt') 'x'; git -C $r add added.txt }
+                Setup    = { param($r) Set-Content (Join-Path $r 'added.txt') 'x'; Invoke-Git @('-C', $r, 'add', 'added.txt') }
                 Property = 'IndexAdded'
                 Expected = 1
                 Token    = '\+1'
             }
             @{
                 Name     = 'staged deletion'
-                Setup    = { param($r) git -C $r rm README.md --quiet }
+                Setup    = { param($r) Invoke-Git @('-C', $r, 'rm', 'README.md', '--quiet') }
                 Property = 'IndexDeleted'
                 Expected = 1
                 Token    = '-1'
@@ -105,13 +132,11 @@ Describe 'Get-GitStatusSummary' {
         BeforeAll {
             $origin = New-TestRepo -Path (Join-Path $TestDrive 'origin')
             $clone = Join-Path $TestDrive 'clone'
-            git clone --quiet $origin $clone
-            git -C $clone config user.email 'test@example.com'
-            git -C $clone config user.name 'Test User'
-            git -C $clone config commit.gpgsign false
+            Invoke-Git @('clone', '--quiet', $origin, $clone)
+            Set-TestRepoConfig $clone
             Set-Content (Join-Path $clone 'feature.txt') 'x'
-            git -C $clone add feature.txt
-            git -C $clone commit -m 'ahead' --quiet
+            Invoke-Git @('-C', $clone, 'add', 'feature.txt')
+            Invoke-Git @('-C', $clone, 'commit', '-m', 'ahead', '--quiet')
             $script:aheadClone = $clone
         }
 
@@ -128,8 +153,10 @@ Describe 'Get-GitStatusSummary' {
 Describe 'Format-GitStatusSegment' {
     BeforeAll {
         # Build a synthetic GitStatusSummary so the formatter can be exercised
-        # without a real repository. Only the properties the formatter reads are
-        # defaulted; pass a hashtable to override any of them.
+        # without a real repository: the formatter's contract is its input object,
+        # not the git CLI. Each -ForEach case below overrides just the properties
+        # for one rendering rule (relation indicator, index/working counts,
+        # untracked folding, conflicts, operation) and asserts the rendered token.
         function New-Summary {
             param([hashtable]$Override = @{})
             $props = @{

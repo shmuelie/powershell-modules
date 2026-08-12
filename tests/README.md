@@ -25,6 +25,6 @@ without a full build.
 ./build/Invoke-Tests.ps1 -Path tests/Shmuelie.Git.Tests.ps1   # one file
 ```
 
-The runner ensures Pester v5+ is available (installing it if needed) and fails
+The runner ensures Pester 5.2+ is available (installing it if needed) and fails
 on any failing test. CI runs it in `.github/workflows/ci.yml`, and it gates
 publishing in `.github/workflows/publish-module.yml`.

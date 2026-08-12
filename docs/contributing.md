@@ -88,7 +88,7 @@ Run the suite with the test runner:
 .\build\Invoke-Tests.ps1 -Path tests\Shmuelie.Git.Tests.ps1   # one file
 ```
 
-The runner ensures Pester v5+ is available (installing it if needed) and fails
+The runner ensures Pester 5.2+ is available (installing it if needed) and fails
 on any failing test. CI runs it on every pull request, and it gates publishing,
 so a change without passing tests cannot merge or ship.
 
