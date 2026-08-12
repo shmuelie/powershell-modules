@@ -72,6 +72,7 @@ $ExecutionContext.SessionState.Module.OnRemove = {
 Export-ModuleMember -Function @(
     'Sync-GitRemote',
     'Get-GitStatusSummary',
+    'Format-GitStatusSegment',
     'Get-Worktrees',
     'Get-CurrentWorktree',
     'Get-RepositoryName',

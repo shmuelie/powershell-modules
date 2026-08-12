@@ -9,7 +9,7 @@
     PowerShellVersion = '7.4'
     CompatiblePSEditions = @('Core')
     FunctionsToExport = @(
-        'Sync-GitRemote', 'Get-GitStatusSummary', 'Get-Worktrees',
+        'Sync-GitRemote', 'Get-GitStatusSummary', 'Format-GitStatusSegment', 'Get-Worktrees',
         'Get-CurrentWorktree', 'Get-RepositoryName', 'Get-RootWorktree',
         'Get-WorktreePath', 'Add-Worktree', 'New-Worktree', 'Remove-Worktree',
         'Set-Worktree', 'Update-Worktrees', 'Find-StaleBranch', 'New-Repository',

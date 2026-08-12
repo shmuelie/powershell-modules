@@ -17,7 +17,7 @@ Import-Module Shmuelie.Utilities
 
 | Area | Commands |
 |---|---|
-| Core | `Test-IsElevated`, `New-GlobalConstant`, `New-PathVariable`, `Get-SessionTitle`, `Invoke-InLocation`, `Import-ModuleSafe`, `Repair-GlobalJson` |
+| Core | `Test-IsElevated`, `New-GlobalConstant`, `New-PathVariable`, `Get-SessionTitle`, `Invoke-InLocation`, `Import-ModuleSafe`, `Repair-GlobalJson`, `Format-Duration` |
 | Terminal | `Reset-TerminalModes` |
 | Services | `Get-ServiceProcess` |
 | .NET tools | `Get-DotNetTool`, `Install-DotNetTool`, `Update-DotNetTool`, `Uninstall-DotNetTool` |
