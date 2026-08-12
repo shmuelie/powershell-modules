@@ -50,6 +50,26 @@ BeforeAll {
         }
         $Path
     }
+
+    function Get-TestGitDir {
+        param([Parameter(Mandatory)][string]$Path)
+        $gitDir = Invoke-Git @('-C', $Path, 'rev-parse', '--git-dir')
+        if ([System.IO.Path]::IsPathRooted($gitDir)) {
+            $gitDir
+        } else {
+            Join-Path $Path $gitDir
+        }
+    }
+
+    function ConvertTo-NativeTestPath {
+        param([Parameter(Mandatory)][string]$Path)
+
+        if ([System.IO.Path]::DirectorySeparatorChar -eq '\') {
+            return $Path -replace '/', '\'
+        }
+
+        [System.IO.Path]::GetFullPath($Path)
+    }
 }
 
 Describe 'Get-GitStatusSummary' {
@@ -83,6 +103,80 @@ Describe 'Get-GitStatusSummary' {
 
         It 'renders a status string beginning with the branch' {
             (Get-GitStatusSummary -Path $script:cleanRepo).StatusString | Should -Match '^\[main'
+        }
+    }
+
+    Context 'repository paths' {
+        BeforeAll {
+            $script:pathRepo = New-TestRepo -Path (Join-Path $TestDrive 'paths')
+            $script:expectedTop = ConvertTo-NativeTestPath (Invoke-Git @('-C', $script:pathRepo, 'rev-parse', '--show-toplevel'))
+            $script:nestedPath = Join-Path $script:expectedTop (Join-Path 'src' 'nested')
+            New-Item -ItemType Directory -Path $script:nestedPath -Force | Out-Null
+        }
+
+        It 'returns the worktree path using native separators' {
+            (Get-GitStatusSummary -Path $script:pathRepo).WorktreePath | Should -BeExactly $script:expectedTop
+        }
+
+        It 'returns the relative path using native separators' {
+            $summary = Get-GitStatusSummary -Path $script:nestedPath
+            $expected = [System.IO.Path]::DirectorySeparatorChar + (Join-Path 'src' 'nested')
+            $summary.RelativePath | Should -BeExactly $expected
+        }
+    }
+
+    Context 'in-progress operations' {
+        $operationCases = @(
+            @{
+                Name     = 'merge'
+                Setup    = { param($d, $r) Set-Content -Path (Join-Path $d 'MERGE_HEAD') -Value (Invoke-Git @('-C', $r, 'rev-parse', 'HEAD')) -NoNewline }
+                Expected = 'MERGING'
+            }
+            @{
+                Name     = 'revert'
+                Setup    = { param($d, $r) Set-Content -Path (Join-Path $d 'REVERT_HEAD') -Value (Invoke-Git @('-C', $r, 'rev-parse', 'HEAD')) -NoNewline }
+                Expected = 'REVERTING'
+            }
+            @{
+                Name     = 'cherry-pick'
+                Setup    = { param($d, $r) Set-Content -Path (Join-Path $d 'CHERRY_PICK_HEAD') -Value (Invoke-Git @('-C', $r, 'rev-parse', 'HEAD')) -NoNewline }
+                Expected = 'CHERRY-PICKING'
+            }
+            @{
+                Name     = 'bisect'
+                Setup    = { param($d) Set-Content -Path (Join-Path $d 'BISECT_LOG') -Value 'git bisect start' -NoNewline }
+                Expected = 'BISECTING'
+            }
+            @{
+                Name     = 'merge rebase'
+                Setup    = {
+                    param($d)
+                    $rebase = Join-Path $d 'rebase-merge'
+                    New-Item -ItemType Directory -Path $rebase -Force | Out-Null
+                    Set-Content -Path (Join-Path $rebase 'msgnum') -Value '2' -NoNewline
+                    Set-Content -Path (Join-Path $rebase 'end') -Value '5' -NoNewline
+                }
+                Expected = 'REBASE-m 2/5'
+            }
+            @{
+                Name     = 'apply rebase'
+                Setup    = {
+                    param($d)
+                    $rebase = Join-Path $d 'rebase-apply'
+                    New-Item -ItemType Directory -Path $rebase -Force | Out-Null
+                    Set-Content -Path (Join-Path $rebase 'next') -Value '2' -NoNewline
+                    Set-Content -Path (Join-Path $rebase 'last') -Value '5' -NoNewline
+                    New-Item -ItemType File -Path (Join-Path $rebase 'rebasing') -Force | Out-Null
+                }
+                Expected = 'REBASE 2/5'
+            }
+        )
+
+        It 'detects a <Name> operation from git directory sentinels' -ForEach $operationCases {
+            $repo = New-TestRepo -Path (Join-Path $TestDrive ([guid]::NewGuid().ToString('N')))
+            $gitDir = Get-TestGitDir -Path $repo
+            & $Setup $gitDir $repo
+            (Get-GitStatusSummary -Path $repo).Operation | Should -Be $Expected
         }
     }
 
