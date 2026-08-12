@@ -6,6 +6,8 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-12
+
 ### Added
 - `Format-GitStatusSegment` — render a `GitStatusSummary` (from
   `Get-GitStatusSummary`) as a colored posh-git-style prompt segment
