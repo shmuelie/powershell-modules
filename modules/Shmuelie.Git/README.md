@@ -28,6 +28,7 @@ Import-Module Shmuelie.Git
 | `Update-Worktrees` | Fast-forward every worktree from upstream |
 | `Find-StaleBranch` | Find local branches whose upstream branch is gone |
 | `Get-GitStatusSummary` | Parse `git status` into a typed object (branch, ahead/behind, conflicts, stash, operation) |
+| `Format-GitStatusSegment` | Render a `GitStatusSummary` as a colored posh-git-style prompt segment (`$PSStyle` string; `-ShowChangeCounts` toggles the change counts) |
 | `Update-WorktreePrediction` | Refresh the bundled predictor for the current directory |
 
 ## Worktree predictor
