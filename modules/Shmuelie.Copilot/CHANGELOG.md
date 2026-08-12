@@ -6,6 +6,15 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+### Fixed
+- `Get-CopilotLaunchPlan -SessionId` no longer triggers the automatic
+  session-resume picker or emits a conflicting `--resume` alongside
+  `--session-id`. Passing an explicit session UUID is now treated as intent for
+  that session, so the auto-resume heuristic is skipped. The `-SessionId` help
+  now clarifies it maps to `--session-id` (and points to `-ResumeSession` for
+  id-based resume), and documents that combining both emits `--resume` (from
+  `-ResumeSession`) and `--session-id` (from `-SessionId`).
+
 ## [0.1.0] - 2026-08-05
 
 ### Added
