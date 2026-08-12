@@ -6,6 +6,8 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-12
+
 ### Added
 - `Format-Duration` — format a `TimeSpan` as a compact duration string that
   scales with length (`H:MM:SS.mmm`, `M:SS.mmm`, or `<seconds> seconds`), with no
