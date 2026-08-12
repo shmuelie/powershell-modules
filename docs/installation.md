@@ -39,6 +39,9 @@ Clone the repository and build with the included scripts:
 # Build, validate, import every module, and run the public-content scan
 .\build\Test-Modules.ps1
 
+# Run the Pester unit test suite
+.\build\Invoke-Tests.ps1
+
 # Build one module into artifacts/
 .\build\Build-Module.ps1 -Module Shmuelie.Git
 ```
