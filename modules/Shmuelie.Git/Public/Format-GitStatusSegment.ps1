@@ -41,7 +41,7 @@ function Format-GitStatusSegment {
         [PSTypeName('GitStatusSummary')]
         $Status,
 
-        [switch]$ShowChangeCounts = $true
+        [bool]$ShowChangeCounts = $true
     )
 
     process {
@@ -57,7 +57,7 @@ function Format-GitStatusSegment {
             elseif ($Status.BehindBy -gt 0) { $fg.BrightRed }                                  # Red
             else { $fg.BrightCyan }                                                            # Cyan
 
-        $relation = if ($Status.AheadBy -gt 0 -and $Status.BehindBy -gt 0) { "↓$($Status.BehindBy) ↑$($Status.AheadBy)" }
+        $relation = if ($Status.AheadBy -gt 0 -and $Status.BehindBy -gt 0) { "↑$($Status.AheadBy)↓$($Status.BehindBy)" }
             elseif ($Status.AheadBy -gt 0) { "↑$($Status.AheadBy)" }
             elseif ($Status.BehindBy -gt 0) { "↓$($Status.BehindBy)" }
             elseif ($Status.UpstreamGone) { '×' }

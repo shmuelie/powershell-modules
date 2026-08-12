@@ -326,14 +326,14 @@ function Format-Duration {
     )
 
     process {
-        if ($TimeSpan.TotalSeconds -gt 3600) {
+        if ($TimeSpan.TotalSeconds -ge 3600) {
             '{0:#0}:{1:00}:{2:00}.{3:000}' -f (($TimeSpan.Days * 24) + $TimeSpan.Hours), $TimeSpan.Minutes, $TimeSpan.Seconds, $TimeSpan.Milliseconds
         }
-        elseif ($TimeSpan.TotalSeconds -gt 60) {
+        elseif ($TimeSpan.TotalSeconds -ge 60) {
             '{0:#0}:{1:00}.{2:000}' -f $TimeSpan.Minutes, $TimeSpan.Seconds, $TimeSpan.Milliseconds
         }
         else {
-            "$($TimeSpan.TotalSeconds) seconds"
+            '{0:0.###} seconds' -f $TimeSpan.TotalSeconds
         }
     }
 }
