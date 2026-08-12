@@ -8,7 +8,7 @@ namespace WorktreePredictor;
 
 public sealed class WorktreeCommandPredictor : ICommandPredictor
 {
-    public static readonly Guid PredictorId = new("a1b2c3d4-e5f6-7890-abcd-ef1234567890");
+    internal static readonly Guid PredictorId = new("a1b2c3d4-e5f6-7890-abcd-ef1234567890");
 
     private static readonly string[] WorktreeBranchCommands =
     [
@@ -160,21 +160,33 @@ public sealed class WorktreeCommandPredictor : ICommandPredictor
             return;
         }
 
-        _ = Task.Run(() =>
+        try
         {
-            try
+            _ = Task.Run(() =>
             {
-                var worktreeBranches = FetchWorktreeBranches(cwd);
-                _cachedWorktreeBranches = worktreeBranches;
-                _cachedCheckoutableBranches = FetchCheckoutableBranches(cwd, worktreeBranches);
-                _cachedCwd = cwd;
-                Interlocked.Exchange(ref _cacheTimeTicks, DateTime.UtcNow.Ticks);
-            }
-            finally
-            {
-                Interlocked.Exchange(ref _refreshing, 0);
-            }
-        });
+                try
+                {
+                    var worktreeBranches = FetchWorktreeBranches(cwd);
+                    _cachedWorktreeBranches = worktreeBranches;
+                    _cachedCheckoutableBranches = FetchCheckoutableBranches(cwd, worktreeBranches);
+                    _cachedCwd = cwd;
+                    Interlocked.Exchange(ref _cacheTimeTicks, DateTime.UtcNow.Ticks);
+                }
+                catch (Exception ex)
+                {
+                    Debug.WriteLine($"WorktreePredictor refresh failed: {ex}");
+                }
+                finally
+                {
+                    Interlocked.Exchange(ref _refreshing, 0);
+                }
+            });
+        }
+        catch
+        {
+            Interlocked.Exchange(ref _refreshing, 0);
+            throw;
+        }
     }
 
     private static string[] RunGit(string cwd, string arguments)
