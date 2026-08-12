@@ -113,30 +113,46 @@ function Get-GitStatusSummary {
             }
         }
 
-        # Worktree path
-        $toplevel = (git rev-parse --show-toplevel 2>$null) -replace '/', '\'
+        # Worktree path. Git prints '/' separators even on Windows; normalize only
+        # there so Unix paths are not corrupted by replacing path separators.
+        $toplevel = git rev-parse --show-toplevel 2>$null
+        if ([System.IO.Path]::DirectorySeparatorChar -eq '\') {
+            $toplevel = $toplevel -replace '/', '\'
+        }
 
         # Detect in-progress git operations via .git/ sentinel files
-        $gitDir = (git rev-parse --git-dir 2>$null) -replace '/', '\'
+        $gitDir = git rev-parse --git-dir 2>$null
+        if ([System.IO.Path]::DirectorySeparatorChar -eq '\') {
+            $gitDir = $gitDir -replace '/', '\'
+        }
         $operation = if ($gitDir) {
-            if (Test-Path "$gitDir\rebase-merge") {
-                $step = if (Test-Path "$gitDir\rebase-merge\msgnum") { (Get-Content "$gitDir\rebase-merge\msgnum" -Raw).Trim() }
-                $total = if (Test-Path "$gitDir\rebase-merge\end") { (Get-Content "$gitDir\rebase-merge\end" -Raw).Trim() }
-                $type = if (Test-Path "$gitDir\rebase-merge\interactive") { 'REBASE-i' } else { 'REBASE-m' }
+            $rebaseMergePath = Join-Path $gitDir 'rebase-merge'
+            $rebaseApplyPath = Join-Path $gitDir 'rebase-apply'
+            if (Test-Path -LiteralPath $rebaseMergePath) {
+                $msgnumPath = Join-Path $rebaseMergePath 'msgnum'
+                $endPath = Join-Path $rebaseMergePath 'end'
+                $interactivePath = Join-Path $rebaseMergePath 'interactive'
+                $step = if (Test-Path -LiteralPath $msgnumPath) { (Get-Content -LiteralPath $msgnumPath -Raw).Trim() }
+                $total = if (Test-Path -LiteralPath $endPath) { (Get-Content -LiteralPath $endPath -Raw).Trim() }
+                $type = if (Test-Path -LiteralPath $interactivePath) { 'REBASE-i' } else { 'REBASE-m' }
                 if ($step -and $total) { "$type $step/$total" } else { $type }
             }
-            elseif (Test-Path "$gitDir\rebase-apply") {
-                $step = if (Test-Path "$gitDir\rebase-apply\next") { (Get-Content "$gitDir\rebase-apply\next" -Raw).Trim() }
-                $total = if (Test-Path "$gitDir\rebase-apply\last") { (Get-Content "$gitDir\rebase-apply\last" -Raw).Trim() }
-                $type = if (Test-Path "$gitDir\rebase-apply\rebasing") { 'REBASE' }
-                    elseif (Test-Path "$gitDir\rebase-apply\applying") { 'AM' }
+            elseif (Test-Path -LiteralPath $rebaseApplyPath) {
+                $nextPath = Join-Path $rebaseApplyPath 'next'
+                $lastPath = Join-Path $rebaseApplyPath 'last'
+                $rebasingPath = Join-Path $rebaseApplyPath 'rebasing'
+                $applyingPath = Join-Path $rebaseApplyPath 'applying'
+                $step = if (Test-Path -LiteralPath $nextPath) { (Get-Content -LiteralPath $nextPath -Raw).Trim() }
+                $total = if (Test-Path -LiteralPath $lastPath) { (Get-Content -LiteralPath $lastPath -Raw).Trim() }
+                $type = if (Test-Path -LiteralPath $rebasingPath) { 'REBASE' }
+                    elseif (Test-Path -LiteralPath $applyingPath) { 'AM' }
                     else { 'AM/REBASE' }
                 if ($step -and $total) { "$type $step/$total" } else { $type }
             }
-            elseif (Test-Path "$gitDir\MERGE_HEAD") { 'MERGING' }
-            elseif (Test-Path "$gitDir\REVERT_HEAD") { 'REVERTING' }
-            elseif (Test-Path "$gitDir\CHERRY_PICK_HEAD") { 'CHERRY-PICKING' }
-            elseif (Test-Path "$gitDir\BISECT_LOG") { 'BISECTING' }
+            elseif (Test-Path -LiteralPath (Join-Path $gitDir 'MERGE_HEAD')) { 'MERGING' }
+            elseif (Test-Path -LiteralPath (Join-Path $gitDir 'REVERT_HEAD')) { 'REVERTING' }
+            elseif (Test-Path -LiteralPath (Join-Path $gitDir 'CHERRY_PICK_HEAD')) { 'CHERRY-PICKING' }
+            elseif (Test-Path -LiteralPath (Join-Path $gitDir 'BISECT_LOG')) { 'BISECTING' }
         }
 
         # Repo name from remote URL or directory name
