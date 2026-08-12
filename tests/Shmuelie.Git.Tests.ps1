@@ -60,6 +60,16 @@ BeforeAll {
             Join-Path $Path $gitDir
         }
     }
+
+    function ConvertTo-NativeTestPath {
+        param([Parameter(Mandatory)][string]$Path)
+
+        if ([System.IO.Path]::DirectorySeparatorChar -eq '\') {
+            return $Path -replace '/', '\'
+        }
+
+        [System.IO.Path]::GetFullPath($Path)
+    }
 }
 
 Describe 'Get-GitStatusSummary' {
@@ -99,12 +109,13 @@ Describe 'Get-GitStatusSummary' {
     Context 'repository paths' {
         BeforeAll {
             $script:pathRepo = New-TestRepo -Path (Join-Path $TestDrive 'paths')
-            $script:nestedPath = Join-Path $script:pathRepo (Join-Path 'src' 'nested')
+            $script:expectedTop = ConvertTo-NativeTestPath (Invoke-Git @('-C', $script:pathRepo, 'rev-parse', '--show-toplevel'))
+            $script:nestedPath = Join-Path $script:expectedTop (Join-Path 'src' 'nested')
             New-Item -ItemType Directory -Path $script:nestedPath -Force | Out-Null
         }
 
         It 'returns the worktree path using native separators' {
-            (Get-GitStatusSummary -Path $script:pathRepo).WorktreePath | Should -BeExactly $script:pathRepo
+            (Get-GitStatusSummary -Path $script:pathRepo).WorktreePath | Should -BeExactly $script:expectedTop
         }
 
         It 'returns the relative path using native separators' {

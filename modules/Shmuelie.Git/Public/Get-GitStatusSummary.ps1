@@ -1,3 +1,13 @@
+function ConvertTo-NativeGitPath {
+    param([AllowNull()][string]$Path)
+
+    if ([System.IO.Path]::DirectorySeparatorChar -eq '\') {
+        return $Path -replace '/', '\'
+    }
+
+    $Path
+}
+
 function Get-GitStatusSummary {
     <#
     .SYNOPSIS
@@ -115,16 +125,10 @@ function Get-GitStatusSummary {
 
         # Worktree path. Git prints '/' separators even on Windows; normalize only
         # there so Unix paths are not corrupted by replacing path separators.
-        $toplevel = git rev-parse --show-toplevel 2>$null
-        if ([System.IO.Path]::DirectorySeparatorChar -eq '\') {
-            $toplevel = $toplevel -replace '/', '\'
-        }
+        $toplevel = ConvertTo-NativeGitPath (git rev-parse --show-toplevel 2>$null)
 
         # Detect in-progress git operations via .git/ sentinel files
-        $gitDir = git rev-parse --git-dir 2>$null
-        if ([System.IO.Path]::DirectorySeparatorChar -eq '\') {
-            $gitDir = $gitDir -replace '/', '\'
-        }
+        $gitDir = ConvertTo-NativeGitPath (git rev-parse --git-dir 2>$null)
         $operation = if ($gitDir) {
             $rebaseMergePath = Join-Path $gitDir 'rebase-merge'
             $rebaseApplyPath = Join-Path $gitDir 'rebase-apply'
