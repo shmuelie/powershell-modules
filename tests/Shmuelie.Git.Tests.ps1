@@ -150,6 +150,76 @@ Describe 'Get-GitStatusSummary' {
     }
 }
 
+Describe 'Find-StaleBranch' {
+    BeforeAll {
+        function New-AdoLikeRemote {
+            param([Parameter(Mandatory)][string]$Path)
+
+            $remotePath = Join-Path $Path 'dev.azure.com\example\project\_git\repo.git'
+            Invoke-Git @('init', '--bare', '--quiet', $remotePath)
+            'file:///' + ($remotePath -replace '\\', '/')
+        }
+    }
+
+    BeforeEach {
+        $global:FindStaleBranchAzCalls = [System.Collections.Generic.List[object]]::new()
+        function global:az {
+            $global:FindStaleBranchAzCalls.Add(@($args)) | Out-Null
+            '{"id":123,"title":"Merged branch","status":"completed"}'
+        }
+    }
+
+    AfterEach {
+        Remove-Item Function:\az -Force -ErrorAction SilentlyContinue
+        Remove-Variable -Name FindStaleBranchAzCalls -Scope Global -Force -ErrorAction SilentlyContinue
+    }
+
+    It 'queries PR status for branch names in the safe allow-list' {
+        $repo = New-TestRepo -Path (Join-Path $TestDrive 'safe-stale-branch')
+        $remoteUrl = New-AdoLikeRemote -Path (Join-Path $TestDrive 'safe-remote')
+        Invoke-Git @('-C', $repo, 'remote', 'add', 'origin', $remoteUrl)
+        Invoke-Git @('-C', $repo, 'branch', 'user/test/safe-branch')
+
+        Push-Location $repo
+        try {
+            $result = Find-StaleBranch -IncludePrStatus -User test
+        } finally {
+            Pop-Location
+        }
+
+        $result | Should -HaveCount 1
+        $result.Branch | Should -Be 'user/test/safe-branch'
+        $result.PrStatus | Should -Be 'completed'
+        $result.PrId | Should -Be 123
+        $global:FindStaleBranchAzCalls.Count | Should -Be 1
+        $sourceBranchIndex = [array]::IndexOf($global:FindStaleBranchAzCalls[0], '--source-branch')
+        $global:FindStaleBranchAzCalls[0][$sourceBranchIndex + 1] | Should -Be 'user/test/safe-branch'
+    }
+
+    It 'skips PR status lookup and warns for branch names outside the safe allow-list' {
+        $repo = New-TestRepo -Path (Join-Path $TestDrive 'unsafe-stale-branch')
+        $remoteUrl = New-AdoLikeRemote -Path (Join-Path $TestDrive 'unsafe-remote')
+        Invoke-Git @('-C', $repo, 'remote', 'add', 'origin', $remoteUrl)
+        Invoke-Git @('-C', $repo, 'branch', 'user/test/a&calc.exe')
+
+        Push-Location $repo
+        try {
+            $result = Find-StaleBranch -IncludePrStatus -User test -WarningVariable warnings
+        } finally {
+            Pop-Location
+        }
+
+        $result | Should -HaveCount 1
+        $result.Branch | Should -Be 'user/test/a&calc.exe'
+        $result.PrStatus | Should -BeNullOrEmpty
+        $result.PrId | Should -BeNullOrEmpty
+        $result.PrTitle | Should -BeNullOrEmpty
+        $global:FindStaleBranchAzCalls.Count | Should -Be 0
+        $warnings[0].Message | Should -Match 'Skipping PR lookup'
+        $warnings[0].Message | Should -Match 'unsafe'
+    }
+}
+
 Describe 'Format-GitStatusSegment' {
     BeforeAll {
         # Build a synthetic GitStatusSummary so the formatter can be exercised

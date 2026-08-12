@@ -126,23 +126,27 @@ function Find-StaleBranch {
 
             # Optional ADO PR lookup
             if ($IncludePrStatus -and $adoContext) {
-                try {
-                    $prJson = az repos pr list `
-                        --source-branch $branch `
-                        --status all `
-                        --repository $adoContext.Repo `
-                        --project $adoContext.Project `
-                        --org $adoContext.Org `
-                        --query '[0].{id:pullRequestId,title:title,status:status}' `
-                        -o json 2>$null | ConvertFrom-Json
+                if ($branch -notmatch '^[A-Za-z0-9._/-]+$') {
+                    Write-Warning "Skipping PR lookup for branch '$branch' because it contains an unsafe name."
+                } else {
+                    try {
+                        $prJson = az repos pr list `
+                            --source-branch $branch `
+                            --status all `
+                            --repository $adoContext.Repo `
+                            --project $adoContext.Project `
+                            --org $adoContext.Org `
+                            --query '[0].{id:pullRequestId,title:title,status:status}' `
+                            -o json 2>$null | ConvertFrom-Json
 
-                    if ($prJson) {
-                        $result.PrStatus = $prJson.status
-                        $result.PrId = $prJson.id
-                        $result.PrTitle = $prJson.title
+                        if ($prJson) {
+                            $result.PrStatus = $prJson.status
+                            $result.PrId = $prJson.id
+                            $result.PrTitle = $prJson.title
+                        }
+                    } catch {
+                        Write-Verbose "Failed to query PR for $branch`: $_"
                     }
-                } catch {
-                    Write-Verbose "Failed to query PR for $branch`: $_"
                 }
             }
 
