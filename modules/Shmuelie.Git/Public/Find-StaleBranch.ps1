@@ -43,6 +43,21 @@ function Find-StaleBranch {
         [switch]$All
     )
     process {
+        # Issue #4 / CVE-2024-1874: these arguments flow through az.cmd, so
+        # neutralize cmd.exe metacharacter injection before invoking az.
+        $SafeBranchNamePattern = '^[A-Za-z0-9._/-]+$'
+        $UnsafeAdoContextPattern = '[<>&|%!^`"()]'
+
+        $decodeRemoteUrlComponent = {
+            param([string]$Value)
+
+            try {
+                [System.Uri]::UnescapeDataString($Value)
+            } catch {
+                $Value
+            }
+        }
+
         # Determine user filter
         if (-not $All -and -not $User) {
             $email = git config user.email 2>$null
@@ -101,10 +116,13 @@ function Find-StaleBranch {
             $gitUrl = git config --get "remote.$Remote.url" 2>$null
             if ($gitUrl -match 'dev\.azure\.com/(?<org>[^/]+)/(?<project>[^/]+)/_git/(?<repo>.+)$' -or
                 $gitUrl -match '(?<org>[^/]+)\.visualstudio\.com/(?:DefaultCollection/)?(?<project>[^/]+)/_git/(?<repo>.+)$') {
+                $org = & $decodeRemoteUrlComponent $Matches['org']
+                $project = & $decodeRemoteUrlComponent $Matches['project']
+                $repo = & $decodeRemoteUrlComponent $Matches['repo']
                 $adoContext = @{
-                    Org     = "https://dev.azure.com/$($Matches['org'])"
-                    Project = $Matches['project']
-                    Repo    = $Matches['repo']
+                    Org     = "https://dev.azure.com/$org"
+                    Project = $project
+                    Repo    = $repo
                 }
             }
         }
@@ -126,8 +144,12 @@ function Find-StaleBranch {
 
             # Optional ADO PR lookup
             if ($IncludePrStatus -and $adoContext) {
-                if ($branch -notmatch '^[A-Za-z0-9._/-]+$') {
-                    Write-Warning "Skipping PR lookup for branch '$branch' because it contains an unsafe name."
+                if ($branch -notmatch $SafeBranchNamePattern) {
+                    Write-Warning "Skipping PR lookup for branch '$branch' because the branch contains an unsafe name."
+                } elseif ($adoContext.Repo -match $UnsafeAdoContextPattern -or
+                    $adoContext.Project -match $UnsafeAdoContextPattern -or
+                    $adoContext.Org -match $UnsafeAdoContextPattern) {
+                    Write-Warning "Skipping PR lookup for branch '$branch' because the ADO remote context contains an unsafe name."
                 } else {
                     try {
                         $prJson = az repos pr list `

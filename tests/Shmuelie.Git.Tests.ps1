@@ -153,16 +153,28 @@ Describe 'Get-GitStatusSummary' {
 Describe 'Find-StaleBranch' {
     BeforeAll {
         function New-AdoLikeRemote {
-            param([Parameter(Mandatory)][string]$Path)
+            param(
+                [Parameter(Mandatory)][string]$Path,
+                [string]$Organization = 'example',
+                [string]$Project = 'project',
+                [string]$Repository = 'repo.git',
+                [switch]$EncodeSpaces
+            )
 
-            $remotePath = Join-Path $Path 'dev.azure.com\example\project\_git\repo.git'
+            $remotePath = Join-Path $Path "dev.azure.com\$Organization\$Project\_git\$Repository"
             Invoke-Git @('init', '--bare', '--quiet', $remotePath)
-            'file:///' + ($remotePath -replace '\\', '/')
+            $remoteUrlPath = $remotePath -replace '\\', '/'
+            if ($EncodeSpaces) {
+                $remoteUrlPath = $remoteUrlPath -replace ' ', '%20'
+            }
+            'file:///' + $remoteUrlPath
         }
     }
 
     BeforeEach {
         $global:FindStaleBranchAzCalls = [System.Collections.Generic.List[object]]::new()
+        # This mock proves the guard skips az execution; it cannot prove cmd.exe
+        # neutralization directly because unsafe input should never reach az.
         function global:az {
             $global:FindStaleBranchAzCalls.Add(@($args)) | Out-Null
             '{"id":123,"title":"Merged branch","status":"completed"}'
@@ -196,6 +208,32 @@ Describe 'Find-StaleBranch' {
         $global:FindStaleBranchAzCalls[0][$sourceBranchIndex + 1] | Should -Be 'user/test/safe-branch'
     }
 
+    It 'queries PR status for URL-encoded ADO names that decode to spaces' {
+        $repo = New-TestRepo -Path (Join-Path $TestDrive 'safe-ado-context')
+        $remoteUrl = New-AdoLikeRemote `
+            -Path (Join-Path $TestDrive 'safe-context-remote') `
+            -Project 'space project' `
+            -Repository 'repo with space.git' `
+            -EncodeSpaces
+        Invoke-Git @('-C', $repo, 'remote', 'add', 'origin', $remoteUrl)
+        Invoke-Git @('-C', $repo, 'branch', 'user/test/safe-branch')
+
+        Push-Location $repo
+        try {
+            $result = Find-StaleBranch -IncludePrStatus -User test
+        } finally {
+            Pop-Location
+        }
+
+        $result | Should -HaveCount 1
+        $result.PrStatus | Should -Be 'completed'
+        $global:FindStaleBranchAzCalls.Count | Should -Be 1
+        $projectIndex = [array]::IndexOf($global:FindStaleBranchAzCalls[0], '--project')
+        $repositoryIndex = [array]::IndexOf($global:FindStaleBranchAzCalls[0], '--repository')
+        $global:FindStaleBranchAzCalls[0][$projectIndex + 1] | Should -Be 'space project'
+        $global:FindStaleBranchAzCalls[0][$repositoryIndex + 1] | Should -Be 'repo with space.git'
+    }
+
     It 'skips PR status lookup and warns for branch names outside the safe allow-list' {
         $repo = New-TestRepo -Path (Join-Path $TestDrive 'unsafe-stale-branch')
         $remoteUrl = New-AdoLikeRemote -Path (Join-Path $TestDrive 'unsafe-remote')
@@ -211,6 +249,29 @@ Describe 'Find-StaleBranch' {
 
         $result | Should -HaveCount 1
         $result.Branch | Should -Be 'user/test/a&calc.exe'
+        $result.PrStatus | Should -BeNullOrEmpty
+        $result.PrId | Should -BeNullOrEmpty
+        $result.PrTitle | Should -BeNullOrEmpty
+        $global:FindStaleBranchAzCalls.Count | Should -Be 0
+        $warnings[0].Message | Should -Match 'Skipping PR lookup'
+        $warnings[0].Message | Should -Match 'unsafe'
+    }
+
+    It 'skips PR status lookup and warns for ADO context names with cmd metacharacters' {
+        $repo = New-TestRepo -Path (Join-Path $TestDrive 'unsafe-ado-context')
+        $remoteUrl = New-AdoLikeRemote -Path (Join-Path $TestDrive 'unsafe-context-remote') -Project 'bad&project'
+        Invoke-Git @('-C', $repo, 'remote', 'add', 'origin', $remoteUrl)
+        Invoke-Git @('-C', $repo, 'branch', 'user/test/safe-branch')
+
+        Push-Location $repo
+        try {
+            $result = Find-StaleBranch -IncludePrStatus -User test -WarningVariable warnings
+        } finally {
+            Pop-Location
+        }
+
+        $result | Should -HaveCount 1
+        $result.Branch | Should -Be 'user/test/safe-branch'
         $result.PrStatus | Should -BeNullOrEmpty
         $result.PrId | Should -BeNullOrEmpty
         $result.PrTitle | Should -BeNullOrEmpty
