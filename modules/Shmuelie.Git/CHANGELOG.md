@@ -14,6 +14,25 @@ Versions change only when a release is cut; unreleased work stays under
   `-ShowChangeCounts:$false` renders only the branch, operation, and ahead/behind
   relation (for large repos where counting working-tree changes is expensive).
 
+### Fixed
+- `Get-GitStatusSummary` no longer hard-codes Windows path separators, so it works
+  on Linux/macOS. Git-reported paths are only normalized to backslashes on Windows,
+  and in-progress operation detection (rebase, merge, revert, cherry-pick, bisect)
+  now resolves its `.git` sentinel files cross-platform instead of always returning
+  `$null` for `Operation` off Windows.
+- The bundled worktree predictor's background cache refresh is now thread-safe: the
+  `refreshing` guard uses an atomic compare-and-exchange (instead of a non-atomic
+  check-then-set that allowed overlapping refreshes) and the cache timestamp is
+  published atomically, and the guard is released even if scheduling the refresh
+  fails. Background refresh failures are now traced instead of silently swallowed.
+- The worktree predictor's identifier is defined once and shared between
+  registration and cleanup, so it can no longer leak across a module reload if the
+  two copies drifted.
+- `Find-StaleBranch -IncludePrStatus` now validates the branch name and the Azure
+  DevOps org/project/repo before passing them to `az`, preventing command injection
+  via `cmd.exe` metacharacters in those names when `az` resolves to `az.cmd`
+  (CVE-2024-1874 class). Unsafe names skip the PR lookup with a warning.
+
 ## [0.1.0] - 2026-08-05
 
 ### Added

@@ -11,7 +11,8 @@ between releases this file tracks catalog-level changes under `[Unreleased]`.
   and CI wiring (`ci.yml` plus a gate in `publish-module.yml`) so behavioral
   tests of exported functions run alongside `Test-Modules.ps1`. Coverage
   includes `Get-GitStatusSummary`, `Format-GitStatusSegment`, `Format-Duration`,
-  and the pure `Shmuelie.Utilities` helpers.
+  `Get-CopilotLaunchPlan`, `Find-StaleBranch`, and the pure `Shmuelie.Utilities`
+  helpers.
 
 ## [0.1.0] - 2026-08-05
 
