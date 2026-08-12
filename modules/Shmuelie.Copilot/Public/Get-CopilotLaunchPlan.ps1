@@ -65,7 +65,9 @@ function Get-CopilotLaunchPlan {
         Resume a specific session directly, by session id, id-prefix, or name
         (passed to the CLI's --resume). Bypasses the auto-resume heuristics and the
         picker. Tab-completes the current folder's sessions. Mutually exclusive with
-        -NoResume, -ResumeLatest, and -NoAutoResume.
+        -NoResume, -ResumeLatest, and -NoAutoResume. If combined with -SessionId,
+        this parameter drives the --resume value while -SessionId is still forwarded
+        as --session-id.
 
     .PARAMETER NoAutoResume
         Disable auto-resume and always show the interactive session picker for the
@@ -216,7 +218,11 @@ function Get-CopilotLaunchPlan {
         Request reasoning summaries for OpenAI models.
 
     .PARAMETER SessionId
-        Resume an existing session or task by UUID, or set the UUID for a new session.
+        Set the session UUID for the CLI invocation (maps to --session-id), such
+        as when assigning an id to a new session or task. This does not resume a
+        session by itself; use -ResumeSession to resume by id, id-prefix, or
+        name via --resume. If combined with -ResumeSession, the plan emits both
+        --resume (from -ResumeSession) and --session-id (from -SessionId).
 
     .PARAMETER NoColor
         Disable all color output (useful for piping or scripting).
@@ -682,7 +688,7 @@ function Get-CopilotLaunchPlan {
         Write-Verbose "Resuming session: $ResumeSession"
         $copilotArgs += '--resume', $ResumeSession
     }
-    elseif (-not $isNoResume -and -not $isPassthrough -and -not $DeferResume) {
+    elseif (-not $isNoResume -and -not $isPassthrough -and -not $DeferResume -and -not $SessionId) {
         $sessionStateDir = Join-Path $env:USERPROFILE '.copilot' 'session-state'
         # Auto-generated maintenance sessions to skip when auto-resuming
         $ignoredSessionNames = @(

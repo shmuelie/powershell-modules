@@ -8,7 +8,7 @@ namespace WorktreePredictor;
 
 public sealed class WorktreeCommandPredictor : ICommandPredictor
 {
-    private static readonly Guid Identifier = new("a1b2c3d4-e5f6-7890-abcd-ef1234567890");
+    internal static readonly Guid PredictorId = new("a1b2c3d4-e5f6-7890-abcd-ef1234567890");
 
     private static readonly string[] WorktreeBranchCommands =
     [
@@ -26,14 +26,14 @@ public sealed class WorktreeCommandPredictor : ICommandPredictor
     private volatile string[]? _cachedWorktreeBranches;
     private volatile string[]? _cachedCheckoutableBranches;
     private volatile string? _cachedCwd;
-    private volatile bool _refreshing;
-    private DateTime _cacheTime = DateTime.MinValue;
+    private int _refreshing;
+    private long _cacheTimeTicks = DateTime.MinValue.Ticks;
     private static readonly TimeSpan CacheDuration = TimeSpan.FromSeconds(30);
 
     // Static reference so the PowerShell hook can reach the registered instance
     internal static WorktreeCommandPredictor? Instance { get; set; }
 
-    public Guid Id => Identifier;
+    public Guid Id => PredictorId;
     public string Name => "Worktree";
     public string Description => "Suggests git worktree branch names for worktree commands";
 
@@ -147,34 +147,46 @@ public sealed class WorktreeCommandPredictor : ICommandPredictor
     internal void RefreshCache(string cwd)
     {
         var isSameCwd = string.Equals(_cachedCwd, cwd, StringComparison.OrdinalIgnoreCase);
-        var isExpired = DateTime.UtcNow - _cacheTime > CacheDuration;
+        var cacheTime = new DateTime(Interlocked.Read(ref _cacheTimeTicks), DateTimeKind.Utc);
+        var isExpired = DateTime.UtcNow - cacheTime > CacheDuration;
 
         if (isSameCwd && !isExpired)
         {
             return;
         }
 
-        if (_refreshing)
+        if (Interlocked.CompareExchange(ref _refreshing, 1, 0) != 0)
         {
             return;
         }
 
-        _refreshing = true;
-        _ = Task.Run(() =>
+        try
         {
-            try
+            _ = Task.Run(() =>
             {
-                var worktreeBranches = FetchWorktreeBranches(cwd);
-                _cachedWorktreeBranches = worktreeBranches;
-                _cachedCheckoutableBranches = FetchCheckoutableBranches(cwd, worktreeBranches);
-                _cachedCwd = cwd;
-                _cacheTime = DateTime.UtcNow;
-            }
-            finally
-            {
-                _refreshing = false;
-            }
-        });
+                try
+                {
+                    var worktreeBranches = FetchWorktreeBranches(cwd);
+                    _cachedWorktreeBranches = worktreeBranches;
+                    _cachedCheckoutableBranches = FetchCheckoutableBranches(cwd, worktreeBranches);
+                    _cachedCwd = cwd;
+                    Interlocked.Exchange(ref _cacheTimeTicks, DateTime.UtcNow.Ticks);
+                }
+                catch (Exception ex)
+                {
+                    Debug.WriteLine($"WorktreePredictor refresh failed: {ex}");
+                }
+                finally
+                {
+                    Interlocked.Exchange(ref _refreshing, 0);
+                }
+            });
+        }
+        catch
+        {
+            Interlocked.Exchange(ref _refreshing, 0);
+            throw;
+        }
     }
 
     private static string[] RunGit(string cwd, string arguments)
@@ -250,8 +262,6 @@ public sealed class WorktreeCommandPredictor : ICommandPredictor
 
 public class Init : IModuleAssemblyInitializer, IModuleAssemblyCleanup
 {
-    private static readonly Guid Identifier = new("a1b2c3d4-e5f6-7890-abcd-ef1234567890");
-
     public void OnImport()
     {
         var predictor = new WorktreeCommandPredictor();
@@ -262,6 +272,6 @@ public class Init : IModuleAssemblyInitializer, IModuleAssemblyCleanup
     public void OnRemove(PSModuleInfo psModuleInfo)
     {
         WorktreeCommandPredictor.Instance = null;
-        SubsystemManager.UnregisterSubsystem(SubsystemKind.CommandPredictor, Identifier);
+        SubsystemManager.UnregisterSubsystem(SubsystemKind.CommandPredictor, WorktreeCommandPredictor.PredictorId);
     }
 }
