@@ -16,3 +16,6 @@ jobs:
       - name: Build and import modules
         shell: pwsh
         run: ./build/Test-Modules.ps1
+      - name: Run unit tests
+        shell: pwsh
+        run: ./build/Invoke-Tests.ps1

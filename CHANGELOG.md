@@ -6,6 +6,11 @@ between releases this file tracks catalog-level changes under `[Unreleased]`.
 
 ## [Unreleased]
 
+### Added
+- Pester v5 unit test suite under `tests/`, a `build/Invoke-Tests.ps1` runner,
+  and CI wiring (`ci.yml` plus a gate in `publish-module.yml`) so behavioral
+  tests of exported functions run alongside `Test-Modules.ps1`.
+
 ## [0.1.0] - 2026-08-05
 
 ### Added
