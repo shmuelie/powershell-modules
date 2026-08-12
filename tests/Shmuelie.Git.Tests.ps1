@@ -124,3 +124,111 @@ Describe 'Get-GitStatusSummary' {
         }
     }
 }
+
+Describe 'Format-GitStatusSegment' {
+    BeforeAll {
+        # Build a synthetic GitStatusSummary so the formatter can be exercised
+        # without a real repository. Only the properties the formatter reads are
+        # defaulted; pass a hashtable to override any of them.
+        function New-Summary {
+            param([hashtable]$Override = @{})
+            $props = @{
+                PSTypeName      = 'GitStatusSummary'
+                IsGitRepo       = $true
+                Branch          = 'main'
+                Upstream        = 'origin/main'
+                UpstreamGone    = $false
+                Operation       = $null
+                AheadBy         = 0
+                BehindBy        = 0
+                IndexAdded      = 0
+                IndexModified   = 0
+                IndexDeleted    = 0
+                WorkingAdded    = 0
+                WorkingModified = 0
+                WorkingDeleted  = 0
+                Untracked       = 0
+                Conflicts       = 0
+            }
+            foreach ($key in $Override.Keys) { $props[$key] = $Override[$key] }
+            [PSCustomObject]$props
+        }
+    }
+
+    It 'returns an empty string when the summary is not a git repo' {
+        Format-GitStatusSegment -Status (New-Summary @{ IsGitRepo = $false }) | Should -BeExactly ''
+    }
+
+    It 'accepts pipeline input' {
+        (New-Summary | Format-GitStatusSegment) | Should -Match 'main'
+    }
+
+    $segmentCases = @(
+        @{
+            Name        = 'clean tracked branch (up-to-date relation)'
+            Override    = @{}
+            Contains    = @('main', "$([char]0x2261)")
+            NotContains = @()
+        }
+        @{
+            Name        = 'ahead of upstream'
+            Override    = @{ AheadBy = 2 }
+            Contains    = @("$([char]0x2191)2")
+            NotContains = @()
+        }
+        @{
+            Name        = 'behind upstream'
+            Override    = @{ BehindBy = 3 }
+            Contains    = @("$([char]0x2193)3")
+            NotContains = @()
+        }
+        @{
+            Name        = 'diverged (ahead and behind)'
+            Override    = @{ AheadBy = 1; BehindBy = 2 }
+            Contains    = @("$([char]0x2191)1$([char]0x2193)2")
+            NotContains = @()
+        }
+        @{
+            Name        = 'gone upstream'
+            Override    = @{ UpstreamGone = $true }
+            Contains    = @("$([char]0x00D7)")
+            NotContains = @()
+        }
+        @{
+            Name        = 'staged (index) change counts'
+            Override    = @{ IndexAdded = 1; IndexModified = 2; IndexDeleted = 0 }
+            Contains    = @('+1 ~2 -0')
+            NotContains = @()
+        }
+        @{
+            Name        = 'working counts fold untracked into added'
+            Override    = @{ WorkingModified = 3; Untracked = 2; WorkingAdded = 1 }
+            Contains    = @('+3 ~3 -0')
+            NotContains = @()
+        }
+        @{
+            Name        = 'conflicts marker'
+            Override    = @{ Conflicts = 2 }
+            Contains    = @('!2')
+            NotContains = @()
+        }
+        @{
+            Name        = 'in-progress operation'
+            Override    = @{ Operation = 'REBASE 1/3' }
+            Contains    = @('|REBASE 1/3')
+            NotContains = @()
+        }
+    )
+
+    It 'renders <Name>' -ForEach $segmentCases {
+        $out = Format-GitStatusSegment -Status (New-Summary $Override)
+        foreach ($token in $Contains) { $out | Should -Match ([regex]::Escape($token)) }
+        foreach ($token in $NotContains) { $out | Should -Not -Match ([regex]::Escape($token)) }
+    }
+
+    It 'omits change counts when -ShowChangeCounts is false' {
+        $out = Format-GitStatusSegment -Status (New-Summary @{ IndexAdded = 5 }) -ShowChangeCounts:$false
+        $out | Should -Match 'main'
+        $out | Should -Not -Match ([regex]::Escape('+5'))
+    }
+}

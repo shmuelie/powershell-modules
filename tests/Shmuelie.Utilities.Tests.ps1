@@ -55,6 +55,39 @@ Describe 'Import-ModuleSafe' {
     }
 }
 
+Describe 'Format-Duration' {
+    $durationCases = @(
+        # sub-minute: fractional TotalSeconds with no trailing label punctuation
+        @{ Seconds = 45;     Expected = '45 seconds' }
+        @{ Seconds = 0.5;    Expected = '0.5 seconds' }
+        @{ Seconds = 5.3;    Expected = '5.3 seconds' }
+        # fractional rounding to three decimals
+        @{ Seconds = 1.2344; Expected = '1.234 seconds' }
+        @{ Seconds = 2.5678; Expected = '2.568 seconds' }
+        # just under the one-minute boundary
+        @{ Seconds = 59.999; Expected = '59.999 seconds' }
+        # exact one-minute boundary switches to M:SS.mmm
+        @{ Seconds = 60;     Expected = '1:00.000' }
+        @{ Seconds = 90.25;  Expected = '1:30.250' }
+        @{ Seconds = 3599;   Expected = '59:59.000' }
+        # exact one-hour boundary switches to H:MM:SS.mmm
+        @{ Seconds = 3600;   Expected = '1:00:00.000' }
+        @{ Seconds = 3661.5; Expected = '1:01:01.500' }
+    )
+
+    It 'formats <Seconds>s as <Expected>' -ForEach $durationCases {
+        Format-Duration ([TimeSpan]::FromSeconds($Seconds)) | Should -BeExactly $Expected
+    }
+
+    It 'folds days into the hours field' {
+        Format-Duration ([TimeSpan]::FromHours(25)) | Should -BeExactly '25:00:00.000'
+    }
+
+    It 'accepts pipeline input' {
+        [TimeSpan]::FromSeconds(5.3) | Format-Duration | Should -BeExactly '5.3 seconds'
+    }
+}
+
 Describe 'Invoke-InLocation' {
     It 'runs the script block in the requested location' {
         $target = Join-Path $TestDrive 'work'

@@ -10,10 +10,13 @@ without a full build.
 
 - `Shmuelie.Git.Tests.ps1` — table-driven `Get-GitStatusSummary` coverage against
   real temporary git repositories (non-repo, clean, staged/working/untracked
-  changes, and ahead-of-upstream tracking).
+  changes, and ahead-of-upstream tracking), plus `Format-GitStatusSegment`
+  rendering (relation indicators, index/working/conflict counts, untracked
+  folding, and `-ShowChangeCounts:$false`) driven by synthetic summaries.
 - `Shmuelie.Utilities.Tests.ps1` — pure helpers (`Test-IsElevated`,
   `Get-SessionTitle`, `New-GlobalConstant`, `New-PathVariable`,
-  `Import-ModuleSafe`, `Invoke-InLocation`).
+  `Import-ModuleSafe`, `Invoke-InLocation`) and `Format-Duration` boundary/
+  rounding cases.
 
 ## Running
 
