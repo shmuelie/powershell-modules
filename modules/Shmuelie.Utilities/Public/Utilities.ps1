@@ -295,3 +295,45 @@ function Get-ServiceProcess {
         }
     }
 }
+
+function Format-Duration {
+    <#
+    .SYNOPSIS
+    Format a TimeSpan as a compact human-readable duration string.
+    .DESCRIPTION
+    Returns a duration string whose shape scales with length:
+
+    - one hour or more  -> 'H:MM:SS.mmm' (hours can exceed 24; days are folded in)
+    - one minute or more -> 'M:SS.mmm'
+    - under a minute      -> '<seconds> seconds' (fractional TotalSeconds)
+
+    The string carries no trailing punctuation or label, so a caller can embed it
+    in a sentence (e.g. a prompt's "Command Time: ..." line).
+    .PARAMETER TimeSpan
+    The duration to format. Accepts pipeline input.
+    .EXAMPLE
+    Format-Duration ([TimeSpan]::FromSeconds(5.3))
+    Returns '5.3 seconds'.
+    .EXAMPLE
+    (Get-History -Count 1 | ForEach-Object { $_.EndExecutionTime - $_.StartExecutionTime }) | Format-Duration
+    Formats the elapsed time of the last command.
+    #>
+    [OutputType([string])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory, ValueFromPipeline, Position = 0)]
+        [TimeSpan]$TimeSpan
+    )
+
+    process {
+        if ($TimeSpan.TotalSeconds -gt 3600) {
+            '{0:#0}:{1:00}:{2:00}.{3:000}' -f (($TimeSpan.Days * 24) + $TimeSpan.Hours), $TimeSpan.Minutes, $TimeSpan.Seconds, $TimeSpan.Milliseconds
+        }
+        elseif ($TimeSpan.TotalSeconds -gt 60) {
+            '{0:#0}:{1:00}.{2:000}' -f $TimeSpan.Minutes, $TimeSpan.Seconds, $TimeSpan.Milliseconds
+        }
+        else {
+            "$($TimeSpan.TotalSeconds) seconds"
+        }
+    }
+}

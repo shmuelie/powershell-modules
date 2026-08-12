@@ -9,6 +9,7 @@ Export-ModuleMember -Function @(
     'Update-PipPackage', 'Test-IsElevated', 'New-GlobalConstant',
     'New-PathVariable', 'Get-SessionTitle', 'Reset-TerminalModes',
     'Import-ModuleSafe', 'Invoke-InLocation', 'Repair-GlobalJson',
+    'Format-Duration',
     'Get-ServiceProcess', 'Get-UvPackages', 'Update-UvPackage', 'Start-VsCode',
     'Start-VsCodeChat', 'Get-VsCodeExtension', 'Install-VsCodeExtension',
     'Uninstall-VsCodeExtension', 'Update-VsCodeExtension',

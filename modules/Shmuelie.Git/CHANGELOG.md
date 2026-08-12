@@ -6,6 +6,14 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+### Added
+- `Format-GitStatusSegment` — render a `GitStatusSummary` (from
+  `Get-GitStatusSummary`) as a colored posh-git-style prompt segment
+  (`[branch|OP ↑A↓B +A ~M -D | +A ~M -D !C]`). Emits an ANSI-colored string via
+  `$PSStyle` (capturable/testable), branch color reflecting upstream state.
+  `-ShowChangeCounts:$false` renders only the branch, operation, and ahead/behind
+  relation (for large repos where counting working-tree changes is expensive).
+
 ## [0.1.0] - 2026-08-05
 
 ### Added
