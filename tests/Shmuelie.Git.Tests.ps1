@@ -484,3 +484,297 @@ Describe 'Format-GitStatusSegment' {
         $out | Should -Not -Match ([regex]::Escape('+5'))
     }
 }
+
+
+Describe 'GitHub account helpers' {
+    Context 'Get-GitHubRemoteInfo' {
+        $remoteCases = @(
+            @{ Name = 'https github';        Url = 'https://github.com/contoso/repo.git';        ExpectHost = 'github.com';      ExpectOwner = 'contoso' }
+            @{ Name = 'https github no .git'; Url = 'https://github.com/contoso/repo';             ExpectHost = 'github.com';      ExpectOwner = 'contoso' }
+            @{ Name = 'https user@host';      Url = 'https://user@github.com/contoso/repo.git';    ExpectHost = 'github.com';      ExpectOwner = 'contoso' }
+            @{ Name = 'https ghe host';       Url = 'https://ghe.example.com/team/repo.git';       ExpectHost = 'ghe.example.com'; ExpectOwner = 'team' }
+            @{ Name = 'https port';           Url = 'https://ghe.example.com:8443/team/repo.git';  ExpectHost = 'ghe.example.com'; ExpectOwner = 'team' }
+            @{ Name = 'scp-like';             Url = 'git@github.com:contoso/repo.git';             ExpectHost = 'github.com';      ExpectOwner = 'contoso' }
+            @{ Name = 'ssh scheme';           Url = 'ssh://git@github.com/contoso/repo.git';       ExpectHost = 'github.com';      ExpectOwner = 'contoso' }
+            @{ Name = 'ghe scp-like';         Url = 'git@ghe.example.com:team/repo.git';           ExpectHost = 'ghe.example.com'; ExpectOwner = 'team' }
+            @{ Name = 'uppercase host';       Url = 'https://GitHub.com/contoso/repo.git';         ExpectHost = 'github.com';      ExpectOwner = 'contoso' }
+        )
+
+        It 'parses <Name>' -ForEach $remoteCases {
+            InModuleScope Shmuelie.Git -Parameters @{ Url = $Url; ExpectHost = $ExpectHost; ExpectOwner = $ExpectOwner } {
+                param($Url, $ExpectHost, $ExpectOwner)
+                $info = Get-GitHubRemoteInfo -Url $Url
+                $info.Host | Should -BeExactly $ExpectHost
+                $info.Owner | Should -BeExactly $ExpectOwner
+            }
+        }
+
+        It 'returns nothing for a non-remote-looking URL' {
+            InModuleScope Shmuelie.Git {
+                Get-GitHubRemoteInfo -Url 'file:///C:/repos/local.git' | Should -BeNullOrEmpty
+                Get-GitHubRemoteInfo -Url 'not a url' | Should -BeNullOrEmpty
+            }
+        }
+    }
+
+    Context 'Test-GitHubHostName / Test-GitHubAccountName' {
+        It 'accepts valid and rejects unsafe host names' {
+            InModuleScope Shmuelie.Git {
+                Test-GitHubHostName 'github.com' | Should -BeTrue
+                Test-GitHubHostName 'ghe.example.com' | Should -BeTrue
+                Test-GitHubHostName 'github.com & calc' | Should -BeFalse
+                Test-GitHubHostName 'a|b' | Should -BeFalse
+                Test-GitHubHostName '' | Should -BeFalse
+            }
+        }
+
+        It 'accepts valid and rejects unsafe account names' {
+            InModuleScope Shmuelie.Git {
+                Test-GitHubAccountName 'octocat' | Should -BeTrue
+                Test-GitHubAccountName 'work-user' | Should -BeTrue
+                Test-GitHubAccountName '-bad' | Should -BeFalse
+                Test-GitHubAccountName 'a b' | Should -BeFalse
+                Test-GitHubAccountName 'a&b' | Should -BeFalse
+            }
+        }
+    }
+
+    Context 'Get-GitHubAccountMapValue' {
+        It 'matches host/owner and bare owner keys case-insensitively' {
+            InModuleScope Shmuelie.Git {
+                $map = @{ 'github.com/Contoso' = 'work'; 'fabrikam' = 'personal' }
+                Get-GitHubAccountMapValue -Map $map -HostName 'github.com' -Owner 'contoso' | Should -Be 'work'
+                Get-GitHubAccountMapValue -Map $map -HostName 'ghe.example.com' -Owner 'FABRIKAM' | Should -Be 'personal'
+                Get-GitHubAccountMapValue -Map $map -HostName 'github.com' -Owner 'nobody' | Should -BeNullOrEmpty
+                Get-GitHubAccountMapValue -Map $null -HostName 'github.com' -Owner 'contoso' | Should -BeNullOrEmpty
+            }
+        }
+    }
+
+    Context 'Test-GitHubAuthFailure' {
+        It 'detects auth/access failures but not clean output' {
+            InModuleScope Shmuelie.Git {
+                Test-GitHubAuthFailure -Output @('remote: Repository not found') | Should -BeTrue
+                Test-GitHubAuthFailure -Output @('fatal: Authentication failed for https://github.com') | Should -BeTrue
+                Test-GitHubAuthFailure -Output @('   abc123..def456  main -> origin/main') | Should -BeFalse
+            }
+        }
+    }
+
+    Context 'Get-GitHubSignedInAccount' {
+        BeforeEach {
+            function global:gh {
+                @(
+                    'github.com'
+                    '  Logged in to github.com account personal (keyring)'
+                    '  - Active account: true'
+                    '  Logged in to github.com account work (keyring)'
+                    '  - Active account: false'
+                    'ghe.example.com'
+                    '  Logged in to ghe.example.com account enterprise-user (keyring)'
+                    '  - Active account: true'
+                )
+            }
+        }
+        AfterEach {
+            Remove-Item Function:\gh -Force -ErrorAction SilentlyContinue
+        }
+
+        It 'parses accounts across hosts with active flags' {
+            Mock -ModuleName Shmuelie.Git Test-GhAvailable { $true }
+            $accounts = InModuleScope Shmuelie.Git { Get-GitHubSignedInAccount }
+
+            $accounts | Should -HaveCount 3
+            ($accounts | Where-Object { $_.Host -eq 'github.com' }).Account | Should -Be @('personal', 'work')
+            ($accounts | Where-Object { $_.Account -eq 'personal' }).Active | Should -BeTrue
+            ($accounts | Where-Object { $_.Account -eq 'work' }).Active | Should -BeFalse
+            ($accounts | Where-Object { $_.Host -eq 'ghe.example.com' }).Account | Should -Be 'enterprise-user'
+        }
+
+        It 'returns nothing when gh is unavailable' {
+            Mock -ModuleName Shmuelie.Git Test-GhAvailable { $false }
+            InModuleScope Shmuelie.Git { Get-GitHubSignedInAccount } | Should -BeNullOrEmpty
+        }
+    }
+
+    Context 'Get-GitHubAccountToken' {
+        It 'returns the token on success' {
+            function global:gh { 'gho_exampletoken'; $global:LASTEXITCODE = 0 }
+            try {
+                InModuleScope Shmuelie.Git { Get-GitHubAccountToken -HostName 'github.com' -Account 'work' } |
+                    Should -Be 'gho_exampletoken'
+            } finally { Remove-Item Function:\gh -Force -ErrorAction SilentlyContinue }
+        }
+
+        It 'refuses unsafe host/account without calling gh' {
+            $script:called = $false
+            function global:gh { $script:called = $true; 'nope' }
+            try {
+                InModuleScope Shmuelie.Git { Get-GitHubAccountToken -HostName 'bad host' -Account 'work' } |
+                    Should -BeNullOrEmpty
+            } finally { Remove-Item Function:\gh -Force -ErrorAction SilentlyContinue }
+            $script:called | Should -BeFalse
+        }
+    }
+}
+
+Describe 'Sync-GitRemote GitHub account awareness' {
+    BeforeAll {
+        function New-GitHubRepo {
+            param([Parameter(Mandatory)][string]$Path, [string]$Url = 'https://github.com/contoso/repo.git')
+            $repo = New-TestRepo -Path $Path
+            Invoke-Git @('-C', $repo, 'remote', 'add', 'origin', $Url)
+            $repo
+        }
+    }
+
+    BeforeEach {
+        # Fresh session cache per test so caching assertions are deterministic.
+        InModuleScope Shmuelie.Git { $script:GitHubAccountCache = $null }
+        $global:GhFetchTokens = [System.Collections.Generic.List[string]]::new()
+    }
+    AfterEach {
+        Remove-Variable -Name GhFetchTokens -Scope Global -Force -ErrorAction SilentlyContinue
+    }
+
+    Context 'account selection' {
+        BeforeEach {
+            Mock -ModuleName Shmuelie.Git Get-GitHubSignedInAccount {
+                @(
+                    [PSCustomObject]@{ PSTypeName = 'GitHubAccount'; Host = 'github.com'; Account = 'personal'; Active = $true }
+                    [PSCustomObject]@{ PSTypeName = 'GitHubAccount'; Host = 'github.com'; Account = 'work'; Active = $false }
+                )
+            }
+            Mock -ModuleName Shmuelie.Git Get-GitHubAccountToken { "tok-$Account" }
+            # Record which token each fetch used; succeed unless the token is
+            # flagged to fail via $global:GhFailToken.
+            Mock -ModuleName Shmuelie.Git Invoke-GitWithEnvironment {
+                $tok = if ($Environment) { [string]$Environment['GH_TOKEN'] } else { '' }
+                $global:GhFetchTokens.Add($tok)
+                if ($global:GhFailToken -and $tok -eq $global:GhFailToken) {
+                    [PSCustomObject]@{ PSTypeName = 'GitInvocationResult'; ExitCode = 1; Output = @('remote: Repository not found') }
+                } else {
+                    [PSCustomObject]@{ PSTypeName = 'GitInvocationResult'; ExitCode = 0; Output = @(' * [new branch]      main       -> origin/main') }
+                }
+            }
+        }
+        AfterEach {
+            Remove-Variable -Name GhFailToken -Scope Global -Force -ErrorAction SilentlyContinue
+        }
+
+        It 'uses the account from -GitHubAccountMap' {
+            $repo = New-GitHubRepo -Path (Join-Path $TestDrive 'map-repo')
+            Push-Location $repo
+            try {
+                $result = Sync-GitRemote -GitHubAccountMap @{ 'github.com/contoso' = 'work' }
+            } finally { Pop-Location }
+
+            $global:GhFetchTokens | Should -Contain 'tok-work'
+            $global:GhFetchTokens[0] | Should -Be 'tok-work'
+            $result.Action | Should -Be 'New branch'
+            InModuleScope Shmuelie.Git { $script:GitHubAccountCache['github.com/contoso'] } | Should -Be 'work'
+        }
+
+        It 'uses the account from -GitHubAccountResolver' {
+            $repo = New-GitHubRepo -Path (Join-Path $TestDrive 'resolver-repo')
+            Push-Location $repo
+            try {
+                Sync-GitRemote -GitHubAccountResolver { param($h, $o) if ($o -eq 'contoso') { 'work' } } | Out-Null
+            } finally { Pop-Location }
+
+            $global:GhFetchTokens[0] | Should -Be 'tok-work'
+        }
+
+        It 'tries the active account first when no mapping is given' {
+            $repo = New-GitHubRepo -Path (Join-Path $TestDrive 'active-repo')
+            Push-Location $repo
+            try {
+                Sync-GitRemote | Out-Null
+            } finally { Pop-Location }
+
+            $global:GhFetchTokens[0] | Should -Be 'tok-personal'
+        }
+
+        It 'falls back to another account when the first cannot access, and caches it' {
+            $global:GhFailToken = 'tok-personal'
+            $repo = New-GitHubRepo -Path (Join-Path $TestDrive 'fallback-repo')
+            Push-Location $repo
+            try {
+                $result = Sync-GitRemote
+            } finally { Pop-Location }
+
+            $global:GhFetchTokens | Should -Be @('tok-personal', 'tok-work')
+            $result.Action | Should -Be 'New branch'
+            InModuleScope Shmuelie.Git { $script:GitHubAccountCache['github.com/contoso'] } | Should -Be 'work'
+        }
+
+        It 'passes GH_HOST and a token to the git child environment' {
+            Mock -ModuleName Shmuelie.Git Invoke-GitWithEnvironment {
+                $Environment['GH_HOST'] | Should -Be 'github.com'
+                $Environment['GH_TOKEN'] | Should -Be 'tok-work'
+                [PSCustomObject]@{ PSTypeName = 'GitInvocationResult'; ExitCode = 0; Output = @() }
+            }
+            $repo = New-GitHubRepo -Path (Join-Path $TestDrive 'env-repo')
+            Push-Location $repo
+            try {
+                Sync-GitRemote -GitHubAccountMap @{ 'github.com/contoso' = 'work' } | Out-Null
+            } finally { Pop-Location }
+            Should -Invoke -ModuleName Shmuelie.Git Invoke-GitWithEnvironment -Times 1
+        }
+    }
+
+    Context 'graceful no-op paths' {
+        It 'does not engage tokened fetch for a single account on the host' {
+            Mock -ModuleName Shmuelie.Git Get-GitHubSignedInAccount {
+                @([PSCustomObject]@{ PSTypeName = 'GitHubAccount'; Host = 'github.com'; Account = 'solo'; Active = $true })
+            }
+            Mock -ModuleName Shmuelie.Git Get-GitHubAccountToken { 'should-not-be-called' }
+            Mock -ModuleName Shmuelie.Git Invoke-GitWithEnvironment { [PSCustomObject]@{ PSTypeName = 'GitInvocationResult'; ExitCode = 0; Output = @() } }
+            # Local bare remote reachable offline; rewrite the github URL to it so
+            # the default (non-tokened) fetch path can run without the network.
+            $bare = Join-Path $TestDrive 'solo-bare'
+            Invoke-Git @('init', '--bare', '--quiet', $bare)
+            $repo = New-GitHubRepo -Path (Join-Path $TestDrive 'solo-repo')
+            $bareUrl = 'file:///' + ($bare -replace '\\', '/')
+            Invoke-Git @('-C', $repo, 'config', ('url.' + $bareUrl + '.insteadOf'), 'https://github.com/contoso/repo.git')
+
+            Push-Location $repo
+            try { Sync-GitRemote | Out-Null } finally { Pop-Location }
+
+            Should -Invoke -ModuleName Shmuelie.Git Get-GitHubAccountToken -Times 0
+            Should -Invoke -ModuleName Shmuelie.Git Invoke-GitWithEnvironment -Times 0
+        }
+
+        It 'does not engage for a non gh-managed host' {
+            Mock -ModuleName Shmuelie.Git Get-GitHubSignedInAccount {
+                @([PSCustomObject]@{ PSTypeName = 'GitHubAccount'; Host = 'github.com'; Account = 'personal'; Active = $true }
+                  [PSCustomObject]@{ PSTypeName = 'GitHubAccount'; Host = 'github.com'; Account = 'work'; Active = $false })
+            }
+            Mock -ModuleName Shmuelie.Git Get-GitHubAccountToken { 'should-not-be-called' }
+            $bare = Join-Path $TestDrive 'ado-bare'
+            Invoke-Git @('init', '--bare', '--quiet', $bare)
+            $repo = New-TestRepo -Path (Join-Path $TestDrive 'ado-repo')
+            $bareUrl = 'file:///' + ($bare -replace '\\', '/')
+            Invoke-Git @('-C', $repo, 'remote', 'add', 'origin', $bareUrl)
+
+            Push-Location $repo
+            try { Sync-GitRemote | Out-Null } finally { Pop-Location }
+
+            Should -Invoke -ModuleName Shmuelie.Git Get-GitHubAccountToken -Times 0
+        }
+
+        It 'does not consult gh when -NoGitHubAccountResolve is set' {
+            Mock -ModuleName Shmuelie.Git Get-GitHubSignedInAccount { throw 'should not be called' }
+            $bare = Join-Path $TestDrive 'noresolve-bare'
+            Invoke-Git @('init', '--bare', '--quiet', $bare)
+            $repo = New-TestRepo -Path (Join-Path $TestDrive 'noresolve-repo')
+            $bareUrl = 'file:///' + ($bare -replace '\\', '/')
+            Invoke-Git @('-C', $repo, 'remote', 'add', 'origin', $bareUrl)
+
+            Push-Location $repo
+            try { Sync-GitRemote -NoGitHubAccountResolve | Out-Null } finally { Pop-Location }
+
+            Should -Invoke -ModuleName Shmuelie.Git Get-GitHubSignedInAccount -Times 0
+        }
+    }
+}

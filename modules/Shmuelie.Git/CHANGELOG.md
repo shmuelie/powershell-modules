@@ -6,6 +6,24 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+### Added
+- `Sync-GitRemote` is now GitHub-account-aware. When more than one account is
+  signed in to the `gh` CLI for a remote's host — github.com or a GitHub
+  Enterprise host — the fetch for that remote runs with the account that can
+  access it. A per-account token is acquired with `gh auth token` and injected
+  into the git child process environment only, so the globally-active `gh`
+  account is never changed and concurrent fetches never cross-contaminate
+  credentials. New `-GitHubAccountMap` (host/owner → account) and
+  `-GitHubAccountResolver` (scriptblock) parameters choose the account, with a
+  reactive fallback that tries the active account and retries the remaining
+  signed-in accounts on an auth failure (caching the winner for the session).
+  `-NoGitHubAccountResolve` opts out. It is a graceful no-op — identical to
+  plain `git fetch` — when `gh` is absent, only one account is signed in for the
+  host, the host is not one `gh` manages, or `gh auth token` fails.
+- `Update-Worktrees` gains matching `-GitHubAccountMap`,
+  `-GitHubAccountResolver`, and `-NoGitHubAccountResolve` parameters, forwarded
+  to `Sync-GitRemote`.
+
 ## [0.2.0] - 2026-08-12
 
 ### Added
