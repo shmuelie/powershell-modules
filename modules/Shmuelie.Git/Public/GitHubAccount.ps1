@@ -44,6 +44,11 @@ function Get-GitHubSignedInAccount {
 
     if (-not (Test-GhAvailable)) { return }
 
+    # `gh auth status` has no JSON/machine-readable form, so this parses its
+    # English output ("Logged in to <host> account <user>" / "Active account:
+    # true"). It is therefore coupled to that wording; if a future `gh` changes
+    # it, the Active flag only affects candidate ordering, so a parse miss
+    # degrades gracefully to "try all accounts" rather than failing.
     $output = & gh auth status 2>&1
     if (-not $output) { return }
 

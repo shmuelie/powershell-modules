@@ -26,7 +26,10 @@ function Sync-GitRemote {
     (caching the winning host+owner -> account for the session). This is a
     graceful no-op — identical to plain 'git fetch' — when `gh` is not
     installed, only one account is signed in for the host, the host is one
-    `gh` does not manage, or `gh auth token` fails.
+    `gh` does not manage, or `gh auth token` fails. When account resolution
+    engages, each remote is fetched individually rather than through a single
+    'git fetch --all', so the returned refs are the same but their ordering
+    groups by remote.
     .PARAMETER Remote
     Fetch from a specific remote instead of all remotes.
     .PARAMETER NoPrune
@@ -83,12 +86,19 @@ function Sync-GitRemote {
     $pruneArg = if ($NoPrune) { @() } else { @('--prune') }
 
     # Decide whether GitHub account awareness can apply at all. When it can't,
-    # fall through to the original single 'git fetch' path unchanged.
+    # fall through to the original single 'git fetch' path unchanged. Only pay
+    # for remote enumeration when a choice is actually possible: a caller-supplied
+    # map/resolver, or a host with more than one signed-in account. A lone account
+    # (the common case) uses the default credential helper exactly as before.
     $accounts = if ($NoGitHubAccountResolve) { @() } else { @(Get-GitHubSignedInAccount) }
 
     $resolvePlan = @{}
     $remoteSet = @()
-    if ($accounts.Count -gt 0) {
+    $canResolve = $accounts.Count -gt 0 -and (
+        $GitHubAccountMap -or $GitHubAccountResolver -or
+        @($accounts | Group-Object Host | Where-Object { $_.Count -gt 1 }).Count -gt 0
+    )
+    if ($canResolve) {
         $remoteSet = if ($Remote) { @($Remote) } else { @(git remote 2>$null) }
 
         foreach ($remoteName in $remoteSet) {
@@ -262,9 +272,14 @@ function Invoke-GitHubTokenedFetch {
         if (-not $token) { continue }
 
         $result = Invoke-GitWithEnvironment -Arguments $Arguments -Environment @{
-            GH_TOKEN = $token
-            GH_HOST  = $gitHost
-        }
+                GH_TOKEN            = $token
+                GH_HOST             = $gitHost
+                # The fallback deliberately fetches with accounts that may be denied;
+                # forbid any interactive credential prompt so a redirected git can
+                # never hang and a denied account fails fast to the next candidate.
+                GIT_TERMINAL_PROMPT = '0'
+                GCM_INTERACTIVE     = 'never'
+            }
         $last = $result
 
         if ($result.ExitCode -eq 0) {

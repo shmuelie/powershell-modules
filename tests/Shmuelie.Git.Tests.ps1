@@ -708,10 +708,24 @@ Describe 'Sync-GitRemote GitHub account awareness' {
             InModuleScope Shmuelie.Git { $script:GitHubAccountCache['github.com/contoso'] } | Should -Be 'work'
         }
 
+        It 'still engages via -GitHubAccountMap even with a single account on the host' {
+            Mock -ModuleName Shmuelie.Git Get-GitHubSignedInAccount {
+                @([PSCustomObject]@{ PSTypeName = 'GitHubAccount'; Host = 'github.com'; Account = 'work'; Active = $true })
+            }
+            $repo = New-GitHubRepo -Path (Join-Path $TestDrive 'single-map-repo')
+            Push-Location $repo
+            try {
+                Sync-GitRemote -GitHubAccountMap @{ 'github.com/contoso' = 'work' } | Out-Null
+            } finally { Pop-Location }
+
+            $global:GhFetchTokens[0] | Should -Be 'tok-work'
+        }
+
         It 'passes GH_HOST and a token to the git child environment' {
             Mock -ModuleName Shmuelie.Git Invoke-GitWithEnvironment {
                 $Environment['GH_HOST'] | Should -Be 'github.com'
                 $Environment['GH_TOKEN'] | Should -Be 'tok-work'
+                $Environment['GIT_TERMINAL_PROMPT'] | Should -Be '0'
                 [PSCustomObject]@{ PSTypeName = 'GitInvocationResult'; ExitCode = 0; Output = @() }
             }
             $repo = New-GitHubRepo -Path (Join-Path $TestDrive 'env-repo')
