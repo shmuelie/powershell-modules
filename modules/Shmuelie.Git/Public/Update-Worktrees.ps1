@@ -13,6 +13,16 @@ function Update-Worktrees {
     .PARAMETER CheckRemote
     Also query the remote for branches with no local upstream, reclassifying
     NoUpstream worktrees so deleted/stale remote branches are detected.
+    .PARAMETER GitHubAccountMap
+    Forwarded to Sync-GitRemote. Maps a repository ("host/owner" or bare
+    "owner") to the `gh` account that should fetch it when several accounts are
+    signed in for the host (github.com or a GitHub Enterprise host).
+    .PARAMETER GitHubAccountResolver
+    Forwarded to Sync-GitRemote. A scriptblock that receives the remote's host
+    and owner and returns the `gh` account name to use.
+    .PARAMETER NoGitHubAccountResolve
+    Forwarded to Sync-GitRemote. Disable GitHub account awareness during the
+    fetch; behave exactly as plain 'git fetch'.
     .EXAMPLE
     Update-Worktrees
     Fetches and fast-forwards all worktrees, returning status objects.
@@ -29,7 +39,13 @@ function Update-Worktrees {
     [OutputType('WorktreeUpdateResult')]
     [CmdletBinding(SupportsShouldProcess)]
     param(
-        [switch]$CheckRemote
+        [switch]$CheckRemote,
+
+        [hashtable]$GitHubAccountMap,
+
+        [scriptblock]$GitHubAccountResolver,
+
+        [switch]$NoGitHubAccountResolve
     )
     process {
         $previousView = $PSStyle.Progress.View
@@ -41,7 +57,11 @@ function Update-Worktrees {
 
         # Get latest state
         Write-Progress -Activity 'Updating Worktrees' -Status 'Fetching' -PercentComplete 0 -Id 0
-        $fetchResults = Sync-GitRemote
+        $syncParams = @{}
+        if ($PSBoundParameters.ContainsKey('GitHubAccountMap')) { $syncParams.GitHubAccountMap = $GitHubAccountMap }
+        if ($PSBoundParameters.ContainsKey('GitHubAccountResolver')) { $syncParams.GitHubAccountResolver = $GitHubAccountResolver }
+        if ($NoGitHubAccountResolve) { $syncParams.NoGitHubAccountResolve = $true }
+        $fetchResults = Sync-GitRemote @syncParams
         if (-not $?) { return }
 
         # Build set of branch names whose remote refs were just pruned
