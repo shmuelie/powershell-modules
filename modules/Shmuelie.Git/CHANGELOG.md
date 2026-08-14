@@ -24,6 +24,11 @@ Versions change only when a release is cut; unreleased work stays under
   `-GitHubAccountResolver`, and `-NoGitHubAccountResolve` parameters, forwarded
   to `Sync-GitRemote`.
 
+### Fixed
+- `Update-Worktrees` now serializes dirty worktrees that need `git stash`
+  push/pop while still fast-forwarding clean worktrees in parallel, preventing
+  concurrent workers from popping each other's shared repository stash.
+
 ## [0.2.0] - 2026-08-12
 
 ### Added

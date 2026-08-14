@@ -70,6 +70,20 @@ BeforeAll {
 
         [System.IO.Path]::GetFullPath($Path)
     }
+
+    function Invoke-TestCommit {
+        param(
+            [Parameter(Mandatory)][string]$Path,
+            [Parameter(Mandatory)][string]$Message
+        )
+
+        Invoke-Git @(
+            '-C', $Path,
+            '-c', 'user.name=Test User',
+            '-c', 'user.email=test@example.com',
+            'commit', '-m', $Message, '--quiet'
+        )
+    }
 }
 
 Describe 'Get-GitStatusSummary' {
@@ -374,6 +388,325 @@ Describe 'Find-StaleBranch' {
         $warnings[0].Message | Should -Match 'unsafe'
     }
 }
+
+Describe 'Update-Worktrees' {
+    It 'keeps each dirty worktree change with its own worktree while fast-forwarding' -Skip:(-not (Get-Command git -ErrorAction SilentlyContinue)) {
+        $origin = Join-Path $TestDrive 'origin.git'
+        Invoke-Git @('init', '--bare', '-b', 'main', '--quiet', $origin)
+
+        $seed = New-TestRepo -Path (Join-Path $TestDrive 'seed')
+        Invoke-Git @('-C', $seed, 'remote', 'add', 'origin', $origin)
+        Invoke-Git @('-C', $seed, 'push', '-u', 'origin', 'main', '--quiet')
+
+        Invoke-Git @('-C', $seed, 'switch', '-c', 'branch-a', '--quiet')
+        Set-Content -Path (Join-Path $seed 'tracked-a.txt') -Value 'branch-a v1' -NoNewline
+        Invoke-Git @('-C', $seed, 'add', 'tracked-a.txt')
+        Invoke-TestCommit -Path $seed -Message 'branch a v1'
+        Invoke-Git @('-C', $seed, 'push', '-u', 'origin', 'branch-a', '--quiet')
+        Invoke-Git @('-C', $seed, 'branch', '--set-upstream-to=origin/branch-a', 'branch-a')
+
+        Invoke-Git @('-C', $seed, 'switch', 'main', '--quiet')
+        Invoke-Git @('-C', $seed, 'switch', '-c', 'branch-b', '--quiet')
+        Set-Content -Path (Join-Path $seed 'tracked-b.txt') -Value 'branch-b v1' -NoNewline
+        Invoke-Git @('-C', $seed, 'add', 'tracked-b.txt')
+        Invoke-TestCommit -Path $seed -Message 'branch b v1'
+        Invoke-Git @('-C', $seed, 'push', '-u', 'origin', 'branch-b', '--quiet')
+        Invoke-Git @('-C', $seed, 'branch', '--set-upstream-to=origin/branch-b', 'branch-b')
+
+        Invoke-Git @('-C', $seed, 'switch', 'main', '--quiet')
+        $worktreeA = Join-Path $TestDrive 'worktree-a'
+        $worktreeB = Join-Path $TestDrive 'worktree-b'
+        Invoke-Git @('-C', $seed, 'worktree', 'add', '--quiet', $worktreeA, 'branch-a')
+        Invoke-Git @('-C', $seed, 'worktree', 'add', '--quiet', $worktreeB, 'branch-b')
+        Set-TestRepoConfig $worktreeA
+        Set-TestRepoConfig $worktreeB
+
+        $updater = Join-Path $TestDrive 'updater'
+        Invoke-Git @('clone', '--quiet', $origin, $updater)
+        Set-TestRepoConfig $updater
+
+        Invoke-Git @('-C', $updater, 'switch', 'branch-a', '--quiet')
+        Set-Content -Path (Join-Path $updater 'tracked-a.txt') -Value 'branch-a v2' -NoNewline
+        Invoke-Git @('-C', $updater, 'add', 'tracked-a.txt')
+        Invoke-TestCommit -Path $updater -Message 'branch a v2'
+        Invoke-Git @('-C', $updater, 'push', 'origin', 'branch-a', '--quiet')
+
+        Invoke-Git @('-C', $updater, 'switch', 'branch-b', '--quiet')
+        Set-Content -Path (Join-Path $updater 'tracked-b.txt') -Value 'branch-b v2' -NoNewline
+        Invoke-Git @('-C', $updater, 'add', 'tracked-b.txt')
+        Invoke-TestCommit -Path $updater -Message 'branch b v2'
+        Invoke-Git @('-C', $updater, 'push', 'origin', 'branch-b', '--quiet')
+
+        Set-Content -Path (Join-Path $worktreeA 'local-a.txt') -Value 'local change from worktree A' -NoNewline
+        Set-Content -Path (Join-Path $worktreeB 'local-b.txt') -Value 'local change from worktree B' -NoNewline
+
+        $realGit = (Get-Command git -CommandType Application).Source
+        $shimDir = Join-Path $TestDrive 'git-shim'
+        $shimState = Join-Path $TestDrive 'stash-race-state'
+        New-Item -ItemType Directory -Path $shimDir, $shimState -Force | Out-Null
+        $shimProject = Join-Path $TestDrive 'git-shim-src'
+        New-Item -ItemType Directory -Path $shimProject -Force | Out-Null
+        Set-Content -Path (Join-Path $shimProject 'git-shim.csproj') -Value @'
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <AssemblyName>git</AssemblyName>
+    <UseAppHost>true</UseAppHost>
+    <Nullable>disable</Nullable>
+  </PropertyGroup>
+</Project>
+'@
+        Set-Content -Path (Join-Path $shimProject 'Program.cs') -Value @'
+using System;
+using System.Diagnostics;
+using System.IO;
+using System.Text;
+using System.Threading;
+
+public static class GitShim
+{
+    public static int Main(string[] args)
+    {
+        string realGit = Environment.GetEnvironmentVariable("SHMUELIE_REAL_GIT");
+        string state = Environment.GetEnvironmentVariable("SHMUELIE_STASH_RACE_STATE");
+        if (String.IsNullOrEmpty(realGit))
+        {
+            Console.Error.WriteLine("SHMUELIE_REAL_GIT is not set.");
+            return 1;
+        }
+
+        if (!String.IsNullOrEmpty(state) && args.Length >= 2 && args[0] == "stash" && args[1] == "push")
+        {
+            int exitCode = Run(realGit, args);
+            if (exitCode == 0)
+            {
+                string current = Directory.GetCurrentDirectory();
+                int slot = 0;
+                while (slot == 0)
+                {
+                    foreach (int candidate in new[] { 1, 2 })
+                    {
+                        try
+                        {
+                            WriteMarker(Path.Combine(state, "push-" + candidate + ".txt"), current);
+                            slot = candidate;
+                            break;
+                        }
+                        catch (IOException)
+                        {
+                        }
+                    }
+
+                    if (slot == 0)
+                    {
+                        Thread.Sleep(10);
+                    }
+                }
+
+                WaitForTwoPushes(state);
+            }
+
+            return exitCode;
+        }
+
+        if (!String.IsNullOrEmpty(state) && args.Length >= 2 && args[0] == "stash" && args[1] == "pop")
+        {
+            string current = Directory.GetCurrentDirectory();
+            string[] pushes = Directory.GetFiles(state, "push-*.txt");
+            if (pushes.Length >= 2)
+            {
+                string first = File.ReadAllText(Path.Combine(state, "push-1.txt"));
+                string second = File.ReadAllText(Path.Combine(state, "push-2.txt"));
+                if (String.Equals(current, second, StringComparison.OrdinalIgnoreCase))
+                {
+                    DateTime deadline = DateTime.UtcNow.AddSeconds(10);
+                    string firstPopped = Path.Combine(state, "first-popped.txt");
+                    while (!File.Exists(firstPopped) && DateTime.UtcNow < deadline)
+                    {
+                        Thread.Sleep(25);
+                    }
+                }
+
+                int exitCode = Run(realGit, args);
+
+                if (String.Equals(current, first, StringComparison.OrdinalIgnoreCase))
+                {
+                    try
+                    {
+                        WriteMarker(Path.Combine(state, "first-popped.txt"), current);
+                    }
+                    catch (IOException)
+                    {
+                    }
+                }
+                else if (String.Equals(current, second, StringComparison.OrdinalIgnoreCase))
+                {
+                    ClearPushMarkers(state);
+                }
+
+                return exitCode;
+            }
+
+            int singleExitCode = Run(realGit, args);
+            ClearPushMarkers(state);
+            return singleExitCode;
+        }
+
+        return Run(realGit, args);
+    }
+
+    private static int Run(string realGit, string[] args)
+    {
+        ProcessStartInfo startInfo = new ProcessStartInfo(realGit);
+        startInfo.UseShellExecute = false;
+        startInfo.RedirectStandardOutput = true;
+        startInfo.RedirectStandardError = true;
+        startInfo.Arguments = String.Join(" ", Array.ConvertAll(args, QuoteArgument));
+
+        using (Process process = Process.Start(startInfo))
+        {
+            string output = process.StandardOutput.ReadToEnd();
+            string error = process.StandardError.ReadToEnd();
+            process.WaitForExit();
+            Console.Out.Write(output);
+            Console.Error.Write(error);
+            return process.ExitCode;
+        }
+    }
+
+    private static string QuoteArgument(string argument)
+    {
+        if (String.IsNullOrEmpty(argument))
+        {
+            return "\"\"";
+        }
+
+        if (argument.IndexOfAny(new[] { ' ', '\t', '\n', '\v', '"' }) < 0)
+        {
+            return argument;
+        }
+
+        StringBuilder builder = new StringBuilder();
+        builder.Append('"');
+        int backslashes = 0;
+        foreach (char character in argument)
+        {
+            if (character == '\\')
+            {
+                backslashes++;
+            }
+            else if (character == '"')
+            {
+                builder.Append('\\', (backslashes * 2) + 1);
+                builder.Append('"');
+                backslashes = 0;
+            }
+            else
+            {
+                builder.Append('\\', backslashes);
+                backslashes = 0;
+                builder.Append(character);
+            }
+        }
+
+        builder.Append('\\', backslashes * 2);
+        builder.Append('"');
+        return builder.ToString();
+    }
+
+    private static void WaitForTwoPushes(string state)
+    {
+        DateTime deadline = DateTime.UtcNow.AddSeconds(2);
+        do
+        {
+            if (Directory.GetFiles(state, "push-*.txt").Length >= 2)
+            {
+                return;
+            }
+
+            Thread.Sleep(25);
+        } while (DateTime.UtcNow < deadline);
+    }
+
+    private static void WriteMarker(string path, string content)
+    {
+        using (FileStream stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.Read))
+        using (StreamWriter writer = new StreamWriter(stream))
+        {
+            writer.Write(content);
+        }
+    }
+
+    private static void ClearPushMarkers(string state)
+    {
+        foreach (string path in new[]
+        {
+            Path.Combine(state, "push-1.txt"),
+            Path.Combine(state, "push-2.txt"),
+            Path.Combine(state, "first-popped.txt")
+        })
+        {
+            try
+            {
+                File.Delete(path);
+            }
+            catch
+            {
+            }
+        }
+    }
+}
+'@
+        $csc = Get-Command csc -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($csc) {
+            $compileOutput = & $csc.Source -nologo -target:exe "-out:$(Join-Path $shimDir 'git.exe')" (Join-Path $shimProject 'Program.cs') 2>&1
+            if ($LASTEXITCODE -ne 0) {
+                throw "csc failed (exit $LASTEXITCODE): $compileOutput"
+            }
+        } else {
+            $dotnet = Get-Command dotnet -CommandType Application -ErrorAction SilentlyContinue
+            $dotnet | Should -Not -BeNullOrEmpty
+            $publishOutput = & $dotnet.Source publish (Join-Path $shimProject 'git-shim.csproj') -c Release -o $shimDir --nologo -v q 2>&1
+            if ($LASTEXITCODE -ne 0) {
+                throw "dotnet publish failed (exit $LASTEXITCODE): $publishOutput"
+            }
+        }
+
+        $oldPath = $env:PATH
+        $oldRealGit = $env:SHMUELIE_REAL_GIT
+        $oldRaceState = $env:SHMUELIE_STASH_RACE_STATE
+        $env:PATH = "$shimDir$([System.IO.Path]::PathSeparator)$oldPath"
+        $env:SHMUELIE_REAL_GIT = $realGit
+        $env:SHMUELIE_STASH_RACE_STATE = $shimState
+
+        Push-Location $seed
+        try {
+            $results = Update-Worktrees -NoGitHubAccountResolve
+        } finally {
+            Pop-Location
+            $env:PATH = $oldPath
+            $env:SHMUELIE_REAL_GIT = $oldRealGit
+            $env:SHMUELIE_STASH_RACE_STATE = $oldRaceState
+        }
+
+        foreach ($branch in 'branch-a', 'branch-b') {
+            $result = $results | Where-Object Branch -eq $branch
+            $result.Status | Should -Be 'Updated'
+            $result.Stashed | Should -BeTrue
+            $result.PopFailed | Should -BeFalse
+            $result.BehindBy | Should -Be 1
+        }
+
+        Get-Content -LiteralPath (Join-Path $worktreeA 'tracked-a.txt') -Raw | Should -BeExactly 'branch-a v2'
+        Get-Content -LiteralPath (Join-Path $worktreeB 'tracked-b.txt') -Raw | Should -BeExactly 'branch-b v2'
+        Get-Content -LiteralPath (Join-Path $worktreeA 'local-a.txt') -Raw | Should -BeExactly 'local change from worktree A'
+        Get-Content -LiteralPath (Join-Path $worktreeB 'local-b.txt') -Raw | Should -BeExactly 'local change from worktree B'
+        Test-Path -LiteralPath (Join-Path $worktreeA 'local-b.txt') | Should -BeFalse
+        Test-Path -LiteralPath (Join-Path $worktreeB 'local-a.txt') | Should -BeFalse
+    }
+}
+
 
 Describe 'Format-GitStatusSegment' {
     BeforeAll {
