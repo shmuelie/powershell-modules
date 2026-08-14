@@ -24,6 +24,9 @@ Versions change only when a release is cut; unreleased work stays under
   `-GitHubAccountResolver`, and `-NoGitHubAccountResolve` parameters, forwarded
   to `Sync-GitRemote`.
 
+### Fixed
+- `Sync-GitRemote` now returns `Updated` results for fast-forwarded refs.
+
 ## [0.2.0] - 2026-08-12
 
 ### Added
