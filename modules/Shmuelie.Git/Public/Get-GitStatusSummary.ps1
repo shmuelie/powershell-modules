@@ -37,7 +37,11 @@ function Get-GitStatusSummary {
         [string]$Path
     )
 
-    if ($Path) { Push-Location $Path }
+    $pushed = $false
+    if ($Path) {
+        Push-Location $Path -ErrorAction Stop
+        $pushed = $true
+    }
     try {
         # Quick check: are we in a git repo?
         $null = git rev-parse --is-inside-work-tree 2>$null
@@ -250,6 +254,6 @@ function Get-GitStatusSummary {
             StatusString    = $sb.ToString()
         }
     } finally {
-        if ($Path) { Pop-Location }
+        if ($pushed) { Pop-Location }
     }
 }
