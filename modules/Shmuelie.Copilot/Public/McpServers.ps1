@@ -93,6 +93,25 @@ function Register-CopilotMcpServer {
 
         [string[]]$Header
     )
+    Assert-CopilotShimArgument -Value $Name -ParameterName 'Name' -Pattern '^[A-Za-z0-9][A-Za-z0-9._-]*$'
+    if ($Command) { Assert-CopilotShimTextArgument -Value $Command -ParameterName 'Command' }
+    if ($ArgumentList) {
+        foreach ($argument in $ArgumentList) {
+            Assert-CopilotShimTextArgument -Value $argument -ParameterName 'ArgumentList'
+        }
+    }
+    if ($Url) { Assert-CopilotShimTextArgument -Value $Url -ParameterName 'Url' }
+    if ($Env) {
+        foreach ($entry in $Env) {
+            Assert-CopilotShimTextArgument -Value $entry -ParameterName 'Env'
+        }
+    }
+    if ($Header) {
+        foreach ($entry in $Header) {
+            Assert-CopilotShimTextArgument -Value $entry -ParameterName 'Header'
+        }
+    }
+
     $copilotExe = (Get-Command copilot -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
     if ($PSCmdlet.ShouldProcess($Name, 'copilot mcp add')) {
         $addArgs = @('mcp', 'add', '--transport', $Transport)
@@ -139,8 +158,10 @@ function Unregister-CopilotMcpServer {
         [string]$Name
     )
     process {
-        $copilotExe = (Get-Command copilot -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
         $removeName = if ($PSCmdlet.ParameterSetName -eq 'ByName') { $Name } else { $InputObject.Name }
+        Assert-CopilotShimArgument -Value $removeName -ParameterName 'Name' -Pattern '^[A-Za-z0-9][A-Za-z0-9._-]*$'
+
+        $copilotExe = (Get-Command copilot -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
         if ($PSCmdlet.ShouldProcess($removeName, 'copilot mcp remove')) {
             & $copilotExe mcp remove $removeName 2>&1
             if ($LASTEXITCODE -ne 0) {

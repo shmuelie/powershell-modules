@@ -1,3 +1,65 @@
+function Test-VsCodeShimArgument {
+    param([AllowEmptyString()][string]$Value)
+
+    return [bool]($Value -and $Value -notmatch '[<>&|%!^`"()]')
+}
+
+function Assert-VsCodeShimArgument {
+    param(
+        [AllowEmptyString()]
+        [string]$Value,
+
+        [Parameter(Mandatory)]
+        [string]$ParameterName
+    )
+
+    if (-not (Test-VsCodeShimArgument $Value)) {
+        throw [System.ArgumentException]::new(
+            "Unsafe $ParameterName value. Values passed to the code CLI must not contain cmd.exe metacharacters.",
+            $ParameterName)
+    }
+}
+
+function Assert-VsCodeIdentifierArgument {
+    param(
+        [AllowEmptyString()]
+        [string]$Value,
+
+        [Parameter(Mandatory)]
+        [string]$ParameterName
+    )
+
+    if (-not (Test-VsCodeShimArgument $Value) -or $Value -notmatch '^[A-Za-z0-9][A-Za-z0-9._@-]*$') {
+        throw [System.ArgumentException]::new(
+            "Unsafe $ParameterName value. Values passed to the code CLI must use an allow-listed identifier format and must not contain cmd.exe metacharacters.",
+            $ParameterName)
+    }
+}
+
+function Assert-VsCodeExtensionInstallArgument {
+    param([AllowEmptyString()][string]$Value)
+
+    if ($Value -match '(?i)\.vsix$' -or
+        $Value -match '[\\/]' -or
+        $Value -match '^[A-Za-z]:') {
+        Assert-VsCodeShimArgument -Value $Value -ParameterName 'InstallExtension'
+        return
+    }
+
+    Assert-VsCodeIdentifierArgument -Value $Value -ParameterName 'InstallExtension'
+}
+
+function Assert-VsCodeGotoArgument {
+    param([AllowEmptyString()][string]$Value)
+
+    Assert-VsCodeShimArgument -Value $Value -ParameterName 'Goto'
+    if ($Value -notmatch '^.+:\d+(?::\d+)?$') {
+        throw [System.ArgumentException]::new(
+            "Unsafe Goto value. Use file:line[:character] and avoid cmd.exe metacharacters.",
+            'Goto')
+    }
+}
+
 function Start-VsCode {
     <#
     .SYNOPSIS
@@ -115,6 +177,17 @@ function Start-VsCode {
         [string[]]$RemainingArgs
     )
 
+    if ($Profile) { Assert-VsCodeShimArgument -Value $Profile -ParameterName 'Profile' }
+    if ($Diff) { foreach ($p in $Diff) { Assert-VsCodeShimArgument -Value $p -ParameterName 'Diff' } }
+    if ($Goto) { Assert-VsCodeGotoArgument -Value $Goto }
+    if ($Add) { foreach ($a in $Add) { Assert-VsCodeShimArgument -Value $a -ParameterName 'Add' } }
+    if ($DisableExtension) { foreach ($e in $DisableExtension) { Assert-VsCodeIdentifierArgument -Value $e -ParameterName 'DisableExtension' } }
+    if ($InstallExtension) { foreach ($e in $InstallExtension) { Assert-VsCodeExtensionInstallArgument -Value $e } }
+    if ($UninstallExtension) { foreach ($e in $UninstallExtension) { Assert-VsCodeIdentifierArgument -Value $e -ParameterName 'UninstallExtension' } }
+    if ($AddMcp) { Assert-VsCodeShimArgument -Value $AddMcp -ParameterName 'AddMcp' }
+    if ($RemainingArgs) { foreach ($arg in $RemainingArgs) { Assert-VsCodeShimArgument -Value $arg -ParameterName 'RemainingArgs' } }
+    if ($Path) { foreach ($p in $Path) { Assert-VsCodeShimArgument -Value $p -ParameterName 'Path' } }
+
     $codeExe = (Get-Command code -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
     $codeArgs = @()
 
@@ -135,9 +208,8 @@ function Start-VsCode {
     if ($ShowVersions) { $codeArgs += '--show-versions' }
     if ($AddMcp) { $codeArgs += '--add-mcp', $AddMcp }
 
-    if ($Path) { $codeArgs += $Path }
-
     if ($RemainingArgs) { $codeArgs += $RemainingArgs }
+    if ($Path) { $codeArgs += '--'; $codeArgs += $Path }
 
     if ($PSCmdlet.ShouldProcess("$codeExe $($codeArgs -join ' ')", 'Execute')) {
         & $codeExe @codeArgs
@@ -213,6 +285,11 @@ function Start-VsCodeChat {
         [string[]]$RemainingArgs
     )
 
+    if ($Mode) { Assert-VsCodeIdentifierArgument -Value $Mode -ParameterName 'Mode' }
+    if ($AddFile) { foreach ($f in $AddFile) { Assert-VsCodeShimArgument -Value $f -ParameterName 'AddFile' } }
+    if ($Profile) { Assert-VsCodeShimArgument -Value $Profile -ParameterName 'Profile' }
+    if ($RemainingArgs) { foreach ($arg in $RemainingArgs) { Assert-VsCodeShimArgument -Value $arg -ParameterName 'RemainingArgs' } }
+
     $codeExe = (Get-Command code -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
     $chatArgs = @('chat')
 
@@ -265,6 +342,9 @@ function Get-VsCodeExtension {
 
         [string]$Profile
     )
+    if ($Category) { Assert-VsCodeIdentifierArgument -Value $Category -ParameterName 'Category' }
+    if ($Profile) { Assert-VsCodeShimArgument -Value $Profile -ParameterName 'Profile' }
+
     $codeExe = (Get-Command code -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
     $listArgs = @('--list-extensions', '--show-versions')
     if ($Category) { $listArgs += '--category', $Category }
@@ -321,6 +401,9 @@ function Install-VsCodeExtension {
     )
     process {
         $extId = if ($PSCmdlet.ParameterSetName -eq 'ById') { $Id } else { $InputObject.FullId }
+        Assert-VsCodeExtensionInstallArgument -Value $extId
+        if ($Profile) { Assert-VsCodeShimArgument -Value $Profile -ParameterName 'Profile' }
+
         $codeExe = (Get-Command code -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
         if ($PSCmdlet.ShouldProcess($extId, 'code --install-extension')) {
             $installArgs = @('--install-extension', $extId)
@@ -356,6 +439,8 @@ function Uninstall-VsCodeExtension {
     )
     process {
         $extId = if ($PSCmdlet.ParameterSetName -eq 'ById') { $Id } else { $InputObject.FullId }
+        Assert-VsCodeIdentifierArgument -Value $extId -ParameterName 'Id'
+
         $codeExe = (Get-Command code -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
         if ($PSCmdlet.ShouldProcess($extId, 'code --uninstall-extension')) {
             & $codeExe '--uninstall-extension' $extId 2>&1 | ForEach-Object { Write-Verbose $_ }

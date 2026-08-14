@@ -55,6 +55,8 @@ function Register-CopilotMarketplace {
         [ValidateNotNullOrEmpty()]
         [string]$Source
     )
+    Assert-CopilotShimArgument -Value $Source -ParameterName 'Source'
+
     $exe = Resolve-CliExe -Name copilot
     if ($PSCmdlet.ShouldProcess($Source, 'copilot plugin marketplace add')) {
         $existing = Get-CopilotMarketplace | Where-Object Repository -eq $Source
@@ -95,8 +97,10 @@ function Unregister-CopilotMarketplace {
         [string]$Name
     )
     process {
-        $exe = Resolve-CliExe -Name copilot
         $removeName = if ($PSCmdlet.ParameterSetName -eq 'ByName') { $Name } else { $InputObject.Name }
+        Assert-CopilotShimArgument -Value $removeName -ParameterName 'Name' -Pattern '^[A-Za-z0-9][A-Za-z0-9._#/-]*$'
+
+        $exe = Resolve-CliExe -Name copilot
         if ($PSCmdlet.ShouldProcess($removeName, 'copilot plugin marketplace remove')) {
             & $exe plugin marketplace remove $removeName 2>&1
             if ($LASTEXITCODE -ne 0) {
@@ -133,8 +137,10 @@ function Get-CopilotMarketplacePlugin {
         [string]$Name
     )
     process {
-        $exe = Resolve-CliExe -Name copilot
         $mktName = if ($PSCmdlet.ParameterSetName -eq 'ByName') { $Name } else { $InputObject.Name }
+        Assert-CopilotShimArgument -Value $mktName -ParameterName 'Name' -Pattern '^[A-Za-z0-9][A-Za-z0-9._#/-]*$'
+
+        $exe = Resolve-CliExe -Name copilot
         $output = & $exe plugin marketplace browse $mktName 2>&1
         foreach ($line in $output) {
             if ($line -match '^\s+[•]\s+(\S+)\s+-\s+(.+)$') {

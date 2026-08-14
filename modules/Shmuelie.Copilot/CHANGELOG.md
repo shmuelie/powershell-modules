@@ -10,6 +10,10 @@ Versions change only when a release is cut; unreleased work stays under
 - Copilot session and MCP config lookups now resolve the home directory
   cross-platform instead of using Windows-only `$env:USERPROFILE`.
 
+### Security
+- Validate plugin, marketplace, and MCP values before forwarding them to the
+  `copilot` CLI shim so cmd.exe metacharacters are rejected instead of invoked.
+
 ## [0.1.1] - 2026-08-12
 
 ### Fixed
