@@ -25,6 +25,9 @@ Versions change only when a release is cut; unreleased work stays under
   to `Sync-GitRemote`.
 
 ### Fixed
+- The bundled worktree predictor now drains `git` stdout and stderr concurrently
+  and kills timed-out `git` processes, preventing stderr pipe deadlocks from
+  permanently disabling cache refreshes.
 - `Sync-GitRemote` now returns `Updated` results for fast-forwarded refs.
 - Git tab completion now offers the destination path for renamed/copied files
   and preserves non-ASCII paths in `git status --porcelain` completions.

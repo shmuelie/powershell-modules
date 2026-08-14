@@ -208,12 +208,28 @@ public sealed class WorktreeCommandPredictor : ICommandPredictor
                 return [];
             }
 
-            var output = process.StandardOutput.ReadToEnd();
+            var outputTask = process.StandardOutput.ReadToEndAsync();
+            var errorTask = process.StandardError.ReadToEndAsync();
             if (!process.WaitForExit(5000))
+            {
+                try
+                {
+                    process.Kill(entireProcessTree: true);
+                }
+                catch
+                {
+                }
+
+                _ = Task.WaitAll(new Task[] { outputTask, errorTask }, 5000);
+                return [];
+            }
+
+            if (!Task.WaitAll(new Task[] { outputTask, errorTask }, 5000))
             {
                 return [];
             }
 
+            var output = outputTask.Result;
             return output.Split('\n', StringSplitOptions.RemoveEmptyEntries);
         }
         catch
