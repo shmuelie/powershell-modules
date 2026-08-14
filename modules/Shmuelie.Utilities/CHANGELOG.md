@@ -6,6 +6,8 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-08-14
+
 ### Security
 - Validate VS Code CLI wrapper arguments before forwarding names, IDs, and path
   values to the `code` shim, and pass open paths after an option separator.

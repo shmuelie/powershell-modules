@@ -6,6 +6,8 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-08-14
+
 ### Fixed
 - Copilot session and MCP config lookups now resolve the home directory
   cross-platform instead of using Windows-only `$env:USERPROFILE`.

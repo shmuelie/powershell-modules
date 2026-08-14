@@ -1,6 +1,6 @@
 @{
     RootModule        = 'Shmuelie.Utilities.psm1'
-    ModuleVersion     = '0.2.0'
+    ModuleVersion = '0.2.1'
     GUID              = 'ebba55f0-7da9-4b2b-811f-e325c1124bdb'
     Author            = 'Shmueli Englard'
     CompanyName       = 'Shmuelie'
