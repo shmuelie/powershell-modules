@@ -222,7 +222,7 @@ function Sync-GitRemote {
                 Summary    = $text
             }
         }
-        elseif ($text -match '^\s+[0-9a-f]+\.\.[0-9a-f]+\s+\S+\s+->\s+(\S+)') {
+        elseif ($text -match '^[0-9a-f]+\.\.[0-9a-f]+\s+\S+\s+->\s+(\S+)') {
             [PSCustomObject]@{
                 PSTypeName = 'GitFetchResult'
                 Action     = 'Updated'

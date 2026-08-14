@@ -485,6 +485,38 @@ Describe 'Format-GitStatusSegment' {
     }
 }
 
+Describe 'Sync-GitRemote' {
+    It 'returns Updated for a fast-forwarded remote ref' {
+        if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
+            Set-ItResult -Skipped -Because 'git is not available'
+            return
+        }
+
+        $originWork = New-TestRepo -Path (Join-Path $TestDrive 'sync-origin-work')
+        $bare = Join-Path $TestDrive 'sync-origin.git'
+        Invoke-Git @('clone', '--bare', '--quiet', $originWork, $bare)
+        $clone = Join-Path $TestDrive 'sync-clone'
+        Invoke-Git @('clone', '--quiet', $bare, $clone)
+        Set-TestRepoConfig $clone
+
+        Set-Content -Path (Join-Path $originWork 'README.md') -Value 'updated'
+        Invoke-Git @('-C', $originWork, 'add', 'README.md')
+        Invoke-Git @('-C', $originWork, 'commit', '-m', 'advance', '--quiet')
+        Invoke-Git @('-C', $originWork, 'push', '--quiet', $bare, 'main')
+
+        Push-Location $clone
+        try {
+            $results = @(Sync-GitRemote -Remote origin -NoGitHubAccountResolve)
+        } finally {
+            Pop-Location
+        }
+
+        $updated = @($results | Where-Object { $_.Action -eq 'Updated' -and $_.Ref -eq 'origin/main' })
+        $updated | Should -HaveCount 1
+        $updated[0].PSTypeNames[0] | Should -Be 'GitFetchResult'
+    }
+}
+
 
 Describe 'GitHub account helpers' {
     Context 'Get-GitHubRemoteInfo' {
