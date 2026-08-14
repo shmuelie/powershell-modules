@@ -24,6 +24,11 @@ Versions change only when a release is cut; unreleased work stays under
   `-GitHubAccountResolver`, and `-NoGitHubAccountResolve` parameters, forwarded
   to `Sync-GitRemote`.
 
+### Fixed
+- `Format-GitStatusSegment` now renders diverged upstream relations in the same
+  down-then-up, space-separated order as `Get-GitStatusSummary.StatusString`
+  (for example, `↓4 ↑1`).
+
 ## [0.2.0] - 2026-08-12
 
 ### Added
