@@ -24,6 +24,11 @@ Versions change only when a release is cut; unreleased work stays under
   `-GitHubAccountResolver`, and `-NoGitHubAccountResolve` parameters, forwarded
   to `Sync-GitRemote`.
 
+### Fixed
+- The bundled worktree predictor now drains `git` stdout and stderr concurrently
+  and kills timed-out `git` processes, preventing stderr pipe deadlocks from
+  permanently disabling cache refreshes.
+
 ## [0.2.0] - 2026-08-12
 
 ### Added
