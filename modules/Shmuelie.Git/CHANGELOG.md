@@ -26,6 +26,10 @@ Versions change only when a release is cut; unreleased work stays under
 
 ### Fixed
 - `Sync-GitRemote` now returns `Updated` results for fast-forwarded refs.
+- Git tab completion now offers the destination path for renamed/copied files
+  and preserves non-ASCII paths in `git status --porcelain` completions.
+- `Sync-GitRemote` now parses fetch output with a stable C locale so result
+  classification does not depend on the caller's git localization.
 
 ## [0.2.0] - 2026-08-12
 
