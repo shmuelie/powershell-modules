@@ -157,6 +157,26 @@ function script:gitStashes($filter) {
     git stash list --format='%gd' 2>$null | Where-Object { $_ -like "$filter*" }
 }
 
+function script:Get-GitStatusPorcelainPath($line) {
+    <#
+    .SYNOPSIS
+        Extract the completed path from a git status --porcelain line.
+    #>
+    if (-not $line -or $line.Length -lt 4) { return }
+
+    $status = $line.Substring(0, 2)
+    $path = $line.Substring(3)
+    if ($status -match '[RC]' -and $path -match ' -> ') {
+        $path = ($path -split ' -> ', 2)[1]
+    }
+
+    $path.Trim('"')
+}
+
+function script:gitStatusPorcelain() {
+    git -c core.quotePath=false status --porcelain 2>$null
+}
+
 # Helper: complete files for git add (untracked + modified)
 function script:gitAddFiles($filter) {
     <#
@@ -165,10 +185,10 @@ function script:gitAddFiles($filter) {
     .PARAMETER filter
         The partial word being completed (prefix match).
     #>
-    git status --porcelain 2>$null | ForEach-Object {
+    gitStatusPorcelain | ForEach-Object {
         $x = $_[0]; $y = $_[1]
         if ($x -eq '?' -or $y -eq 'M' -or $y -eq 'D' -or $y -eq 'A') {
-            $_.Substring(3).Trim('"')
+            Get-GitStatusPorcelainPath $_
         }
     } | Where-Object { $_ -like "$filter*" }
 }
@@ -181,10 +201,10 @@ function script:gitIndexFiles($filter) {
     .PARAMETER filter
         The partial word being completed (prefix match).
     #>
-    git status --porcelain 2>$null | ForEach-Object {
+    gitStatusPorcelain | ForEach-Object {
         $x = $_[0]
         if ($x -ne ' ' -and $x -ne '?') {
-            $_.Substring(3).Trim('"')
+            Get-GitStatusPorcelainPath $_
         }
     } | Where-Object { $_ -like "$filter*" }
 }
@@ -197,10 +217,10 @@ function script:gitCheckoutFiles($filter) {
     .PARAMETER filter
         The partial word being completed (prefix match).
     #>
-    git status --porcelain 2>$null | ForEach-Object {
+    gitStatusPorcelain | ForEach-Object {
         $y = $_[1]
         if ($y -eq 'M' -or $y -eq 'D') {
-            $_.Substring(3).Trim('"')
+            Get-GitStatusPorcelainPath $_
         }
     } | Where-Object { $_ -like "$filter*" }
 }
@@ -218,10 +238,10 @@ function script:gitDiffFiles($filter, $staged) {
     if ($staged) {
         gitIndexFiles $filter
     } else {
-        git status --porcelain 2>$null | ForEach-Object {
+        gitStatusPorcelain | ForEach-Object {
             $y = $_[1]
             if ($y -eq 'M' -or $y -eq 'D') {
-                $_.Substring(3).Trim('"')
+                Get-GitStatusPorcelainPath $_
             }
         } | Where-Object { $_ -like "$filter*" }
     }

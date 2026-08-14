@@ -507,6 +507,115 @@ Describe 'Format-GitStatusSegment' {
     }
 }
 
+Describe 'Git tab completion status parsing' {
+    It 'extracts the destination path from rename and copy porcelain entries' {
+        InModuleScope Shmuelie.Git {
+            Get-GitStatusPorcelainPath 'R  old.txt -> new.txt' | Should -BeExactly 'new.txt'
+            Get-GitStatusPorcelainPath 'C  "old name.txt" -> "new name.txt"' | Should -BeExactly 'new name.txt'
+        }
+    }
+
+    It 'leaves normal and quoted non-ASCII paths unchanged except surrounding quotes' {
+        InModuleScope Shmuelie.Git {
+            Get-GitStatusPorcelainPath ' M normal.txt' | Should -BeExactly 'normal.txt'
+            Get-GitStatusPorcelainPath '?? "文.txt"' | Should -BeExactly '文.txt'
+        }
+    }
+
+    It 'completes a non-ASCII file name even when repository quotePath is enabled' {
+        if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
+            Set-ItResult -Skipped -Because 'git is not available'
+            return
+        }
+
+        $repo = New-TestRepo -Path (Join-Path $TestDrive 'completion-quotepath')
+        Invoke-Git @('-C', $repo, 'config', 'core.quotePath', 'true')
+        Set-Content -Path (Join-Path $repo '文.txt') -Value 'content'
+
+        Push-Location $repo
+        try {
+            $files = InModuleScope Shmuelie.Git { gitAddFiles '' }
+        } finally {
+            Pop-Location
+        }
+
+        $files | Should -Contain '文.txt'
+        $files | Should -Not -Contain '\346\226\207.txt'
+    }
+
+    It 'completes the new path for a staged rename' {
+        if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
+            Set-ItResult -Skipped -Because 'git is not available'
+            return
+        }
+
+        $repo = New-TestRepo -Path (Join-Path $TestDrive 'completion-rename')
+        Invoke-Git @('-C', $repo, 'mv', 'README.md', 'README-renamed.md')
+
+        Push-Location $repo
+        try {
+            $files = InModuleScope Shmuelie.Git { gitIndexFiles '' }
+        } finally {
+            Pop-Location
+        }
+
+        $files | Should -Contain 'README-renamed.md'
+        $files | Should -Not -Contain 'README.md -> README-renamed.md'
+    }
+}
+
+Describe 'Sync-GitRemote' {
+    It 'returns Updated for a fast-forwarded remote ref' {
+        if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
+            Set-ItResult -Skipped -Because 'git is not available'
+            return
+        }
+
+        $originWork = New-TestRepo -Path (Join-Path $TestDrive 'sync-origin-work')
+        $bare = Join-Path $TestDrive 'sync-origin.git'
+        Invoke-Git @('clone', '--bare', '--quiet', $originWork, $bare)
+        $clone = Join-Path $TestDrive 'sync-clone'
+        Invoke-Git @('clone', '--quiet', $bare, $clone)
+        Set-TestRepoConfig $clone
+
+        Set-Content -Path (Join-Path $originWork 'README.md') -Value 'updated'
+        Invoke-Git @('-C', $originWork, 'add', 'README.md')
+        Invoke-Git @('-C', $originWork, 'commit', '-m', 'advance', '--quiet')
+        Invoke-Git @('-C', $originWork, 'push', '--quiet', $bare, 'main')
+
+        Push-Location $clone
+        try {
+            $results = @(Sync-GitRemote -Remote origin -NoGitHubAccountResolve)
+        } finally {
+            Pop-Location
+        }
+
+        $updated = @($results | Where-Object { $_.Action -eq 'Updated' -and $_.Ref -eq 'origin/main' })
+        $updated | Should -HaveCount 1
+        $updated[0].PSTypeNames[0] | Should -Be 'GitFetchResult'
+    }
+
+    It 'runs the parsed fetch invocation with the C locale' {
+        Mock -ModuleName Shmuelie.Git Get-GitHubSignedInAccount { @() }
+        Mock -ModuleName Shmuelie.Git Invoke-GitWithEnvironment {
+            $Arguments[0] | Should -Be '-C'
+            ($Arguments[2..4] -join ' ') | Should -Be 'fetch origin --prune'
+            $Environment['LC_ALL'] | Should -Be 'C'
+            $Environment['LANG'] | Should -Be 'C'
+            [PSCustomObject]@{
+                PSTypeName = 'GitInvocationResult'
+                ExitCode   = 0
+                Output     = @(' * [new branch]      main       -> origin/main')
+            }
+        }
+
+        $result = Sync-GitRemote -Remote origin
+
+        $result.Action | Should -Be 'New branch'
+        Should -Invoke -ModuleName Shmuelie.Git Invoke-GitWithEnvironment -Times 1
+    }
+}
+
 
 Describe 'GitHub account helpers' {
     Context 'Get-GitHubRemoteInfo' {
@@ -748,6 +857,8 @@ Describe 'Sync-GitRemote GitHub account awareness' {
                 $Environment['GH_HOST'] | Should -Be 'github.com'
                 $Environment['GH_TOKEN'] | Should -Be 'tok-work'
                 $Environment['GIT_TERMINAL_PROMPT'] | Should -Be '0'
+                $Environment['LC_ALL'] | Should -Be 'C'
+                $Environment['LANG'] | Should -Be 'C'
                 [PSCustomObject]@{ PSTypeName = 'GitInvocationResult'; ExitCode = 0; Output = @() }
             }
             $repo = New-GitHubRepo -Path (Join-Path $TestDrive 'env-repo')
@@ -778,7 +889,7 @@ Describe 'Sync-GitRemote GitHub account awareness' {
             try { Sync-GitRemote | Out-Null } finally { Pop-Location }
 
             Should -Invoke -ModuleName Shmuelie.Git Get-GitHubAccountToken -Times 0
-            Should -Invoke -ModuleName Shmuelie.Git Invoke-GitWithEnvironment -Times 0
+            Should -Invoke -ModuleName Shmuelie.Git Invoke-GitWithEnvironment -Times 1
         }
 
         It 'does not engage for a non gh-managed host' {
