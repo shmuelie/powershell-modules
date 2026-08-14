@@ -6,6 +6,11 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+### Fixed
+- `Get-GitStatusSummary -Path` now fails fast when the target path cannot be
+  entered and only calls `Pop-Location` after a successful `Push-Location`, so a
+  bad path cannot corrupt the caller's location stack.
+
 ### Added
 - `Sync-GitRemote` is now GitHub-account-aware. When more than one account is
   signed in to the `gh` CLI for a remote's host — github.com or a GitHub
@@ -23,6 +28,27 @@ Versions change only when a release is cut; unreleased work stays under
 - `Update-Worktrees` gains matching `-GitHubAccountMap`,
   `-GitHubAccountResolver`, and `-NoGitHubAccountResolve` parameters, forwarded
   to `Sync-GitRemote`.
+
+### Fixed
+- `Update-Worktrees` now serializes dirty worktrees that need `git stash`
+  push/pop while still fast-forwarding clean worktrees in parallel, preventing
+  concurrent workers from popping each other's shared repository stash.
+- `Repair-RepositoryLayout` now uses the platform path separator when converting
+  nested git branch names into directories and when checking whether the current
+  directory is inside a repository or worktree.
+- `Add-Worktree` now requires a non-empty `-BranchName`, failing during parameter
+  binding instead of attempting to create a worktree with an empty branch name.
+- `Format-GitStatusSegment` now renders diverged upstream relations in the same
+  down-then-up, space-separated order as `Get-GitStatusSummary.StatusString`
+  (for example, `↓4 ↑1`).
+- The bundled worktree predictor now drains `git` stdout and stderr concurrently
+  and kills timed-out `git` processes, preventing stderr pipe deadlocks from
+  permanently disabling cache refreshes.
+- `Sync-GitRemote` now returns `Updated` results for fast-forwarded refs.
+- Git tab completion now offers the destination path for renamed/copied files
+  and preserves non-ASCII paths in `git status --porcelain` completions.
+- `Sync-GitRemote` now parses fetch output with a stable C locale so result
+  classification does not depend on the caller's git localization.
 
 ## [0.2.0] - 2026-08-12
 

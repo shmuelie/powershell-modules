@@ -345,7 +345,7 @@ function Start-Copilot {
         [Parameter(ParameterSetName = 'CopilotResumeSession', Mandatory)]
         [ArgumentCompleter({
             param($commandName, $parameterName, $wordToComplete)
-            $sessionStateDir = Join-Path $env:USERPROFILE '.copilot' 'session-state'
+            $sessionStateDir = Join-Path (Get-CopilotHome) '.copilot' 'session-state'
             if (-not (Test-Path $sessionStateDir)) { return }
             $cwd = (Get-Location).Path
             Get-ChildItem $sessionStateDir -Directory | ForEach-Object {

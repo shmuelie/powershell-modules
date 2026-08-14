@@ -40,7 +40,7 @@ function Get-CopilotSession {
         [string]$Id
     )
 
-    $sessionStateDir = Join-Path $env:USERPROFILE '.copilot' 'session-state'
+    $sessionStateDir = Join-Path (Get-CopilotHome) '.copilot' 'session-state'
     if (-not (Test-Path $sessionStateDir)) {
         return
     }

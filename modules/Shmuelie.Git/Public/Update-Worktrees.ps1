@@ -187,11 +187,63 @@ function Update-Worktrees {
             }
         }
 
-        # Merge behind worktrees in parallel
+        # Merge behind worktrees. Clean worktrees can fast-forward in parallel, but
+        # dirty worktrees must stash/pop sequentially because refs/stash is shared
+        # across every worktree in the repository and git stash pop always pops
+        # stash@{0}.
         if ($behindWorktrees.Count -gt 0 -and $PSCmdlet.ShouldProcess("$($behindWorktrees.Count) worktrees", 'Fast-forward merge from upstream')) {
-            Write-Progress -Activity 'Updating Worktrees' -Status "Merging $($behindWorktrees.Count) worktrees" -PercentComplete 50 -Id 0
-            $mergeResults = $behindWorktrees | ForEach-Object -Parallel {
-                $wt = $_
+            Write-Progress -Activity 'Updating Worktrees' -Status "Checking $($behindWorktrees.Count) worktrees" -PercentComplete 50 -Id 0
+
+            $cleanWorktrees = [System.Collections.Generic.List[PSObject]]::new()
+            $dirtyWorktrees = [System.Collections.Generic.List[PSObject]]::new()
+            foreach ($wt in $behindWorktrees) {
+                Push-Location $wt.Path
+                try {
+                    $dirtyOutput = git status --porcelain 2>&1
+                    $isDirty = $dirtyOutput -and @($dirtyOutput).Count -gt 0
+                    if ($isDirty) {
+                        $dirtyWorktrees.Add($wt)
+                    } else {
+                        $cleanWorktrees.Add($wt)
+                    }
+                } finally {
+                    Pop-Location
+                }
+            }
+
+            $mergeResults = [System.Collections.Generic.List[PSObject]]::new()
+
+            if ($cleanWorktrees.Count -gt 0) {
+                Write-Progress -Activity 'Updating Worktrees' -Status "Merging $($cleanWorktrees.Count) clean worktrees" -PercentComplete 60 -Id 0
+                $cleanResults = $cleanWorktrees | ForEach-Object -Parallel {
+                    $wt = $_
+                    Push-Location $wt.Path
+                    try {
+                        git merge --ff-only '@{upstream}' --quiet 2>&1 | Out-Null
+                        $mergeSuccess = $LASTEXITCODE -eq 0
+
+                        [PSCustomObject]@{
+                            PSTypeName = 'WorktreeUpdateResult'
+                            Branch     = $wt.Branch
+                            Path       = $wt.Path
+                            Status     = if ($mergeSuccess) { 'Updated' } else { 'Failed' }
+                            BehindBy   = $wt.Behind
+                            Stashed    = $false
+                            PopFailed  = $false
+                        }
+                    } finally {
+                        Pop-Location
+                    }
+                } -ThrottleLimit 4
+
+                foreach ($cr in $cleanResults) { $mergeResults.Add($cr) }
+            }
+
+            if ($dirtyWorktrees.Count -gt 0) {
+                Write-Progress -Activity 'Updating Worktrees' -Status "Merging $($dirtyWorktrees.Count) dirty worktrees" -PercentComplete 70 -Id 0
+            }
+
+            foreach ($wt in $dirtyWorktrees) {
                 Push-Location $wt.Path
                 try {
                     $stashed = $false
@@ -208,7 +260,7 @@ function Update-Worktrees {
                     # fast-forwarded, and we must NOT run `git stash pop` (which would pop an
                     # unrelated, pre-existing stash into this worktree).
                     if ($isDirty -and -not $stashed) {
-                        [PSCustomObject]@{
+                        $mergeResults.Add([PSCustomObject]@{
                             PSTypeName = 'WorktreeUpdateResult'
                             Branch     = $wt.Branch
                             Path       = $wt.Path
@@ -216,8 +268,8 @@ function Update-Worktrees {
                             BehindBy   = $wt.Behind
                             Stashed    = $false
                             PopFailed  = $false
-                        }
-                        return
+                        })
+                        continue
                     }
 
                     git merge --ff-only '@{upstream}' --quiet 2>&1 | Out-Null
@@ -228,7 +280,7 @@ function Update-Worktrees {
                         $popFailed = $LASTEXITCODE -ne 0
                     }
 
-                    [PSCustomObject]@{
+                    $mergeResults.Add([PSCustomObject]@{
                         PSTypeName = 'WorktreeUpdateResult'
                         Branch     = $wt.Branch
                         Path       = $wt.Path
@@ -236,11 +288,11 @@ function Update-Worktrees {
                         BehindBy   = $wt.Behind
                         Stashed    = $stashed
                         PopFailed  = if ($stashed) { $popFailed } else { $false }
-                    }
+                    })
                 } finally {
                     Pop-Location
                 }
-            } -ThrottleLimit 4
+            }
 
             foreach ($mr in $mergeResults) {
                 if ($mr.PopFailed) {

@@ -16,6 +16,9 @@ BeforeAll {
             'if defined COPILOT_TEST_LOG echo %*>>"%COPILOT_TEST_LOG%"'
             'exit /b 0'
         )
+        $copilot = Join-Path $Path 'copilot'
+        Set-Content -Path $copilot -Value '#!/usr/bin/env sh'
+        if (-not $IsWindows) { & chmod +x $copilot }
         $env:PATH = "$Path$([IO.Path]::PathSeparator)$script:OriginalPath"
     }
 
@@ -88,17 +91,37 @@ AfterAll {
     Remove-Module Shmuelie.Copilot -Force -ErrorAction SilentlyContinue
 }
 
+Describe 'Get-CopilotHome' {
+    It 'returns the current home directory' {
+        $result = InModuleScope Shmuelie.Copilot { Get-CopilotHome }
+
+        $result | Should -Be $HOME
+        $result | Should -Not -BeNullOrEmpty
+        Test-Path $result | Should -BeTrue
+    }
+}
+
+Describe 'Shmuelie.Copilot source' {
+    It 'does not reference the Windows-only USERPROFILE environment variable' {
+        $moduleRoot = Join-Path $repoRoot 'modules\Shmuelie.Copilot'
+        $matches = @(Get-ChildItem -Path $moduleRoot -Recurse -Include *.ps1, *.psm1 | Select-String -Pattern '\$env:USERPROFILE')
+
+        $matches.Count | Should -Be 0
+    }
+}
+
 Describe 'Get-CopilotLaunchPlan' {
     BeforeEach {
-        $env:USERPROFILE = Join-Path $TestDrive 'home'
-        New-Item -ItemType Directory -Path $env:USERPROFILE -Force | Out-Null
+        $testHome = Join-Path $TestDrive 'home'
+        $env:USERPROFILE = Join-Path $TestDrive 'legacy-userprofile'
+        New-Item -ItemType Directory -Path $testHome -Force | Out-Null
+        Mock -ModuleName Shmuelie.Copilot -CommandName Get-CopilotHome -MockWith { $testHome }
         Add-FakeCopilot -Path (Join-Path $TestDrive 'bin')
     }
-
     It 'auto-resumes a single matching session when SessionId is omitted' {
         $cwd = Join-Path $TestDrive 'workspace'
         New-Item -ItemType Directory -Path $cwd -Force | Out-Null
-        $sessionRoot = Join-Path $env:USERPROFILE '.copilot\session-state'
+        $sessionRoot = Join-Path $testHome '.copilot' 'session-state'
         $existingSessionId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
         New-CopilotSessionState `
             -SessionRoot $sessionRoot `
@@ -121,7 +144,7 @@ Describe 'Get-CopilotLaunchPlan' {
     It 'maps SessionId to --session-id without adding an auto-resume argument' {
         $cwd = Join-Path $TestDrive 'workspace'
         New-Item -ItemType Directory -Path $cwd -Force | Out-Null
-        $sessionRoot = Join-Path $env:USERPROFILE '.copilot\session-state'
+        $sessionRoot = Join-Path $testHome '.copilot' 'session-state'
         New-CopilotSessionState `
             -SessionRoot $sessionRoot `
             -Id 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' `
@@ -145,7 +168,7 @@ Describe 'Get-CopilotLaunchPlan' {
     It 'maps SessionId to --session-id without invoking the multi-session picker' {
         $cwd = Join-Path $TestDrive 'workspace'
         New-Item -ItemType Directory -Path $cwd -Force | Out-Null
-        $sessionRoot = Join-Path $env:USERPROFILE '.copilot\session-state'
+        $sessionRoot = Join-Path $testHome '.copilot' 'session-state'
         New-CopilotSessionState `
             -SessionRoot $sessionRoot `
             -Id 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' `
