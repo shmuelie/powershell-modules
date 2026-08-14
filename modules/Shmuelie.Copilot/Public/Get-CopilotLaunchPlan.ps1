@@ -333,7 +333,7 @@ function Get-CopilotLaunchPlan {
         [Parameter(ParameterSetName = 'CopilotResumeSession', Mandatory)]
         [ArgumentCompleter({
             param($commandName, $parameterName, $wordToComplete)
-            $sessionStateDir = Join-Path $env:USERPROFILE '.copilot' 'session-state'
+            $sessionStateDir = Join-Path (Get-CopilotHome) '.copilot' 'session-state'
             if (-not (Test-Path $sessionStateDir)) { return }
             $cwd = (Get-Location).Path
             Get-ChildItem $sessionStateDir -Directory | ForEach-Object {
@@ -538,7 +538,7 @@ function Get-CopilotLaunchPlan {
         [StringComparer]::OrdinalIgnoreCase)
     if ($EnableMcpServer) { foreach ($s in $EnableMcpServer) { [void]$enableSet.Add($s) } }
 
-    $mcpConfigPath = Join-Path $env:USERPROFILE '.copilot' 'mcp-config.json'
+    $mcpConfigPath = Join-Path (Get-CopilotHome) '.copilot' 'mcp-config.json'
     if (Test-Path $mcpConfigPath) {
         $mcpConfig = Get-Content $mcpConfigPath -Raw | ConvertFrom-Json
         $cwd = (Get-Location).Path
@@ -689,7 +689,7 @@ function Get-CopilotLaunchPlan {
         $copilotArgs += '--resume', $ResumeSession
     }
     elseif (-not $isNoResume -and -not $isPassthrough -and -not $DeferResume -and -not $SessionId) {
-        $sessionStateDir = Join-Path $env:USERPROFILE '.copilot' 'session-state'
+        $sessionStateDir = Join-Path (Get-CopilotHome) '.copilot' 'session-state'
         # Auto-generated maintenance sessions to skip when auto-resuming
         $ignoredSessionNames = @(
             'Apply context_board add/prune updates for this session. End the turn with a 2-3 sentence summary of the changes you made to the context_board.'

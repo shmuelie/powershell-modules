@@ -98,7 +98,7 @@ function Merge-CopilotSession {
         # Create new session directory
         Write-Progress -Activity $activity -Status 'Creating session directory' -PercentComplete 0 -Id 1
         $newId = [guid]::NewGuid().ToString()
-        $sessionStateDir = Join-Path $env:USERPROFILE '.copilot' 'session-state'
+        $sessionStateDir = Join-Path (Get-CopilotHome) '.copilot' 'session-state'
         $newSessionPath = Join-Path $sessionStateDir $newId
         New-Item -ItemType Directory -Path $newSessionPath -Force | Out-Null
         New-Item -ItemType Directory -Path (Join-Path $newSessionPath 'checkpoints') -Force | Out-Null
