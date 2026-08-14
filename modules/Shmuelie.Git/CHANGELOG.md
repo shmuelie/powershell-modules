@@ -6,6 +6,11 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+### Fixed
+- `Get-GitStatusSummary -Path` now fails fast when the target path cannot be
+  entered and only calls `Pop-Location` after a successful `Push-Location`, so a
+  bad path cannot corrupt the caller's location stack.
+
 ### Added
 - `Sync-GitRemote` is now GitHub-account-aware. When more than one account is
   signed in to the `gh` CLI for a remote's host — github.com or a GitHub

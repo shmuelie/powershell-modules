@@ -73,6 +73,28 @@ BeforeAll {
 }
 
 Describe 'Get-GitStatusSummary' {
+    It 'does not pop the caller location stack when -Path cannot be pushed' {
+        $startingPath = (Get-Location).Path
+        $callerPath = Join-Path $TestDrive 'caller-location'
+        New-Item -ItemType Directory -Path $callerPath -Force | Out-Null
+
+        Push-Location $callerPath
+        try {
+            $expectedPath = (Get-Location).Path
+            try {
+                Get-GitStatusSummary -Path (Join-Path $TestDrive 'does-not-exist') | Out-Null
+            } catch {
+                # Bad paths fail fast; this test only verifies the caller location is preserved.
+            }
+
+            (Get-Location).Path | Should -BeExactly $expectedPath
+        } finally {
+            if ((Get-Location).Path -ne $startingPath) {
+                Pop-Location
+            }
+        }
+    }
+
     Context 'outside a git repository' {
         It 'reports the directory is not a git repo' {
             $dir = Join-Path $TestDrive 'not-a-repo'
