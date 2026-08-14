@@ -30,6 +30,9 @@ Versions change only when a release is cut; unreleased work stays under
   to `Sync-GitRemote`.
 
 ### Fixed
+- `Repair-RepositoryLayout` now uses the platform path separator when converting
+  nested git branch names into directories and when checking whether the current
+  directory is inside a repository or worktree.
 - `Add-Worktree` now requires a non-empty `-BranchName`, failing during parameter
   binding instead of attempting to create a worktree with an empty branch name.
 - `Format-GitStatusSegment` now renders diverged upstream relations in the same
