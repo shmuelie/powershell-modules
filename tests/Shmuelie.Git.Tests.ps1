@@ -2,7 +2,7 @@
 
 BeforeAll {
     $repoRoot = Split-Path (Split-Path $PSCommandPath -Parent) -Parent
-    Import-Module (Join-Path $repoRoot 'modules\Shmuelie.Git\Shmuelie.Git.psd1') -Force
+    Import-Module ([System.IO.Path]::Combine($repoRoot, 'modules', 'Shmuelie.Git', 'Shmuelie.Git.psd1')) -Force
 
     # Run a git command and throw on failure. $ErrorActionPreference does not turn
     # a native non-zero exit into a terminating error, so setup failures would
@@ -11,7 +11,15 @@ BeforeAll {
     # mistaken for parameters of this function.
     function Invoke-Git {
         param([Parameter(Mandatory, Position = 0)][string[]]$Arguments)
-        $output = & git @Arguments 2>&1
+        $commonConfig = @(
+            '-c', 'user.name=Test User',
+            '-c', 'user.email=test@example.com',
+            '-c', 'init.defaultBranch=main',
+            '-c', 'protocol.file.allow=always',
+            '-c', 'commit.gpgsign=false',
+            '-c', 'tag.gpgsign=false'
+        )
+        $output = & git @commonConfig @Arguments 2>&1
         if ($LASTEXITCODE -ne 0) {
             throw "git $($Arguments -join ' ') failed (exit $LASTEXITCODE): $output"
         }
@@ -70,9 +78,51 @@ BeforeAll {
 
         [System.IO.Path]::GetFullPath($Path)
     }
+
+    function Invoke-TestCommit {
+        param(
+            [Parameter(Mandatory)][string]$Path,
+            [Parameter(Mandatory)][string]$Message
+        )
+
+        Invoke-Git @(
+            '-C', $Path,
+            '-c', 'user.name=Test User',
+            '-c', 'user.email=test@example.com',
+            'commit', '-m', $Message, '--quiet'
+        )
+    }
+}
+
+Describe 'Add-Worktree' {
+    It 'requires a non-empty branch name' {
+        { Add-Worktree -BranchName '' } | Should -Throw
+    }
 }
 
 Describe 'Get-GitStatusSummary' {
+    It 'does not pop the caller location stack when -Path cannot be pushed' {
+        $startingPath = (Get-Location).Path
+        $callerPath = Join-Path $TestDrive 'caller-location'
+        New-Item -ItemType Directory -Path $callerPath -Force | Out-Null
+
+        Push-Location $callerPath
+        try {
+            $expectedPath = (Get-Location).Path
+            try {
+                Get-GitStatusSummary -Path (Join-Path $TestDrive 'does-not-exist') | Out-Null
+            } catch {
+                # Bad paths fail fast; this test only verifies the caller location is preserved.
+            }
+
+            (Get-Location).Path | Should -BeExactly $expectedPath
+        } finally {
+            if ((Get-Location).Path -ne $startingPath) {
+                Pop-Location
+            }
+        }
+    }
+
     Context 'outside a git repository' {
         It 'reports the directory is not a git repo' {
             $dir = Join-Path $TestDrive 'not-a-repo'
@@ -244,6 +294,48 @@ Describe 'Get-GitStatusSummary' {
     }
 }
 
+Describe 'Repair-RepositoryLayout' {
+    It 'converts git branch separators to native path separators' {
+        InModuleScope Shmuelie.Git {
+            ConvertTo-RepositoryLayoutPathFragment 'feature/nested' |
+                Should -BeExactly ([System.IO.Path]::Combine('feature', 'nested'))
+        }
+    }
+
+    It 'plans repo-level branch moves with native path separators' {
+        $root = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
+        $org = Join-Path $root 'example'
+        $repo = Join-Path $org 'repo'
+        New-TestRepo -Path $repo | Out-Null
+        Invoke-Git @('-C', $repo, 'checkout', '--quiet', '-b', 'feature/nested')
+
+        $result = @(Repair-RepositoryLayout -Root $root -Organization 'example' -Name 'repo' -WhatIf -Confirm:$false)
+
+        $result | Should -HaveCount 1
+        $result.Status | Should -Be 'WhatIf'
+        $result.To | Should -BeExactly ([System.IO.Path]::Combine($repo, 'feature', 'nested'))
+    }
+
+    It 'skips repo-level clones when the current directory is inside them' {
+        $root = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
+        $org = Join-Path $root 'example'
+        $repo = Join-Path $org 'repo'
+        $child = Join-Path $repo 'child'
+        New-TestRepo -Path $repo | Out-Null
+        New-Item -ItemType Directory -Path $child -Force | Out-Null
+
+        Push-Location $child
+        try {
+            $result = @(Repair-RepositoryLayout -Root $root -Organization 'example' -Name 'repo' -WhatIf -Confirm:$false)
+        } finally {
+            Pop-Location
+        }
+
+        $result | Should -HaveCount 1
+        $result.Status | Should -Be 'Skipped-CwdInside'
+    }
+}
+
 Describe 'Find-StaleBranch' {
     BeforeAll {
         function New-AdoLikeRemote {
@@ -375,6 +467,349 @@ Describe 'Find-StaleBranch' {
     }
 }
 
+Describe 'Update-Worktrees' {
+    It 'keeps each dirty worktree change with its own worktree while fast-forwarding' -Skip:(-not (Get-Command git -ErrorAction SilentlyContinue)) {
+        $origin = Join-Path $TestDrive 'origin.git'
+        Invoke-Git @('init', '--bare', '-b', 'main', '--quiet', $origin)
+
+        $seed = Join-Path $TestDrive 'seed'
+        Invoke-Git @('clone', '--quiet', $origin, $seed)
+        Set-TestRepoConfig $seed
+        Set-Content -Path (Join-Path $seed 'README.md') -Value 'initial' -NoNewline
+        Invoke-Git @('-C', $seed, 'add', 'README.md')
+        Invoke-TestCommit -Path $seed -Message 'init'
+        Invoke-Git @('-C', $seed, 'push', '-u', 'origin', 'main', '--quiet')
+
+        Invoke-Git @('-C', $seed, 'switch', '-c', 'branch-a', '--quiet')
+        Set-Content -Path (Join-Path $seed 'tracked-a.txt') -Value 'branch-a v1' -NoNewline
+        Invoke-Git @('-C', $seed, 'add', 'tracked-a.txt')
+        Invoke-TestCommit -Path $seed -Message 'branch a v1'
+        Invoke-Git @('-C', $seed, 'push', '-u', 'origin', 'branch-a', '--quiet')
+        Invoke-Git @('-C', $seed, 'branch', '--set-upstream-to=origin/branch-a', 'branch-a')
+
+        Invoke-Git @('-C', $seed, 'switch', 'main', '--quiet')
+        Invoke-Git @('-C', $seed, 'switch', '-c', 'branch-b', '--quiet')
+        Set-Content -Path (Join-Path $seed 'tracked-b.txt') -Value 'branch-b v1' -NoNewline
+        Invoke-Git @('-C', $seed, 'add', 'tracked-b.txt')
+        Invoke-TestCommit -Path $seed -Message 'branch b v1'
+        Invoke-Git @('-C', $seed, 'push', '-u', 'origin', 'branch-b', '--quiet')
+        Invoke-Git @('-C', $seed, 'branch', '--set-upstream-to=origin/branch-b', 'branch-b')
+
+        $clone = Join-Path $TestDrive 'clone'
+        Invoke-Git @('clone', '--quiet', $origin, $clone)
+        Set-TestRepoConfig $clone
+        $worktreeA = Join-Path $TestDrive 'worktree-a'
+        $worktreeB = Join-Path $TestDrive 'worktree-b'
+        Invoke-Git @('-C', $clone, 'worktree', 'add', '--quiet', '--track', '-b', 'branch-a', $worktreeA, 'origin/branch-a')
+        Invoke-Git @('-C', $clone, 'worktree', 'add', '--quiet', '--track', '-b', 'branch-b', $worktreeB, 'origin/branch-b')
+        Set-TestRepoConfig $worktreeA
+        Set-TestRepoConfig $worktreeB
+
+        $updater = Join-Path $TestDrive 'updater'
+        Invoke-Git @('clone', '--quiet', $origin, $updater)
+        Set-TestRepoConfig $updater
+
+        Invoke-Git @('-C', $updater, 'switch', 'branch-a', '--quiet')
+        Set-Content -Path (Join-Path $updater 'tracked-a.txt') -Value 'branch-a v2' -NoNewline
+        Invoke-Git @('-C', $updater, 'add', 'tracked-a.txt')
+        Invoke-TestCommit -Path $updater -Message 'branch a v2'
+        Invoke-Git @('-C', $updater, 'push', 'origin', 'branch-a', '--quiet')
+
+        Invoke-Git @('-C', $updater, 'switch', 'branch-b', '--quiet')
+        Set-Content -Path (Join-Path $updater 'tracked-b.txt') -Value 'branch-b v2' -NoNewline
+        Invoke-Git @('-C', $updater, 'add', 'tracked-b.txt')
+        Invoke-TestCommit -Path $updater -Message 'branch b v2'
+        Invoke-Git @('-C', $updater, 'push', 'origin', 'branch-b', '--quiet')
+
+        Invoke-Git @('-C', $clone, 'fetch', '--all', '--prune')
+        Invoke-Git @('-C', $clone, 'rev-list', '--count', 'branch-a..origin/branch-a') | Should -Be '1'
+        Invoke-Git @('-C', $clone, 'rev-list', '--count', 'branch-b..origin/branch-b') | Should -Be '1'
+
+        Set-Content -Path (Join-Path $worktreeA 'local-a.txt') -Value 'local change from worktree A' -NoNewline
+        Set-Content -Path (Join-Path $worktreeB 'local-b.txt') -Value 'local change from worktree B' -NoNewline
+
+        $realGit = (Get-Command git -CommandType Application | Select-Object -First 1).Source
+        $shimDir = Join-Path $TestDrive 'git-shim'
+        $shimState = Join-Path $TestDrive 'stash-race-state'
+        New-Item -ItemType Directory -Path $shimDir, $shimState -Force | Out-Null
+        $shimProject = Join-Path $TestDrive 'git-shim-src'
+        New-Item -ItemType Directory -Path $shimProject -Force | Out-Null
+        Set-Content -Path (Join-Path $shimProject 'git-shim.csproj') -Value @'
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <AssemblyName>git</AssemblyName>
+    <UseAppHost>true</UseAppHost>
+    <Nullable>disable</Nullable>
+  </PropertyGroup>
+</Project>
+'@
+        Set-Content -Path (Join-Path $shimProject 'Program.cs') -Value @'
+using System;
+using System.Diagnostics;
+using System.IO;
+using System.Text;
+using System.Threading;
+
+public static class GitShim
+{
+    public static int Main(string[] args)
+    {
+        string realGit = Environment.GetEnvironmentVariable("SHMUELIE_REAL_GIT");
+        string state = Environment.GetEnvironmentVariable("SHMUELIE_STASH_RACE_STATE");
+        if (String.IsNullOrEmpty(realGit))
+        {
+            Console.Error.WriteLine("SHMUELIE_REAL_GIT is not set.");
+            return 1;
+        }
+
+        if (!String.IsNullOrEmpty(state) && args.Length >= 2 && args[0] == "stash" && args[1] == "push")
+        {
+            int exitCode = Run(realGit, args);
+            if (exitCode == 0)
+            {
+                string current = Directory.GetCurrentDirectory();
+                int slot = 0;
+                while (slot == 0)
+                {
+                    foreach (int candidate in new[] { 1, 2 })
+                    {
+                        try
+                        {
+                            WriteMarker(Path.Combine(state, "push-" + candidate + ".txt"), current);
+                            slot = candidate;
+                            break;
+                        }
+                        catch (IOException)
+                        {
+                        }
+                    }
+
+                    if (slot == 0)
+                    {
+                        Thread.Sleep(10);
+                    }
+                }
+
+                WaitForTwoPushes(state);
+            }
+
+            return exitCode;
+        }
+
+        if (!String.IsNullOrEmpty(state) && args.Length >= 2 && args[0] == "stash" && args[1] == "pop")
+        {
+            string current = Directory.GetCurrentDirectory();
+            string[] pushes = Directory.GetFiles(state, "push-*.txt");
+            if (pushes.Length >= 2)
+            {
+                string first = File.ReadAllText(Path.Combine(state, "push-1.txt"));
+                string second = File.ReadAllText(Path.Combine(state, "push-2.txt"));
+                if (String.Equals(current, second, StringComparison.OrdinalIgnoreCase))
+                {
+                    DateTime deadline = DateTime.UtcNow.AddSeconds(10);
+                    string firstPopped = Path.Combine(state, "first-popped.txt");
+                    while (!File.Exists(firstPopped) && DateTime.UtcNow < deadline)
+                    {
+                        Thread.Sleep(25);
+                    }
+                }
+
+                int exitCode = Run(realGit, args);
+
+                if (String.Equals(current, first, StringComparison.OrdinalIgnoreCase))
+                {
+                    try
+                    {
+                        WriteMarker(Path.Combine(state, "first-popped.txt"), current);
+                    }
+                    catch (IOException)
+                    {
+                    }
+                }
+                else if (String.Equals(current, second, StringComparison.OrdinalIgnoreCase))
+                {
+                    ClearPushMarkers(state);
+                }
+
+                return exitCode;
+            }
+
+            int singleExitCode = Run(realGit, args);
+            ClearPushMarkers(state);
+            return singleExitCode;
+        }
+
+        return Run(realGit, args);
+    }
+
+    private static int Run(string realGit, string[] args)
+    {
+        ProcessStartInfo startInfo = new ProcessStartInfo(realGit);
+        startInfo.UseShellExecute = false;
+        startInfo.RedirectStandardOutput = true;
+        startInfo.RedirectStandardError = true;
+        startInfo.Arguments = String.Join(" ", Array.ConvertAll(args, QuoteArgument));
+
+        using (Process process = Process.Start(startInfo))
+        {
+            string output = process.StandardOutput.ReadToEnd();
+            string error = process.StandardError.ReadToEnd();
+            process.WaitForExit();
+            Console.Out.Write(output);
+            Console.Error.Write(error);
+            return process.ExitCode;
+        }
+    }
+
+    private static string QuoteArgument(string argument)
+    {
+        if (String.IsNullOrEmpty(argument))
+        {
+            return "\"\"";
+        }
+
+        if (argument.IndexOfAny(new[] { ' ', '\t', '\n', '\v', '"' }) < 0)
+        {
+            return argument;
+        }
+
+        StringBuilder builder = new StringBuilder();
+        builder.Append('"');
+        int backslashes = 0;
+        foreach (char character in argument)
+        {
+            if (character == '\\')
+            {
+                backslashes++;
+            }
+            else if (character == '"')
+            {
+                builder.Append('\\', (backslashes * 2) + 1);
+                builder.Append('"');
+                backslashes = 0;
+            }
+            else
+            {
+                builder.Append('\\', backslashes);
+                backslashes = 0;
+                builder.Append(character);
+            }
+        }
+
+        builder.Append('\\', backslashes * 2);
+        builder.Append('"');
+        return builder.ToString();
+    }
+
+    private static void WaitForTwoPushes(string state)
+    {
+        DateTime deadline = DateTime.UtcNow.AddSeconds(2);
+        do
+        {
+            if (Directory.GetFiles(state, "push-*.txt").Length >= 2)
+            {
+                return;
+            }
+
+            Thread.Sleep(25);
+        } while (DateTime.UtcNow < deadline);
+    }
+
+    private static void WriteMarker(string path, string content)
+    {
+        using (FileStream stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.Read))
+        using (StreamWriter writer = new StreamWriter(stream))
+        {
+            writer.Write(content);
+        }
+    }
+
+    private static void ClearPushMarkers(string state)
+    {
+        foreach (string path in new[]
+        {
+            Path.Combine(state, "push-1.txt"),
+            Path.Combine(state, "push-2.txt"),
+            Path.Combine(state, "first-popped.txt")
+        })
+        {
+            try
+            {
+                File.Delete(path);
+            }
+            catch
+            {
+            }
+        }
+    }
+}
+'@
+        $csc = Get-Command csc -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($csc) {
+            $compileOutput = & $csc.Source -nologo -target:exe "-out:$(Join-Path $shimDir 'git.exe')" (Join-Path $shimProject 'Program.cs') 2>&1
+            if ($LASTEXITCODE -ne 0) {
+                throw "csc failed (exit $LASTEXITCODE): $compileOutput"
+            }
+        } else {
+            $dotnet = Get-Command dotnet -CommandType Application -ErrorAction SilentlyContinue
+            $dotnet | Should -Not -BeNullOrEmpty
+            $publishOutput = & $dotnet.Source publish (Join-Path $shimProject 'git-shim.csproj') -c Release -o $shimDir --nologo -v q 2>&1
+            if ($LASTEXITCODE -ne 0) {
+                throw "dotnet publish failed (exit $LASTEXITCODE): $publishOutput"
+            }
+        }
+
+        $oldPath = $env:PATH
+        $oldRealGit = $env:SHMUELIE_REAL_GIT
+        $oldRaceState = $env:SHMUELIE_STASH_RACE_STATE
+        $oldGitTerminalPrompt = $env:GIT_TERMINAL_PROMPT
+        $oldGitConfigCount = $env:GIT_CONFIG_COUNT
+        $oldGitConfigKey0 = $env:GIT_CONFIG_KEY_0
+        $oldGitConfigValue0 = $env:GIT_CONFIG_VALUE_0
+        $env:PATH = "$shimDir$([System.IO.Path]::PathSeparator)$oldPath"
+        $env:SHMUELIE_REAL_GIT = $realGit
+        $env:SHMUELIE_STASH_RACE_STATE = $shimState
+        $env:GIT_TERMINAL_PROMPT = '0'
+        $env:GIT_CONFIG_COUNT = '1'
+        $env:GIT_CONFIG_KEY_0 = 'protocol.file.allow'
+        $env:GIT_CONFIG_VALUE_0 = 'always'
+
+        Mock -ModuleName Shmuelie.Git Sync-GitRemote { @() }
+
+        Push-Location $clone
+        try {
+            $results = Update-Worktrees -NoGitHubAccountResolve
+        } finally {
+            Pop-Location
+            $env:PATH = $oldPath
+            $env:SHMUELIE_REAL_GIT = $oldRealGit
+            $env:SHMUELIE_STASH_RACE_STATE = $oldRaceState
+            $env:GIT_TERMINAL_PROMPT = $oldGitTerminalPrompt
+            $env:GIT_CONFIG_COUNT = $oldGitConfigCount
+            $env:GIT_CONFIG_KEY_0 = $oldGitConfigKey0
+            $env:GIT_CONFIG_VALUE_0 = $oldGitConfigValue0
+        }
+
+        foreach ($branch in 'branch-a', 'branch-b') {
+            $result = $results | Where-Object Branch -eq $branch
+            $result.Status | Should -Be 'Updated'
+            $result.Stashed | Should -BeTrue
+            $result.PopFailed | Should -BeFalse
+            $result.BehindBy | Should -Be 1
+        }
+
+        Get-Content -LiteralPath (Join-Path $worktreeA 'tracked-a.txt') -Raw | Should -BeExactly 'branch-a v2'
+        Get-Content -LiteralPath (Join-Path $worktreeB 'tracked-b.txt') -Raw | Should -BeExactly 'branch-b v2'
+        Get-Content -LiteralPath (Join-Path $worktreeA 'local-a.txt') -Raw | Should -BeExactly 'local change from worktree A'
+        Get-Content -LiteralPath (Join-Path $worktreeB 'local-b.txt') -Raw | Should -BeExactly 'local change from worktree B'
+        Test-Path -LiteralPath (Join-Path $worktreeA 'local-b.txt') | Should -BeFalse
+        Test-Path -LiteralPath (Join-Path $worktreeB 'local-a.txt') | Should -BeFalse
+    }
+}
+
+
 Describe 'Format-GitStatusSegment' {
     BeforeAll {
         # Build a synthetic GitStatusSummary so the formatter can be exercised
@@ -405,6 +840,11 @@ Describe 'Format-GitStatusSegment' {
             foreach ($key in $Override.Keys) { $props[$key] = $Override[$key] }
             [PSCustomObject]$props
         }
+
+        function ConvertTo-PlainText {
+            param([string]$Value)
+            $Value -replace "$([char]0x1b)\[[0-9;]*m", ''
+        }
     }
 
     It 'returns an empty string when the summary is not a git repo' {
@@ -413,6 +853,45 @@ Describe 'Format-GitStatusSegment' {
 
     It 'accepts pipeline input' {
         (New-Summary | Format-GitStatusSegment) | Should -Match 'main'
+    }
+
+    $relationCases = @(
+        @{
+            Name        = 'diverged branch with StatusString order'
+            Override    = @{ AheadBy = 1; BehindBy = 4 }
+            Contains    = "$([char]0x2193)4 $([char]0x2191)1"
+            NotContains = "$([char]0x2191)1$([char]0x2193)4"
+        }
+        @{
+            Name        = 'ahead-only branch'
+            Override    = @{ AheadBy = 2 }
+            Contains    = "$([char]0x2191)2"
+            NotContains = "$([char]0x2193)2 $([char]0x2191)2"
+        }
+        @{
+            Name        = 'behind-only branch'
+            Override    = @{ BehindBy = 3 }
+            Contains    = "$([char]0x2193)3"
+            NotContains = "$([char]0x2193)3 $([char]0x2191)3"
+        }
+        @{
+            Name        = 'up-to-date branch'
+            Override    = @{}
+            Contains    = "$([char]0x2261)"
+            NotContains = "$([char]0x2191)"
+        }
+        @{
+            Name        = 'gone upstream'
+            Override    = @{ UpstreamGone = $true }
+            Contains    = "$([char]0x00D7)"
+            NotContains = "$([char]0x2261)"
+        }
+    )
+
+    It 'renders the <Name> relation' -ForEach $relationCases {
+        $plain = ConvertTo-PlainText (Format-GitStatusSegment -Status (New-Summary $Override))
+        $plain | Should -Match ([regex]::Escape($Contains))
+        $plain | Should -Not -Match ([regex]::Escape($NotContains))
     }
 
     $segmentCases = @(
@@ -437,8 +916,8 @@ Describe 'Format-GitStatusSegment' {
         @{
             Name        = 'diverged (ahead and behind)'
             Override    = @{ AheadBy = 1; BehindBy = 2 }
-            Contains    = @("$([char]0x2191)1$([char]0x2193)2")
-            NotContains = @()
+            Contains    = @("$([char]0x2193)2 $([char]0x2191)1")
+            NotContains = @("$([char]0x2191)1$([char]0x2193)2")
         }
         @{
             Name        = 'gone upstream'
@@ -482,6 +961,115 @@ Describe 'Format-GitStatusSegment' {
         $out = Format-GitStatusSegment -Status (New-Summary @{ IndexAdded = 5 }) -ShowChangeCounts:$false
         $out | Should -Match 'main'
         $out | Should -Not -Match ([regex]::Escape('+5'))
+    }
+}
+
+Describe 'Git tab completion status parsing' {
+    It 'extracts the destination path from rename and copy porcelain entries' {
+        InModuleScope Shmuelie.Git {
+            Get-GitStatusPorcelainPath 'R  old.txt -> new.txt' | Should -BeExactly 'new.txt'
+            Get-GitStatusPorcelainPath 'C  "old name.txt" -> "new name.txt"' | Should -BeExactly 'new name.txt'
+        }
+    }
+
+    It 'leaves normal and quoted non-ASCII paths unchanged except surrounding quotes' {
+        InModuleScope Shmuelie.Git {
+            Get-GitStatusPorcelainPath ' M normal.txt' | Should -BeExactly 'normal.txt'
+            Get-GitStatusPorcelainPath '?? "文.txt"' | Should -BeExactly '文.txt'
+        }
+    }
+
+    It 'completes a non-ASCII file name even when repository quotePath is enabled' {
+        if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
+            Set-ItResult -Skipped -Because 'git is not available'
+            return
+        }
+
+        $repo = New-TestRepo -Path (Join-Path $TestDrive 'completion-quotepath')
+        Invoke-Git @('-C', $repo, 'config', 'core.quotePath', 'true')
+        Set-Content -Path (Join-Path $repo '文.txt') -Value 'content'
+
+        Push-Location $repo
+        try {
+            $files = InModuleScope Shmuelie.Git { gitAddFiles '' }
+        } finally {
+            Pop-Location
+        }
+
+        $files | Should -Contain '文.txt'
+        $files | Should -Not -Contain '\346\226\207.txt'
+    }
+
+    It 'completes the new path for a staged rename' {
+        if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
+            Set-ItResult -Skipped -Because 'git is not available'
+            return
+        }
+
+        $repo = New-TestRepo -Path (Join-Path $TestDrive 'completion-rename')
+        Invoke-Git @('-C', $repo, 'mv', 'README.md', 'README-renamed.md')
+
+        Push-Location $repo
+        try {
+            $files = InModuleScope Shmuelie.Git { gitIndexFiles '' }
+        } finally {
+            Pop-Location
+        }
+
+        $files | Should -Contain 'README-renamed.md'
+        $files | Should -Not -Contain 'README.md -> README-renamed.md'
+    }
+}
+
+Describe 'Sync-GitRemote' {
+    It 'returns Updated for a fast-forwarded remote ref' {
+        if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
+            Set-ItResult -Skipped -Because 'git is not available'
+            return
+        }
+
+        $originWork = New-TestRepo -Path (Join-Path $TestDrive 'sync-origin-work')
+        $bare = Join-Path $TestDrive 'sync-origin.git'
+        Invoke-Git @('clone', '--bare', '--quiet', $originWork, $bare)
+        $clone = Join-Path $TestDrive 'sync-clone'
+        Invoke-Git @('clone', '--quiet', $bare, $clone)
+        Set-TestRepoConfig $clone
+
+        Set-Content -Path (Join-Path $originWork 'README.md') -Value 'updated'
+        Invoke-Git @('-C', $originWork, 'add', 'README.md')
+        Invoke-Git @('-C', $originWork, 'commit', '-m', 'advance', '--quiet')
+        Invoke-Git @('-C', $originWork, 'push', '--quiet', $bare, 'main')
+
+        Push-Location $clone
+        try {
+            $results = @(Sync-GitRemote -Remote origin -NoGitHubAccountResolve)
+        } finally {
+            Pop-Location
+        }
+
+        $updated = @($results | Where-Object { $_.Action -eq 'Updated' -and $_.Ref -eq 'origin/main' })
+        $updated | Should -HaveCount 1
+        $updated[0].PSTypeNames[0] | Should -Be 'GitFetchResult'
+    }
+
+    It 'runs the parsed fetch invocation with the C locale' {
+        Mock -ModuleName Shmuelie.Git Get-GitHubSignedInAccount { @() }
+        Mock -ModuleName Shmuelie.Git Invoke-GitWithEnvironment {
+            $Arguments[0] | Should -Be '-C'
+            ($Arguments[2..4] -join ' ') | Should -Be 'fetch origin --prune'
+            $Environment['LC_ALL'] | Should -Be 'C'
+            $Environment['LANG'] | Should -Be 'C'
+            [PSCustomObject]@{
+                PSTypeName = 'GitInvocationResult'
+                ExitCode   = 0
+                Output     = @(' * [new branch]      main       -> origin/main')
+            }
+        }
+
+        $result = Sync-GitRemote -Remote origin
+
+        $result.Action | Should -Be 'New branch'
+        Should -Invoke -ModuleName Shmuelie.Git Invoke-GitWithEnvironment -Times 1
     }
 }
 
@@ -726,6 +1314,8 @@ Describe 'Sync-GitRemote GitHub account awareness' {
                 $Environment['GH_HOST'] | Should -Be 'github.com'
                 $Environment['GH_TOKEN'] | Should -Be 'tok-work'
                 $Environment['GIT_TERMINAL_PROMPT'] | Should -Be '0'
+                $Environment['LC_ALL'] | Should -Be 'C'
+                $Environment['LANG'] | Should -Be 'C'
                 [PSCustomObject]@{ PSTypeName = 'GitInvocationResult'; ExitCode = 0; Output = @() }
             }
             $repo = New-GitHubRepo -Path (Join-Path $TestDrive 'env-repo')
@@ -756,7 +1346,7 @@ Describe 'Sync-GitRemote GitHub account awareness' {
             try { Sync-GitRemote | Out-Null } finally { Pop-Location }
 
             Should -Invoke -ModuleName Shmuelie.Git Get-GitHubAccountToken -Times 0
-            Should -Invoke -ModuleName Shmuelie.Git Invoke-GitWithEnvironment -Times 0
+            Should -Invoke -ModuleName Shmuelie.Git Invoke-GitWithEnvironment -Times 1
         }
 
         It 'does not engage for a non gh-managed host' {

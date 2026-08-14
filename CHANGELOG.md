@@ -7,6 +7,7 @@ between releases this file tracks catalog-level changes under `[Unreleased]`.
 ## [Unreleased]
 
 ### Added
+- GitHub Pages documentation workflow now redeploys automatically when docs or its workflow change.
 - Pester v5 unit test suite under `tests/`, a `build/Invoke-Tests.ps1` runner,
   and CI wiring (`ci.yml` plus a gate in `publish-module.yml`) so behavioral
   tests of exported functions run alongside `Test-Modules.ps1`. Coverage

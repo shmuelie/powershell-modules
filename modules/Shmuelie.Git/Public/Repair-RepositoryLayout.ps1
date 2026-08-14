@@ -1,15 +1,54 @@
+function ConvertTo-RepositoryLayoutPathFragment {
+    <#
+    .SYNOPSIS
+        Convert a git path fragment to a native file-system path fragment.
+    .DESCRIPTION
+        Git branch names use '/' to separate nested ref segments. Repository
+        layout paths should use the current platform's directory separator.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path
+    )
+
+    [System.IO.Path]::Combine([string[]]($Path -split '/'))
+}
+
+function Test-RepositoryLayoutPathContains {
+    <#
+    .SYNOPSIS
+        Test whether a path is equal to or under another path.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$ReferencePath,
+
+        [Parameter(Mandatory)]
+        [string]$CandidatePath
+    )
+
+    $separator = [System.IO.Path]::DirectorySeparatorChar
+    $normalizedRef = ([System.IO.Path]::GetFullPath($ReferencePath)).TrimEnd($separator)
+    $normalizedCandidate = [System.IO.Path]::GetFullPath($CandidatePath)
+
+    $normalizedCandidate.Equals($normalizedRef, [StringComparison]::OrdinalIgnoreCase) -or
+        $normalizedCandidate.StartsWith("$normalizedRef$separator", [StringComparison]::OrdinalIgnoreCase)
+}
+
 function Repair-RepositoryLayout {
     <#
     .SYNOPSIS
-    Conform git repositories to the New-Repository layout (`<org>\<repo>\<branch>`).
+    Conform git repositories to the New-Repository layout (`<org>/<repo>/<branch>`).
     .DESCRIPTION
     Scans repositories under the repos root and moves any that don't follow the
-    standard `<root>\<org>\<repo>\<branch>` layout into place, where the branch
+    standard `<root>/<org>/<repo>/<branch>` layout into place, where the branch
     directory mirrors the checked-out branch (with '/' as nested subdirectories,
-    e.g. `release/main` -> `release\main`).
+    using the platform's directory separator).
 
     Handles three non-conforming categories:
-    - **git-at-repo-level**: a clone sitting directly at `<org>\<repo>` is moved
+    - **git-at-repo-level**: a clone sitting directly at `<org>/<repo>` is moved
       down into a `<branch>` subdirectory.
     - **leaf-not-branch**: a working tree whose directory name doesn't match its
       checked-out branch is renamed (via `git worktree move` for linked worktrees,
@@ -55,6 +94,8 @@ function Repair-RepositoryLayout {
     }
 
     $cwd = (Get-Location).Path
+    $separator = [System.IO.Path]::DirectorySeparatorChar
+    $gitDirectorySegmentPattern = [regex]::Escape("$separator.git$separator")
 
     function New-Result {
         <#
@@ -101,7 +142,7 @@ function Repair-RepositoryLayout {
                     continue
                 }
                 # Guard: don't move a repo we're sitting inside
-                if ($cwd -eq $repo.FullName -or $cwd.StartsWith($repo.FullName + '\')) {
+                if (Test-RepositoryLayoutPathContains -ReferencePath $repo.FullName -CandidatePath $cwd) {
                     New-Result $repoRel 'git-at-repo-level' 'none' $repo.FullName '' 'Skipped-CwdInside'
                     continue
                 }
@@ -112,7 +153,7 @@ function Repair-RepositoryLayout {
                     continue
                 }
 
-                $branchDir = $branch -replace '/', '\'
+                $branchDir = ConvertTo-RepositoryLayoutPathFragment $branch
                 $target = Join-Path $repo.FullName $branchDir
 
                 if ($PSCmdlet.ShouldProcess($repo.FullName, "Move clone into '$branchDir' subdirectory")) {
@@ -137,7 +178,7 @@ function Repair-RepositoryLayout {
 
             # --- Category 2/3: branch-level working trees ---
             $gitItems = Get-ChildItem $repo.FullName -Force -Recurse -Depth 4 -Filter '.git' -ErrorAction SilentlyContinue |
-                Where-Object { $_.FullName -notmatch '\\\.git\\' }
+                Where-Object { $_.FullName -notmatch $gitDirectorySegmentPattern }
 
             if (-not $gitItems) {
                 New-Result $repoRel 'no-git' 'none' $repo.FullName '' 'Skipped-NoGit'
@@ -162,25 +203,25 @@ function Repair-RepositoryLayout {
                         $commonFull = Join-Path $wt $commonDir
                     }
                     try { $commonFull = (Resolve-Path -LiteralPath $commonFull -ErrorAction Stop).Path } catch { }
-                    if (-not $commonFull.Replace('/', '\').StartsWith($repo.FullName, [StringComparison]::OrdinalIgnoreCase)) {
+                    if (-not (Test-RepositoryLayoutPathContains -ReferencePath $repo.FullName -CandidatePath $commonFull)) {
                         New-Result $repoRel 'foreign-nested' 'none' $wt '' 'Skipped-ForeignClone'
                         continue
                     }
                 }
-                $rel = $wt.Substring($repo.FullName.Length).TrimStart('\')
+                $rel = $wt.Substring($repo.FullName.Length).TrimStart($separator)
                 $branch = (git -C $wt rev-parse --abbrev-ref HEAD 2>$null)
                 if (-not $branch -or $branch -eq 'HEAD') {
                     New-Result $repoRel 'detached' 'none' $wt '' 'Skipped-Detached'
                     continue
                 }
-                $branchDir = $branch -replace '/', '\'
+                $branchDir = ConvertTo-RepositoryLayoutPathFragment $branch
                 if ($rel -eq $branchDir) { continue }   # conforms
 
                 $target = Join-Path $repo.FullName $branchDir
                 # Is this a linked worktree (.git is a file) or a main clone (.git is a dir)?
                 $isLinkedWorktree = -not $g.PSIsContainer
 
-                if ($cwd -eq $wt -or $cwd.StartsWith($wt + '\')) {
+                if (Test-RepositoryLayoutPathContains -ReferencePath $wt -CandidatePath $cwd) {
                     New-Result $repoRel 'leaf-not-branch' 'none' $wt $target 'Skipped-CwdInside'
                     continue
                 }

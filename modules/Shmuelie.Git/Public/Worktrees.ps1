@@ -199,6 +199,8 @@ function Add-Worktree {
     #>
     [CmdletBinding(SupportsShouldProcess)]
     param(
+        [Parameter(Mandatory)]
+        [ValidateNotNullOrEmpty()]
         [string]$BranchName,
         [switch]$SetLocation = $false
     )

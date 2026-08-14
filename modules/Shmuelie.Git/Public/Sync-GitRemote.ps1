@@ -137,14 +137,16 @@ function Sync-GitRemote {
 
     $output = $null
     $failed = $false
+    $gitDirectoryArgs = @('-C', (Get-Location).ProviderPath)
 
     if ($resolvePlan.Count -eq 0) {
         # Original behavior: one 'git fetch' for the whole request.
-        $fetchArgs = @('fetch')
+        $fetchArgs = $gitDirectoryArgs + @('fetch')
         $fetchArgs += if ($Remote) { $Remote } else { '--all' }
         $fetchArgs += $pruneArg
-        $output = git @fetchArgs 2>&1
-        if ($LASTEXITCODE -ne 0) { $failed = $true }
+        $result = Invoke-GitWithEnvironment -Arguments $fetchArgs -Environment (Get-GitFetchParseEnvironment)
+        $output = $result.Output
+        if ($result.ExitCode -ne 0) { $failed = $true }
     }
     else {
         # Per-remote mode: tokened fetch for planned remotes, plain fetch for
@@ -152,13 +154,13 @@ function Sync-GitRemote {
         $collected = [System.Collections.Generic.List[string]]::new()
         foreach ($remoteName in $remoteSet) {
             if (-not $remoteName) { continue }
-            $baseArgs = @('fetch', $remoteName) + $pruneArg
+            $baseArgs = $gitDirectoryArgs + @('fetch', $remoteName) + $pruneArg
 
             if ($resolvePlan.ContainsKey($remoteName)) {
                 $result = Invoke-GitHubTokenedFetch -Arguments $baseArgs -Plan $resolvePlan[$remoteName]
             }
             else {
-                $result = Invoke-GitWithEnvironment -Arguments $baseArgs
+                $result = Invoke-GitWithEnvironment -Arguments $baseArgs -Environment (Get-GitFetchParseEnvironment)
             }
 
             foreach ($l in $result.Output) { $collected.Add($l) }
@@ -171,7 +173,7 @@ function Sync-GitRemote {
     }
 
     if ($failed -and $resolvePlan.Count -eq 0) {
-        Write-Error "git fetch failed (exit code $LASTEXITCODE)."
+        Write-Error "git fetch failed (exit code $($result.ExitCode))."
         return
     }
 
@@ -222,7 +224,7 @@ function Sync-GitRemote {
                 Summary    = $text
             }
         }
-        elseif ($text -match '^\s+[0-9a-f]+\.\.[0-9a-f]+\s+\S+\s+->\s+(\S+)') {
+        elseif ($text -match '^[0-9a-f]+\.\.[0-9a-f]+\s+\S+\s+->\s+(\S+)') {
             [PSCustomObject]@{
                 PSTypeName = 'GitFetchResult'
                 Action     = 'Updated'
@@ -232,6 +234,26 @@ function Sync-GitRemote {
         }
         # Skip "Fetching <remote>" and "From <url>" header lines
     }
+}
+
+function Get-GitFetchParseEnvironment {
+    <#
+    .SYNOPSIS
+    Return locale environment variables that keep parsed git fetch output stable.
+    #>
+    [OutputType([hashtable])]
+    [CmdletBinding()]
+    param([hashtable]$Environment)
+
+    $merged = @{}
+    if ($Environment) {
+        foreach ($key in $Environment.Keys) {
+            $merged[$key] = $Environment[$key]
+        }
+    }
+    $merged['LC_ALL'] = 'C'
+    $merged['LANG'] = 'C'
+    $merged
 }
 
 function Invoke-GitHubTokenedFetch {
@@ -271,7 +293,7 @@ function Invoke-GitHubTokenedFetch {
         $token = Get-GitHubAccountToken -HostName $gitHost -Account $account
         if (-not $token) { continue }
 
-        $result = Invoke-GitWithEnvironment -Arguments $Arguments -Environment @{
+        $result = Invoke-GitWithEnvironment -Arguments $Arguments -Environment (Get-GitFetchParseEnvironment @{
                 GH_TOKEN            = $token
                 GH_HOST             = $gitHost
                 # The fallback deliberately fetches with accounts that may be denied;
@@ -279,7 +301,7 @@ function Invoke-GitHubTokenedFetch {
                 # never hang and a denied account fails fast to the next candidate.
                 GIT_TERMINAL_PROMPT = '0'
                 GCM_INTERACTIVE     = 'never'
-            }
+            })
         $last = $result
 
         if ($result.ExitCode -eq 0) {
@@ -299,5 +321,5 @@ function Invoke-GitHubTokenedFetch {
 
     # No usable token for any candidate: fall back to a plain fetch so behavior
     # matches a machine where account resolution never engaged.
-    Invoke-GitWithEnvironment -Arguments $Arguments
+    Invoke-GitWithEnvironment -Arguments $Arguments -Environment (Get-GitFetchParseEnvironment)
 }
