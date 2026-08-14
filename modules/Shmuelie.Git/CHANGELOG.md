@@ -24,6 +24,10 @@ Versions change only when a release is cut; unreleased work stays under
   `-GitHubAccountResolver`, and `-NoGitHubAccountResolve` parameters, forwarded
   to `Sync-GitRemote`.
 
+### Fixed
+- `Add-Worktree` now requires a non-empty `-BranchName`, failing during parameter
+  binding instead of attempting to create a worktree with an empty branch name.
+
 ## [0.2.0] - 2026-08-12
 
 ### Added

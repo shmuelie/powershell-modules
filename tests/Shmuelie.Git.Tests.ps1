@@ -72,6 +72,12 @@ BeforeAll {
     }
 }
 
+Describe 'Add-Worktree' {
+    It 'requires a non-empty branch name' {
+        { Add-Worktree -BranchName '' } | Should -Throw
+    }
+}
+
 Describe 'Get-GitStatusSummary' {
     Context 'outside a git repository' {
         It 'reports the directory is not a git repo' {
