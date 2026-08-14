@@ -6,7 +6,7 @@ function Format-GitStatusSegment {
         Takes a GitStatusSummary (from Get-GitStatusSummary) and returns an
         ANSI-colored string of the form
 
-            [branch|OP ↑A↓B +A ~M -D | +A ~M -D !C]
+            [branch|OP ↓B ↑A +A ~M -D | +A ~M -D !C]
 
         suitable for embedding in a prompt. Colors are emitted with $PSStyle, so
         the result is a plain string that can be captured, tested, or written with
@@ -57,7 +57,7 @@ function Format-GitStatusSegment {
             elseif ($Status.BehindBy -gt 0) { $fg.BrightRed }                                  # Red
             else { $fg.BrightCyan }                                                            # Cyan
 
-        $relation = if ($Status.AheadBy -gt 0 -and $Status.BehindBy -gt 0) { "↑$($Status.AheadBy)↓$($Status.BehindBy)" }
+        $relation = if ($Status.AheadBy -gt 0 -and $Status.BehindBy -gt 0) { "↓$($Status.BehindBy) ↑$($Status.AheadBy)" }
             elseif ($Status.AheadBy -gt 0) { "↑$($Status.AheadBy)" }
             elseif ($Status.BehindBy -gt 0) { "↓$($Status.BehindBy)" }
             elseif ($Status.UpstreamGone) { '×' }
