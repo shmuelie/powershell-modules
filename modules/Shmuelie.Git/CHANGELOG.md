@@ -24,6 +24,11 @@ Versions change only when a release is cut; unreleased work stays under
   `-GitHubAccountResolver`, and `-NoGitHubAccountResolve` parameters, forwarded
   to `Sync-GitRemote`.
 
+### Fixed
+- `Repair-RepositoryLayout` now uses the platform path separator when converting
+  nested git branch names into directories and when checking whether the current
+  directory is inside a repository or worktree.
+
 ## [0.2.0] - 2026-08-12
 
 ### Added

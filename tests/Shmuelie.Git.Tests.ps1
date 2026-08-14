@@ -2,7 +2,7 @@
 
 BeforeAll {
     $repoRoot = Split-Path (Split-Path $PSCommandPath -Parent) -Parent
-    Import-Module (Join-Path $repoRoot 'modules\Shmuelie.Git\Shmuelie.Git.psd1') -Force
+    Import-Module ([System.IO.Path]::Combine($repoRoot, 'modules', 'Shmuelie.Git', 'Shmuelie.Git.psd1')) -Force
 
     # Run a git command and throw on failure. $ErrorActionPreference does not turn
     # a native non-zero exit into a terminating error, so setup failures would
@@ -241,6 +241,48 @@ Describe 'Get-GitStatusSummary' {
         It 'shows the ahead indicator in the status string' {
             (Get-GitStatusSummary -Path $script:aheadClone).StatusString | Should -Match ([char]0x2191 + '1')
         }
+    }
+}
+
+Describe 'Repair-RepositoryLayout' {
+    It 'converts git branch separators to native path separators' {
+        InModuleScope Shmuelie.Git {
+            ConvertTo-RepositoryLayoutPathFragment 'feature/nested' |
+                Should -BeExactly ([System.IO.Path]::Combine('feature', 'nested'))
+        }
+    }
+
+    It 'plans repo-level branch moves with native path separators' {
+        $root = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
+        $org = Join-Path $root 'example'
+        $repo = Join-Path $org 'repo'
+        New-TestRepo -Path $repo | Out-Null
+        Invoke-Git @('-C', $repo, 'checkout', '--quiet', '-b', 'feature/nested')
+
+        $result = @(Repair-RepositoryLayout -Root $root -Organization 'example' -Name 'repo' -WhatIf -Confirm:$false)
+
+        $result | Should -HaveCount 1
+        $result.Status | Should -Be 'WhatIf'
+        $result.To | Should -BeExactly ([System.IO.Path]::Combine($repo, 'feature', 'nested'))
+    }
+
+    It 'skips repo-level clones when the current directory is inside them' {
+        $root = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
+        $org = Join-Path $root 'example'
+        $repo = Join-Path $org 'repo'
+        $child = Join-Path $repo 'child'
+        New-TestRepo -Path $repo | Out-Null
+        New-Item -ItemType Directory -Path $child -Force | Out-Null
+
+        Push-Location $child
+        try {
+            $result = @(Repair-RepositoryLayout -Root $root -Organization 'example' -Name 'repo' -WhatIf -Confirm:$false)
+        } finally {
+            Pop-Location
+        }
+
+        $result | Should -HaveCount 1
+        $result.Status | Should -Be 'Skipped-CwdInside'
     }
 }
 
