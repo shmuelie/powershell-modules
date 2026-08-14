@@ -6,6 +6,8 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-08-14
+
 ### Security
 - Harden `Update-AdoNpmToken` temporary `.npmrc` handling on Windows with
   owner-only ACLs and best-effort overwrite before deletion.

@@ -6,10 +6,7 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
-### Fixed
-- `Get-GitStatusSummary -Path` now fails fast when the target path cannot be
-  entered and only calls `Pop-Location` after a successful `Push-Location`, so a
-  bad path cannot corrupt the caller's location stack.
+## [0.3.0] - 2026-08-14
 
 ### Added
 - `Sync-GitRemote` is now GitHub-account-aware. When more than one account is
@@ -30,6 +27,9 @@ Versions change only when a release is cut; unreleased work stays under
   to `Sync-GitRemote`.
 
 ### Fixed
+- `Get-GitStatusSummary -Path` now fails fast when the target path cannot be
+  entered and only calls `Pop-Location` after a successful `Push-Location`, so a
+  bad path cannot corrupt the caller's location stack.
 - `Update-Worktrees` now serializes dirty worktrees that need `git stash`
   push/pop while still fast-forwarding clean worktrees in parallel, preventing
   concurrent workers from popping each other's shared repository stash.
