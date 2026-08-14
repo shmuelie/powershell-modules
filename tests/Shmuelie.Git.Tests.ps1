@@ -72,6 +72,12 @@ BeforeAll {
     }
 }
 
+Describe 'Add-Worktree' {
+    It 'requires a non-empty branch name' {
+        { Add-Worktree -BranchName '' } | Should -Throw
+    }
+}
+
 Describe 'Get-GitStatusSummary' {
     It 'does not pop the caller location stack when -Path cannot be pushed' {
         $startingPath = (Get-Location).Path

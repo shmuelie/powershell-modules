@@ -30,6 +30,8 @@ Versions change only when a release is cut; unreleased work stays under
   to `Sync-GitRemote`.
 
 ### Fixed
+- `Add-Worktree` now requires a non-empty `-BranchName`, failing during parameter
+  binding instead of attempting to create a worktree with an empty branch name.
 - `Format-GitStatusSegment` now renders diverged upstream relations in the same
   down-then-up, space-separated order as `Get-GitStatusSummary.StatusString`
   (for example, `↓4 ↑1`).
