@@ -427,6 +427,11 @@ Describe 'Format-GitStatusSegment' {
             foreach ($key in $Override.Keys) { $props[$key] = $Override[$key] }
             [PSCustomObject]$props
         }
+
+        function ConvertTo-PlainText {
+            param([string]$Value)
+            $Value -replace "$([char]0x1b)\[[0-9;]*m", ''
+        }
     }
 
     It 'returns an empty string when the summary is not a git repo' {
@@ -435,6 +440,45 @@ Describe 'Format-GitStatusSegment' {
 
     It 'accepts pipeline input' {
         (New-Summary | Format-GitStatusSegment) | Should -Match 'main'
+    }
+
+    $relationCases = @(
+        @{
+            Name        = 'diverged branch with StatusString order'
+            Override    = @{ AheadBy = 1; BehindBy = 4 }
+            Contains    = "$([char]0x2193)4 $([char]0x2191)1"
+            NotContains = "$([char]0x2191)1$([char]0x2193)4"
+        }
+        @{
+            Name        = 'ahead-only branch'
+            Override    = @{ AheadBy = 2 }
+            Contains    = "$([char]0x2191)2"
+            NotContains = "$([char]0x2193)2 $([char]0x2191)2"
+        }
+        @{
+            Name        = 'behind-only branch'
+            Override    = @{ BehindBy = 3 }
+            Contains    = "$([char]0x2193)3"
+            NotContains = "$([char]0x2193)3 $([char]0x2191)3"
+        }
+        @{
+            Name        = 'up-to-date branch'
+            Override    = @{}
+            Contains    = "$([char]0x2261)"
+            NotContains = "$([char]0x2191)"
+        }
+        @{
+            Name        = 'gone upstream'
+            Override    = @{ UpstreamGone = $true }
+            Contains    = "$([char]0x00D7)"
+            NotContains = "$([char]0x2261)"
+        }
+    )
+
+    It 'renders the <Name> relation' -ForEach $relationCases {
+        $plain = ConvertTo-PlainText (Format-GitStatusSegment -Status (New-Summary $Override))
+        $plain | Should -Match ([regex]::Escape($Contains))
+        $plain | Should -Not -Match ([regex]::Escape($NotContains))
     }
 
     $segmentCases = @(
@@ -459,8 +503,8 @@ Describe 'Format-GitStatusSegment' {
         @{
             Name        = 'diverged (ahead and behind)'
             Override    = @{ AheadBy = 1; BehindBy = 2 }
-            Contains    = @("$([char]0x2191)1$([char]0x2193)2")
-            NotContains = @()
+            Contains    = @("$([char]0x2193)2 $([char]0x2191)1")
+            NotContains = @("$([char]0x2191)1$([char]0x2193)2")
         }
         @{
             Name        = 'gone upstream'

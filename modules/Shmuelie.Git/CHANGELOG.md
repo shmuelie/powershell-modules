@@ -30,6 +30,9 @@ Versions change only when a release is cut; unreleased work stays under
   to `Sync-GitRemote`.
 
 ### Fixed
+- `Format-GitStatusSegment` now renders diverged upstream relations in the same
+  down-then-up, space-separated order as `Get-GitStatusSummary.StatusString`
+  (for example, `↓4 ↑1`).
 - The bundled worktree predictor now drains `git` stdout and stderr concurrently
   and kills timed-out `git` processes, preventing stderr pipe deadlocks from
   permanently disabling cache refreshes.
