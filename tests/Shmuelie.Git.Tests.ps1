@@ -11,7 +11,15 @@ BeforeAll {
     # mistaken for parameters of this function.
     function Invoke-Git {
         param([Parameter(Mandatory, Position = 0)][string[]]$Arguments)
-        $output = & git @Arguments 2>&1
+        $commonConfig = @(
+            '-c', 'user.name=Test User',
+            '-c', 'user.email=test@example.com',
+            '-c', 'init.defaultBranch=main',
+            '-c', 'protocol.file.allow=always',
+            '-c', 'commit.gpgsign=false',
+            '-c', 'tag.gpgsign=false'
+        )
+        $output = & git @commonConfig @Arguments 2>&1
         if ($LASTEXITCODE -ne 0) {
             throw "git $($Arguments -join ' ') failed (exit $LASTEXITCODE): $output"
         }
@@ -394,8 +402,12 @@ Describe 'Update-Worktrees' {
         $origin = Join-Path $TestDrive 'origin.git'
         Invoke-Git @('init', '--bare', '-b', 'main', '--quiet', $origin)
 
-        $seed = New-TestRepo -Path (Join-Path $TestDrive 'seed')
-        Invoke-Git @('-C', $seed, 'remote', 'add', 'origin', $origin)
+        $seed = Join-Path $TestDrive 'seed'
+        Invoke-Git @('clone', '--quiet', $origin, $seed)
+        Set-TestRepoConfig $seed
+        Set-Content -Path (Join-Path $seed 'README.md') -Value 'initial' -NoNewline
+        Invoke-Git @('-C', $seed, 'add', 'README.md')
+        Invoke-TestCommit -Path $seed -Message 'init'
         Invoke-Git @('-C', $seed, 'push', '-u', 'origin', 'main', '--quiet')
 
         Invoke-Git @('-C', $seed, 'switch', '-c', 'branch-a', '--quiet')
@@ -413,11 +425,13 @@ Describe 'Update-Worktrees' {
         Invoke-Git @('-C', $seed, 'push', '-u', 'origin', 'branch-b', '--quiet')
         Invoke-Git @('-C', $seed, 'branch', '--set-upstream-to=origin/branch-b', 'branch-b')
 
-        Invoke-Git @('-C', $seed, 'switch', 'main', '--quiet')
+        $clone = Join-Path $TestDrive 'clone'
+        Invoke-Git @('clone', '--quiet', $origin, $clone)
+        Set-TestRepoConfig $clone
         $worktreeA = Join-Path $TestDrive 'worktree-a'
         $worktreeB = Join-Path $TestDrive 'worktree-b'
-        Invoke-Git @('-C', $seed, 'worktree', 'add', '--quiet', $worktreeA, 'branch-a')
-        Invoke-Git @('-C', $seed, 'worktree', 'add', '--quiet', $worktreeB, 'branch-b')
+        Invoke-Git @('-C', $clone, 'worktree', 'add', '--quiet', '--track', '-b', 'branch-a', $worktreeA, 'origin/branch-a')
+        Invoke-Git @('-C', $clone, 'worktree', 'add', '--quiet', '--track', '-b', 'branch-b', $worktreeB, 'origin/branch-b')
         Set-TestRepoConfig $worktreeA
         Set-TestRepoConfig $worktreeB
 
@@ -437,10 +451,14 @@ Describe 'Update-Worktrees' {
         Invoke-TestCommit -Path $updater -Message 'branch b v2'
         Invoke-Git @('-C', $updater, 'push', 'origin', 'branch-b', '--quiet')
 
+        Invoke-Git @('-C', $clone, 'fetch', '--all', '--prune')
+        Invoke-Git @('-C', $clone, 'rev-list', '--count', 'branch-a..origin/branch-a') | Should -Be '1'
+        Invoke-Git @('-C', $clone, 'rev-list', '--count', 'branch-b..origin/branch-b') | Should -Be '1'
+
         Set-Content -Path (Join-Path $worktreeA 'local-a.txt') -Value 'local change from worktree A' -NoNewline
         Set-Content -Path (Join-Path $worktreeB 'local-b.txt') -Value 'local change from worktree B' -NoNewline
 
-        $realGit = (Get-Command git -CommandType Application).Source
+        $realGit = (Get-Command git -CommandType Application | Select-Object -First 1).Source
         $shimDir = Join-Path $TestDrive 'git-shim'
         $shimState = Join-Path $TestDrive 'stash-race-state'
         New-Item -ItemType Directory -Path $shimDir, $shimState -Force | Out-Null
@@ -676,11 +694,21 @@ public static class GitShim
         $oldPath = $env:PATH
         $oldRealGit = $env:SHMUELIE_REAL_GIT
         $oldRaceState = $env:SHMUELIE_STASH_RACE_STATE
+        $oldGitTerminalPrompt = $env:GIT_TERMINAL_PROMPT
+        $oldGitConfigCount = $env:GIT_CONFIG_COUNT
+        $oldGitConfigKey0 = $env:GIT_CONFIG_KEY_0
+        $oldGitConfigValue0 = $env:GIT_CONFIG_VALUE_0
         $env:PATH = "$shimDir$([System.IO.Path]::PathSeparator)$oldPath"
         $env:SHMUELIE_REAL_GIT = $realGit
         $env:SHMUELIE_STASH_RACE_STATE = $shimState
+        $env:GIT_TERMINAL_PROMPT = '0'
+        $env:GIT_CONFIG_COUNT = '1'
+        $env:GIT_CONFIG_KEY_0 = 'protocol.file.allow'
+        $env:GIT_CONFIG_VALUE_0 = 'always'
 
-        Push-Location $seed
+        Mock -ModuleName Shmuelie.Git Sync-GitRemote { @() }
+
+        Push-Location $clone
         try {
             $results = Update-Worktrees -NoGitHubAccountResolve
         } finally {
@@ -688,6 +716,10 @@ public static class GitShim
             $env:PATH = $oldPath
             $env:SHMUELIE_REAL_GIT = $oldRealGit
             $env:SHMUELIE_STASH_RACE_STATE = $oldRaceState
+            $env:GIT_TERMINAL_PROMPT = $oldGitTerminalPrompt
+            $env:GIT_CONFIG_COUNT = $oldGitConfigCount
+            $env:GIT_CONFIG_KEY_0 = $oldGitConfigKey0
+            $env:GIT_CONFIG_VALUE_0 = $oldGitConfigValue0
         }
 
         foreach ($branch in 'branch-a', 'branch-b') {
