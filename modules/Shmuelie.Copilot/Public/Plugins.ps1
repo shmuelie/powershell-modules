@@ -81,8 +81,10 @@ function Update-CopilotPlugin {
         [string]$Name
     )
     process {
-        $exe = Resolve-CliExe -Name copilot
         $updateName = if ($PSCmdlet.ParameterSetName -eq 'ByName') { $Name } else { $InputObject.FullName }
+        Assert-CopilotShimArgument -Value $updateName -ParameterName 'Name'
+
+        $exe = Resolve-CliExe -Name copilot
         if (-not $PSCmdlet.ShouldProcess($updateName, 'copilot plugin update')) {
             return
         }
@@ -168,10 +170,14 @@ function Install-CopilotPlugin {
     )
     process {
         $installSource = if ($PSCmdlet.ParameterSetName -eq 'ByObject') {
+            Assert-CopilotShimArgument -Value $InputObject.Name -ParameterName 'InputObject.Name' -Pattern '^[A-Za-z0-9][A-Za-z0-9._#/-]*$'
+            Assert-CopilotShimArgument -Value $InputObject.Marketplace -ParameterName 'InputObject.Marketplace' -Pattern '^[A-Za-z0-9][A-Za-z0-9._#/-]*$'
             "$($InputObject.Name)@$($InputObject.Marketplace)"
         } else {
             $Source
         }
+        Assert-CopilotShimArgument -Value $installSource -ParameterName 'Source'
+
         $exe = Resolve-CliExe -Name copilot
         if ($PSCmdlet.ShouldProcess($installSource, 'copilot plugin install')) {
             # Skip if already installed.
@@ -217,8 +223,10 @@ function Uninstall-CopilotPlugin {
         [string]$Name
     )
     process {
-        $exe = Resolve-CliExe -Name copilot
         $uninstallName = if ($PSCmdlet.ParameterSetName -eq 'ByName') { $Name } else { $InputObject.FullName }
+        Assert-CopilotShimArgument -Value $uninstallName -ParameterName 'Name'
+
+        $exe = Resolve-CliExe -Name copilot
         if ($PSCmdlet.ShouldProcess($uninstallName, 'copilot plugin uninstall')) {
             & $exe plugin uninstall $uninstallName 2>&1
             if ($LASTEXITCODE -ne 0) {

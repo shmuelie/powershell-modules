@@ -11,7 +11,11 @@ BeforeAll {
         param([Parameter(Mandatory)][string]$Path)
 
         New-Item -ItemType Directory -Path $Path -Force | Out-Null
-        Set-Content -Path (Join-Path $Path 'copilot.cmd') -Value '@echo off'
+        Set-Content -Path (Join-Path $Path 'copilot.cmd') -Value @(
+            '@echo off'
+            'if defined COPILOT_TEST_LOG echo %*>>"%COPILOT_TEST_LOG%"'
+            'exit /b 0'
+        )
         $env:PATH = "$Path$([IO.Path]::PathSeparator)$script:OriginalPath"
     }
 
@@ -30,6 +34,51 @@ BeforeAll {
             'updated_at: 2026-08-12T22:00:00.000Z'
             "summary: $Summary"
         )
+    }
+}
+
+Describe 'Copilot CLI shim argument validation' {
+    BeforeEach {
+        $env:USERPROFILE = Join-Path $TestDrive 'home'
+        New-Item -ItemType Directory -Path $env:USERPROFILE -Force | Out-Null
+        $script:CopilotTestLog = Join-Path $TestDrive 'copilot.log'
+        Remove-Item $script:CopilotTestLog -Force -ErrorAction SilentlyContinue
+        $env:COPILOT_TEST_LOG = $script:CopilotTestLog
+        Add-FakeCopilot -Path (Join-Path $TestDrive 'bin')
+    }
+
+    AfterEach {
+        Remove-Item Env:\COPILOT_TEST_LOG -ErrorAction SilentlyContinue
+    }
+
+    It 'rejects an unsafe marketplace source before invoking copilot' {
+        { Register-CopilotMarketplace -Source 'owner/repo&echo-bad' -Confirm:$false } |
+            Should -Throw '*Unsafe Source value*'
+        Test-Path $script:CopilotTestLog | Should -BeFalse
+    }
+
+    It 'allows a normal plugin source through to copilot' {
+        Install-CopilotPlugin -Source 'owner/repo' -Confirm:$false
+
+        Get-Content $script:CopilotTestLog -Raw | Should -Match 'plugin install owner/repo'
+    }
+
+    It 'rejects unsafe marketplace-derived plugin names before invoking copilot' {
+        $entry = [PSCustomObject]@{
+            PSTypeName   = 'CopilotMarketplaceEntry'
+            Name         = 'plugin&echo-bad'
+            Marketplace  = 'safe-marketplace'
+            Description  = 'test'
+        }
+
+        { $entry | Install-CopilotPlugin -Confirm:$false } | Should -Throw '*Unsafe InputObject.Name value*'
+        Test-Path $script:CopilotTestLog | Should -BeFalse
+    }
+
+    It 'rejects unsafe MCP command arguments before invoking copilot' {
+        { Register-CopilotMcpServer -Name 'safe-server' -Command 'node' -ArgumentList 'server&echo-bad' -Confirm:$false } |
+            Should -Throw '*Unsafe ArgumentList value*'
+        Test-Path $script:CopilotTestLog | Should -BeFalse
     }
 }
 

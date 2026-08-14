@@ -3,6 +3,25 @@
 BeforeAll {
     $repoRoot = Split-Path (Split-Path $PSCommandPath -Parent) -Parent
     Import-Module (Join-Path $repoRoot 'modules\Shmuelie.Utilities\Shmuelie.Utilities.psd1') -Force
+
+    $script:OriginalPath = $env:PATH
+
+    function Add-FakeCode {
+        param([Parameter(Mandatory)][string]$Path)
+
+        New-Item -ItemType Directory -Path $Path -Force | Out-Null
+        Set-Content -Path (Join-Path $Path 'code.cmd') -Value @(
+            '@echo off'
+            'if defined VSCODE_TEST_LOG echo %*>>"%VSCODE_TEST_LOG%"'
+            'exit /b 0'
+        )
+        $env:PATH = "$Path$([IO.Path]::PathSeparator)$script:OriginalPath"
+    }
+}
+
+AfterAll {
+    $env:PATH = $script:OriginalPath
+    Remove-Module Shmuelie.Utilities -Force -ErrorAction SilentlyContinue
 }
 
 Describe 'Test-IsElevated' {
@@ -102,5 +121,45 @@ Describe 'Invoke-InLocation' {
         $before = (Get-Location).Path
         Invoke-InLocation -Location $target -ScriptBlock { $null } | Out-Null
         (Get-Location).Path | Should -Be $before
+    }
+}
+
+Describe 'VS Code CLI shim argument validation' {
+    BeforeEach {
+        $script:VsCodeTestLog = Join-Path $TestDrive 'code.log'
+        Remove-Item $script:VsCodeTestLog -Force -ErrorAction SilentlyContinue
+        $env:VSCODE_TEST_LOG = $script:VsCodeTestLog
+        Add-FakeCode -Path (Join-Path $TestDrive 'bin')
+    }
+
+    AfterEach {
+        Remove-Item Env:\VSCODE_TEST_LOG -ErrorAction SilentlyContinue
+    }
+
+    It 'rejects an unsafe extension id before invoking code' {
+        { Install-VsCodeExtension -Id 'publisher.extension&echo-bad' -Confirm:$false } |
+            Should -Throw '*Unsafe InstallExtension value*'
+        Test-Path $script:VsCodeTestLog | Should -BeFalse
+    }
+
+    It 'allows a normal extension id through to code' {
+        Install-VsCodeExtension -Id 'ms-python.python' -Confirm:$false
+
+        Get-Content $script:VsCodeTestLog -Raw | Should -Match '--install-extension ms-python.python'
+    }
+
+    It 'rejects an invalid goto target before invoking code' {
+        { Start-VsCode -Goto 'src\file.ps1:not-a-line' -Confirm:$false } |
+            Should -Throw '*Unsafe Goto value*'
+        Test-Path $script:VsCodeTestLog | Should -BeFalse
+    }
+
+    It 'passes path arguments after an option separator' {
+        $workspace = Join-Path $TestDrive 'workspace'
+        New-Item -ItemType Directory -Path $workspace -Force | Out-Null
+
+        Start-VsCode -Path $workspace -Confirm:$false
+
+        Get-Content $script:VsCodeTestLog -Raw | Should -Match ([regex]::Escape("-- $workspace"))
     }
 }

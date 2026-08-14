@@ -1,3 +1,54 @@
+function Set-AdoNpmTokenOwnerOnlyAcl {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path,
+
+        [switch]$Directory
+    )
+
+    if (-not $IsWindows) { return }
+
+    $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+    $acl = Get-Acl -LiteralPath $Path
+    $acl.SetOwner($identity)
+    $acl.SetAccessRuleProtection($true, $false)
+    foreach ($rule in @($acl.Access)) {
+        [void]$acl.RemoveAccessRuleSpecific($rule)
+    }
+
+    if ($Directory) {
+        $rule = [System.Security.AccessControl.FileSystemAccessRule]::new(
+            $identity,
+            [System.Security.AccessControl.FileSystemRights]::FullControl,
+            [System.Security.AccessControl.InheritanceFlags]'ContainerInherit,ObjectInherit',
+            [System.Security.AccessControl.PropagationFlags]::None,
+            [System.Security.AccessControl.AccessControlType]::Allow)
+    } else {
+        $rule = [System.Security.AccessControl.FileSystemAccessRule]::new(
+            $identity,
+            [System.Security.AccessControl.FileSystemRights]::FullControl,
+            [System.Security.AccessControl.AccessControlType]::Allow)
+    }
+
+    $acl.SetAccessRule($rule)
+    Set-Acl -LiteralPath $Path -AclObject $acl
+}
+
+function Clear-AdoNpmTokenFile {
+    param([Parameter(Mandatory)][string]$Path)
+
+    if (-not (Test-Path -LiteralPath $Path)) { return }
+
+    try {
+        $item = Get-Item -LiteralPath $Path -ErrorAction Stop
+        if ($item.Length -gt 0) {
+            [System.IO.File]::WriteAllBytes($item.FullName, [byte[]]::new([int]$item.Length))
+        }
+    } catch {
+        Write-Verbose "Failed to overwrite temporary npm token file before deletion: $_"
+    }
+}
+
 function Update-AdoNpmToken {
     <#
     .SYNOPSIS
@@ -61,7 +112,10 @@ function Update-AdoNpmToken {
 
         # Build a temporary .npmrc with the feed entry so the credprovider writes the token into it
         $tempDir = New-Item -ItemType Directory -Path (Join-Path ([System.IO.Path]::GetTempPath()) "ado-npm-$([System.IO.Path]::GetRandomFileName())")
-        $tempNpmrc = Join-Path $tempDir '.npmrc'
+        Set-AdoNpmTokenOwnerOnlyAcl -Path $tempDir.FullName -Directory
+        $tempNpmrc = Join-Path $tempDir.FullName '.npmrc'
+        New-Item -ItemType File -Path $tempNpmrc -Force | Out-Null
+        Set-AdoNpmTokenOwnerOnlyAcl -Path $tempNpmrc
         Set-Content -Path $tempNpmrc -Value "//$($entry.Feed -replace '^https?://', ''):_authToken="
 
         try {
@@ -92,7 +146,8 @@ function Update-AdoNpmToken {
             }
         }
         finally {
-            Remove-Item $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+            Clear-AdoNpmTokenFile -Path $tempNpmrc
+            Remove-Item $tempDir.FullName -Recurse -Force -ErrorAction SilentlyContinue
         }
     }
 }
