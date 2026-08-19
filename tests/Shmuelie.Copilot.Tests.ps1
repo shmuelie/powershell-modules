@@ -17,7 +17,11 @@ BeforeAll {
             'exit /b 0'
         )
         $copilot = Join-Path $Path 'copilot'
-        Set-Content -Path $copilot -Value '#!/usr/bin/env sh'
+        Set-Content -Path $copilot -Value @(
+            '#!/usr/bin/env sh'
+            'if [ -n "$COPILOT_TEST_LOG" ]; then printf "%s\n" "$*" >> "$COPILOT_TEST_LOG"; fi'
+            'exit 0'
+        )
         if (-not $IsWindows) { & chmod +x $copilot }
         $env:PATH = "$Path$([IO.Path]::PathSeparator)$script:OriginalPath"
     }
@@ -192,5 +196,65 @@ Describe 'Get-CopilotLaunchPlan' {
         $sessionIdArg | Should -BeGreaterOrEqual 0
         $plan.Args[$sessionIdArg + 1] | Should -Be $sessionId
         $plan.Args | Should -Not -Contain '--resume'
+    }
+}
+
+Describe 'Start-Copilot' {
+    BeforeEach {
+        $testHome = Join-Path $TestDrive 'home'
+        $env:USERPROFILE = Join-Path $TestDrive 'legacy-userprofile'
+        New-Item -ItemType Directory -Path $testHome -Force | Out-Null
+        Mock -ModuleName Shmuelie.Copilot -CommandName Get-CopilotHome -MockWith { $testHome }
+
+        $script:CopilotTestLog = Join-Path $TestDrive 'copilot.log'
+        Remove-Item $script:CopilotTestLog -Force -ErrorAction SilentlyContinue
+        $env:COPILOT_TEST_LOG = $script:CopilotTestLog
+        Add-FakeCopilot -Path (Join-Path $TestDrive 'bin')
+        $script:FakeCopilotExe = (Get-Command copilot -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
+
+        $script:ObservedDeferResume = @()
+        Mock -ModuleName Shmuelie.Copilot -CommandName Get-CopilotLaunchPlan -MockWith {
+            param([string]$Model, [switch]$DeferResume)
+
+            $script:ObservedDeferResume += [bool]$DeferResume
+            [pscustomobject]@{
+                PSTypeName  = 'CopilotLaunchPlan'
+                Exe         = $script:FakeCopilotExe
+                Args        = @('--model', $Model)
+                Passthrough = $false
+            }
+        }
+    }
+
+    AfterEach {
+        Remove-Item Env:\COPILOT_TEST_LOG -ErrorAction SilentlyContinue
+    }
+
+    It 'defers resume while rendering WhatIf output without invoking copilot' {
+        $transcriptPath = Join-Path $TestDrive 'whatif-transcript.txt'
+        Start-Transcript -Path $transcriptPath | Out-Null
+        try {
+            Start-Copilot -Model 'gpt-5.4' -WhatIf
+        } finally {
+            Stop-Transcript | Out-Null
+        }
+
+        Should -Invoke -ModuleName Shmuelie.Copilot -CommandName Get-CopilotLaunchPlan -Exactly -Times 1
+        $script:ObservedDeferResume | Should -HaveCount 1
+        $script:ObservedDeferResume[0] | Should -BeTrue
+        Test-Path $script:CopilotTestLog | Should -BeFalse
+
+        $renderedOutput = Get-Content $transcriptPath -Raw
+        $renderedOutput | Should -Match ([regex]::Escape($script:FakeCopilotExe))
+        $renderedOutput | Should -Match ([regex]::Escape('--model gpt-5.4'))
+    }
+
+    It 'keeps normal launches interactive by not deferring resume by default' {
+        Start-Copilot -Model 'gpt-5.4' -Confirm:$false
+
+        Should -Invoke -ModuleName Shmuelie.Copilot -CommandName Get-CopilotLaunchPlan -Exactly -Times 1
+        $script:ObservedDeferResume | Should -HaveCount 1
+        $script:ObservedDeferResume[0] | Should -BeFalse
+        Get-Content $script:CopilotTestLog -Raw | Should -Match ([regex]::Escape('--model gpt-5.4'))
     }
 }
