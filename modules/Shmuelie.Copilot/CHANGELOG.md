@@ -6,6 +6,10 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+### Fixed
+- `Start-Copilot -WhatIf` now defers session resume while rendering the dry-run
+  command line, so it never opens the interactive resume picker.
+
 ## [0.1.2] - 2026-08-14
 
 ### Fixed
