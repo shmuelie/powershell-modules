@@ -284,6 +284,10 @@ function Start-Copilot {
         example, to wrap the launch with a different engine) without duplicating
         the argument or resume logic.
 
+        When -WhatIf is active, Start-Copilot computes this plan with resume
+        deferred so previewing the command never opens the interactive session
+        picker.
+
     .PARAMETER DeferResume
         Skip the automatic session-resume decision entirely: no interactive
         picker runs and no --resume argument is added, leaving session selection
@@ -530,7 +534,20 @@ function Start-Copilot {
             $planParams[$kv.Key] = $kv.Value
         }
     }
-    $launchPlan = Get-CopilotLaunchPlan @planParams
+
+    $originalDeferResume = $planParams.ContainsKey('DeferResume') -and [bool]$planParams['DeferResume']
+    $confirmationMayPrompt =
+        $ConfirmPreference -ne [System.Management.Automation.ConfirmImpact]::None -and
+        [System.Management.Automation.ConfirmImpact]::Medium -ge $ConfirmPreference
+    $useNonInteractivePreview = $WhatIfPreference -or (-not $PassThru -and $confirmationMayPrompt)
+    $previewPlanDiffers = $useNonInteractivePreview -and -not $originalDeferResume
+
+    $previewPlanParams = $planParams.Clone()
+    if ($useNonInteractivePreview) {
+        $previewPlanParams['DeferResume'] = $true
+    }
+
+    $launchPlan = Get-CopilotLaunchPlan @previewPlanParams
 
     # -PassThru: return the resolved launch plan without executing.
     if ($PassThru) {
@@ -539,6 +556,10 @@ function Start-Copilot {
 
     $exitCode = $null
     if ($PSCmdlet.ShouldProcess("$($launchPlan.Exe) $($launchPlan.Args -join ' ')", 'Execute')) {
+        if ($previewPlanDiffers) {
+            $launchPlan = Get-CopilotLaunchPlan @planParams
+        }
+
         & $launchPlan.Exe @($launchPlan.Args)
         $exitCode = $LASTEXITCODE
     }

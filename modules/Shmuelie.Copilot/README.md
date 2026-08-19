@@ -45,7 +45,8 @@ Start-Copilot
   and emit no `--resume`, letting an overlay own session selection.
   `Get-CopilotLaunchPlan` exposes the same plan directly — it is the shared core
   `Start-Copilot` delegates to, so an overlay can build identical command lines
-  without re-invoking `Start-Copilot`.
+  without re-invoking `Start-Copilot`. `-WhatIf` also defers resume while
+  rendering the command line, so previews never open the session picker.
 - **Terminal recovery** after a non-zero exit (via `Reset-TerminalModes` when
   available).
 - **`update` / `help` passthrough** straight to the executable.
