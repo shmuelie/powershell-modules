@@ -6,6 +6,10 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+### Fixed
+- Gate `Get-NvmRoot -Path` with `SupportsShouldProcess` so `-WhatIf` and
+  `-Confirm` are honored before changing the nvm root.
+
 ## [0.1.1] - 2026-08-14
 
 ### Security

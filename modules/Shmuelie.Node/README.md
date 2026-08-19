@@ -36,6 +36,7 @@ Install-NodeVersion -Version 22.11.0
 Set-NodeVersion -Latest
 Get-NpmPackage -Global -Outdated | Update-NpmPackage -Global
 Update-AdoNpmToken -Feed 'https://pkgs.dev.azure.com/org/_packaging/feed/npm/registry/'
+Get-NvmRoot -Path 'C:\nvm' -WhatIf
 ```
 
 ## Requirements

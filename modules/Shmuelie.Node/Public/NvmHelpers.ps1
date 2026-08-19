@@ -338,14 +338,16 @@ function Get-NvmRoot {
         Get-NvmRoot -Path "C:\nvm"
         Sets a new nvm root directory
     #>
-    [CmdletBinding()]
+    [CmdletBinding(SupportsShouldProcess)]
     param(
         [Parameter()]
         [string]$Path
     )
     
     if ($Path) {
-        nvm root $Path
+        if ($PSCmdlet.ShouldProcess('nvm root', "Set to '$Path'")) {
+            nvm root $Path
+        }
     }
     else {
         nvm root
