@@ -1,3 +1,29 @@
+function Invoke-RegistryHiveCommand {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [ValidateSet('LOAD', 'UNLOAD')]
+        [string]$Action,
+
+        [Parameter(Mandatory)]
+        [string]$Key,
+
+        [string]$Hive
+    )
+
+    $argumentList = @($Action, $Key)
+    if ($Hive) {
+        $argumentList += $Hive
+    }
+
+    $output = & reg.exe @argumentList 2>&1
+    foreach ($line in $output) {
+        Write-Verbose "$line"
+    }
+
+    return $LASTEXITCODE
+}
+
 function Get-InstalledApplications {
     <#
     .SYNOPSIS
@@ -6,6 +32,7 @@ function Get-InstalledApplications {
     Queries the Windows registry uninstall keys to find installed applications.
     Supports multiple scopes: global (HKLM), current user, all users, or combinations.
     Querying all users requires administrative privileges to mount offline user hives.
+    Use -WhatIf to preview offline user hive mount and unmount operations without changing the registry.
     .PARAMETER Scope
     The scope of applications to query. Defaults to 'GlobalAndAllUsers'.
     Valid values: Global, GlobalAndCurrentUser, GlobalAndAllUsers, CurrentUser, AllUsers.
@@ -69,17 +96,29 @@ function Get-InstalledApplications {
             Write-Verbose " -> Mounting hive at $Hive"
 
             if (Test-Path $Hive) {
-            
-                REG LOAD HKU\temp $Hive
 
-                Get-ItemProperty -Path "Registry::\HKEY_USERS\temp\$32BitPath" | ForEach-Object { $Apps.Add($_) }
-                Get-ItemProperty -Path "Registry::\HKEY_USERS\temp\$64BitPath" | ForEach-Object { $Apps.Add($_) }
+                if ($PSCmdlet.ShouldProcess("HKU\temp from $Hive", 'REG LOAD')) {
+                    $loadExitCode = Invoke-RegistryHiveCommand -Action LOAD -Key 'HKU\temp' -Hive $Hive
+                    if ($loadExitCode -ne 0) {
+                        Write-Warning "Failed to load registry hive '$Hive' into HKU\temp. REG LOAD exited with code $loadExitCode; skipping this profile."
+                    } else {
+                        try {
+                            Get-ItemProperty -Path "Registry::\HKEY_USERS\temp\$32BitPath" | ForEach-Object { $Apps.Add($_) }
+                            Get-ItemProperty -Path "Registry::\HKEY_USERS\temp\$64BitPath" | ForEach-Object { $Apps.Add($_) }
+                        } finally {
+                            # Run manual GC to allow hive to be unmounted
+                            [GC]::Collect()
+                            [GC]::WaitForPendingFinalizers()
 
-                # Run manual GC to allow hive to be unmounted
-                [GC]::Collect()
-                [GC]::WaitForPendingFinalizers()
-            
-                REG UNLOAD HKU\temp
+                            if ($PSCmdlet.ShouldProcess('HKU\temp', 'REG UNLOAD')) {
+                                $unloadExitCode = Invoke-RegistryHiveCommand -Action UNLOAD -Key 'HKU\temp'
+                                if ($unloadExitCode -ne 0) {
+                                    Write-Warning "Failed to unload registry hive HKU\temp after reading '$Hive'. REG UNLOAD exited with code $unloadExitCode."
+                                }
+                            }
+                        }
+                    }
+                }
 
             } else {
                 Write-Warning "Unable to access registry hive at $Hive"
