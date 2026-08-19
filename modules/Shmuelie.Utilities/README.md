@@ -33,6 +33,8 @@ Import-Module Shmuelie.Utilities
   alternate screen, bracketed paste, kitty keyboard flags) by a crashed TUI.
 - `Get-ServiceProcess` resolves a Windows service to its hosting process, so it
   composes with `Stop-Process` and friends.
+- `Get-InstalledApplications -Scope AllUsers` honors `-WhatIf` for offline user
+  hive load/unload operations and reports registry mount failures.
 - `Invoke-InLocation` runs a script block in a location and always returns, even
   on Ctrl+C.
 
