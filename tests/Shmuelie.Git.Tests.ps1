@@ -355,6 +355,18 @@ Describe 'Find-StaleBranch' {
             }
             'file:///' + $remoteUrlPath
         }
+
+        function Add-GoneUpstreamBranch {
+            param(
+                [Parameter(Mandatory)][string]$Repo,
+                [Parameter(Mandatory)][string]$Branch
+            )
+
+            Invoke-Git @('-C', $Repo, 'branch', $Branch)
+            Invoke-Git @('-C', $Repo, 'update-ref', "refs/remotes/origin/$Branch", 'HEAD')
+            Invoke-Git @('-C', $Repo, 'branch', '--set-upstream-to', "origin/$Branch", $Branch)
+            Invoke-Git @('-C', $Repo, 'update-ref', '-d', "refs/remotes/origin/$Branch")
+        }
     }
 
     BeforeEach {
@@ -372,6 +384,40 @@ Describe 'Find-StaleBranch' {
         Remove-Variable -Name FindStaleBranchAzCalls -Scope Global -Force -ErrorAction SilentlyContinue
     }
 
+    It 'excludes never-pushed branches by default and includes gone upstream branches' {
+        $repo = New-TestRepo -Path (Join-Path $TestDrive 'stale-default-filter')
+        $remoteUrl = New-AdoLikeRemote -Path (Join-Path $TestDrive 'stale-default-remote')
+        Invoke-Git @('-C', $repo, 'remote', 'add', 'origin', $remoteUrl)
+        Add-GoneUpstreamBranch -Repo $repo -Branch 'user/test/gone-branch'
+        Invoke-Git @('-C', $repo, 'branch', 'user/test/never-pushed')
+
+        Push-Location $repo
+        try {
+            $result = @(Find-StaleBranch -User test)
+        } finally {
+            Pop-Location
+        }
+
+        $result.Branch | Should -Be @('user/test/gone-branch')
+    }
+
+    It 'includes never-pushed branches when explicitly requested' {
+        $repo = New-TestRepo -Path (Join-Path $TestDrive 'stale-include-never-pushed')
+        $remoteUrl = New-AdoLikeRemote -Path (Join-Path $TestDrive 'stale-include-remote')
+        Invoke-Git @('-C', $repo, 'remote', 'add', 'origin', $remoteUrl)
+        Add-GoneUpstreamBranch -Repo $repo -Branch 'user/test/gone-branch'
+        Invoke-Git @('-C', $repo, 'branch', 'user/test/never-pushed')
+
+        Push-Location $repo
+        try {
+            $result = @(Find-StaleBranch -User test -IncludeNeverPushed)
+        } finally {
+            Pop-Location
+        }
+
+        $result.Branch | Sort-Object | Should -Be @('user/test/gone-branch', 'user/test/never-pushed')
+    }
+
     It 'queries PR status for branch names in the safe allow-list' {
         $repo = New-TestRepo -Path (Join-Path $TestDrive 'safe-stale-branch')
         $remoteUrl = New-AdoLikeRemote -Path (Join-Path $TestDrive 'safe-remote')
@@ -380,7 +426,7 @@ Describe 'Find-StaleBranch' {
 
         Push-Location $repo
         try {
-            $result = Find-StaleBranch -IncludePrStatus -User test
+            $result = Find-StaleBranch -IncludePrStatus -IncludeNeverPushed -User test
         } finally {
             Pop-Location
         }
@@ -406,7 +452,7 @@ Describe 'Find-StaleBranch' {
 
         Push-Location $repo
         try {
-            $result = Find-StaleBranch -IncludePrStatus -User test
+            $result = Find-StaleBranch -IncludePrStatus -IncludeNeverPushed -User test
         } finally {
             Pop-Location
         }
@@ -428,7 +474,7 @@ Describe 'Find-StaleBranch' {
 
         Push-Location $repo
         try {
-            $result = Find-StaleBranch -IncludePrStatus -User test -WarningVariable warnings
+            $result = Find-StaleBranch -IncludePrStatus -IncludeNeverPushed -User test -WarningVariable warnings
         } finally {
             Pop-Location
         }
@@ -451,7 +497,7 @@ Describe 'Find-StaleBranch' {
 
         Push-Location $repo
         try {
-            $result = Find-StaleBranch -IncludePrStatus -User test -WarningVariable warnings
+            $result = Find-StaleBranch -IncludePrStatus -IncludeNeverPushed -User test -WarningVariable warnings
         } finally {
             Pop-Location
         }
