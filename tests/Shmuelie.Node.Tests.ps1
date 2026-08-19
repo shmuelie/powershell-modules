@@ -5,6 +5,11 @@ BeforeAll {
     $script:ModuleManifest = [System.IO.Path]::Combine($repoRoot, 'modules', 'Shmuelie.Node', 'Shmuelie.Node.psd1')
     Import-Module $script:ModuleManifest -Force
 
+    # Provide a stub so 'nvm' is mockable on machines where nvm is not installed
+    # (e.g. CI). Without an existing command, Pester's Mock throws
+    # CommandNotFoundException. The stub also shadows any real nvm for determinism.
+    function global:nvm { }
+
     function ConvertTo-SingleQuotedLiteral {
         param([Parameter(Mandatory)][string]$Value)
 
@@ -13,6 +18,7 @@ BeforeAll {
 }
 
 AfterAll {
+    Remove-Item -Path Function:\nvm -ErrorAction SilentlyContinue
     Remove-Module Shmuelie.Node -Force -ErrorAction SilentlyContinue
 }
 
