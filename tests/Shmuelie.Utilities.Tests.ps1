@@ -124,6 +124,70 @@ Describe 'Invoke-InLocation' {
     }
 }
 
+Describe 'Get-InstalledApplications all-user hive handling' -Skip:(-not $IsWindows) {
+    BeforeEach {
+        Mock -ModuleName Shmuelie.Utilities Test-IsElevated { $true }
+        Mock -ModuleName Shmuelie.Utilities Get-CimInstance {
+            [PSCustomObject]@{
+                LocalPath = 'C:\Users\OfflineUser'
+                SID       = 'S-1-5-21-1000'
+                Loaded    = $false
+                Special   = $false
+            }
+        } -ParameterFilter { $ClassName -eq 'Win32_UserProfile' }
+        Mock -ModuleName Shmuelie.Utilities Test-Path { $true } -ParameterFilter { $Path -eq 'C:\Users\OfflineUser\NTUSER.DAT' }
+    }
+
+    It 'does not load or unload offline hives under WhatIf' {
+        Mock -ModuleName Shmuelie.Utilities Invoke-RegistryHiveCommand { throw 'REG should not be invoked under WhatIf' }
+        Mock -ModuleName Shmuelie.Utilities Get-ItemProperty { throw 'Offline hive should not be read when WhatIf skips loading' }
+
+        Get-InstalledApplications -Scope AllUsers -WhatIf | Should -BeNullOrEmpty
+
+        Should -Invoke -ModuleName Shmuelie.Utilities Invoke-RegistryHiveCommand -Times 0
+        Should -Invoke -ModuleName Shmuelie.Utilities Get-ItemProperty -Times 0
+    }
+
+    It 'surfaces failed loads and skips dependent reads' {
+        Mock -ModuleName Shmuelie.Utilities Invoke-RegistryHiveCommand { 5 } -ParameterFilter { $Action -eq 'LOAD' }
+        Mock -ModuleName Shmuelie.Utilities Invoke-RegistryHiveCommand { throw 'Unload should not run after a failed load' } -ParameterFilter { $Action -eq 'UNLOAD' }
+        Mock -ModuleName Shmuelie.Utilities Get-ItemProperty { throw 'Offline hive should not be read after a failed load' }
+        Mock -ModuleName Shmuelie.Utilities Write-Warning { }
+
+        Get-InstalledApplications -Scope AllUsers | Should -BeNullOrEmpty
+
+        Should -Invoke -ModuleName Shmuelie.Utilities Invoke-RegistryHiveCommand -Times 1 -ParameterFilter { $Action -eq 'LOAD' }
+        Should -Invoke -ModuleName Shmuelie.Utilities Invoke-RegistryHiveCommand -Times 0 -ParameterFilter { $Action -eq 'UNLOAD' }
+        Should -Invoke -ModuleName Shmuelie.Utilities Get-ItemProperty -Times 0
+        Should -Invoke -ModuleName Shmuelie.Utilities Write-Warning -Times 1 -ParameterFilter { $Message -like '*REG LOAD exited with code 5*' }
+    }
+
+    It 'unloads offline hives in a finally block when reads throw' {
+        Mock -ModuleName Shmuelie.Utilities Invoke-RegistryHiveCommand { 0 } -ParameterFilter { $Action -eq 'LOAD' }
+        Mock -ModuleName Shmuelie.Utilities Invoke-RegistryHiveCommand { 0 } -ParameterFilter { $Action -eq 'UNLOAD' }
+        Mock -ModuleName Shmuelie.Utilities Get-ItemProperty { throw 'read failed' }
+
+        { Get-InstalledApplications -Scope AllUsers } | Should -Throw '*read failed*'
+
+        Should -Invoke -ModuleName Shmuelie.Utilities Invoke-RegistryHiveCommand -Times 1 -ParameterFilter { $Action -eq 'LOAD' }
+        Should -Invoke -ModuleName Shmuelie.Utilities Invoke-RegistryHiveCommand -Times 1 -ParameterFilter { $Action -eq 'UNLOAD' }
+    }
+
+    It 'surfaces failed unloads' {
+        Mock -ModuleName Shmuelie.Utilities Invoke-RegistryHiveCommand { 0 } -ParameterFilter { $Action -eq 'LOAD' }
+        Mock -ModuleName Shmuelie.Utilities Invoke-RegistryHiveCommand { 7 } -ParameterFilter { $Action -eq 'UNLOAD' }
+        Mock -ModuleName Shmuelie.Utilities Get-ItemProperty { [PSCustomObject]@{ DisplayName = 'Example App' } }
+        Mock -ModuleName Shmuelie.Utilities Write-Warning { }
+
+        $apps = @(Get-InstalledApplications -Scope AllUsers)
+
+        $apps | Should -HaveCount 2
+        Should -Invoke -ModuleName Shmuelie.Utilities Invoke-RegistryHiveCommand -Times 1 -ParameterFilter { $Action -eq 'LOAD' }
+        Should -Invoke -ModuleName Shmuelie.Utilities Invoke-RegistryHiveCommand -Times 1 -ParameterFilter { $Action -eq 'UNLOAD' }
+        Should -Invoke -ModuleName Shmuelie.Utilities Write-Warning -Times 1 -ParameterFilter { $Message -like '*REG UNLOAD exited with code 7*' }
+    }
+}
+
 Describe 'VS Code CLI shim argument validation' {
     BeforeEach {
         $script:VsCodeTestLog = Join-Path $TestDrive 'code.log'
