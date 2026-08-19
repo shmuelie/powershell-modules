@@ -6,6 +6,10 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+### Fixed
+- `Find-StaleBranch` no longer reports never-pushed local branches by default;
+  use `-IncludeNeverPushed` to include local-only branches intentionally.
+
 ## [0.3.0] - 2026-08-14
 
 ### Added
