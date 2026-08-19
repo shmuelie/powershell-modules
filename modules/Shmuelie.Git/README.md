@@ -26,7 +26,7 @@ Import-Module Shmuelie.Git
 | `Remove-Worktree` | Remove a worktree (optionally deleting its branch) |
 | `Set-Worktree` | Switch to a worktree by branch name |
 | `Update-Worktrees` | Fast-forward every worktree from upstream (forwards the `Sync-GitRemote` GitHub-account options to the fetch) |
-| `Find-StaleBranch` | Find local branches whose upstream branch is gone |
+| `Find-StaleBranch` | Find local branches whose upstream branch is gone (`-IncludeNeverPushed` also includes local-only branches) |
 | `Get-GitStatusSummary` | Parse `git status` into a typed object (branch, ahead/behind, conflicts, stash, operation) |
 | `Format-GitStatusSegment` | Render a `GitStatusSummary` as a colored posh-git-style prompt segment (`$PSStyle` string; `-ShowChangeCounts` toggles the change counts) |
 | `Update-WorktreePrediction` | Refresh the bundled predictor for the current directory |

@@ -3,8 +3,10 @@ function Find-StaleBranch {
     .SYNOPSIS
         Find local branches whose remote branch no longer exists.
     .DESCRIPTION
-        Compares local branches against remote refs to identify stale branches
-        that were deleted from the remote (e.g., after a PR was merged or abandoned).
+        Compares local branches with gone upstreams against remote refs to identify
+        stale branches that were deleted from the remote (e.g., after a PR was
+        merged or abandoned). Local branches that were never pushed are excluded
+        by default; use -IncludeNeverPushed to include them.
 
         Optionally queries Azure DevOps for PR status to explain why the branch
         was deleted (completed/merged, abandoned, or manually deleted).
@@ -16,6 +18,9 @@ function Find-StaleBranch {
     .PARAMETER IncludePrStatus
         Query Azure DevOps for PR status on each stale branch. This makes
         one API call per stale branch and is slower.
+    .PARAMETER IncludeNeverPushed
+        Include local branches with no configured upstream. By default, only
+        branches whose configured upstream is gone are considered stale.
     .PARAMETER All
         Include all local branches, not just those matching the user filter.
     .EXAMPLE
@@ -28,6 +33,9 @@ function Find-StaleBranch {
         Find-StaleBranch -All
         Lists all stale branches regardless of user.
     .EXAMPLE
+        Find-StaleBranch -IncludeNeverPushed
+        Lists stale branches and local branches that have never been pushed.
+    .EXAMPLE
         Find-StaleBranch | Remove-Worktree
         Removes worktrees for stale branches.
     #>
@@ -39,6 +47,8 @@ function Find-StaleBranch {
         [string]$User,
 
         [switch]$IncludePrStatus,
+
+        [switch]$IncludeNeverPushed,
 
         [switch]$All
     )
@@ -80,8 +90,8 @@ function Find-StaleBranch {
             $upstream = $parts[1]
             $upstreamTrack = $parts[2]
 
-            # Keep branches with no upstream or an upstream whose tracking ref is gone.
-            if ($upstream -and $upstreamTrack -ne '[gone]') { continue }
+            # Keep gone upstreams by default; optionally include local-only branches.
+            if ($upstreamTrack -ne '[gone]' -and ($upstream -or -not $IncludeNeverPushed)) { continue }
 
             # Apply user filter
             if ($userPrefix -and -not $branch.StartsWith($userPrefix, [System.StringComparison]::OrdinalIgnoreCase)) { continue }
