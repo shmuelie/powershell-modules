@@ -6,6 +6,11 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+### Fixed
+- `Get-InstalledApplications -Scope AllUsers` now honors `-WhatIf` for offline
+  user hive load/unload operations, checks `REG LOAD`/`REG UNLOAD` exit codes,
+  and attempts unload cleanup even when registry reads fail.
+
 ## [0.2.1] - 2026-08-14
 
 ### Security
