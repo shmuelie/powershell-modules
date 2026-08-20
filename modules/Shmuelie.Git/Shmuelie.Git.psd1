@@ -13,7 +13,8 @@
         'Get-CurrentWorktree', 'Get-RepositoryName', 'Get-RootWorktree',
         'Get-WorktreePath', 'Add-Worktree', 'New-Worktree', 'Remove-Worktree',
         'Set-Worktree', 'Remove-StaleWorktree', 'Repair-Worktree',
-        'Update-Worktrees', 'Find-StaleBranch', 'New-Repository',
+        'Lock-Worktree', 'Unlock-Worktree', 'Update-Worktrees',
+        'Find-StaleBranch', 'New-Repository',
         'Repair-RepositoryLayout', 'Update-WorktreePrediction'
     )
     CmdletsToExport   = @()

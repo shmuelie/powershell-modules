@@ -27,6 +27,7 @@ Import-Module Shmuelie.Git
 | `Set-Worktree` | Switch to a worktree by branch name |
 | `Remove-StaleWorktree` | Prune stale worktree administrative entries for deleted worktree directories |
 | `Repair-Worktree` | Repair worktree links after a repository or worktree move |
+| `Lock-Worktree` / `Unlock-Worktree` | Lock or unlock a worktree by branch name |
 | `Update-Worktrees` | Fast-forward every worktree from upstream (forwards the `Sync-GitRemote` GitHub-account options to the fetch) |
 | `Find-StaleBranch` | Find local branches whose upstream branch is gone (`-IncludeNeverPushed` also includes local-only branches) |
 | `Get-GitStatusSummary` | Parse `git status` into a typed object (branch, ahead/behind, conflicts, stash, operation) |

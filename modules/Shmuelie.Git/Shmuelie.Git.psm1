@@ -84,6 +84,8 @@ Export-ModuleMember -Function @(
     'Set-Worktree',
     'Remove-StaleWorktree',
     'Repair-Worktree',
+    'Lock-Worktree',
+    'Unlock-Worktree',
     'Update-Worktrees',
     'Find-StaleBranch',
     'New-Repository',
