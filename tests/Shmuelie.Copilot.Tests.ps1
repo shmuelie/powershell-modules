@@ -636,3 +636,117 @@ Describe 'Start-Copilot' {
         Get-Content $script:CopilotTestLog -Raw | Should -Match ([regex]::Escape('--model gpt-5.4'))
     }
 }
+
+Describe 'Copilot workspace.yaml helpers' {
+    It 'reads quoted and plain flow scalars with varied indentation and line endings' -ForEach @(
+        @{ Content = 'name: "quoted value"'; Field = 'name'; Expected = 'quoted value' }
+        @{ Content = "name: 'It''s fine'"; Field = 'name'; Expected = "It's fine" }
+        @{ Content = '   branch: user/test-workspace-yaml-parser'; Field = 'branch'; Expected = 'user/test-workspace-yaml-parser' }
+        @{ Content = "cwd: C:\Work\Repo`r`nsummary: Plain summary"; Field = 'summary'; Expected = 'Plain summary' }
+        @{ Content = "cwd: /work/repo`nsummary: LF summary"; Field = 'summary'; Expected = 'LF summary' }
+    ) {
+        InModuleScope Shmuelie.Copilot -Parameters @{ Content = $Content; Field = $Field } {
+            Get-CopilotWorkspaceField -Content $Content -Field $Field
+        } | Should -Be $Expected
+    }
+
+    It 'reads literal and folded block scalars' -ForEach @(
+        @{ Content = "name: |`n  first line`n  second line`nsummary: next"; Expected = "first line`nsecond line`n" }
+        @{ Content = "name: |-`n  first line`n  second line`nsummary: next"; Expected = "first line`nsecond line" }
+        @{ Content = "name: >`n  first line`n  second line`nsummary: next"; Expected = "first line second line`n" }
+        @{ Content = "name: >-`n  first line`n  second line`nsummary: next"; Expected = 'first line second line' }
+        @{ Content = "  name: |-`n     odd indent`n  summary: next"; Expected = 'odd indent' }
+        @{ Content = "name: |-`r`n  crlf one`r`n  crlf two`r`nsummary: next"; Expected = "crlf one`ncrlf two" }
+    ) {
+        InModuleScope Shmuelie.Copilot -Parameters @{ Content = $Content } {
+            Get-CopilotWorkspaceField -Content $Content -Field 'name'
+        } | Should -Be $Expected
+    }
+
+    It 'rewrites fields so read-after-write round trips simple, block, and special-character values' -ForEach @(
+        @{ Value = 'Merged session'; Original = "name: old`nsummary: keep" }
+        @{ Value = "Line one`nLine two"; Original = "name: |-`n  old line`n  removed line`nsummary: keep" }
+        @{ Value = 'Needs: quoting # and "quotes"'; Original = "name: old`nsummary: keep" }
+    ) {
+        $updated = InModuleScope Shmuelie.Copilot -Parameters @{ Original = $Original; Value = $Value } {
+            Set-CopilotWorkspaceField -Content $Original -Field 'name' -Value $Value
+        }
+
+        InModuleScope Shmuelie.Copilot -Parameters @{ Updated = $updated } {
+            Get-CopilotWorkspaceField -Content $Updated -Field 'name'
+        } | Should -Be $Value
+        $updated | Should -Match 'summary: keep'
+        $updated | Should -Not -Match 'removed line'
+    }
+
+    It 'preserves CRLF when rewriting content and supports path-based reads and writes' {
+        $workspaceYaml = Join-Path $TestDrive 'workspace.yaml'
+        Set-Content -Path $workspaceYaml -Value "name: old`r`nsummary: keep`r`n" -NoNewline
+
+        $updated = InModuleScope Shmuelie.Copilot -Parameters @{ Path = $workspaceYaml } {
+            Set-CopilotWorkspaceField -Path $Path -Field 'name' -Value 'new value'
+        }
+
+        $updated | Should -Match "new value`r`nsummary"
+        InModuleScope Shmuelie.Copilot -Parameters @{ Path = $workspaceYaml } {
+            Get-CopilotWorkspaceField -Path $Path -Field 'name'
+        } | Should -Be 'new value'
+    }
+}
+
+Describe 'Copilot maintenance-session auto-resume exclusion' {
+    BeforeEach {
+        $testHome = Join-Path $TestDrive 'home'
+        $env:USERPROFILE = Join-Path $TestDrive 'legacy-userprofile'
+        New-Item -ItemType Directory -Path $testHome -Force | Out-Null
+        Mock -ModuleName Shmuelie.Copilot -CommandName Get-CopilotHome -MockWith { $testHome }
+        Add-FakeCopilot -Path (Join-Path $TestDrive 'bin')
+    }
+
+    It 'keeps known generated maintenance sessions out of ResumeLatest candidates' -ForEach @(
+        @{
+            MaintenanceName = 'Apply context_board add/prune updates for this session. End the turn with a 2-3 sentence summary of the changes you made to the context_board.'
+            AsBlock = $false
+        }
+        @{
+            MaintenanceName = 'Analyze the session file and write the session insights result to the specified output file as described in the instructions.'
+            AsBlock = $false
+        }
+        @{
+            MaintenanceName = "Session File Path:`nC:\Users\example\.copilot\session-state\session\events.jsonl"
+            AsBlock = $true
+        }
+    ) {
+        $cwd = Join-Path $TestDrive 'workspace'
+        New-Item -ItemType Directory -Path $cwd -Force | Out-Null
+        $sessionRoot = Join-Path $testHome '.copilot' 'session-state'
+        $regularSessionId = '11111111-1111-1111-1111-111111111111'
+        $maintenanceSessionId = '22222222-2222-2222-2222-222222222222'
+        New-CopilotSessionState -SessionRoot $sessionRoot -Id $regularSessionId -Cwd $cwd -Summary 'Real work' -UpdatedAt '2026-08-20T10:00:00.000Z' | Out-Null
+        $maintenancePath = New-CopilotSessionState -SessionRoot $sessionRoot -Id $maintenanceSessionId -Cwd $cwd -Summary 'generated maintenance' -UpdatedAt '2026-08-20T11:00:00.000Z'
+
+        $workspaceYaml = Join-Path $maintenancePath 'workspace.yaml'
+        $content = Get-Content $workspaceYaml -Raw
+        if ($AsBlock) {
+            $blockLines = $MaintenanceName -split '\r?\n'
+            $replacement = "name: |-$([Environment]::NewLine)  $($blockLines -join "$([Environment]::NewLine)  ")"
+            $content = $content -replace '(?m)^name:\s*.+$', $replacement
+        } else {
+            $content = InModuleScope Shmuelie.Copilot -Parameters @{ Content = $content; MaintenanceName = $MaintenanceName } {
+                Set-CopilotWorkspaceField -Content $Content -Field 'name' -Value $MaintenanceName
+            }
+        }
+        Set-Content -Path $workspaceYaml -Value $content -Encoding UTF8 -NoNewline
+
+        Push-Location $cwd
+        try {
+            $plan = Get-CopilotLaunchPlan -ResumeLatest
+        } finally {
+            Pop-Location
+        }
+
+        $resumeArg = [array]::IndexOf($plan.Args, '--resume')
+        $resumeArg | Should -BeGreaterOrEqual 0
+        $plan.Args[$resumeArg + 1] | Should -Be $regularSessionId -Because 'the auto-resume exclusion still relies on these generated maintenance prompt names; update the exclusion and this regression test together if Copilot CLI changes that shape'
+    }
+}

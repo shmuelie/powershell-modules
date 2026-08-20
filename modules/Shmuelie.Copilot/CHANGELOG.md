@@ -10,6 +10,10 @@ Versions change only when a release is cut; unreleased work stays under
 - Pester coverage for destructive Copilot session merge, compact, and repair
   maintenance cmdlets.
 
+### Changed
+- Copilot session workspace metadata parsing and rewriting now share one internal
+  workspace.yaml helper that handles quoted and block scalar values.
+
 ### Fixed
 - `Get-CopilotPlugin`, `Get-CopilotMarketplace`, and
   `Get-CopilotMarketplacePlugin` now decode Copilot CLI output as UTF-8 even
