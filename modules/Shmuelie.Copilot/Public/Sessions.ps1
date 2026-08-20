@@ -58,19 +58,14 @@ function Get-CopilotSession {
         $wsFile = Join-Path $_.FullName 'workspace.yaml'
         if (Test-Path $wsFile) {
             $content = Get-Content $wsFile -Raw
-            $sessionCwd = if ($content -match '(?m)^cwd:\s*(.+)$') { $Matches[1].Trim() }
-            $updatedAt  = if ($content -match '(?m)^updated_at:\s*(.+)$') { $Matches[1].Trim() }
-            $summary    = if ($content -match '(?m)^summary:\s*(.+)$') { $Matches[1].Trim() } else { $null }
-            $branch     = if ($content -match '(?m)^branch:\s*(.+)$') { $Matches[1].Trim() }
-            $repository = if ($content -match '(?m)^repository:\s*(.+)$') { $Matches[1].Trim() }
-            $createdAt  = if ($content -match '(?m)^created_at:\s*(.+)$') { $Matches[1].Trim() }
-
-            # Parse name field, handling YAML block scalars (|- or >-)
-            $name = if ($content -match '(?m)^name:\s*[\|>]-?\s*$') {
-                if ($content -match '(?m)^name:\s*[\|>]-?\s*\r?\n(\s{2,}.+)') { $Matches[1].Trim() }
-            } elseif ($content -match '(?m)^name:\s+(.+)$') {
-                $Matches[1].Trim()
-            }
+            $sessionCwd = Get-CopilotWorkspaceField -Content $content -Field 'cwd'
+            $updatedAt  = Get-CopilotWorkspaceField -Content $content -Field 'updated_at'
+            $summary    = Get-CopilotWorkspaceField -Content $content -Field 'summary'
+            $branch     = Get-CopilotWorkspaceField -Content $content -Field 'branch'
+            $repository = Get-CopilotWorkspaceField -Content $content -Field 'repository'
+            $createdAt  = Get-CopilotWorkspaceField -Content $content -Field 'created_at'
+            $name       = Get-CopilotWorkspaceField -Content $content -Field 'name'
+            if ($name) { $name = ($name -split '\r?\n', 2)[0].Trim() }
 
             if ($All -or $Id -or $sessionCwd -eq $cwd) {
                 $eventsFile = Join-Path $_.FullName 'events.jsonl'
@@ -225,29 +220,8 @@ function Rename-CopilotSession {
 
         $content = Get-Content $wsFile -Raw
 
-        # Replace name field (handles block scalars like |- or >-)
-        $hasName = $content -match '(?m)^name:'
-        if ($hasName) {
-            $yamlLines = $content -split '\r?\n'
-            $newLines = [System.Collections.Generic.List[string]]::new()
-            $skipBlock = $false
-            foreach ($line in $yamlLines) {
-                if ($line -match '^name:') {
-                    $newLines.Add("name: $Summary")
-                    $skipBlock = ($line -match ':\s*[\|>]')
-                    continue
-                }
-                if ($skipBlock -and ($line -match '^\s' -or $line -eq '')) { continue }
-                $skipBlock = $false
-                $newLines.Add($line)
-            }
-            $content = $newLines -join "`n"
-        }
-
-        # Also update summary field if present
-        if ($content -match '(?m)^summary:') {
-            $content = $content -replace '(?m)^summary:\s*.+$', "summary: $Summary"
-        }
+        $content = Set-CopilotWorkspaceField -Content $content -Field 'name' -Value $Summary
+        $content = Set-CopilotWorkspaceField -Content $content -Field 'summary' -Value $Summary
 
         [System.IO.File]::WriteAllText($wsFile, $content, [System.Text.UTF8Encoding]::new($false))
         Write-Verbose "Renamed session $($session.Id.Substring(0,8)) to '$Summary'"

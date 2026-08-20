@@ -12,6 +12,10 @@ Versions change only when a release is cut; unreleased work stays under
 - Pester coverage for Copilot session, plugin, marketplace, and MCP lifecycle
   cmdlets that shell out to the Copilot CLI.
 
+### Changed
+- Copilot session workspace metadata parsing and rewriting now share one internal
+  workspace.yaml helper that handles quoted and block scalar values.
+
 ### Fixed
 - `Get-CopilotPlugin`, `Get-CopilotMarketplace`, and
   `Get-CopilotMarketplacePlugin` now decode Copilot CLI output as UTF-8 even
