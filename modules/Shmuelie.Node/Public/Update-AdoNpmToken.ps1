@@ -10,7 +10,6 @@ function Set-AdoNpmTokenOwnerOnlyAcl {
 
     $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
     $acl = Get-Acl -LiteralPath $Path
-    $acl.SetOwner($identity)
     $acl.SetAccessRuleProtection($true, $false)
     foreach ($rule in @($acl.Access)) {
         [void]$acl.RemoveAccessRuleSpecific($rule)

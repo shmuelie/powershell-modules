@@ -6,7 +6,13 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+### Added
+- Add Pester coverage for `Update-AdoNpmToken` and exported nvm wrapper
+  cmdlets.
+
 ### Fixed
+- Preserve existing temporary file owners when hardening `Update-AdoNpmToken`
+  scratch ACLs to avoid requiring elevated privileges.
 - Gate `Get-NvmRoot -Path` with `SupportsShouldProcess` so `-WhatIf` and
   `-Confirm` are honored before changing the nvm root.
 - Tolerate npm stdout warning lines before or after JSON when parsing
