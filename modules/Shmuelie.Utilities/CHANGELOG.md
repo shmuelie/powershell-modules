@@ -6,6 +6,8 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-08-20
+
 ### Fixed
 - Harden `Get-PipPackages` and `Get-UvPackages` JSON parsing to tolerate stray
   warning lines emitted before or after the tool's JSON payload.

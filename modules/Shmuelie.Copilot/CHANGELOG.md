@@ -6,6 +6,8 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-08-20
+
 ### Added
 - Pester coverage for destructive Copilot session merge, compact, and repair
   maintenance cmdlets.

@@ -6,6 +6,8 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-08-20
+
 ### Added
 - Add Pester coverage for `Update-AdoNpmToken` and exported nvm wrapper
   cmdlets.
