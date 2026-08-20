@@ -46,7 +46,7 @@ function Get-PipPackages {
             $arguments += '--uptodate'
         }
 
-        & pip @arguments | ConvertFrom-Json
+        & pip @arguments | ConvertFrom-ToolJsonOutput
     }
 }
 

@@ -7,6 +7,8 @@ Versions change only when a release is cut; unreleased work stays under
 ## [Unreleased]
 
 ### Fixed
+- Harden `Get-PipPackages` and `Get-UvPackages` JSON parsing to tolerate stray
+  warning lines emitted before or after the tool's JSON payload.
 - `Get-InstalledApplications -Scope AllUsers` now honors `-WhatIf` for offline
   user hive load/unload operations, checks `REG LOAD`/`REG UNLOAD` exit codes,
   and attempts unload cleanup even when registry reads fail.

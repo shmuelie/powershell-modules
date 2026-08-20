@@ -9,6 +9,8 @@ Versions change only when a release is cut; unreleased work stays under
 ### Added
 - Pester coverage for destructive Copilot session merge, compact, and repair
   maintenance cmdlets.
+- Pester coverage for Copilot session, plugin, marketplace, and MCP lifecycle
+  cmdlets that shell out to the Copilot CLI.
 
 ### Changed
 - Copilot session workspace metadata parsing and rewriting now share one internal
