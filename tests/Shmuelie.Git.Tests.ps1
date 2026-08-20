@@ -1541,3 +1541,228 @@ Describe 'Sync-GitRemote GitHub account awareness' {
         }
     }
 }
+
+Describe 'Get-Worktrees' -Skip:(-not (Get-Command git -ErrorAction SilentlyContinue)) {
+    It 'parses normal and detached worktrees' {
+        $repo = New-TestRepo -Path (Join-Path $TestDrive 'worktrees-list-main')
+        $head = Invoke-Git @('-C', $repo, 'rev-parse', 'HEAD')
+        Invoke-Git @('-C', $repo, 'branch', 'feature/alpha')
+        Invoke-Git @('-C', $repo, 'branch', 'feature/beta')
+        $alpha = Join-Path $TestDrive (Join-Path 'feature' 'alpha')
+        $beta = Join-Path $TestDrive (Join-Path 'feature' 'beta')
+        $detached = Join-Path $TestDrive 'detached-worktree'
+        Invoke-Git @('-C', $repo, 'worktree', 'add', '--quiet', $alpha, 'feature/alpha')
+        Invoke-Git @('-C', $repo, 'worktree', 'add', '--quiet', $beta, 'feature/beta')
+        Invoke-Git @('-C', $repo, 'worktree', 'add', '--quiet', '--detach', $detached, 'HEAD')
+
+        Push-Location $repo
+        try {
+            $worktrees = @(Get-Worktrees)
+        } finally {
+            Pop-Location
+        }
+
+        $worktrees | Should -HaveCount 4
+        foreach ($case in @(
+            @{ Branch = 'main'; Path = $repo },
+            @{ Branch = 'feature/alpha'; Path = $alpha },
+            @{ Branch = 'feature/beta'; Path = $beta },
+            @{ Branch = '(detached)'; Path = $detached }
+        )) {
+            $match = @($worktrees | Where-Object Branch -eq $case.Branch)
+            $match | Should -HaveCount 1
+            $match[0].Path | Should -BeExactly (Resolve-Path -LiteralPath $case.Path).Path
+            $match[0].Commit | Should -BeExactly $head
+            $match[0].PSTypeNames[0] | Should -Be 'Worktree'
+        }
+    }
+}
+
+Describe 'Get-RepositoryName' -Skip:(-not (Get-Command git -ErrorAction SilentlyContinue)) {
+    It 'derives the repository name from an origin URL ending in .git' {
+        $repo = New-TestRepo -Path (Join-Path $TestDrive 'repo-name-dotgit')
+        Invoke-Git @('-C', $repo, 'remote', 'add', 'origin', 'https://github.com/example/repo-name.git')
+
+        Push-Location $repo
+        try {
+            Get-RepositoryName | Should -BeExactly 'repo-name'
+        } finally {
+            Pop-Location
+        }
+    }
+
+    It 'derives the repository name from an origin URL without .git' {
+        $repo = New-TestRepo -Path (Join-Path $TestDrive 'repo-name-no-dotgit')
+        Invoke-Git @('-C', $repo, 'remote', 'add', 'origin', 'https://github.com/example/repo-name')
+
+        Push-Location $repo
+        try {
+            Get-RepositoryName | Should -BeExactly 'repo-name'
+        } finally {
+            Pop-Location
+        }
+    }
+}
+
+Describe 'Get-RootWorktree and Get-CurrentWorktree' -Skip:(-not (Get-Command git -ErrorAction SilentlyContinue)) {
+    It 'resolves the root and current worktree from a subdirectory of the main worktree' {
+        $repo = New-TestRepo -Path (Join-Path $TestDrive 'current-main')
+        $subdir = Join-Path $repo (Join-Path 'src' 'nested')
+        New-Item -ItemType Directory -Path $subdir -Force | Out-Null
+
+        Push-Location $subdir
+        try {
+            $root = Get-RootWorktree
+            $current = Get-CurrentWorktree
+        } finally {
+            Pop-Location
+        }
+
+        $root.Path | Should -BeExactly (Resolve-Path -LiteralPath $repo).Path
+        $root.Branch | Should -BeExactly 'main'
+        $current.Path | Should -BeExactly (Resolve-Path -LiteralPath $repo).Path
+        $current.Branch | Should -BeExactly 'main'
+    }
+
+    It 'resolves the root and current worktree from an added worktree' {
+        $repo = New-TestRepo -Path (Join-Path $TestDrive 'current-added-main')
+        Invoke-Git @('-C', $repo, 'branch', 'feature/current-added')
+        $worktree = Join-Path $TestDrive (Join-Path 'feature' 'current-added')
+        Invoke-Git @('-C', $repo, 'worktree', 'add', '--quiet', $worktree, 'feature/current-added')
+        $subdir = Join-Path $worktree 'child'
+        New-Item -ItemType Directory -Path $subdir -Force | Out-Null
+
+        Push-Location $subdir
+        try {
+            $root = Get-RootWorktree
+            $current = Get-CurrentWorktree
+        } finally {
+            Pop-Location
+        }
+
+        $root.Path | Should -BeExactly (Resolve-Path -LiteralPath $repo).Path
+        $root.Branch | Should -BeExactly 'main'
+        $current.Path | Should -BeExactly (Resolve-Path -LiteralPath $worktree).Path
+        $current.Branch | Should -BeExactly 'feature/current-added'
+    }
+}
+
+Describe 'Get-WorktreePath' -Skip:(-not (Get-Command git -ErrorAction SilentlyContinue)) {
+    It 'constructs the sibling worktree path for a branch name' {
+        $repo = New-TestRepo -Path (Join-Path $TestDrive 'main')
+        $branchName = 'feature/path-test'
+        $expected = Join-Path (Split-Path $repo -Parent) $branchName
+
+        Push-Location $repo
+        try {
+            Get-WorktreePath -BranchName $branchName | Should -BeExactly $expected
+        } finally {
+            Pop-Location
+        }
+    }
+}
+
+Describe 'New-Worktree' -Skip:(-not (Get-Command git -ErrorAction SilentlyContinue)) {
+    It 'does not create a branch or worktree when WhatIf is used' {
+        $repo = New-TestRepo -Path (Join-Path $TestDrive 'new-worktree-whatif-main')
+        $branchName = 'user/tester/dry-run'
+        $expectedPath = Join-Path (Split-Path $repo -Parent) $branchName
+
+        Push-Location $repo
+        try {
+            New-Worktree -WorkName 'dry-run' -UserName 'tester' -WhatIf -Confirm:$false
+            Test-Path -LiteralPath $expectedPath | Should -BeFalse
+            Invoke-Git @('-C', $repo, 'branch', '--list', $branchName) | Should -BeNullOrEmpty
+        } finally {
+            Pop-Location
+        }
+    }
+
+    It 'creates a user-prefixed branch and worktree at the expected path' {
+        $repo = New-TestRepo -Path (Join-Path $TestDrive 'new-worktree-user-main')
+        $branchName = 'user/tester/happy-path'
+        $expectedPath = Join-Path (Split-Path $repo -Parent) $branchName
+
+        Push-Location $repo
+        try {
+            New-Worktree -WorkName 'happy-path' -UserName 'tester' -Confirm:$false
+            Test-Path -LiteralPath $expectedPath | Should -BeTrue
+            Invoke-Git @('-C', $repo, 'rev-parse', '--verify', $branchName) | Should -Not -BeNullOrEmpty
+            (@(Get-Worktrees) | Where-Object Branch -eq $branchName).Path | Should -BeExactly (Resolve-Path -LiteralPath $expectedPath).Path
+        } finally {
+            Pop-Location
+        }
+    }
+
+    It 'creates an unprefixed branch and worktree when NoPrefix is used' {
+        $repo = New-TestRepo -Path (Join-Path $TestDrive 'new-worktree-noprefix-main')
+        $branchName = 'plain-work'
+        $expectedPath = Join-Path (Split-Path $repo -Parent) $branchName
+
+        Push-Location $repo
+        try {
+            New-Worktree -WorkName $branchName -NoPrefix -Confirm:$false
+            Test-Path -LiteralPath $expectedPath | Should -BeTrue
+            Invoke-Git @('-C', $repo, 'rev-parse', '--verify', $branchName) | Should -Not -BeNullOrEmpty
+            (@(Get-Worktrees) | Where-Object Branch -eq $branchName).Path | Should -BeExactly (Resolve-Path -LiteralPath $expectedPath).Path
+        } finally {
+            Pop-Location
+        }
+    }
+}
+
+Describe 'Remove-Worktree' -Skip:(-not (Get-Command git -ErrorAction SilentlyContinue)) {
+    It 'does not remove a worktree when WhatIf is used' {
+        $repo = New-TestRepo -Path (Join-Path $TestDrive 'remove-worktree-whatif-main')
+        Invoke-Git @('-C', $repo, 'branch', 'feature/remove-whatif')
+        $worktree = Join-Path $TestDrive (Join-Path 'feature' 'remove-whatif')
+        Invoke-Git @('-C', $repo, 'worktree', 'add', '--quiet', $worktree, 'feature/remove-whatif')
+
+        Push-Location $repo
+        try {
+            Remove-Worktree -BranchName 'feature/remove-whatif' -WhatIf -Confirm:$false
+            Test-Path -LiteralPath $worktree | Should -BeTrue
+            (@(Get-Worktrees) | Where-Object Branch -eq 'feature/remove-whatif') | Should -HaveCount 1
+        } finally {
+            Pop-Location
+        }
+    }
+
+    It 'removes exactly the target worktree' {
+        $repo = New-TestRepo -Path (Join-Path $TestDrive 'remove-worktree-main')
+        Invoke-Git @('-C', $repo, 'branch', 'feature/remove-target')
+        Invoke-Git @('-C', $repo, 'branch', 'feature/keep-target')
+        $target = Join-Path $TestDrive (Join-Path 'feature' 'remove-target')
+        $keeper = Join-Path $TestDrive (Join-Path 'feature' 'keep-target')
+        Invoke-Git @('-C', $repo, 'worktree', 'add', '--quiet', $target, 'feature/remove-target')
+        Invoke-Git @('-C', $repo, 'worktree', 'add', '--quiet', $keeper, 'feature/keep-target')
+
+        Push-Location $repo
+        try {
+            Remove-Worktree -BranchName 'feature/remove-target' -Confirm:$false
+            Test-Path -LiteralPath $target | Should -BeFalse
+            Test-Path -LiteralPath $keeper | Should -BeTrue
+            (@(Get-Worktrees) | Where-Object Branch -eq 'feature/remove-target') | Should -BeNullOrEmpty
+            (@(Get-Worktrees) | Where-Object Branch -eq 'feature/keep-target') | Should -HaveCount 1
+        } finally {
+            Pop-Location
+        }
+    }
+}
+
+Describe 'Set-Worktree' -Skip:(-not (Get-Command git -ErrorAction SilentlyContinue)) {
+    It 'changes the current location to the requested worktree' {
+        $repo = New-TestRepo -Path (Join-Path $TestDrive 'set-worktree-main')
+        Invoke-Git @('-C', $repo, 'branch', 'feature/set-target')
+        $worktree = Join-Path $TestDrive (Join-Path 'feature' 'set-target')
+        Invoke-Git @('-C', $repo, 'worktree', 'add', '--quiet', $worktree, 'feature/set-target')
+
+        Push-Location $repo
+        try {
+            Set-Worktree -BranchName 'feature/set-target'
+            (Get-Location).Path | Should -BeExactly (Resolve-Path -LiteralPath $worktree).Path
+        } finally {
+            Pop-Location
+        }
+    }
+}

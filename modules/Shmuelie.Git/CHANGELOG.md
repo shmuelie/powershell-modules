@@ -7,6 +7,7 @@ Versions change only when a release is cut; unreleased work stays under
 ## [Unreleased]
 
 ### Added
+- Added direct test coverage for the core worktree cmdlets.
 - Added test coverage for `Update-Worktrees` current, no-upstream, and clean
   fast-forward result statuses.
 
