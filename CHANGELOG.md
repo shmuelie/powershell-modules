@@ -6,6 +6,10 @@ between releases this file tracks catalog-level changes under `[Unreleased]`.
 
 ## [Unreleased]
 
+### Changed
+- `Build-Module.ps1` now stages optional module `Classes` folders for shared
+  PowerShell class definitions.
+
 ### Added
 - GitHub Pages documentation workflow now redeploys automatically when docs or its workflow change.
 - Pester v5 unit test suite under `tests/`, a `build/Invoke-Tests.ps1` runner,

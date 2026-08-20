@@ -1839,3 +1839,107 @@ Describe 'Set-Worktree' -Skip:(-not (Get-Command git -ErrorAction SilentlyContin
         }
     }
 }
+
+Describe 'Lock-Worktree and Unlock-Worktree' -Skip:(-not (Get-Command git -ErrorAction SilentlyContinue)) {
+    BeforeAll {
+        function New-LockTestWorktree {
+            param(
+                [Parameter(Mandatory)][string]$Name,
+                [Parameter(Mandatory)][string]$BranchName
+            )
+
+            $repo = New-TestRepo -Path (Join-Path $TestDrive "$Name-main")
+            Invoke-Git @('-C', $repo, 'branch', $BranchName)
+            $worktree = Join-Path $TestDrive "$Name-worktree"
+            Invoke-Git @('-C', $repo, 'worktree', 'add', '--quiet', $worktree, $BranchName)
+            [PSCustomObject]@{
+                Repo     = $repo
+                Branch   = $BranchName
+                Worktree = $worktree
+            }
+        }
+    }
+
+    It 'locks a worktree without a reason' {
+        $case = New-LockTestWorktree -Name 'lock-no-reason' -BranchName 'feature/lock-no-reason'
+
+        Push-Location $case.Repo
+        try {
+            Lock-Worktree -BranchName $case.Branch -Confirm:$false
+            $worktree = @(Get-Worktrees | Where-Object Branch -eq $case.Branch)
+        } finally {
+            Pop-Location
+        }
+
+        $worktree | Should -HaveCount 1
+        $worktree[0].Locked | Should -BeTrue
+        $worktree[0].LockReason | Should -BeExactly ''
+    }
+
+    It 'locks a worktree with a reason from pipeline property name' {
+        $case = New-LockTestWorktree -Name 'lock-with-reason' -BranchName 'feature/lock-with-reason'
+        $reason = 'keep this test worktree'
+
+        Push-Location $case.Repo
+        try {
+            [PSCustomObject]@{ Branch = $case.Branch } | Lock-Worktree -Reason $reason -Confirm:$false
+            $worktree = @(Get-Worktrees | Where-Object Branch -eq $case.Branch)
+        } finally {
+            Pop-Location
+        }
+
+        $worktree | Should -HaveCount 1
+        $worktree[0].Locked | Should -BeTrue
+        $worktree[0].LockReason | Should -BeExactly $reason
+    }
+
+    It 'unlocks a locked worktree' {
+        $case = New-LockTestWorktree -Name 'unlock-locked' -BranchName 'feature/unlock-locked'
+
+        Push-Location $case.Repo
+        try {
+            Lock-Worktree -BranchName $case.Branch -Reason 'temporary lock' -Confirm:$false
+            Unlock-Worktree -BranchName $case.Branch -Confirm:$false
+            $worktree = @(Get-Worktrees | Where-Object Branch -eq $case.Branch)
+        } finally {
+            Pop-Location
+        }
+
+        $worktree | Should -HaveCount 1
+        $worktree[0].Locked | Should -BeFalse
+        $worktree[0].LockReason | Should -BeExactly ''
+    }
+
+    It 'does not lock or unlock when WhatIf is used' {
+        $case = New-LockTestWorktree -Name 'lock-whatif' -BranchName 'feature/lock-whatif'
+
+        Push-Location $case.Repo
+        try {
+            Lock-Worktree -BranchName $case.Branch -WhatIf -Confirm:$false
+            (@(Get-Worktrees | Where-Object Branch -eq $case.Branch)[0]).Locked | Should -BeFalse
+
+            Lock-Worktree -BranchName $case.Branch -Reason 'real lock' -Confirm:$false
+            Unlock-Worktree -BranchName $case.Branch -WhatIf -Confirm:$false
+            $worktree = @(Get-Worktrees | Where-Object Branch -eq $case.Branch)
+        } finally {
+            Pop-Location
+        }
+
+        $worktree | Should -HaveCount 1
+        $worktree[0].Locked | Should -BeTrue
+        $worktree[0].LockReason | Should -BeExactly 'real lock'
+    }
+
+    It 'surfaces a clear git error when locking an already locked worktree' {
+        $case = New-LockTestWorktree -Name 'lock-already-locked' -BranchName 'feature/lock-already-locked'
+
+        Push-Location $case.Repo
+        try {
+            Lock-Worktree -BranchName $case.Branch -Reason 'first lock' -Confirm:$false
+            { Lock-Worktree -BranchName $case.Branch -Reason 'second lock' -Confirm:$false -ErrorAction Stop } |
+                Should -Throw -ExpectedMessage '*already locked*'
+        } finally {
+            Pop-Location
+        }
+    }
+}

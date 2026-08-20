@@ -25,6 +25,7 @@ Import-Module Shmuelie.Git
 | `Add-Worktree` | Check out an existing branch to a worktree |
 | `Remove-Worktree` | Remove a worktree (optionally deleting its branch) |
 | `Set-Worktree` | Switch to a worktree by branch name |
+| `Lock-Worktree` / `Unlock-Worktree` | Lock or unlock a worktree by branch name |
 | `Update-Worktrees` | Fast-forward every worktree from upstream (forwards the `Sync-GitRemote` GitHub-account options to the fetch) |
 | `Find-StaleBranch` | Find local branches whose upstream branch is gone (`-IncludeNeverPushed` also includes local-only branches) |
 | `Get-GitStatusSummary` | Parse `git status` into a typed object (branch, ahead/behind, conflicts, stash, operation) |
