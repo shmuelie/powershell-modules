@@ -6,6 +6,10 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+### Added
+- Added test coverage for `Update-Worktrees` current, no-upstream, and clean
+  fast-forward result statuses.
+
 ### Fixed
 - `Find-StaleBranch` no longer reports never-pushed local branches by default;
   use `-IncludeNeverPushed` to include local-only branches intentionally.

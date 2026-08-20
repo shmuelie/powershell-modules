@@ -853,6 +853,119 @@ public static class GitShim
         Test-Path -LiteralPath (Join-Path $worktreeA 'local-b.txt') | Should -BeFalse
         Test-Path -LiteralPath (Join-Path $worktreeB 'local-a.txt') | Should -BeFalse
     }
+
+    It 'reports Current for a worktree that is already up to date' -Skip:(-not (Get-Command git -ErrorAction SilentlyContinue)) {
+        $origin = Join-Path $TestDrive 'current-origin.git'
+        Invoke-Git @('init', '--bare', '-b', 'main', '--quiet', $origin)
+
+        $seed = Join-Path $TestDrive 'current-seed'
+        Invoke-Git @('clone', '--quiet', $origin, $seed)
+        Set-TestRepoConfig $seed
+        Set-Content -Path (Join-Path $seed 'README.md') -Value 'initial' -NoNewline
+        Invoke-Git @('-C', $seed, 'add', 'README.md')
+        Invoke-TestCommit -Path $seed -Message 'init'
+        Invoke-Git @('-C', $seed, 'push', '-u', 'origin', 'main', '--quiet')
+
+        $clone = Join-Path $TestDrive 'current-clone'
+        Invoke-Git @('clone', '--quiet', $origin, $clone)
+        Set-TestRepoConfig $clone
+
+        Mock -ModuleName Shmuelie.Git Sync-GitRemote { @() }
+
+        Push-Location $clone
+        try {
+            $results = Update-Worktrees -NoGitHubAccountResolve
+        } finally {
+            Pop-Location
+        }
+
+        $result = @($results | Where-Object Branch -eq 'main')
+        $result | Should -HaveCount 1
+        $result[0].Status | Should -Be 'Current'
+        $result[0].BehindBy | Should -Be 0
+        $result[0].Stashed | Should -BeFalse
+    }
+
+    It 'reports NoUpstream for a worktree without an upstream branch' -Skip:(-not (Get-Command git -ErrorAction SilentlyContinue)) {
+        $origin = Join-Path $TestDrive 'no-upstream-origin.git'
+        Invoke-Git @('init', '--bare', '-b', 'main', '--quiet', $origin)
+
+        $seed = Join-Path $TestDrive 'no-upstream-seed'
+        Invoke-Git @('clone', '--quiet', $origin, $seed)
+        Set-TestRepoConfig $seed
+        Set-Content -Path (Join-Path $seed 'README.md') -Value 'initial' -NoNewline
+        Invoke-Git @('-C', $seed, 'add', 'README.md')
+        Invoke-TestCommit -Path $seed -Message 'init'
+        Invoke-Git @('-C', $seed, 'push', '-u', 'origin', 'main', '--quiet')
+
+        $clone = Join-Path $TestDrive 'no-upstream-clone'
+        Invoke-Git @('clone', '--quiet', $origin, $clone)
+        Set-TestRepoConfig $clone
+        Invoke-Git @('-C', $clone, 'branch', 'local-only')
+        $worktree = Join-Path $TestDrive 'no-upstream-worktree'
+        Invoke-Git @('-C', $clone, 'worktree', 'add', '--quiet', $worktree, 'local-only')
+        Set-TestRepoConfig $worktree
+
+        Mock -ModuleName Shmuelie.Git Sync-GitRemote { @() }
+
+        Push-Location $clone
+        try {
+            $results = Update-Worktrees -NoGitHubAccountResolve
+        } finally {
+            Pop-Location
+        }
+
+        $result = @($results | Where-Object Branch -eq 'local-only')
+        $result | Should -HaveCount 1
+        $result[0].Status | Should -Be 'NoUpstream'
+        $result[0].BehindBy | Should -Be 0
+        $result[0].Stashed | Should -BeFalse
+    }
+
+    It 'reports Updated for a clean fast-forwarded worktree' -Skip:(-not (Get-Command git -ErrorAction SilentlyContinue)) {
+        $origin = Join-Path $TestDrive 'clean-update-origin.git'
+        Invoke-Git @('init', '--bare', '-b', 'main', '--quiet', $origin)
+
+        $seed = Join-Path $TestDrive 'clean-update-seed'
+        Invoke-Git @('clone', '--quiet', $origin, $seed)
+        Set-TestRepoConfig $seed
+        Set-Content -Path (Join-Path $seed 'README.md') -Value 'initial' -NoNewline
+        Invoke-Git @('-C', $seed, 'add', 'README.md')
+        Invoke-TestCommit -Path $seed -Message 'init'
+        Invoke-Git @('-C', $seed, 'push', '-u', 'origin', 'main', '--quiet')
+
+        $clone = Join-Path $TestDrive 'clean-update-clone'
+        Invoke-Git @('clone', '--quiet', $origin, $clone)
+        Set-TestRepoConfig $clone
+
+        $updater = Join-Path $TestDrive 'clean-update-updater'
+        Invoke-Git @('clone', '--quiet', $origin, $updater)
+        Set-TestRepoConfig $updater
+        Set-Content -Path (Join-Path $updater 'README.md') -Value 'updated' -NoNewline
+        Invoke-Git @('-C', $updater, 'add', 'README.md')
+        Invoke-TestCommit -Path $updater -Message 'update readme'
+        Invoke-Git @('-C', $updater, 'push', 'origin', 'main', '--quiet')
+
+        Invoke-Git @('-C', $clone, 'fetch', '--all', '--prune')
+        Invoke-Git @('-C', $clone, 'rev-list', '--count', 'main..origin/main') | Should -Be '1'
+
+        Mock -ModuleName Shmuelie.Git Sync-GitRemote { @() }
+
+        Push-Location $clone
+        try {
+            $results = Update-Worktrees -NoGitHubAccountResolve
+        } finally {
+            Pop-Location
+        }
+
+        $result = @($results | Where-Object Branch -eq 'main')
+        $result | Should -HaveCount 1
+        $result[0].Status | Should -Be 'Updated'
+        $result[0].BehindBy | Should -Be 1
+        $result[0].Stashed | Should -BeFalse
+        $result[0].PopFailed | Should -BeFalse
+        Get-Content -LiteralPath (Join-Path $clone 'README.md') -Raw | Should -BeExactly 'updated'
+    }
 }
 
 
