@@ -1,3 +1,25 @@
+function ConvertFrom-NpmJsonOutput {
+    [CmdletBinding()]
+    param(
+        [Parameter(ValueFromPipeline = $true)]
+        [AllowNull()]
+        [string]$InputObject
+    )
+
+    process {
+        if ([string]::IsNullOrWhiteSpace($InputObject)) { return }
+
+        $start = $InputObject.IndexOf('{')
+        $end = $InputObject.LastIndexOf('}')
+        if ($start -lt 0 -or $end -lt $start) { return }
+
+        $json = $InputObject.Substring($start, $end - $start + 1)
+        if ([string]::IsNullOrWhiteSpace($json)) { return }
+
+        $json | ConvertFrom-Json
+    }
+}
+
 function Get-NpmPackage {
     <#
     .SYNOPSIS
@@ -41,8 +63,8 @@ function Get-NpmPackage {
         }
 
         $jsonOutput = & npm @arguments 2>$null | Out-String
-        if (-not $jsonOutput -or $jsonOutput.Trim() -eq '{}') { return }
-        $parsed = $jsonOutput | ConvertFrom-Json
+        $parsed = $jsonOutput | ConvertFrom-NpmJsonOutput
+        if (-not $parsed) { return }
 
         $parsed.PSObject.Properties | ForEach-Object {
             [PSCustomObject]@{
@@ -60,9 +82,9 @@ function Get-NpmPackage {
         }
 
         $jsonOutput = & npm @arguments 2>$null | Out-String
-        $parsed = $jsonOutput | ConvertFrom-Json
+        $parsed = $jsonOutput | ConvertFrom-NpmJsonOutput
 
-        if ($parsed.dependencies) {
+        if ($parsed -and $parsed.dependencies) {
             $parsed.dependencies.PSObject.Properties | ForEach-Object {
                 [PSCustomObject]@{
                     PSTypeName  = 'NpmPackage'
