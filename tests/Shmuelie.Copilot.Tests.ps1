@@ -11,15 +11,18 @@ BeforeAll {
         param([Parameter(Mandatory)][string]$Path)
 
         New-Item -ItemType Directory -Path $Path -Force | Out-Null
+        $pwsh = (Get-Process -Id $PID).Path -replace '"', '""'
         Set-Content -Path (Join-Path $Path 'copilot.cmd') -Value @(
             '@echo off'
             'if defined COPILOT_TEST_LOG echo %*>>"%COPILOT_TEST_LOG%"'
+            "if defined COPILOT_TEST_STDOUT `"$pwsh`" -NoLogo -NoProfile -NonInteractive -Command `"[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new(`$false); [Console]::Out.Write(`$env:COPILOT_TEST_STDOUT)`""
             'exit /b 0'
         )
         $copilot = Join-Path $Path 'copilot'
         Set-Content -Path $copilot -Value @(
             '#!/usr/bin/env sh'
             'if [ -n "$COPILOT_TEST_LOG" ]; then printf "%s\n" "$*" >> "$COPILOT_TEST_LOG"; fi'
+            'if [ -n "$COPILOT_TEST_STDOUT" ]; then printf "%s" "$COPILOT_TEST_STDOUT"; fi'
             'exit 0'
         )
         if (-not $IsWindows) { & chmod +x $copilot }
@@ -393,6 +396,99 @@ Describe 'Shmuelie.Copilot source' {
         $matches = @(Get-ChildItem -Path $moduleRoot -Recurse -Include *.ps1, *.psm1 | Select-String -Pattern '\$env:USERPROFILE')
 
         $matches.Count | Should -Be 0
+    }
+}
+
+Describe 'Invoke-WithUtf8Console' {
+    It 'sets UTF-8 while running the script block and restores the previous encoding' {
+        $originalEncoding = [Console]::OutputEncoding
+        $legacyEncoding = [System.Text.Encoding]::GetEncoding(28591)
+
+        try {
+            [Console]::OutputEncoding = $legacyEncoding
+
+            $insideCodePage = InModuleScope Shmuelie.Copilot {
+                Invoke-WithUtf8Console { [Console]::OutputEncoding.CodePage }
+            }
+
+            $insideCodePage | Should -Be 65001
+            [Console]::OutputEncoding.CodePage | Should -Be $legacyEncoding.CodePage
+        } finally {
+            [Console]::OutputEncoding = $originalEncoding
+        }
+    }
+
+    It 'restores the previous encoding when the script block throws' {
+        $originalEncoding = [Console]::OutputEncoding
+        $legacyEncoding = [System.Text.Encoding]::GetEncoding(28591)
+
+        try {
+            [Console]::OutputEncoding = $legacyEncoding
+
+            {
+                InModuleScope Shmuelie.Copilot {
+                    Invoke-WithUtf8Console { throw 'intentional failure' }
+                }
+            } | Should -Throw '*intentional failure*'
+
+            [Console]::OutputEncoding.CodePage | Should -Be $legacyEncoding.CodePage
+        } finally {
+            [Console]::OutputEncoding = $originalEncoding
+        }
+    }
+}
+
+Describe 'Copilot CLI UTF-8 output parsing' {
+    BeforeEach {
+        $script:OriginalOutputEncoding = [Console]::OutputEncoding
+        [Console]::OutputEncoding = [System.Text.Encoding]::GetEncoding(28591)
+        $env:USERPROFILE = Join-Path $TestDrive 'home'
+        New-Item -ItemType Directory -Path $env:USERPROFILE -Force | Out-Null
+        $script:CopilotTestLog = Join-Path $TestDrive 'copilot.log'
+        Remove-Item $script:CopilotTestLog -Force -ErrorAction SilentlyContinue
+        $env:COPILOT_TEST_LOG = $script:CopilotTestLog
+        Add-FakeCopilot -Path (Join-Path $TestDrive 'bin')
+    }
+
+    AfterEach {
+        [Console]::OutputEncoding = $script:OriginalOutputEncoding
+        Remove-Item Env:\COPILOT_TEST_LOG -ErrorAction SilentlyContinue
+        Remove-Item Env:\COPILOT_TEST_STDOUT -ErrorAction SilentlyContinue
+    }
+
+    It 'parses plugin list output emitted as UTF-8 while the console starts non-UTF-8' {
+        $env:COPILOT_TEST_STDOUT = "  • dotnet@test-market (v1.2.3)$([Environment]::NewLine)"
+
+        $plugins = @(Get-CopilotPlugin)
+
+        $plugins | Should -HaveCount 1
+        $plugins[0].Name | Should -Be 'dotnet'
+        $plugins[0].FullName | Should -Be 'dotnet@test-market'
+        $plugins[0].Marketplace | Should -Be 'test-market'
+        $plugins[0].Version | Should -Be '1.2.3'
+    }
+
+    It 'parses marketplace list output emitted as UTF-8 while the console starts non-UTF-8' {
+        $env:COPILOT_TEST_STDOUT = "  ◆ curated (GitHub: github/copilot)$([Environment]::NewLine)  • local (URL: https://example.test/marketplace.json)$([Environment]::NewLine)"
+
+        $marketplaces = @(Get-CopilotMarketplace)
+
+        $marketplaces | Should -HaveCount 2
+        $marketplaces[0].Name | Should -Be 'curated'
+        $marketplaces[0].Repository | Should -Be 'github/copilot'
+        $marketplaces[1].Name | Should -Be 'local'
+        $marketplaces[1].Repository | Should -Be 'https://example.test/marketplace.json'
+    }
+
+    It 'parses marketplace plugin output emitted as UTF-8 while the console starts non-UTF-8' {
+        $env:COPILOT_TEST_STDOUT = "  • dotnet-test - Generate deterministic .NET tests$([Environment]::NewLine)"
+
+        $entries = @(Get-CopilotMarketplacePlugin -Name 'curated')
+
+        $entries | Should -HaveCount 1
+        $entries[0].Name | Should -Be 'dotnet-test'
+        $entries[0].Description | Should -Be 'Generate deterministic .NET tests'
+        $entries[0].Marketplace | Should -Be 'curated'
     }
 }
 
