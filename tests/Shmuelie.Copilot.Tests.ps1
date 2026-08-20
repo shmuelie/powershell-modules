@@ -636,3 +636,339 @@ Describe 'Start-Copilot' {
         Get-Content $script:CopilotTestLog -Raw | Should -Match ([regex]::Escape('--model gpt-5.4'))
     }
 }
+
+Describe 'Get-CopilotSession' {
+    BeforeEach {
+        $testHome = Join-Path $TestDrive 'home'
+        Remove-Item -LiteralPath $testHome -Recurse -Force -ErrorAction SilentlyContinue
+        $script:SessionRoot = Join-Path $testHome '.copilot' 'session-state'
+        $script:Workspace = Join-Path $TestDrive 'workspace'
+        $script:OtherWorkspace = Join-Path $TestDrive 'other-workspace'
+        New-Item -ItemType Directory -Path $script:SessionRoot, $script:Workspace, $script:OtherWorkspace -Force | Out-Null
+        Mock -ModuleName Shmuelie.Copilot -CommandName Get-CopilotHome -MockWith { $testHome }
+    }
+
+    It 'parses workspace metadata and counts optional events when present' {
+        $sessionId = '11111111-2222-3333-4444-555555555555'
+        $sessionPath = New-CopilotSessionState -SessionRoot $script:SessionRoot -Id $sessionId -Cwd $script:Workspace -Summary 'Investigate CLI helpers' -UpdatedAt '2026-08-20T18:00:00.000Z'
+        Add-Content -Path (Join-Path $sessionPath 'workspace.yaml') -Value @(
+            'branch: user/test-session'
+            'repository: shmuelie/powershell-modules'
+        )
+        Set-CopilotTestEvents -SessionPath $sessionPath -Lines @(
+            (New-CopilotTestEventLine -Type 'session.start' -Id 'start' -Timestamp '2026-08-20T18:00:00Z' -Data @{ sessionId = $sessionId })
+            (New-CopilotTestEventLine -Type 'user.message' -Id 'user' -Timestamp '2026-08-20T18:01:00Z' -Data @{ content = 'hello' })
+        )
+
+        Push-Location $script:Workspace
+        try {
+            $sessions = @(Get-CopilotSession)
+        } finally {
+            Pop-Location
+        }
+
+        $sessions | Should -HaveCount 1
+        $sessions[0].Id | Should -Be $sessionId
+        $sessions[0].Name | Should -Be 'Investigate CLI helpers'
+        $sessions[0].Summary | Should -Be 'Investigate CLI helpers'
+        $sessions[0].Cwd | Should -Be $script:Workspace
+        $sessions[0].Branch | Should -Be 'user/test-session'
+        $sessions[0].Repository | Should -Be 'shmuelie/powershell-modules'
+        $sessions[0].UpdatedAt | Should -Be ([DateTimeOffset]::Parse('2026-08-20T18:00:00.000Z'))
+        $sessions[0].EventCount | Should -Be 2
+        $sessions[0].EventSize | Should -BeGreaterThan 0
+        $sessions[0].Path | Should -Be $sessionPath
+    }
+
+    It 'tolerates missing optional files and filters by cwd, All, and Id' {
+        $matchingId = 'aaaaaaaa-0000-0000-0000-000000000000'
+        $otherId = 'bbbbbbbb-0000-0000-0000-000000000000'
+        New-CopilotSessionState -SessionRoot $script:SessionRoot -Id $matchingId -Cwd $script:Workspace -Summary 'Current workspace' | Out-Null
+        $otherPath = New-CopilotSessionState -SessionRoot $script:SessionRoot -Id $otherId -Cwd $script:OtherWorkspace -Summary 'Other workspace'
+        Remove-Item -LiteralPath (Join-Path $otherPath 'events.jsonl') -Force -ErrorAction SilentlyContinue
+
+        Push-Location $script:Workspace
+        try {
+            $currentSessions = @(Get-CopilotSession)
+            $allSessions = @(Get-CopilotSession -All)
+            $specificSession = Get-CopilotSession -Id $otherId
+        } finally {
+            Pop-Location
+        }
+
+        $currentSessions.Id | Should -Be @($matchingId)
+        @($allSessions.Id | Sort-Object) | Should -Be @($matchingId, $otherId)
+        $specificSession.Id | Should -Be $otherId
+        $specificSession.EventCount | Should -Be 0
+        $specificSession.EventSize | Should -Be 0
+    }
+}
+
+Describe 'Remove-CopilotSession' {
+    BeforeEach {
+        $testHome = Join-Path $TestDrive 'home'
+        Remove-Item -LiteralPath $testHome -Recurse -Force -ErrorAction SilentlyContinue
+        $script:SessionRoot = Join-Path $testHome '.copilot' 'session-state'
+        $script:Workspace = Join-Path $TestDrive 'workspace'
+        New-Item -ItemType Directory -Path $script:SessionRoot, $script:Workspace -Force | Out-Null
+        Mock -ModuleName Shmuelie.Copilot -CommandName Get-CopilotHome -MockWith { $testHome }
+    }
+
+    It 'honors WhatIf without deleting the target session' {
+        $sessionId = 'cccccccc-0000-0000-0000-000000000000'
+        $sessionPath = New-CopilotSessionState -SessionRoot $script:SessionRoot -Id $sessionId -Cwd $script:Workspace -Summary 'Keep me'
+
+        Remove-CopilotSession -Id $sessionId -WhatIf
+
+        Test-Path $sessionPath | Should -BeTrue
+    }
+
+    It 'removes exactly the requested session directory' {
+        $removeId = 'dddddddd-0000-0000-0000-000000000000'
+        $keepId = 'eeeeeeee-0000-0000-0000-000000000000'
+        $removePath = New-CopilotSessionState -SessionRoot $script:SessionRoot -Id $removeId -Cwd $script:Workspace -Summary 'Remove me'
+        $keepPath = New-CopilotSessionState -SessionRoot $script:SessionRoot -Id $keepId -Cwd $script:Workspace -Summary 'Keep me'
+
+        Remove-CopilotSession -Id $removeId -Confirm:$false
+
+        Test-Path $removePath | Should -BeFalse
+        Test-Path $keepPath | Should -BeTrue
+        @(Get-ChildItem -Path $script:SessionRoot -Directory | Select-Object -ExpandProperty Name) | Should -Be @($keepId)
+    }
+}
+
+Describe 'Rename-CopilotSession' {
+    BeforeEach {
+        $testHome = Join-Path $TestDrive 'home'
+        Remove-Item -LiteralPath $testHome -Recurse -Force -ErrorAction SilentlyContinue
+        $script:SessionRoot = Join-Path $testHome '.copilot' 'session-state'
+        $script:Workspace = Join-Path $TestDrive 'workspace'
+        New-Item -ItemType Directory -Path $script:SessionRoot, $script:Workspace -Force | Out-Null
+        Mock -ModuleName Shmuelie.Copilot -CommandName Get-CopilotHome -MockWith { $testHome }
+    }
+
+    It 'honors WhatIf without changing workspace.yaml' {
+        $sessionId = 'ffffffff-0000-0000-0000-000000000000'
+        $sessionPath = New-CopilotSessionState -SessionRoot $script:SessionRoot -Id $sessionId -Cwd $script:Workspace -Summary 'Original name'
+        $workspaceFile = Join-Path $sessionPath 'workspace.yaml'
+        $before = Get-Content $workspaceFile -Raw
+
+        Rename-CopilotSession -Id $sessionId -Summary 'New name' -WhatIf
+
+        Get-Content $workspaceFile -Raw | Should -Be $before
+    }
+
+    It 'updates the workspace name and summary fields' {
+        $sessionId = '99999999-0000-0000-0000-000000000000'
+        $sessionPath = New-CopilotSessionState -SessionRoot $script:SessionRoot -Id $sessionId -Cwd $script:Workspace -Summary 'Original name'
+        $workspaceFile = Join-Path $sessionPath 'workspace.yaml'
+
+        $renamed = Rename-CopilotSession -Id $sessionId -Summary 'Renamed session' -Confirm:$false
+
+        $renamed.Summary | Should -Be 'Renamed session'
+        $content = Get-Content $workspaceFile -Raw
+        $content | Should -Match '(?m)^name: Renamed session$'
+        $content | Should -Match '(?m)^summary: Renamed session$'
+    }
+}
+
+Describe 'Resume-CopilotSession' {
+    BeforeEach {
+        $testHome = Join-Path $TestDrive 'home'
+        Remove-Item -LiteralPath $testHome -Recurse -Force -ErrorAction SilentlyContinue
+        $script:SessionRoot = Join-Path $testHome '.copilot' 'session-state'
+        $script:Workspace = Join-Path $TestDrive 'workspace'
+        New-Item -ItemType Directory -Path $script:SessionRoot, $script:Workspace -Force | Out-Null
+        Mock -ModuleName Shmuelie.Copilot -CommandName Get-CopilotHome -MockWith { $testHome }
+        $script:CopilotTestLog = Join-Path $TestDrive 'copilot.log'
+        Remove-Item $script:CopilotTestLog -Force -ErrorAction SilentlyContinue
+        $env:COPILOT_TEST_LOG = $script:CopilotTestLog
+        Add-FakeCopilot -Path (Join-Path $TestDrive 'bin')
+    }
+
+    AfterEach {
+        Remove-Item Env:\COPILOT_TEST_LOG -ErrorAction SilentlyContinue
+    }
+
+    It 'invokes copilot with the expected resume arguments without deleting session state' {
+        $sessionId = '12121212-3434-5656-7878-909090909090'
+        $sessionPath = New-CopilotSessionState -SessionRoot $script:SessionRoot -Id $sessionId -Cwd $script:Workspace -Summary 'Resume me'
+
+        Resume-CopilotSession -Id $sessionId
+
+        Get-Content $script:CopilotTestLog -Raw | Should -Be "--allow-all --experimental --resume $sessionId$([Environment]::NewLine)"
+        Test-Path $sessionPath | Should -BeTrue
+    }
+}
+
+Describe 'Copilot plugin, marketplace, and MCP removal cmdlets' {
+    BeforeEach {
+        $env:USERPROFILE = Join-Path $TestDrive 'home'
+        New-Item -ItemType Directory -Path $env:USERPROFILE -Force | Out-Null
+        $script:CopilotTestLog = Join-Path $TestDrive 'copilot.log'
+        Remove-Item $script:CopilotTestLog -Force -ErrorAction SilentlyContinue
+        $env:COPILOT_TEST_LOG = $script:CopilotTestLog
+        Add-FakeCopilot -Path (Join-Path $TestDrive 'bin')
+    }
+
+    AfterEach {
+        Remove-Item Env:\COPILOT_TEST_LOG -ErrorAction SilentlyContinue
+    }
+
+    It 'honors WhatIf without invoking copilot' {
+        Uninstall-CopilotPlugin -Name 'dotnet@test-market' -WhatIf
+        Unregister-CopilotMarketplace -Name 'test-marketplace' -WhatIf
+        Unregister-CopilotMcpServer -Name 'test-server' -WhatIf
+
+        Test-Path $script:CopilotTestLog | Should -BeFalse
+    }
+
+    It 'passes the expected uninstall and unregister arguments to copilot' {
+        Uninstall-CopilotPlugin -Name 'dotnet@test-market' -Confirm:$false
+        Unregister-CopilotMarketplace -Name 'test-marketplace' -Confirm:$false
+        Unregister-CopilotMcpServer -Name 'test-server' -Confirm:$false
+
+        $lines = @(Get-Content $script:CopilotTestLog)
+        $lines | Should -Contain 'plugin uninstall dotnet@test-market'
+        $lines | Should -Contain 'plugin marketplace remove test-marketplace'
+        $lines | Should -Contain 'mcp remove test-server'
+    }
+
+    It 'rejects unsafe removal arguments before invoking copilot' {
+        { Uninstall-CopilotPlugin -Name 'bad&plugin' -Confirm:$false } | Should -Throw '*Unsafe Name value*'
+        { Unregister-CopilotMarketplace -Name 'bad&marketplace' -Confirm:$false } | Should -Throw '*Unsafe Name value*'
+        { Unregister-CopilotMcpServer -Name 'bad&server' -Confirm:$false } | Should -Throw '*Unsafe Name value*'
+        Test-Path $script:CopilotTestLog | Should -BeFalse
+    }
+}
+
+Describe 'Update-CopilotPlugin' {
+    BeforeEach {
+        $env:USERPROFILE = Join-Path $TestDrive 'home'
+        New-Item -ItemType Directory -Path $env:USERPROFILE -Force | Out-Null
+        $script:CopilotTestLog = Join-Path $TestDrive 'copilot.log'
+        Remove-Item $script:CopilotTestLog -Force -ErrorAction SilentlyContinue
+        $env:COPILOT_TEST_LOG = $script:CopilotTestLog
+        Add-FakeCopilot -Path (Join-Path $TestDrive 'bin')
+    }
+
+    AfterEach {
+        Remove-Item Env:\COPILOT_TEST_LOG -ErrorAction SilentlyContinue
+        Remove-Item Env:\COPILOT_TEST_STDOUT -ErrorAction SilentlyContinue
+        Remove-Item Env:\COPILOT_TEST_RETRY_COUNT -ErrorAction SilentlyContinue
+    }
+
+    It 'accepts pipeline input from Get-CopilotPlugin' {
+        $env:COPILOT_TEST_STDOUT = "  • dotnet@test-market (v1.2.3)$([Environment]::NewLine)"
+
+        $results = @(Get-CopilotPlugin | Update-CopilotPlugin -Confirm:$false)
+
+        $results | Should -HaveCount 1
+        $results[0].Name | Should -Be 'dotnet@test-market'
+        $results[0].Success | Should -BeTrue
+        $results[0].Error | Should -BeNullOrEmpty
+        $lines = @(Get-Content $script:CopilotTestLog)
+        $lines | Should -Contain 'plugin list'
+        $lines | Should -Contain 'plugin update dotnet@test-market'
+    }
+
+    It 'retries once when a plugin update initially fails with EBUSY' {
+        $retryBin = Join-Path $TestDrive 'retry-bin'
+        New-Item -ItemType Directory -Path $retryBin -Force | Out-Null
+        $handler = Join-Path $retryBin 'copilot-retry.ps1'
+        Set-Content -Path $handler -Value @(
+            'if ($env:COPILOT_TEST_LOG) {'
+            "    Add-Content -LiteralPath `$env:COPILOT_TEST_LOG -Value (`$args -join ' ')"
+            '}'
+            "if (`$args.Count -ge 3 -and `$args[0] -eq 'plugin' -and `$args[1] -eq 'update' -and `$args[2] -eq 'locked-plugin') {"
+            '    $countPath = $env:COPILOT_TEST_RETRY_COUNT'
+            '    $count = if ($countPath -and (Test-Path -LiteralPath $countPath)) { [int](Get-Content -LiteralPath $countPath -Raw) } else { 0 }'
+            '    $count++'
+            '    if ($countPath) { Set-Content -LiteralPath $countPath -Value $count }'
+            '    if ($count -eq 1) {'
+            "        [Console]::Error.WriteLine('Error: EBUSY: resource busy or locked')"
+            '        exit 1'
+            '    }'
+            '}'
+            'exit 0'
+        )
+        $pwsh = (Get-Process -Id $PID).Path
+        if ($IsWindows) {
+            Set-Content -Path (Join-Path $retryBin 'copilot.cmd') -Value @(
+                '@echo off'
+                "`"$($pwsh -replace '"', '""')`" -NoLogo -NoProfile -NonInteractive -File `"$($handler -replace '"', '""')`" %*"
+                'exit /b %ERRORLEVEL%'
+            )
+        } else {
+            $copilot = Join-Path $retryBin 'copilot'
+            Set-Content -Path $copilot -Value @(
+                '#!/usr/bin/env sh'
+                "'$($pwsh -replace '''', '''\''''')' -NoLogo -NoProfile -NonInteractive -File '$($handler -replace '''', '''\''''')' `"`$@`""
+            )
+            & chmod +x $copilot
+        }
+        $env:PATH = "$retryBin$([IO.Path]::PathSeparator)$script:OriginalPath"
+        $env:COPILOT_TEST_RETRY_COUNT = Join-Path $TestDrive 'retry-count.txt'
+        Mock -ModuleName Shmuelie.Copilot -CommandName Start-Sleep -MockWith { }
+
+        $result = Update-CopilotPlugin -Name 'locked-plugin' -Confirm:$false
+
+        $result.Success | Should -BeTrue
+        $result.Error | Should -BeNullOrEmpty
+        @((Get-Content $script:CopilotTestLog) | Where-Object { $_ -eq 'plugin update locked-plugin' }) | Should -HaveCount 2
+        Get-Content $env:COPILOT_TEST_RETRY_COUNT -Raw | Should -Match '^2\s*$'
+        Should -Invoke -ModuleName Shmuelie.Copilot -CommandName Start-Sleep -Exactly -Times 1
+    }
+}
+
+Describe 'Get-CopilotMcpServer' {
+    BeforeEach {
+        $env:USERPROFILE = Join-Path $TestDrive 'home'
+        New-Item -ItemType Directory -Path $env:USERPROFILE -Force | Out-Null
+        $script:CopilotTestLog = Join-Path $TestDrive 'copilot.log'
+        Remove-Item $script:CopilotTestLog -Force -ErrorAction SilentlyContinue
+        $env:COPILOT_TEST_LOG = $script:CopilotTestLog
+        Add-FakeCopilot -Path (Join-Path $TestDrive 'bin')
+    }
+
+    AfterEach {
+        Remove-Item Env:\COPILOT_TEST_LOG -ErrorAction SilentlyContinue
+        Remove-Item Env:\COPILOT_TEST_STDOUT -ErrorAction SilentlyContinue
+    }
+
+    It 'parses copilot MCP list JSON output into typed server objects' {
+        $env:COPILOT_TEST_STDOUT = [ordered]@{
+            mcpServers = [ordered]@{
+                local = [ordered]@{
+                    type = 'stdio'
+                    command = 'pwsh'
+                    args = @('-File', 'server.ps1')
+                    source = 'user'
+                }
+                remote = [ordered]@{
+                    type = 'http'
+                    url = 'https://example.test/mcp'
+                    source = 'plugin'
+                }
+            }
+        } | ConvertTo-Json -Depth 5 -Compress
+
+        $servers = @(Get-CopilotMcpServer)
+        $filtered = @(Get-CopilotMcpServer -Name 'local*' -Source user)
+
+        $servers | Should -HaveCount 2
+        $servers[0].PSTypeNames[0] | Should -Be 'CopilotMcpServer'
+        $servers[0].Name | Should -Be 'local'
+        $servers[0].Type | Should -Be 'stdio'
+        $servers[0].Command | Should -Be 'pwsh'
+        $servers[0].Args | Should -Be '-File server.ps1'
+        $servers[0].Url | Should -Be ''
+        $servers[0].Source | Should -Be 'user'
+        $servers[1].Name | Should -Be 'remote'
+        $servers[1].Command | Should -Be ''
+        $servers[1].Url | Should -Be 'https://example.test/mcp'
+        $filtered | Should -HaveCount 1
+        $filtered[0].Name | Should -Be 'local'
+        @(Get-Content $script:CopilotTestLog | Where-Object { $_ -eq 'mcp list --json' }) | Should -HaveCount 2
+    }
+}
