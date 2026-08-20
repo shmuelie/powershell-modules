@@ -7,6 +7,8 @@ Versions change only when a release is cut; unreleased work stays under
 ## [Unreleased]
 
 ### Added
+- Added `Remove-StaleWorktree` and `Repair-Worktree` for `git worktree prune`
+  and `git worktree repair` maintenance workflows.
 - `Get-Worktrees` now surfaces the remaining `git worktree list --porcelain`
   state on each object: `Bare`, `Detached`, `Locked`/`LockReason`, and
   `Prunable`/`PrunableReason`. Existing `Path`/`Commit`/`Branch` behavior is
