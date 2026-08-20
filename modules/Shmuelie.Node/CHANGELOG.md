@@ -9,6 +9,8 @@ Versions change only when a release is cut; unreleased work stays under
 ### Fixed
 - Gate `Get-NvmRoot -Path` with `SupportsShouldProcess` so `-WhatIf` and
   `-Confirm` are honored before changing the nvm root.
+- Tolerate npm stdout warning lines before or after JSON when parsing
+  `Get-NpmPackage` list and outdated results.
 
 ## [0.1.1] - 2026-08-14
 
