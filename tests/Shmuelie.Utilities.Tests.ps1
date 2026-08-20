@@ -227,3 +227,242 @@ Describe 'VS Code CLI shim argument validation' {
         Get-Content $script:VsCodeTestLog -Raw | Should -Match ([regex]::Escape("-- $workspace"))
     }
 }
+
+Describe 'Get-PipPackages' {
+    BeforeEach {
+        function global:pip { }
+    }
+
+    AfterEach {
+        Remove-Item Function:\pip -ErrorAction SilentlyContinue
+    }
+
+    It 'parses package names and versions from JSON output' {
+        Mock -ModuleName Shmuelie.Utilities pip {
+            '[{"name":"requests","version":"2.31.0"},{"name":"pytest","version":"8.0.0"}]'
+        }
+
+        $packages = @(Get-PipPackages)
+
+        $packages | Should -HaveCount 2
+        $packages[0].name | Should -BeExactly 'requests'
+        $packages[0].version | Should -BeExactly '2.31.0'
+        $packages[1].name | Should -BeExactly 'pytest'
+        $packages[1].version | Should -BeExactly '8.0.0'
+        Should -Invoke -ModuleName Shmuelie.Utilities pip -Times 1
+    }
+
+    It 'parses JSON when stdout includes warning lines' {
+        Mock -ModuleName Shmuelie.Utilities pip {
+            @(
+                'WARNING: Ignoring invalid distribution -ip'
+                '[{"name":"setuptools","version":"70.0.0"}]'
+                '[notice] A new release of pip is available'
+            )
+        }
+
+        $packages = @(Get-PipPackages -PackageState Outdated)
+
+        $packages | Should -HaveCount 1
+        $packages[0].name | Should -BeExactly 'setuptools'
+        $packages[0].version | Should -BeExactly '70.0.0'
+    }
+}
+
+Describe 'Get-UvPackages' {
+    BeforeEach {
+        function global:uv { }
+    }
+
+    AfterEach {
+        Remove-Item Function:\uv -ErrorAction SilentlyContinue
+    }
+
+    It 'parses package names and versions from JSON output' {
+        Mock -ModuleName Shmuelie.Utilities uv {
+            '[{"name":"ruff","version":"0.6.1"},{"name":"mypy","version":"1.11.0"}]'
+        }
+
+        $packages = @(Get-UvPackages)
+
+        $packages | Should -HaveCount 2
+        $packages[0].name | Should -BeExactly 'ruff'
+        $packages[0].version | Should -BeExactly '0.6.1'
+        $packages[1].name | Should -BeExactly 'mypy'
+        $packages[1].version | Should -BeExactly '1.11.0'
+        Should -Invoke -ModuleName Shmuelie.Utilities uv -Times 1
+    }
+
+    It 'parses JSON when stdout includes warning lines' {
+        Mock -ModuleName Shmuelie.Utilities uv {
+            @(
+                'Using Python 3.12.0 environment at .venv'
+                '[{"name":"black","version":"24.8.0","latest_version":"24.10.0"}]'
+                'warning: cache entry ignored'
+            )
+        }
+
+        $packages = @(Get-UvPackages -Outdated)
+
+        $packages | Should -HaveCount 1
+        $packages[0].name | Should -BeExactly 'black'
+        $packages[0].version | Should -BeExactly '24.8.0'
+    }
+}
+
+Describe 'Get-DotNetTool' {
+    BeforeEach {
+        function global:dotnet { }
+    }
+
+    AfterEach {
+        Remove-Item Function:\dotnet -ErrorAction SilentlyContinue
+    }
+
+    It 'parses package ids, versions, and commands from tool list output' {
+        Mock -ModuleName Shmuelie.Utilities dotnet {
+            @(
+                'Package Id        Version      Commands'
+                '---------------------------------------'
+                'dotnet-ef         8.0.7        dotnet-ef'
+                'dotnet-outdated   4.6.4        dotnet-outdated'
+            )
+        }
+
+        $tools = @(Get-DotNetTool)
+
+        $tools | Should -HaveCount 2
+        $tools[0].PackageId | Should -BeExactly 'dotnet-ef'
+        $tools[0].Version | Should -BeExactly '8.0.7'
+        $tools[0].Commands | Should -BeExactly 'dotnet-ef'
+        $tools[0].Global | Should -BeTrue
+        $tools[1].PackageId | Should -BeExactly 'dotnet-outdated'
+        $tools[1].Version | Should -BeExactly '4.6.4'
+    }
+
+    It 'filters tools by package id' {
+        Mock -ModuleName Shmuelie.Utilities dotnet {
+            @(
+                'Package Id        Version      Commands'
+                '---------------------------------------'
+                'dotnet-ef         8.0.7        dotnet-ef'
+                'dotnet-outdated   4.6.4        dotnet-outdated'
+            )
+        }
+
+        $tools = @(Get-DotNetTool -Name 'dotnet-e*')
+
+        $tools | Should -HaveCount 1
+        $tools[0].PackageId | Should -BeExactly 'dotnet-ef'
+        $tools[0].Version | Should -BeExactly '8.0.7'
+    }
+}
+
+Describe 'Repair-GlobalJson' {
+    It 'sets sdk.rollForward to disable' {
+        $globalJson = Join-Path $TestDrive 'global.json'
+        Set-Content -Path $globalJson -Value '{"sdk":{"version":"9.0.100","rollForward":"latestFeature"}}'
+
+        Push-Location $TestDrive
+        try {
+            Repair-GlobalJson -Confirm:$false
+        } finally {
+            Pop-Location
+        }
+
+        $content = Get-Content $globalJson -Raw | ConvertFrom-Json
+        $content.sdk.version | Should -BeExactly '9.0.100'
+        $content.sdk.rollForward | Should -BeExactly 'disable'
+    }
+
+    It 'does not change global.json under WhatIf' {
+        $globalJson = Join-Path $TestDrive 'global.json'
+        $original = '{"sdk":{"version":"9.0.100","rollForward":"latestFeature"}}'
+        Set-Content -Path $globalJson -Value $original
+
+        Push-Location $TestDrive
+        try {
+            Repair-GlobalJson -WhatIf
+        } finally {
+            Pop-Location
+        }
+
+        (Get-Content $globalJson -Raw).Trim() | Should -BeExactly $original
+    }
+}
+
+Describe 'Windows Terminal settings parsing' -Skip:(-not $IsWindows) {
+    BeforeEach {
+        $script:OriginalLocalAppData = $env:LOCALAPPDATA
+        $script:OriginalProgramData = $env:ProgramData
+        $env:LOCALAPPDATA = Join-Path $TestDrive 'LocalAppData'
+        $env:ProgramData = Join-Path $TestDrive 'ProgramData'
+
+        $settingsDir = Join-Path $env:LOCALAPPDATA 'Packages\Microsoft.WindowsTerminal_8wekyb3d8bbwe\LocalState'
+        New-Item -ItemType Directory -Path $settingsDir -Force | Out-Null
+        Set-Content -Path (Join-Path $settingsDir 'settings.json') -Value @'
+{
+  "profiles": {
+    "list": [
+      { "guid": "{11111111-1111-1111-1111-111111111111}", "name": "PowerShell", "commandline": "pwsh.exe" },
+      { "guid": "{22222222-2222-2222-2222-222222222222}", "name": "Developer Command Prompt", "commandline": "cmd.exe" }
+    ]
+  }
+}
+'@
+    }
+
+    AfterEach {
+        $env:LOCALAPPDATA = $script:OriginalLocalAppData
+        $env:ProgramData = $script:OriginalProgramData
+    }
+
+    It 'reads the stable settings.json as an object' {
+        $settings = Get-WindowsTerminalSettings
+
+        $settings.profiles.list | Should -HaveCount 2
+        $settings.profiles.list[0].name | Should -BeExactly 'PowerShell'
+        $settings.profiles.list[0].guid | Should -BeExactly '{11111111-1111-1111-1111-111111111111}'
+    }
+
+    It 'finds profiles by name and GUID' {
+        $byName = Get-WindowsTerminalProfile -Name '*Command Prompt'
+        $byId = Get-WindowsTerminalProfile -Id '{11111111-1111-1111-1111-111111111111}'
+
+        $byName.name | Should -BeExactly 'Developer Command Prompt'
+        $byName.guid | Should -BeExactly '{22222222-2222-2222-2222-222222222222}'
+        $byId.name | Should -BeExactly 'PowerShell'
+    }
+}
+
+Describe 'Get-ServiceProcess' -Skip:(-not $IsWindows) {
+    It 'returns the hosting process when a single running service is matched' {
+        $fakeProcess = [PSCustomObject]@{
+            Id          = 4242
+            ProcessName = 'svchost'
+        }
+        Mock -ModuleName Shmuelie.Utilities Get-CimInstance {
+            [PSCustomObject]@{
+                Name      = 'ExampleSvc'
+                ProcessId = 4242
+                PathName  = 'C:\Windows\System32\svchost.exe -k netsvcs'
+            }
+        }
+        Mock -ModuleName Shmuelie.Utilities Get-Service {
+            [PSCustomObject]@{
+                Name        = 'ExampleSvc'
+                DisplayName = 'Example Service'
+                Status      = 'Running'
+            }
+        }
+        Mock -ModuleName Shmuelie.Utilities Get-Process { $fakeProcess } -ParameterFilter { $Id -eq 4242 }
+
+        $process = Get-ServiceProcess -Name ExampleSvc
+
+        $process.Id | Should -Be 4242
+        $process.ProcessName | Should -BeExactly 'svchost'
+        Should -Invoke -ModuleName Shmuelie.Utilities Get-CimInstance -Times 1
+        Should -Invoke -ModuleName Shmuelie.Utilities Get-Service -Times 1
+        Should -Invoke -ModuleName Shmuelie.Utilities Get-Process -Times 1 -ParameterFilter { $Id -eq 4242 }
+    }
+}
