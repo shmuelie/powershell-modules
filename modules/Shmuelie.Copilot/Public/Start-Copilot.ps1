@@ -357,10 +357,11 @@ function Start-Copilot {
                 $wsFile = Join-Path $_.FullName 'workspace.yaml'
                 if (-not (Test-Path $wsFile)) { return }
                 $content = Get-Content $wsFile -Raw
-                $sessionCwd = if ($content -match '(?m)^cwd:\s*(.+)$') { $Matches[1].Trim() }
+                $sessionCwd = Get-CopilotWorkspaceField -Content $content -Field 'cwd'
                 if ($sessionCwd -ne $cwd) { return }
-                $summary = if ($content -match '(?m)^summary:\s*(.+)$') { $Matches[1].Trim() }
-                $name = if ($content -match '(?m)^name:\s+(.+)$') { $Matches[1].Trim() }
+                $summary = Get-CopilotWorkspaceField -Content $content -Field 'summary'
+                $name = Get-CopilotWorkspaceField -Content $content -Field 'name'
+                if ($name) { $name = ($name -split '\r?\n', 2)[0].Trim() }
                 $display = $name ?? $summary ?? '(no summary)'
                 [System.Management.Automation.CompletionResult]::new($_.Name, $_.Name, 'ParameterValue', $display)
             }
