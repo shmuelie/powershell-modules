@@ -236,29 +236,12 @@ function Merge-CopilotSession {
             Where-Object { $_ -ne '(no summary)' } | Select-Object -Unique) -join ' + '
         if (-not $mergedSummary) { $mergedSummary = 'merged session' }
 
-        # Replace name field in workspace.yaml (handles block scalars like |- or >-)
-        $hasName = $primaryContent -match '(?m)^name:'
-        if ($hasName) {
-            $yamlLines = $primaryContent -split '\r?\n'
-            $newLines = [System.Collections.Generic.List[string]]::new()
-            $skipBlock = $false
-            foreach ($line in $yamlLines) {
-                if ($line -match '^name:') {
-                    $newLines.Add("name: $mergedSummary")
-                    $skipBlock = ($line -match ':\s*[\|>]')
-                    continue
-                }
-                if ($skipBlock -and ($line -match '^\s' -or $line -eq '')) { continue }
-                $skipBlock = $false
-                $newLines.Add($line)
-            }
-            $primaryContent = $newLines -join "`n"
-        }
+        $primaryContent = Set-CopilotWorkspaceField -Content $primaryContent -Field 'name' -Value $mergedSummary
 
-        $workspaceYaml = $primaryContent -replace '(?m)^id:\s*.+$', "id: $newId"
-        $workspaceYaml = $workspaceYaml -replace '(?m)^summary:\s*.+$', "summary: $mergedSummary"
-        $workspaceYaml = $workspaceYaml -replace '(?m)^summary_count:\s*.+$', 'summary_count: 0'
-        $workspaceYaml = $workspaceYaml -replace '(?m)^updated_at:\s*.+$', "updated_at: $now"
+        $workspaceYaml = Set-CopilotWorkspaceField -Content $primaryContent -Field 'id' -Value $newId
+        $workspaceYaml = Set-CopilotWorkspaceField -Content $workspaceYaml -Field 'summary' -Value $mergedSummary
+        $workspaceYaml = Set-CopilotWorkspaceField -Content $workspaceYaml -Field 'summary_count' -Value '0'
+        $workspaceYaml = Set-CopilotWorkspaceField -Content $workspaceYaml -Field 'updated_at' -Value $now
         $workspaceYaml | Set-Content (Join-Path $newSessionPath 'workspace.yaml') -Encoding UTF8 -NoNewline
 
         # Write empty vscode metadata
