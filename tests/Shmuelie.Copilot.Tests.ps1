@@ -34,16 +34,94 @@ BeforeAll {
             [Parameter(Mandatory)][string]$SessionRoot,
             [Parameter(Mandatory)][string]$Id,
             [Parameter(Mandatory)][string]$Cwd,
-            [Parameter(Mandatory)][string]$Summary
+            [Parameter(Mandatory)][string]$Summary,
+            [string]$UpdatedAt = '2026-08-12T22:00:00.000Z'
         )
 
         $sessionDir = Join-Path $SessionRoot $Id
         New-Item -ItemType Directory -Path $sessionDir -Force | Out-Null
         Set-Content -Path (Join-Path $sessionDir 'workspace.yaml') -Value @(
+            "id: $Id"
             "cwd: $Cwd"
-            'updated_at: 2026-08-12T22:00:00.000Z'
+            "updated_at: $UpdatedAt"
+            "created_at: $UpdatedAt"
+            "name: $Summary"
             "summary: $Summary"
+            'summary_count: 1'
         )
+
+        $sessionDir
+    }
+
+    function New-CopilotTestEventLine {
+        param(
+            [Parameter(Mandatory)][string]$Type,
+            [Parameter(Mandatory)][string]$Id,
+            [Parameter(Mandatory)][string]$Timestamp,
+            [hashtable]$Data = @{}
+        )
+
+        [ordered]@{
+            type      = $Type
+            id        = $Id
+            timestamp = $Timestamp
+            data      = $Data
+        } | ConvertTo-Json -Depth 10 -Compress
+    }
+
+    function Set-CopilotTestEvents {
+        param(
+            [Parameter(Mandatory)][string]$SessionPath,
+            [Parameter(Mandatory)][string[]]$Lines
+        )
+
+        Set-Content -Path (Join-Path $SessionPath 'events.jsonl') -Value $Lines -Encoding UTF8
+    }
+
+    function New-CopilotTestConversationEvents {
+        param(
+            [Parameter(Mandatory)][string]$Prefix,
+            [Parameter(Mandatory)][string]$SessionId,
+            [Parameter(Mandatory)][int]$Count,
+            [Parameter(Mandatory)][datetimeoffset]$Start
+        )
+
+        $lines = [System.Collections.Generic.List[string]]::new()
+        $lines.Add((New-CopilotTestEventLine -Type 'session.start' -Id "$Prefix-start" -Timestamp $Start.ToString('o') -Data @{ sessionId = $SessionId }))
+        for ($i = 1; $i -le $Count; $i++) {
+            $timestamp = $Start.AddMinutes($i).ToString('o')
+            $lines.Add((New-CopilotTestEventLine -Type 'user.message' -Id "$Prefix-user-$i" -Timestamp $timestamp -Data @{ content = "$Prefix user $i" }))
+            $lines.Add((New-CopilotTestEventLine -Type 'assistant.message' -Id "$Prefix-assistant-$i" -Timestamp $Start.AddMinutes($i).AddSeconds(10).ToString('o') -Data @{
+                content       = "$Prefix assistant $i"
+                interactionId = "$Prefix-interaction-$i"
+                model         = 'test-model'
+            }))
+            $lines.Add((New-CopilotTestEventLine -Type 'assistant.turn_end' -Id "$Prefix-end-$i" -Timestamp $Start.AddMinutes($i).AddSeconds(20).ToString('o') -Data @{}))
+        }
+
+        [string[]]$lines
+    }
+
+    function Set-CopilotTestSnapshotIndex {
+        param(
+            [Parameter(Mandatory)][string]$SessionPath,
+            [object[]]$Snapshots = @()
+        )
+
+        $snapshotRoot = Join-Path $SessionPath 'rewind-snapshots'
+        New-Item -ItemType Directory -Path $snapshotRoot -Force | Out-Null
+        [ordered]@{
+            version   = 1
+            snapshots = @($Snapshots)
+        } | ConvertTo-Json -Depth 10 | Set-Content -Path (Join-Path $snapshotRoot 'index.json') -Encoding UTF8
+    }
+
+    function Get-CopilotTestEventObjects {
+        param([Parameter(Mandatory)][string]$SessionPath)
+
+        Get-Content -Path (Join-Path $SessionPath 'events.jsonl') |
+            Where-Object { $_.Trim() } |
+            ForEach-Object { $_ | ConvertFrom-Json }
     }
 }
 
@@ -89,6 +167,210 @@ Describe 'Copilot CLI shim argument validation' {
         { Register-CopilotMcpServer -Name 'safe-server' -Command 'node' -ArgumentList 'server&echo-bad' -Confirm:$false } |
             Should -Throw '*Unsafe ArgumentList value*'
         Test-Path $script:CopilotTestLog | Should -BeFalse
+    }
+}
+
+Describe 'Merge-CopilotSession' {
+    BeforeEach {
+        $testHome = Join-Path $TestDrive 'home'
+        $script:SessionRoot = Join-Path $testHome '.copilot' 'session-state'
+        $script:Workspace = Join-Path $TestDrive 'workspace'
+        New-Item -ItemType Directory -Path $script:SessionRoot, $script:Workspace -Force | Out-Null
+        Mock -ModuleName Shmuelie.Copilot -CommandName Get-CopilotHome -MockWith { $testHome }
+    }
+
+    It 'merges sessions by event chronology while tolerating missing optional files and empty snapshot indexes' {
+        $laterSession = '11111111-1111-1111-1111-111111111111'
+        $earlierSession = '22222222-2222-2222-2222-222222222222'
+        $laterPath = New-CopilotSessionState -SessionRoot $script:SessionRoot -Id $laterSession -Cwd $script:Workspace -Summary 'Later first event' -UpdatedAt '2026-08-20T12:30:00.000Z'
+        $earlierPath = New-CopilotSessionState -SessionRoot $script:SessionRoot -Id $earlierSession -Cwd $script:Workspace -Summary 'Earlier first event' -UpdatedAt '2026-08-20T12:00:00.000Z'
+
+        Set-CopilotTestEvents -SessionPath $laterPath -Lines (New-CopilotTestConversationEvents -Prefix 'later' -SessionId $laterSession -Count 1 -Start ([datetimeoffset]'2026-08-20T12:10:00Z'))
+        Set-CopilotTestEvents -SessionPath $earlierPath -Lines (New-CopilotTestConversationEvents -Prefix 'earlier' -SessionId $earlierSession -Count 1 -Start ([datetimeoffset]'2026-08-20T12:00:00Z'))
+        Set-CopilotTestSnapshotIndex -SessionPath $laterPath -Snapshots @()
+
+        New-Item -ItemType Directory -Path (Join-Path $earlierPath 'checkpoints') -Force | Out-Null
+        Set-Content -Path (Join-Path $earlierPath 'checkpoints' 'index.md') -Value @(
+            '# Checkpoint History'
+            '| # | Title | File |'
+            '|---|-------|------|'
+            '| 9 | Older checkpoint | checkpoint-9.json |'
+        )
+
+        $merged = Merge-CopilotSession -Id $laterSession, $earlierSession -Confirm:$false
+
+        $merged | Should -Not -BeNullOrEmpty
+        Test-Path (Join-Path $merged.Path 'events.jsonl') | Should -BeTrue
+        Test-Path (Join-Path $merged.Path 'rewind-snapshots' 'index.json') | Should -BeTrue
+        Test-Path (Join-Path $merged.Path 'files') | Should -BeTrue
+        Test-Path (Join-Path $merged.Path 'research') | Should -BeTrue
+
+        $events = @(Get-CopilotTestEventObjects -SessionPath $merged.Path)
+        @($events | Where-Object type -EQ 'session.start') | Should -HaveCount 1
+        @($events | Where-Object type -EQ 'user.message' | ForEach-Object { $_.data.content }) | Should -Be @('earlier user 1', 'later user 1')
+        Get-Content (Join-Path $merged.Path 'checkpoints' 'index.md') | Should -Contain '| 1 | Older checkpoint | checkpoint-9.json |'
+
+        $snapshotIndex = Get-Content (Join-Path $merged.Path 'rewind-snapshots' 'index.json') -Raw | ConvertFrom-Json
+        @($snapshotIndex.snapshots) | Should -HaveCount 0
+    }
+
+    It 'honors WhatIf without creating a merged session or deleting sources' {
+        $first = '33333333-3333-3333-3333-333333333333'
+        $second = '44444444-4444-4444-4444-444444444444'
+        $firstPath = New-CopilotSessionState -SessionRoot $script:SessionRoot -Id $first -Cwd $script:Workspace -Summary 'First'
+        $secondPath = New-CopilotSessionState -SessionRoot $script:SessionRoot -Id $second -Cwd $script:Workspace -Summary 'Second'
+        Set-CopilotTestEvents -SessionPath $firstPath -Lines (New-CopilotTestConversationEvents -Prefix 'first' -SessionId $first -Count 1 -Start ([datetimeoffset]'2026-08-20T13:00:00Z'))
+        Set-CopilotTestEvents -SessionPath $secondPath -Lines (New-CopilotTestConversationEvents -Prefix 'second' -SessionId $second -Count 1 -Start ([datetimeoffset]'2026-08-20T13:10:00Z'))
+        $beforeDirs = @(Get-ChildItem -Path $script:SessionRoot -Directory | Select-Object -ExpandProperty Name | Sort-Object)
+
+        $result = Merge-CopilotSession -Id $first, $second -RemoveSource -WhatIf
+
+        $result | Should -BeNullOrEmpty
+        @(Get-ChildItem -Path $script:SessionRoot -Directory | Select-Object -ExpandProperty Name | Sort-Object) | Should -Be $beforeDirs
+        Test-Path $firstPath | Should -BeTrue
+        Test-Path $secondPath | Should -BeTrue
+    }
+
+    It 'removes source sessions only after a successful RemoveSource merge' {
+        $first = '55555555-5555-5555-5555-555555555555'
+        $second = '66666666-6666-6666-6666-666666666666'
+        $firstPath = New-CopilotSessionState -SessionRoot $script:SessionRoot -Id $first -Cwd $script:Workspace -Summary 'First'
+        $secondPath = New-CopilotSessionState -SessionRoot $script:SessionRoot -Id $second -Cwd $script:Workspace -Summary 'Second'
+        Set-CopilotTestEvents -SessionPath $firstPath -Lines (New-CopilotTestConversationEvents -Prefix 'first' -SessionId $first -Count 1 -Start ([datetimeoffset]'2026-08-20T14:00:00Z'))
+        Set-CopilotTestEvents -SessionPath $secondPath -Lines (New-CopilotTestConversationEvents -Prefix 'second' -SessionId $second -Count 1 -Start ([datetimeoffset]'2026-08-20T14:10:00Z'))
+
+        $merged = Merge-CopilotSession -Id $first, $second -RemoveSource -Confirm:$false
+
+        $merged | Should -Not -BeNullOrEmpty
+        Test-Path $merged.Path | Should -BeTrue
+        Test-Path $firstPath | Should -BeFalse
+        Test-Path $secondPath | Should -BeFalse
+
+        $third = '77777777-7777-7777-7777-777777777777'
+        $fourth = '88888888-8888-8888-8888-888888888888'
+        $thirdPath = New-CopilotSessionState -SessionRoot $script:SessionRoot -Id $third -Cwd $script:Workspace -Summary 'Third'
+        $otherWorkspace = Join-Path $TestDrive 'other-workspace'
+        New-Item -ItemType Directory -Path $otherWorkspace -Force | Out-Null
+        $fourthPath = New-CopilotSessionState -SessionRoot $script:SessionRoot -Id $fourth -Cwd $otherWorkspace -Summary 'Fourth'
+
+        $failed = Merge-CopilotSession -Id $third, $fourth -RemoveSource -Confirm:$false -ErrorAction SilentlyContinue
+
+        $failed | Should -BeNullOrEmpty
+        Test-Path $thirdPath | Should -BeTrue
+        Test-Path $fourthPath | Should -BeTrue
+    }
+}
+
+Describe 'Compress-CopilotSession' {
+    BeforeEach {
+        $testHome = Join-Path $TestDrive 'home'
+        $script:SessionRoot = Join-Path $testHome '.copilot' 'session-state'
+        $script:Workspace = Join-Path $TestDrive 'workspace'
+        New-Item -ItemType Directory -Path $script:SessionRoot, $script:Workspace -Force | Out-Null
+        Mock -ModuleName Shmuelie.Copilot -CommandName Get-CopilotHome -MockWith { $testHome }
+    }
+
+    It 'compacts to the requested recent conversations without requiring snapshot metadata' {
+        $sessionId = '99999999-9999-9999-9999-999999999999'
+        $sessionPath = New-CopilotSessionState -SessionRoot $script:SessionRoot -Id $sessionId -Cwd $script:Workspace -Summary 'Compact me'
+        Set-CopilotTestEvents -SessionPath $sessionPath -Lines (New-CopilotTestConversationEvents -Prefix 'compact' -SessionId $sessionId -Count 4 -Start ([datetimeoffset]'2026-08-20T15:00:00Z'))
+
+        Compress-CopilotSession -Id $sessionId -Keep 2 -NoBackup -Confirm:$false
+
+        $events = @(Get-CopilotTestEventObjects -SessionPath $sessionPath)
+        @($events | Where-Object type -EQ 'session.start') | Should -HaveCount 1
+        @($events | Where-Object type -EQ 'user.message' | ForEach-Object { $_.data.content }) | Should -Be @('compact user 3', 'compact user 4')
+        Test-Path (Join-Path $sessionPath 'events.jsonl.bak') | Should -BeFalse
+    }
+
+    It 'honors WhatIf without rewriting events, creating backups, or pruning empty snapshot indexes' {
+        $sessionId = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
+        $sessionPath = New-CopilotSessionState -SessionRoot $script:SessionRoot -Id $sessionId -Cwd $script:Workspace -Summary 'WhatIf compact'
+        Set-CopilotTestEvents -SessionPath $sessionPath -Lines (New-CopilotTestConversationEvents -Prefix 'whatif' -SessionId $sessionId -Count 3 -Start ([datetimeoffset]'2026-08-20T16:00:00Z'))
+        Set-CopilotTestSnapshotIndex -SessionPath $sessionPath -Snapshots @()
+        $eventsFile = Join-Path $sessionPath 'events.jsonl'
+        $snapshotFile = Join-Path $sessionPath 'rewind-snapshots' 'index.json'
+        $beforeEvents = Get-Content $eventsFile -Raw
+        $beforeSnapshots = Get-Content $snapshotFile -Raw
+
+        Compress-CopilotSession -Id $sessionId -Keep 1 -WhatIf
+
+        Get-Content $eventsFile -Raw | Should -Be $beforeEvents
+        Get-Content $snapshotFile -Raw | Should -Be $beforeSnapshots
+        Test-Path (Join-Path $sessionPath 'events.jsonl.bak') | Should -BeFalse
+    }
+}
+
+Describe 'Repair-CopilotSessionEvents' {
+    BeforeEach {
+        $testHome = Join-Path $TestDrive 'home'
+        $script:SessionRoot = Join-Path $testHome '.copilot' 'session-state'
+        $script:Workspace = Join-Path $TestDrive 'workspace'
+        New-Item -ItemType Directory -Path $script:SessionRoot, $script:Workspace -Force | Out-Null
+        Mock -ModuleName Shmuelie.Copilot -CommandName Get-CopilotHome -MockWith { $testHome }
+    }
+
+    It 'relocates out-of-order tool events, removes warnings, and synthesizes missing completions' {
+        $lines = @(
+            (New-CopilotTestEventLine -Type 'session.start' -Id 'repair-start' -Timestamp '2026-08-20T17:00:00Z' -Data @{ sessionId = 'repair-session' })
+            (New-CopilotTestEventLine -Type 'tool.execution_complete' -Id 'complete-before-request' -Timestamp '2026-08-20T17:00:01Z' -Data @{ toolCallId = 'tool-1'; model = 'test-model'; interactionId = 'repair-1'; success = $true; result = @{ content = 'done' } })
+            (New-CopilotTestEventLine -Type 'session.warning' -Id 'warning' -Timestamp '2026-08-20T17:00:02Z' -Data @{ message = 'remove me' })
+            (New-CopilotTestEventLine -Type 'assistant.message' -Id 'assistant-tool-1' -Timestamp '2026-08-20T17:00:03Z' -Data @{ interactionId = 'repair-1'; model = 'test-model'; toolRequests = @(@{ toolCallId = 'tool-1' }) })
+            (New-CopilotTestEventLine -Type 'assistant.message' -Id 'assistant-tool-2' -Timestamp '2026-08-20T17:00:04Z' -Data @{ interactionId = 'repair-2'; model = 'test-model'; toolRequests = @(@{ toolCallId = 'tool-2' }) })
+            (New-CopilotTestEventLine -Type 'assistant.turn_end' -Id 'turn-end' -Timestamp '2026-08-20T17:00:05Z' -Data @{})
+        )
+
+        $repaired = @(Repair-CopilotSessionEvents -EventLines $lines)
+        $events = @($repaired | ForEach-Object { $_ | ConvertFrom-Json })
+
+        $events.type | Should -Not -Contain 'session.warning'
+        [array]::IndexOf($events.id, 'assistant-tool-1') | Should -BeLessThan ([array]::IndexOf($events.id, 'complete-before-request'))
+        @($events | Where-Object { $_.type -eq 'tool.execution_complete' -and $_.data.toolCallId -eq 'tool-2' }) | Should -HaveCount 1
+    }
+
+    It 'honors WhatIf without rewriting or backing up file-backed repairs' {
+        $sessionId = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'
+        $sessionPath = New-CopilotSessionState -SessionRoot $script:SessionRoot -Id $sessionId -Cwd $script:Workspace -Summary 'Repair WhatIf'
+        Set-CopilotTestEvents -SessionPath $sessionPath -Lines @(
+            (New-CopilotTestEventLine -Type 'session.start' -Id 'whatif-repair-start' -Timestamp '2026-08-20T18:00:00Z' -Data @{ sessionId = $sessionId })
+            (New-CopilotTestEventLine -Type 'session.warning' -Id 'whatif-warning' -Timestamp '2026-08-20T18:00:01Z' -Data @{ message = 'would be removed' })
+        )
+        $eventsFile = Join-Path $sessionPath 'events.jsonl'
+        $before = Get-Content $eventsFile -Raw
+
+        Repair-CopilotSessionEvents -Path $sessionPath -WhatIf
+
+        Get-Content $eventsFile -Raw | Should -Be $before
+        Test-Path (Join-Path $sessionPath 'events.jsonl.bak') | Should -BeFalse
+    }
+}
+
+Describe 'Copilot session maintenance round trip' {
+    BeforeEach {
+        $testHome = Join-Path $TestDrive 'home'
+        $script:SessionRoot = Join-Path $testHome '.copilot' 'session-state'
+        $script:Workspace = Join-Path $TestDrive 'workspace'
+        New-Item -ItemType Directory -Path $script:SessionRoot, $script:Workspace -Force | Out-Null
+        Mock -ModuleName Shmuelie.Copilot -CommandName Get-CopilotHome -MockWith { $testHome }
+    }
+
+    It 'keeps events.jsonl as valid line-delimited JSON after merge, compact, and repair' {
+        $first = 'cccccccc-cccc-cccc-cccc-cccccccccccc'
+        $second = 'dddddddd-dddd-dddd-dddd-dddddddddddd'
+        $firstPath = New-CopilotSessionState -SessionRoot $script:SessionRoot -Id $first -Cwd $script:Workspace -Summary 'Round trip first'
+        $secondPath = New-CopilotSessionState -SessionRoot $script:SessionRoot -Id $second -Cwd $script:Workspace -Summary 'Round trip second'
+        Set-CopilotTestEvents -SessionPath $firstPath -Lines (New-CopilotTestConversationEvents -Prefix 'round-first' -SessionId $first -Count 2 -Start ([datetimeoffset]'2026-08-20T19:00:00Z'))
+        Set-CopilotTestEvents -SessionPath $secondPath -Lines (New-CopilotTestConversationEvents -Prefix 'round-second' -SessionId $second -Count 2 -Start ([datetimeoffset]'2026-08-20T19:10:00Z'))
+
+        $merged = Merge-CopilotSession -Id $first, $second -Confirm:$false
+        Compress-CopilotSession -InputObject $merged -Keep 2 -NoBackup -Confirm:$false
+        Repair-CopilotSessionEvents -InputObject $merged -NoBackup -Confirm:$false
+
+        $lines = @(Get-Content (Join-Path $merged.Path 'events.jsonl') | Where-Object { $_.Trim() })
+        $lines | Should -Not -BeNullOrEmpty
+        foreach ($line in $lines) {
+            { $line | ConvertFrom-Json } | Should -Not -Throw
+        }
     }
 }
 
