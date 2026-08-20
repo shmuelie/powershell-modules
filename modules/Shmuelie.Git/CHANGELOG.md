@@ -7,10 +7,17 @@ Versions change only when a release is cut; unreleased work stays under
 ## [Unreleased]
 
 ### Added
+- `Remove-Worktree` and `Set-Worktree` now accept `-Path` and `Path` pipeline
+  input, allowing detached, prunable, and non-standard-location worktrees to be
+  addressed by their real filesystem path.
 - `Get-Worktrees` now surfaces the remaining `git worktree list --porcelain`
   state on each object: `Bare`, `Detached`, `Locked`/`LockReason`, and
   `Prunable`/`PrunableReason`. Existing `Path`/`Commit`/`Branch` behavior is
   unchanged.
+
+### Changed
+- `Remove-Worktree` and `Set-Worktree` now resolve branch names through
+  `Get-Worktrees` instead of reconstructing a conventional sibling path.
 
 ## [0.4.0] - 2026-08-20
 

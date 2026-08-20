@@ -172,10 +172,16 @@ Class WorktreeSetValuesGenerator : System.Management.Automation.IValidateSetValu
     [string[]] GetValidValues() {
         <#
         .SYNOPSIS
-            Return the branch name of every worktree in the current repository,
-            used to supply -ValidateSet/tab-completion values for worktree parameters.
+            Return the branch name of every branch-backed worktree in the current
+            repository, used to supply -ValidateSet/tab-completion values for
+            worktree parameters. Detached worktrees are path-addressed because
+            they all share the ambiguous '(detached)' branch label.
         #>
-        return [string[]](Get-Worktrees | Select-Object -ExpandProperty Branch)
+        return [string[]](
+            Get-Worktrees |
+                Where-Object { -not $_.Detached -and $_.Branch } |
+                Select-Object -ExpandProperty Branch -Unique
+        )
     }
 }
 
@@ -336,43 +342,147 @@ function New-Worktree {
     }
 }
 
+function ConvertTo-ComparableWorktreePath {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path
+    )
+
+    $resolved = Resolve-Path -LiteralPath $Path -ErrorAction SilentlyContinue | Select-Object -First 1
+    $fullPath = if ($resolved) {
+        $resolved.ProviderPath
+    } else {
+        [IO.Path]::GetFullPath($Path)
+    }
+
+    $root = [IO.Path]::GetPathRoot($fullPath)
+    if ($fullPath.Length -le $root.Length) {
+        return $fullPath
+    }
+
+    $fullPath.TrimEnd([char[]]@([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar))
+}
+
+function Test-WorktreePathEquals {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Left,
+
+        [Parameter(Mandatory)]
+        [string]$Right
+    )
+
+    $comparison = if ([IO.Path]::DirectorySeparatorChar -eq '\') {
+        [System.StringComparison]::OrdinalIgnoreCase
+    } else {
+        [System.StringComparison]::Ordinal
+    }
+
+    (ConvertTo-ComparableWorktreePath -Path $Left).Equals((ConvertTo-ComparableWorktreePath -Path $Right), $comparison)
+}
+
+function Resolve-WorktreeTarget {
+    [CmdletBinding(DefaultParameterSetName = 'Path')]
+    param(
+        [Parameter(Mandatory, ParameterSetName = 'BranchName')]
+        [string]$BranchName,
+
+        [Parameter(Mandatory, ParameterSetName = 'Path')]
+        [string]$Path
+    )
+
+    $worktrees = @(Get-Worktrees)
+    if ($PSCmdlet.ParameterSetName -eq 'Path') {
+        $matches = @($worktrees | Where-Object { Test-WorktreePathEquals -Left $_.Path -Right $Path })
+        if ($matches.Count -eq 0) {
+            Write-Error "No worktree was found at path '$Path'."
+            return
+        }
+        if ($matches.Count -gt 1) {
+            Write-Error "More than one worktree matched path '$Path'."
+            return
+        }
+        return $matches[0]
+    }
+
+    $matches = @($worktrees | Where-Object Branch -eq $BranchName)
+    if ($matches.Count -eq 0) {
+        Write-Error "No worktree was found for branch '$BranchName'."
+        return
+    }
+    if ($BranchName -eq '(detached)' -or ($matches | Where-Object Detached)) {
+        Write-Error "Detached worktrees cannot be addressed by branch name because '(detached)' is ambiguous. Use -Path instead."
+        return
+    }
+    if ($matches.Count -gt 1) {
+        Write-Error "More than one worktree matched branch '$BranchName'. Use -Path instead."
+        return
+    }
+
+    $matches[0]
+}
+
 function Remove-Worktree {
     <#
     .SYNOPSIS
-    Remove a worktree by branch name
+    Remove a worktree by branch name or path.
     .PARAMETER BranchName
-    Name of the branch
+    Name of the branch. The branch is resolved through `Get-Worktrees`, so
+    non-standard worktree locations are supported. Detached worktrees must be
+    addressed by `-Path` because their branch label is ambiguous.
+    .PARAMETER Path
+    The actual filesystem path of the worktree to remove. Accepts pipeline input
+    by property name from `Get-Worktrees` and related objects.
     .PARAMETER RemoveBranch
-    Also remove the branch
+    Also remove the branch when the target worktree is backed by a branch.
     .PARAMETER Force
-    Force the removal of the worktree
+    Force the removal of the worktree.
     .EXAMPLE
     Remove-Worktree -BranchName feature/old -RemoveBranch
-    Removes the worktree and deletes the branch.
+    Removes the worktree for the branch and deletes the branch.
+    .EXAMPLE
+    Get-Worktrees | Where-Object Detached | Remove-Worktree -Force
+    Removes detached worktrees by their real paths from pipeline input.
     #>
-    [CmdletBinding(SupportsShouldProcess)]
+    [CmdletBinding(SupportsShouldProcess, DefaultParameterSetName = 'Path')]
     param(
-        [Parameter(ValueFromPipelineByPropertyName)]
+        [Parameter(Mandatory, Position = 0, ParameterSetName = 'BranchName', ValueFromPipelineByPropertyName)]
         [ValidateSet([WorktreeSetValuesGenerator])]
         [Alias('Branch')]
         [string]$BranchName,
+
+        [Parameter(Mandatory, ParameterSetName = 'Path', ValueFromPipelineByPropertyName)]
+        [ValidateNotNullOrEmpty()]
+        [string]$Path,
+
         [switch]$RemoveBranch,
         [switch]$Force = $false
     )
     process {
-        $worktreePath = Get-WorktreePath -BranchName $BranchName
+        $target = if ($PSCmdlet.ParameterSetName -eq 'Path') {
+            Resolve-WorktreeTarget -Path $Path
+        } else {
+            Resolve-WorktreeTarget -BranchName $BranchName
+        }
+        if (-not $target) { return }
+
+        $worktreePath = $target.Path
         if ($PSCmdlet.ShouldProcess($worktreePath, 'Remove worktree')) {
-            if ($Force) {
-                git worktree remove $worktreePath --force
-            } else {
-                git worktree remove $worktreePath
-            }
+            $removeArgs = @('worktree', 'remove')
+            if ($Force) { $removeArgs += '--force' }
+            $removeArgs += '--'
+            $removeArgs += $worktreePath
+            git @removeArgs
             $worktreeRemoved = $LASTEXITCODE -eq 0
             if ($RemoveBranch) {
-                if ($worktreeRemoved) {
-                    git branch -D $BranchName
+                if ($target.Detached -or $target.Branch -eq '(detached)' -or -not $target.Branch) {
+                    Write-Warning 'The target worktree is detached; no branch was removed.'
+                } elseif ($worktreeRemoved) {
+                    git branch -D -- $target.Branch
                 } else {
-                    Write-Warning "Worktree removal failed; leaving branch '$BranchName' in place."
+                    Write-Warning "Worktree removal failed; leaving branch '$($target.Branch)' in place."
                 }
             }
         }
@@ -384,22 +494,42 @@ function Set-Worktree {
     .SYNOPSIS
     Change the current directory to the directory for a worktree.
     .PARAMETER BranchName
-    The name of the branch to change to.
+    The name of the branch to change to. The branch is resolved through
+    `Get-Worktrees`, so non-standard worktree locations are supported. Detached
+    worktrees must be addressed by `-Path` because their branch label is ambiguous.
+    .PARAMETER Path
+    The actual filesystem path of the worktree to change to. Accepts pipeline
+    input by property name from `Get-Worktrees` and related objects.
     .EXAMPLE
     Set-Worktree -BranchName main
     Changes the current directory to the main branch worktree.
+    .EXAMPLE
+    Get-Worktrees | Where-Object Detached | Select-Object -First 1 | Set-Worktree
+    Changes to a detached worktree by using its real path from pipeline input.
     #>
-    [CmdletBinding()]
+    [CmdletBinding(DefaultParameterSetName = 'Path')]
     param(
-        [Parameter(ValueFromPipelineByPropertyName)]
+        [Parameter(Mandatory, Position = 0, ParameterSetName = 'BranchName', ValueFromPipelineByPropertyName)]
         [ValidateSet([WorktreeSetValuesGenerator])]
         [Alias('Branch')]
-        [string]$BranchName
+        [string]$BranchName,
+
+        [Parameter(Mandatory, ParameterSetName = 'Path', ValueFromPipelineByPropertyName)]
+        [ValidateNotNullOrEmpty()]
+        [string]$Path
     )
     process {
-        $worktreePath = Get-Worktrees | Where-Object Branch -eq $BranchName | Select-Object -ExpandProperty Path
-        if ($worktreePath -and (Test-Path -Path $worktreePath)) {
-            Set-Location -Path $worktreePath
+        $target = if ($PSCmdlet.ParameterSetName -eq 'Path') {
+            Resolve-WorktreeTarget -Path $Path
+        } else {
+            Resolve-WorktreeTarget -BranchName $BranchName
+        }
+        if (-not $target) { return }
+
+        if (Test-Path -LiteralPath $target.Path -PathType Container) {
+            Set-Location -LiteralPath $target.Path
+        } else {
+            Write-Error "Worktree path '$($target.Path)' does not exist."
         }
     }
 }
