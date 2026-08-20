@@ -424,9 +424,17 @@ Describe 'Update-AdoNpmToken' {
             Set-AdoNpmTokenOwnerOnlyAcl -Path $file
 
             $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+            # A file created by an elevated process (e.g. the CI runner) is owned by
+            # BUILTIN\Administrators rather than the invoking user. The cmdlet locks down the
+            # DACL (asserted below) and does not reassign the owner, so accept either trusted
+            # owner and compare by SID to avoid NTAccount translation differences across hosts.
+            $acceptableOwnerSids = @(
+                $identity.Value
+                [System.Security.Principal.SecurityIdentifier]::new([System.Security.Principal.WellKnownSidType]::BuiltinAdministratorsSid, $null).Value
+            )
             foreach ($path in @($directory, $file)) {
                 $acl = Get-Acl -LiteralPath $path
-                $acl.Owner | Should -BeExactly $identity.Translate([System.Security.Principal.NTAccount]).Value
+                $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value | Should -BeIn $acceptableOwnerSids
                 @($acl.Access) | Should -HaveCount 1
                 $acl.Access[0].IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value | Should -BeExactly $identity.Value
                 $acl.Access[0].FileSystemRights.HasFlag([System.Security.AccessControl.FileSystemRights]::FullControl) | Should -BeTrue
