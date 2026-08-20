@@ -26,10 +26,10 @@ function Get-UvPackages {
     )
     process {
         $packages = if ($Outdated) {
-            uv pip list --no-progress --outdated --format json --system | ConvertFrom-Json
+            uv pip list --no-progress --outdated --format json --system | ConvertFrom-ToolJsonOutput
         }
         else {
-            uv pip list --no-progress --format json --system | ConvertFrom-Json
+            uv pip list --no-progress --format json --system | ConvertFrom-ToolJsonOutput
         }
 
         if ($TopLevelOnly -and $packages) {
