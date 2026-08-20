@@ -35,6 +35,10 @@ foreach ($name in @("$Module.psd1", "$Module.psm1", 'README.md', 'CHANGELOG.md')
     Copy-Item (Join-Path $source $name) $stage
 }
 Copy-Item (Join-Path $source 'Public') $stage -Recurse
+$classes = Join-Path $source 'Classes'
+if (Test-Path $classes) {
+    Copy-Item $classes $stage -Recurse
+}
 Get-ChildItem $source -Filter '*.format.ps1xml' | Copy-Item -Destination $stage
 
 if ($Module -eq 'Shmuelie.Git') {
