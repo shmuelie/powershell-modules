@@ -6,6 +6,12 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+### Added
+- `Get-Worktrees` now surfaces the remaining `git worktree list --porcelain`
+  state on each object: `Bare`, `Detached`, `Locked`/`LockReason`, and
+  `Prunable`/`PrunableReason`. Existing `Path`/`Commit`/`Branch` behavior is
+  unchanged.
+
 ## [0.4.0] - 2026-08-20
 
 ### Added

@@ -4,23 +4,39 @@ function Get-Worktrees {
     Get all worktrees for the current repository.
     .DESCRIPTION
     Parses the output of 'git worktree list --porcelain' and returns objects
-    with Path, Commit, and Branch properties.
+    with Path, Commit, and Branch properties, plus the remaining porcelain
+    state: Bare, Detached, Locked/LockReason, and Prunable/PrunableReason. The
+    boolean state fields are always present (defaulting to $false) and the
+    reason fields default to an empty string.
     .EXAMPLE
     Get-Worktrees
     Returns all worktrees for the current repository.
+    .EXAMPLE
+    Get-Worktrees | Where-Object Prunable
+    Returns worktrees whose working directory is gone and can be pruned.
     #>
     [OutputType('Worktree')]
     [CmdletBinding()]
     param()
 
     $lines = git worktree list --porcelain
-    $entry = @{}
+    $newEntry = {
+        @{
+            PSTypeName     = 'Worktree'
+            Bare           = $false
+            Detached       = $false
+            Locked         = $false
+            LockReason     = ''
+            Prunable       = $false
+            PrunableReason = ''
+        }
+    }
+    $entry = & $newEntry
     foreach ($line in $lines) {
         if ([string]::IsNullOrWhiteSpace($line)) {
-            if ($entry.Count -gt 0) {
-                $entry['PSTypeName'] = 'Worktree'
+            if ($entry.ContainsKey('Path')) {
                 [PSCustomObject]$entry
-                $entry = @{}
+                $entry = & $newEntry
             }
             continue
         }
@@ -36,11 +52,23 @@ function Get-Worktrees {
             $entry['Branch'] = $line -replace '^branch refs/heads/'
         } elseif ($line -eq 'detached') {
             $entry['Branch'] = '(detached)'
+            $entry['Detached'] = $true
+        } elseif ($line -eq 'bare') {
+            $entry['Bare'] = $true
+        } elseif ($line -eq 'locked' -or $line.StartsWith('locked ')) {
+            $entry['Locked'] = $true
+            if ($line.Length -gt 'locked '.Length) {
+                $entry['LockReason'] = $line.Substring('locked '.Length).Trim()
+            }
+        } elseif ($line -eq 'prunable' -or $line.StartsWith('prunable ')) {
+            $entry['Prunable'] = $true
+            if ($line.Length -gt 'prunable '.Length) {
+                $entry['PrunableReason'] = $line.Substring('prunable '.Length).Trim()
+            }
         }
     }
     # Emit the last entry
-    if ($entry.Count -gt 0) {
-        $entry['PSTypeName'] = 'Worktree'
+    if ($entry.ContainsKey('Path')) {
         [PSCustomObject]$entry
     }
 }

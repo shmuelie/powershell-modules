@@ -1574,7 +1574,80 @@ Describe 'Get-Worktrees' -Skip:(-not (Get-Command git -ErrorAction SilentlyConti
             $match[0].Path | Should -BeExactly (Resolve-Path -LiteralPath $case.Path).Path
             $match[0].Commit | Should -BeExactly $head
             $match[0].PSTypeNames[0] | Should -Be 'Worktree'
+            $match[0].Bare | Should -BeFalse
+            $match[0].Locked | Should -BeFalse
+            $match[0].LockReason | Should -BeExactly ''
+            $match[0].Prunable | Should -BeFalse
+            $match[0].PrunableReason | Should -BeExactly ''
+            $match[0].Detached | Should -Be ($case.Branch -eq '(detached)')
         }
+    }
+
+    It 'reports the lock state and reason for a locked worktree' {
+        $repo = New-TestRepo -Path (Join-Path $TestDrive 'worktrees-locked-main')
+        $locked = Join-Path $TestDrive 'locked-worktree'
+        Invoke-Git @('-C', $repo, 'worktree', 'add', '--quiet', '--detach', $locked, 'HEAD')
+        Invoke-Git @('-C', $repo, 'worktree', 'lock', '--reason', 'held for testing', $locked)
+
+        Push-Location $repo
+        try {
+            $worktrees = @(Get-Worktrees)
+        } finally {
+            Pop-Location
+        }
+
+        $match = @($worktrees | Where-Object Locked)
+        $match | Should -HaveCount 1
+        $match[0].Path | Should -BeExactly (Resolve-Path -LiteralPath $locked).Path
+        $match[0].Locked | Should -BeTrue
+        $match[0].LockReason | Should -BeExactly 'held for testing'
+    }
+
+    It 'reports Prunable when the worktree directory is removed' {
+        $repo = New-TestRepo -Path (Join-Path $TestDrive 'worktrees-prunable-main')
+        $gone = Join-Path $TestDrive 'gone-worktree'
+        Invoke-Git @('-C', $repo, 'worktree', 'add', '--quiet', '--detach', $gone, 'HEAD')
+        Remove-Item -LiteralPath $gone -Recurse -Force
+
+        Push-Location $repo
+        try {
+            $worktrees = @(Get-Worktrees)
+        } finally {
+            Pop-Location
+        }
+
+        $match = @($worktrees | Where-Object Prunable)
+        $match | Should -HaveCount 1
+        $match[0].Prunable | Should -BeTrue
+        $match[0].PrunableReason | Should -Not -BeNullOrEmpty
+    }
+
+    It 'reports Bare for a bare repository worktree' {
+        $bare = Join-Path $TestDrive 'bare-repo.git'
+        Invoke-Git @('init', '--bare', '--quiet', $bare)
+
+        # This machine may set safe.bareRepository=explicit, which makes git refuse
+        # to read a bare repo discovered via the working directory. Override it for
+        # the Get-Worktrees call so the test behaves the same on any host.
+        $priorCount = $env:GIT_CONFIG_COUNT
+        $priorKey = $env:GIT_CONFIG_KEY_0
+        $priorValue = $env:GIT_CONFIG_VALUE_0
+        $env:GIT_CONFIG_COUNT = '1'
+        $env:GIT_CONFIG_KEY_0 = 'safe.bareRepository'
+        $env:GIT_CONFIG_VALUE_0 = 'all'
+        Push-Location $bare
+        try {
+            $worktrees = @(Get-Worktrees)
+        } finally {
+            Pop-Location
+            if ($null -eq $priorCount) { Remove-Item Env:\GIT_CONFIG_COUNT -ErrorAction SilentlyContinue } else { $env:GIT_CONFIG_COUNT = $priorCount }
+            if ($null -eq $priorKey) { Remove-Item Env:\GIT_CONFIG_KEY_0 -ErrorAction SilentlyContinue } else { $env:GIT_CONFIG_KEY_0 = $priorKey }
+            if ($null -eq $priorValue) { Remove-Item Env:\GIT_CONFIG_VALUE_0 -ErrorAction SilentlyContinue } else { $env:GIT_CONFIG_VALUE_0 = $priorValue }
+        }
+
+        $match = @($worktrees | Where-Object Bare)
+        $match | Should -HaveCount 1
+        $match[0].Bare | Should -BeTrue
     }
 }
 
