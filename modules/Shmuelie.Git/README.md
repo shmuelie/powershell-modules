@@ -23,8 +23,8 @@ Import-Module Shmuelie.Git
 | `Get-WorktreePath` | Compute the path a branch's worktree would use |
 | `New-Worktree` | Create a branch and check it out to a worktree |
 | `Add-Worktree` | Check out an existing branch to a worktree |
-| `Remove-Worktree` | Remove a worktree (optionally deleting its branch) |
-| `Set-Worktree` | Switch to a worktree by branch name |
+| `Remove-Worktree` | Remove a worktree by branch name or path (optionally deleting its branch) |
+| `Set-Worktree` | Switch to a worktree by branch name or path |
 | `Remove-StaleWorktree` | Prune stale worktree administrative entries for deleted worktree directories |
 | `Repair-Worktree` | Repair worktree links after a repository or worktree move |
 | `Lock-Worktree` / `Unlock-Worktree` | Lock or unlock a worktree by branch name |
