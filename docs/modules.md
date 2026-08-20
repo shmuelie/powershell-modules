@@ -11,7 +11,7 @@ Each module is self-contained and independently versioned.
 ## Shmuelie.Git
 
 Git repository, worktree, status, completion, and PSReadLine prediction helpers.
-**Version 0.3.0.**
+**Version 0.4.0.**
 [README](https://github.com/shmuelie/powershell-modules/blob/main/modules/Shmuelie.Git/README.md)
 
 Highlights:
@@ -25,7 +25,7 @@ Highlights:
 ## Shmuelie.Copilot
 
 GitHub Copilot CLI sessions, plugins, marketplaces, MCP servers, and the
-`Start-Copilot` launcher. **Version 0.1.2.**
+`Start-Copilot` launcher. **Version 0.1.3.**
 [README](https://github.com/shmuelie/powershell-modules/blob/main/modules/Shmuelie.Copilot/README.md)
 
 Highlights:
@@ -45,7 +45,7 @@ Highlights:
 ## Shmuelie.Node
 
 Node.js, nvm-windows, npm package, and Azure DevOps npm credential helpers.
-**Version 0.1.1.**
+**Version 0.1.2.**
 [README](https://github.com/shmuelie/powershell-modules/blob/main/modules/Shmuelie.Node/README.md)
 
 Highlights:
@@ -57,7 +57,7 @@ Highlights:
 ## Shmuelie.Utilities
 
 General developer utilities for PowerShell, .NET tools, Python packages, VS
-Code, Windows Terminal, services, applications, and WPR. **Version 0.2.1.**
+Code, Windows Terminal, services, applications, and WPR. **Version 0.2.2.**
 [README](https://github.com/shmuelie/powershell-modules/blob/main/modules/Shmuelie.Utilities/README.md)
 
 Highlights:

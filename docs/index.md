@@ -15,10 +15,10 @@ install and upgrade each module on its own.
 
 | Module | Description | Version |
 |---|---|---|
-| [Shmuelie.Git](modules.md#shmuelie-git) | Git worktrees, layout, status, completion, and prediction | 0.3.0 |
-| [Shmuelie.Copilot](modules.md#shmuelie-copilot) | Copilot CLI sessions, plugins, marketplaces, MCP, and launcher | 0.1.2 |
-| [Shmuelie.Node](modules.md#shmuelie-node) | Node.js, nvm-windows, npm, and ADO npm credentials | 0.1.1 |
-| [Shmuelie.Utilities](modules.md#shmuelie-utilities) | .NET, Python, VS Code, Terminal, services, and WPR | 0.2.1 |
+| [Shmuelie.Git](modules.md#shmuelie-git) | Git worktrees, layout, status, completion, and prediction | 0.4.0 |
+| [Shmuelie.Copilot](modules.md#shmuelie-copilot) | Copilot CLI sessions, plugins, marketplaces, MCP, and launcher | 0.1.3 |
+| [Shmuelie.Node](modules.md#shmuelie-node) | Node.js, nvm-windows, npm, and ADO npm credentials | 0.1.2 |
+| [Shmuelie.Utilities](modules.md#shmuelie-utilities) | .NET, Python, VS Code, Terminal, services, and WPR | 0.2.2 |
 
 ## Quick start
 

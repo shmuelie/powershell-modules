@@ -6,6 +6,8 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-20
+
 ### Added
 - Added direct test coverage for the core worktree cmdlets.
 - Added test coverage for `Update-Worktrees` current, no-upstream, and clean
