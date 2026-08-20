@@ -6,7 +6,13 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+### Added
+- Pester coverage for destructive Copilot session merge, compact, and repair
+  maintenance cmdlets.
+
 ### Fixed
+- `Merge-CopilotSession` now preserves checkpoint numbers when renumbering
+  merged checkpoint indexes.
 - `Start-Copilot -WhatIf` now defers session resume while rendering the dry-run
   command line, so it never opens the interactive resume picker.
 
