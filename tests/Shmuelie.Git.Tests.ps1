@@ -1801,7 +1801,7 @@ Describe 'Remove-Worktree' -Skip:(-not (Get-Command git -ErrorAction SilentlyCon
         }
     }
 
-    It 'removes exactly the target worktree' {
+    It 'removes exactly the standard-layout target worktree by branch name' {
         $repo = New-TestRepo -Path (Join-Path $TestDrive 'remove-worktree-main')
         Invoke-Git @('-C', $repo, 'branch', 'feature/remove-target')
         Invoke-Git @('-C', $repo, 'branch', 'feature/keep-target')
@@ -1821,10 +1821,80 @@ Describe 'Remove-Worktree' -Skip:(-not (Get-Command git -ErrorAction SilentlyCon
             Pop-Location
         }
     }
+
+    It 'removes a non-standard worktree by branch name using its real path' {
+        $repo = New-TestRepo -Path (Join-Path $TestDrive 'remove-worktree-custom-branch-main')
+        $branch = 'feature/remove-custom-branch'
+        $actualPath = Join-Path $TestDrive 'custom-remove-branch-path'
+        Invoke-Git @('-C', $repo, 'branch', $branch)
+        Invoke-Git @('-C', $repo, 'worktree', 'add', '--quiet', $actualPath, $branch)
+
+        Push-Location $repo
+        try {
+            Remove-Worktree -BranchName $branch -Confirm:$false
+            Test-Path -LiteralPath $actualPath | Should -BeFalse
+            (@(Get-Worktrees) | Where-Object Branch -eq $branch) | Should -BeNullOrEmpty
+        } finally {
+            Pop-Location
+        }
+    }
+
+    It 'removes a non-standard worktree by path from pipeline input' {
+        $repo = New-TestRepo -Path (Join-Path $TestDrive 'remove-worktree-custom-path-main')
+        $branch = 'feature/remove-custom-path'
+        $actualPath = Join-Path $TestDrive 'custom-remove-path'
+        Invoke-Git @('-C', $repo, 'branch', $branch)
+        Invoke-Git @('-C', $repo, 'worktree', 'add', '--quiet', $actualPath, $branch)
+
+        Push-Location $repo
+        try {
+            Get-Worktrees | Where-Object Branch -eq $branch | Remove-Worktree -Confirm:$false
+            Test-Path -LiteralPath $actualPath | Should -BeFalse
+            (@(Get-Worktrees) | Where-Object Branch -eq $branch) | Should -BeNullOrEmpty
+        } finally {
+            Pop-Location
+        }
+    }
+
+    It 'removes a detached worktree by path without colliding with another detached worktree' {
+        $repo = New-TestRepo -Path (Join-Path $TestDrive 'remove-worktree-detached-main')
+        $first = Join-Path $TestDrive 'detached-keep'
+        $second = Join-Path $TestDrive 'detached-remove'
+        Invoke-Git @('-C', $repo, 'worktree', 'add', '--quiet', '--detach', $first, 'HEAD')
+        Invoke-Git @('-C', $repo, 'worktree', 'add', '--quiet', '--detach', $second, 'HEAD')
+        $secondResolved = (Resolve-Path -LiteralPath $second).Path
+
+        Push-Location $repo
+        try {
+            Get-Worktrees | Where-Object Path -eq $secondResolved | Remove-Worktree -Confirm:$false
+            Test-Path -LiteralPath $first | Should -BeTrue
+            Test-Path -LiteralPath $second | Should -BeFalse
+            (@(Get-Worktrees) | Where-Object Detached) | Should -HaveCount 1
+        } finally {
+            Pop-Location
+        }
+    }
+
+    It 'removes a prunable worktree entry by path' {
+        $repo = New-TestRepo -Path (Join-Path $TestDrive 'remove-worktree-prunable-main')
+        $gone = Join-Path $TestDrive 'prunable-remove'
+        Invoke-Git @('-C', $repo, 'worktree', 'add', '--quiet', '--detach', $gone, 'HEAD')
+        Remove-Item -LiteralPath $gone -Recurse -Force
+
+        Push-Location $repo
+        try {
+            $entry = @(Get-Worktrees | Where-Object Prunable)
+            $entry | Should -HaveCount 1
+            Remove-Worktree -Path $entry[0].Path -Confirm:$false
+            @(Get-Worktrees | Where-Object Prunable) | Should -HaveCount 0
+        } finally {
+            Pop-Location
+        }
+    }
 }
 
 Describe 'Set-Worktree' -Skip:(-not (Get-Command git -ErrorAction SilentlyContinue)) {
-    It 'changes the current location to the requested worktree' {
+    It 'changes the current location to the requested standard-layout worktree by branch name' {
         $repo = New-TestRepo -Path (Join-Path $TestDrive 'set-worktree-main')
         Invoke-Git @('-C', $repo, 'branch', 'feature/set-target')
         $worktree = Join-Path $TestDrive (Join-Path 'feature' 'set-target')
@@ -1834,6 +1904,55 @@ Describe 'Set-Worktree' -Skip:(-not (Get-Command git -ErrorAction SilentlyContin
         try {
             Set-Worktree -BranchName 'feature/set-target'
             (Get-Location).Path | Should -BeExactly (Resolve-Path -LiteralPath $worktree).Path
+        } finally {
+            Pop-Location
+        }
+    }
+
+    It 'changes the current location to a non-standard worktree by path' {
+        $repo = New-TestRepo -Path (Join-Path $TestDrive 'set-worktree-custom-path-main')
+        $branch = 'feature/set-custom-path'
+        $actualPath = Join-Path $TestDrive 'custom-set-path'
+        Invoke-Git @('-C', $repo, 'branch', $branch)
+        Invoke-Git @('-C', $repo, 'worktree', 'add', '--quiet', $actualPath, $branch)
+
+        Push-Location $repo
+        try {
+            Set-Worktree -Path $actualPath
+            (Get-Location).Path | Should -BeExactly (Resolve-Path -LiteralPath $actualPath).Path
+        } finally {
+            Pop-Location
+        }
+    }
+
+    It 'changes the current location to a non-standard worktree from pipeline input' {
+        $repo = New-TestRepo -Path (Join-Path $TestDrive 'set-worktree-pipeline-main')
+        $branch = 'feature/set-pipeline-path'
+        $actualPath = Join-Path $TestDrive 'custom-set-pipeline-path'
+        Invoke-Git @('-C', $repo, 'branch', $branch)
+        Invoke-Git @('-C', $repo, 'worktree', 'add', '--quiet', $actualPath, $branch)
+
+        Push-Location $repo
+        try {
+            Get-Worktrees | Where-Object Branch -eq $branch | Set-Worktree
+            (Get-Location).Path | Should -BeExactly (Resolve-Path -LiteralPath $actualPath).Path
+        } finally {
+            Pop-Location
+        }
+    }
+
+    It 'changes the current location to a detached worktree by path without colliding with another detached worktree' {
+        $repo = New-TestRepo -Path (Join-Path $TestDrive 'set-worktree-detached-main')
+        $first = Join-Path $TestDrive 'set-detached-keep'
+        $second = Join-Path $TestDrive 'set-detached-target'
+        Invoke-Git @('-C', $repo, 'worktree', 'add', '--quiet', '--detach', $first, 'HEAD')
+        Invoke-Git @('-C', $repo, 'worktree', 'add', '--quiet', '--detach', $second, 'HEAD')
+        $secondResolved = (Resolve-Path -LiteralPath $second).Path
+
+        Push-Location $repo
+        try {
+            Get-Worktrees | Where-Object Path -eq $secondResolved | Set-Worktree
+            (Get-Location).Path | Should -BeExactly $secondResolved
         } finally {
             Pop-Location
         }
