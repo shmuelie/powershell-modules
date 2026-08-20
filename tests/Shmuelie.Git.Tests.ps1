@@ -1893,6 +1893,93 @@ Describe 'Remove-Worktree' -Skip:(-not (Get-Command git -ErrorAction SilentlyCon
     }
 }
 
+Describe 'Worktree maintenance' -Skip:(-not (Get-Command git -ErrorAction SilentlyContinue)) {
+    It 'prunes stale worktree entries' {
+        $repo = New-TestRepo -Path (Join-Path $TestDrive 'prune-stale-main')
+        Invoke-Git @('-C', $repo, 'branch', 'feature/prune-stale')
+        $worktree = Join-Path $TestDrive (Join-Path 'feature' 'prune-stale')
+        Invoke-Git @('-C', $repo, 'worktree', 'add', '--quiet', $worktree, 'feature/prune-stale')
+        Remove-Item -LiteralPath $worktree -Recurse -Force
+
+        Push-Location $repo
+        try {
+            (@(Get-Worktrees) | Where-Object Prunable) | Should -HaveCount 1
+            $result = Remove-StaleWorktree -Expire now -Confirm:$false
+            $result.PSTypeNames[0] | Should -Be 'WorktreeMaintenanceResult'
+            $result.Command | Should -BeExactly 'prune'
+            $result.DryRun | Should -BeFalse
+            $result.ExitCode | Should -Be 0
+            (@(Get-Worktrees) | Where-Object Branch -eq 'feature/prune-stale') | Should -BeNullOrEmpty
+        } finally {
+            Pop-Location
+        }
+    }
+
+    It 'leaves stale worktree entries in place when DryRun is used' {
+        $repo = New-TestRepo -Path (Join-Path $TestDrive 'prune-dryrun-main')
+        Invoke-Git @('-C', $repo, 'branch', 'feature/prune-dryrun')
+        $worktree = Join-Path $TestDrive (Join-Path 'feature' 'prune-dryrun')
+        Invoke-Git @('-C', $repo, 'worktree', 'add', '--quiet', $worktree, 'feature/prune-dryrun')
+        Remove-Item -LiteralPath $worktree -Recurse -Force
+
+        Push-Location $repo
+        try {
+            $result = Remove-StaleWorktree -DryRun -Expire now -Confirm:$false
+            $result.DryRun | Should -BeTrue
+            $result.ExitCode | Should -Be 0
+            (@(Get-Worktrees) | Where-Object Branch -eq 'feature/prune-dryrun') | Should -HaveCount 1
+            (@(Get-Worktrees) | Where-Object Prunable) | Should -HaveCount 1
+        } finally {
+            Pop-Location
+        }
+    }
+
+    It 'leaves stale worktree entries in place when WhatIf is used' {
+        $repo = New-TestRepo -Path (Join-Path $TestDrive 'prune-whatif-main')
+        Invoke-Git @('-C', $repo, 'branch', 'feature/prune-whatif')
+        $worktree = Join-Path $TestDrive (Join-Path 'feature' 'prune-whatif')
+        Invoke-Git @('-C', $repo, 'worktree', 'add', '--quiet', $worktree, 'feature/prune-whatif')
+        Remove-Item -LiteralPath $worktree -Recurse -Force
+
+        Push-Location $repo
+        try {
+            $result = Remove-StaleWorktree -Expire now -WhatIf -Confirm:$false
+            $result.DryRun | Should -BeTrue
+            $result.ExitCode | Should -Be 0
+            (@(Get-Worktrees) | Where-Object Branch -eq 'feature/prune-whatif') | Should -HaveCount 1
+            (@(Get-Worktrees) | Where-Object Prunable) | Should -HaveCount 1
+        } finally {
+            Pop-Location
+        }
+    }
+
+    It 'repairs a moved worktree path' {
+        $repo = New-TestRepo -Path (Join-Path $TestDrive 'repair-worktree-main')
+        Invoke-Git @('-C', $repo, 'branch', 'feature/repair-target')
+        $worktree = Join-Path $TestDrive (Join-Path 'feature' 'repair-target')
+        Invoke-Git @('-C', $repo, 'worktree', 'add', '--quiet', $worktree, 'feature/repair-target')
+        $movedParent = Join-Path $TestDrive 'moved-worktrees'
+        $movedWorktree = Join-Path $movedParent 'repair-target'
+        New-Item -ItemType Directory -Path $movedParent -Force | Out-Null
+        Move-Item -LiteralPath $worktree -Destination $movedWorktree
+
+        Push-Location $repo
+        try {
+            $result = Repair-Worktree -Path $movedWorktree -Confirm:$false
+            $result.PSTypeNames[0] | Should -Be 'WorktreeMaintenanceResult'
+            $result.Command | Should -BeExactly 'repair'
+            $result.Paths | Should -Be @($movedWorktree)
+            $result.ExitCode | Should -Be 0
+            Invoke-Git @('-C', $movedWorktree, 'status', '--short') | Should -BeNullOrEmpty
+            $match = @((Get-Worktrees) | Where-Object Branch -eq 'feature/repair-target')
+            $match | Should -HaveCount 1
+            $match[0].Path | Should -BeExactly (Resolve-Path -LiteralPath $movedWorktree).Path
+        } finally {
+            Pop-Location
+        }
+    }
+}
+
 Describe 'Set-Worktree' -Skip:(-not (Get-Command git -ErrorAction SilentlyContinue)) {
     It 'changes the current location to the requested standard-layout worktree by branch name' {
         $repo = New-TestRepo -Path (Join-Path $TestDrive 'set-worktree-main')

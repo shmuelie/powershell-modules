@@ -7,6 +7,8 @@ Versions change only when a release is cut; unreleased work stays under
 ## [Unreleased]
 
 ### Added
+- Added `Remove-StaleWorktree` and `Repair-Worktree` for `git worktree prune`
+  and `git worktree repair` maintenance workflows.
 - `Remove-Worktree` and `Set-Worktree` now accept `-Path` and `Path` pipeline
   input, allowing detached, prunable, and non-standard-location worktrees to be
   addressed by their real filesystem path.
