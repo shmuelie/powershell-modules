@@ -189,7 +189,9 @@ function Merge-CopilotSession {
         # Renumber checkpoints
         $cpNumber = 1
         $renumbered = $checkpointRows | ForEach-Object {
-            $_ -replace '^\|\s*\d+', "| $($cpNumber++)"
+            $currentNumber = $cpNumber
+            $cpNumber++
+            $_ -replace '^\|\s*\d+', "| $currentNumber"
         }
         ($checkpointHeader + $renumbered) | Set-Content (Join-Path $newSessionPath 'checkpoints' 'index.md') -Encoding UTF8
 
