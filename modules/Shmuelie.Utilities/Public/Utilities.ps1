@@ -184,6 +184,53 @@ function Invoke-InLocation {
     }
 }
 
+function ConvertFrom-ToolJsonOutput {
+    [CmdletBinding()]
+    param(
+        [Parameter(ValueFromPipeline)]
+        [AllowNull()]
+        [object]$InputObject
+    )
+
+    begin {
+        $lines = [System.Collections.Generic.List[string]]::new()
+    }
+    process {
+        if ($null -ne $InputObject) {
+            $lines.Add([string]$InputObject)
+        }
+    }
+    end {
+        $text = ($lines -join [Environment]::NewLine).Trim()
+        if (-not $text) { return }
+
+        try {
+            return $text | ConvertFrom-Json
+        } catch {
+            $originalError = $_
+        }
+
+        for ($startIndex = 0; $startIndex -lt $lines.Count; $startIndex++) {
+            $trimmedStart = $lines[$startIndex].TrimStart()
+            if (-not ($trimmedStart.StartsWith('[') -or $trimmedStart.StartsWith('{'))) { continue }
+
+            $close = if ($trimmedStart.StartsWith('[')) { ']' } else { '}' }
+            for ($endIndex = $lines.Count - 1; $endIndex -ge $startIndex; $endIndex--) {
+                if (-not $lines[$endIndex].TrimEnd().EndsWith($close)) { continue }
+
+                $candidate = ($lines[$startIndex..$endIndex] -join [Environment]::NewLine).Trim()
+                try {
+                    return $candidate | ConvertFrom-Json
+                } catch {
+                    continue
+                }
+            }
+        }
+
+        throw $originalError
+    }
+}
+
 function Repair-GlobalJson {
     <#
     .SYNOPSIS
