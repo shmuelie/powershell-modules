@@ -11,7 +11,7 @@ Each module is self-contained and independently versioned.
 ## Shmuelie.Git
 
 Git repository, worktree, status, completion, and PSReadLine prediction helpers.
-**Version 0.4.0.**
+**Version 0.5.0.**
 [README](https://github.com/shmuelie/powershell-modules/blob/main/modules/Shmuelie.Git/README.md)
 
 Highlights:

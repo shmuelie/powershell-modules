@@ -6,6 +6,8 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-08-20
+
 ### Added
 - Added `Remove-StaleWorktree` and `Repair-Worktree` for `git worktree prune`
   and `git worktree repair` maintenance workflows.
