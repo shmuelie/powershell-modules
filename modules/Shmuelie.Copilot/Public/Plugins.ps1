@@ -24,7 +24,7 @@ function Get-CopilotPlugin {
         [string]$Name = '*'
     )
     $exe = Resolve-CliExe -Name copilot
-    $output = & $exe plugin list 2>&1
+    $output = Invoke-WithUtf8Console { & $exe plugin list 2>&1 }
     foreach ($line in $output) {
         if ($line -match '^\s+[•]\s+(.+?)\s+\(v(.+?)\)\s*$') {
             $fullName = $Matches[1]

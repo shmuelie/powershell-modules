@@ -7,6 +7,9 @@ Versions change only when a release is cut; unreleased work stays under
 ## [Unreleased]
 
 ### Fixed
+- `Get-CopilotPlugin`, `Get-CopilotMarketplace`, and
+  `Get-CopilotMarketplacePlugin` now decode Copilot CLI output as UTF-8 even
+  when the host console uses a legacy code page.
 - `Start-Copilot -WhatIf` now defers session resume while rendering the dry-run
   command line, so it never opens the interactive resume picker.
 

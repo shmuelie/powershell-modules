@@ -21,7 +21,7 @@ function Get-CopilotMarketplace {
         [string]$Name = '*'
     )
     $exe = Resolve-CliExe -Name copilot
-    $output = & $exe plugin marketplace list 2>&1
+    $output = Invoke-WithUtf8Console { & $exe plugin marketplace list 2>&1 }
     foreach ($line in $output) {
         if ($line -match '^\s+[◆•]\s+(\S+)\s+\((GitHub|URL):\s+(.+?)\)') {
             $mktName = $Matches[1]
@@ -141,7 +141,7 @@ function Get-CopilotMarketplacePlugin {
         Assert-CopilotShimArgument -Value $mktName -ParameterName 'Name' -Pattern '^[A-Za-z0-9][A-Za-z0-9._#/-]*$'
 
         $exe = Resolve-CliExe -Name copilot
-        $output = & $exe plugin marketplace browse $mktName 2>&1
+        $output = Invoke-WithUtf8Console { & $exe plugin marketplace browse $mktName 2>&1 }
         foreach ($line in $output) {
             if ($line -match '^\s+[•]\s+(\S+)\s+-\s+(.+)$') {
                 [PSCustomObject]@{
