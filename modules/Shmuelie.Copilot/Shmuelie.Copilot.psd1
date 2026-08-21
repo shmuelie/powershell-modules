@@ -15,8 +15,9 @@
         'Register-CopilotMcpServer', 'Unregister-CopilotMcpServer', 'Get-CopilotPlugin',
         'Update-CopilotPlugin', 'Install-CopilotPlugin', 'Uninstall-CopilotPlugin',
         'Merge-CopilotSession', 'Compress-CopilotSession', 'Repair-CopilotSessionEvents',
-        'Get-CopilotSession', 'Remove-CopilotSession', 'Rename-CopilotSession',
-        'Resume-CopilotSession', 'Get-CopilotLaunchPlan', 'Start-Copilot'
+        'Get-CopilotSession', 'Select-CopilotSession', 'Remove-CopilotSession',
+        'Rename-CopilotSession', 'Resume-CopilotSession', 'Get-CopilotLaunchPlan',
+        'Start-Copilot'
     )
     CmdletsToExport   = @()
     VariablesToExport = @()
