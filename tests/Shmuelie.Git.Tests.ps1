@@ -100,6 +100,74 @@ Describe 'Add-Worktree' {
     }
 }
 
+Describe 'Add-Worktree creation' -Skip:(-not (Get-Command git -ErrorAction SilentlyContinue)) {
+    It 'checks out an existing branch to an explicit worktree path' {
+        $repo = New-TestRepo -Path (Join-Path $TestDrive 'add-explicit-main')
+        $branch = 'feature/add-explicit'
+        $customPath = Join-Path $TestDrive 'custom-add-explicit'
+        Invoke-Git @('-C', $repo, 'branch', $branch)
+
+        Push-Location $repo
+        try {
+            Add-Worktree -BranchName $branch -WorktreePath $customPath -Confirm:$false
+            Test-Path -LiteralPath $customPath | Should -BeTrue
+            (@(Get-Worktrees) | Where-Object Branch -eq $branch).Path |
+                Should -BeExactly (Resolve-Path -LiteralPath $customPath).Path
+        } finally {
+            Pop-Location
+        }
+    }
+
+    It 'keeps the auto-generated location when no worktree path is supplied' {
+        $repo = New-TestRepo -Path (Join-Path $TestDrive 'add-auto-main')
+        $branch = 'feature/add-auto'
+        $expectedPath = Join-Path (Split-Path $repo -Parent) $branch
+        Invoke-Git @('-C', $repo, 'branch', $branch)
+
+        Push-Location $repo
+        try {
+            Add-Worktree -BranchName $branch -Confirm:$false
+            Test-Path -LiteralPath $expectedPath | Should -BeTrue
+            (@(Get-Worktrees) | Where-Object Branch -eq $branch).Path |
+                Should -BeExactly (Resolve-Path -LiteralPath $expectedPath).Path
+        } finally {
+            Pop-Location
+        }
+    }
+
+    It 'changes location to the resolved explicit worktree path when SetLocation is used' {
+        $repo = New-TestRepo -Path (Join-Path $TestDrive 'add-setlocation-main')
+        $branch = 'feature/add-setlocation'
+        $customPath = Join-Path $TestDrive 'custom-add-setlocation'
+        Invoke-Git @('-C', $repo, 'branch', $branch)
+
+        Push-Location $repo
+        try {
+            Add-Worktree -BranchName $branch -WorktreePath $customPath -SetLocation -Confirm:$false
+            (Get-Location).Path | Should -BeExactly (Resolve-Path -LiteralPath $customPath).Path
+        } finally {
+            Pop-Location
+        }
+    }
+
+    It 'surfaces git errors when the destination path is invalid' {
+        $repo = New-TestRepo -Path (Join-Path $TestDrive 'add-failure-main')
+        $branch = 'feature/add-failure'
+        $existingPath = Join-Path $TestDrive 'existing-add-destination'
+        New-Item -ItemType Directory -Path $existingPath -Force | Out-Null
+        Set-Content -Path (Join-Path $existingPath 'already-here.txt') -Value 'content'
+        Invoke-Git @('-C', $repo, 'branch', $branch)
+
+        Push-Location $repo
+        try {
+            { Add-Worktree -BranchName $branch -WorktreePath $existingPath -Confirm:$false -ErrorAction Stop } |
+                Should -Throw -ExpectedMessage '*git worktree add failed*already exists*'
+        } finally {
+            Pop-Location
+        }
+    }
+}
+
 Describe 'Get-GitStatusSummary' {
     It 'does not pop the caller location stack when -Path cannot be pushed' {
         $startingPath = (Get-Location).Path
@@ -1841,7 +1909,14 @@ Describe 'New-Worktree' -Skip:(-not (Get-Command git -ErrorAction SilentlyContin
 
         Push-Location $repo
         try {
-            New-Worktree -WorkName 'dry-run' -UserName 'tester' -WhatIf -Confirm:$false
+            $transcriptPath = Join-Path $TestDrive 'new-worktree-auto-whatif.txt'
+            Start-Transcript -Path $transcriptPath -Force | Out-Null
+            try {
+                New-Worktree -WorkName 'dry-run' -UserName 'tester' -WhatIf -Confirm:$false
+            } finally {
+                Stop-Transcript | Out-Null
+            }
+            (Get-Content -LiteralPath $transcriptPath -Raw) | Should -Match ([regex]::Escape($expectedPath))
             Test-Path -LiteralPath $expectedPath | Should -BeFalse
             Invoke-Git @('-C', $repo, 'branch', '--list', $branchName) | Should -BeNullOrEmpty
         } finally {
@@ -1860,6 +1935,58 @@ Describe 'New-Worktree' -Skip:(-not (Get-Command git -ErrorAction SilentlyContin
             Test-Path -LiteralPath $expectedPath | Should -BeTrue
             Invoke-Git @('-C', $repo, 'rev-parse', '--verify', $branchName) | Should -Not -BeNullOrEmpty
             (@(Get-Worktrees) | Where-Object Branch -eq $branchName).Path | Should -BeExactly (Resolve-Path -LiteralPath $expectedPath).Path
+        } finally {
+            Pop-Location
+        }
+    }
+
+    It 'creates a new branch and worktree at an explicit worktree path' {
+        $repo = New-TestRepo -Path (Join-Path $TestDrive 'new-worktree-explicit-main')
+        $branchName = 'user/tester/explicit-path'
+        $customPath = Join-Path $TestDrive 'custom-new-explicit'
+
+        Push-Location $repo
+        try {
+            New-Worktree -WorkName 'explicit-path' -UserName 'tester' -WorktreePath $customPath -Confirm:$false
+            Test-Path -LiteralPath $customPath | Should -BeTrue
+            Invoke-Git @('-C', $repo, 'rev-parse', '--verify', $branchName) | Should -Not -BeNullOrEmpty
+            (@(Get-Worktrees) | Where-Object Branch -eq $branchName).Path |
+                Should -BeExactly (Resolve-Path -LiteralPath $customPath).Path
+        } finally {
+            Pop-Location
+        }
+    }
+
+    It 'changes location to the resolved explicit worktree path for a new branch when SetLocation is used' {
+        $repo = New-TestRepo -Path (Join-Path $TestDrive 'new-worktree-setlocation-main')
+        $customPath = Join-Path $TestDrive 'custom-new-setlocation'
+
+        Push-Location $repo
+        try {
+            New-Worktree -WorkName 'setlocation-path' -UserName 'tester' -WorktreePath $customPath -SetLocation -Confirm:$false
+            (Get-Location).Path | Should -BeExactly (Resolve-Path -LiteralPath $customPath).Path
+        } finally {
+            Pop-Location
+        }
+    }
+
+    It 'reports an explicit worktree path in WhatIf output and creates nothing' {
+        $repo = New-TestRepo -Path (Join-Path $TestDrive 'new-worktree-explicit-whatif-main')
+        $branchName = 'user/tester/explicit-dry-run'
+        $customPath = Join-Path $TestDrive 'custom-new-explicit-whatif'
+
+        Push-Location $repo
+        try {
+            $transcriptPath = Join-Path $TestDrive 'new-worktree-explicit-whatif.txt'
+            Start-Transcript -Path $transcriptPath -Force | Out-Null
+            try {
+                New-Worktree -WorkName 'explicit-dry-run' -UserName 'tester' -WorktreePath $customPath -WhatIf -Confirm:$false
+            } finally {
+                Stop-Transcript | Out-Null
+            }
+            (Get-Content -LiteralPath $transcriptPath -Raw) | Should -Match ([regex]::Escape($customPath))
+            Test-Path -LiteralPath $customPath | Should -BeFalse
+            Invoke-Git @('-C', $repo, 'branch', '--list', $branchName) | Should -BeNullOrEmpty
         } finally {
             Pop-Location
         }

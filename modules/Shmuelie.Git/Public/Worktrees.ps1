@@ -202,31 +202,97 @@ function Get-WorktreePath {
     Join-Path $container $BranchName
 }
 
+function Invoke-GitWorktreeAdd {
+    <#
+    .SYNOPSIS
+    Run git worktree add and surface git's error output.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string[]]$Arguments,
+
+        [Parameter(Mandatory)]
+        [string]$FailureContext
+    )
+
+    $output = & git @Arguments 2>&1
+    $exitCode = $LASTEXITCODE
+    if ($exitCode -eq 0) {
+        return $true
+    }
+
+    $message = ($output | ForEach-Object { $_.ToString() } | Where-Object { $_ }) -join [Environment]::NewLine
+    if (-not $message) {
+        $message = 'No output.'
+    }
+
+    Write-Error "git worktree add failed for $FailureContext (exit $exitCode): $message"
+    $false
+}
+
+function Resolve-CreatedWorktreePath {
+    <#
+    .SYNOPSIS
+    Resolve a newly-created worktree path for Set-Location.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path
+    )
+
+    $resolved = Resolve-Path -LiteralPath $Path -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($resolved) {
+        return $resolved.ProviderPath
+    }
+
+    [IO.Path]::GetFullPath($Path)
+}
+
 function Add-Worktree {
     <#
     .SYNOPSIS
     Checkout an existing branch to a worktree
     .PARAMETER BranchName
     Name of the branch
+    .PARAMETER WorktreePath
+    Optional destination path for the new worktree. When omitted, the path is
+    derived from the repository container and branch name.
     .PARAMETER SetLocation
     Whether to change the current directory to the new worktree
     .EXAMPLE
     Add-Worktree -BranchName feature/my-feature -SetLocation
     Checks out the existing branch to a new worktree and navigates to it.
+    .EXAMPLE
+    Add-Worktree -BranchName feature/my-feature -WorktreePath ../custom-feature
+    Checks out the existing branch to the supplied worktree path.
     #>
     [CmdletBinding(SupportsShouldProcess)]
     param(
         [Parameter(Mandatory)]
         [ValidateNotNullOrEmpty()]
         [string]$BranchName,
+
+        [ValidateNotNullOrEmpty()]
+        [string]$WorktreePath,
+
         [switch]$SetLocation = $false
     )
     process {
-        $worktreePath = Get-WorktreePath -BranchName $BranchName
-        if ($PSCmdlet.ShouldProcess($worktreePath, "Add worktree for branch '$BranchName'")) {
-            git worktree add $worktreePath $BranchName
-            if (($LASTEXITCODE -eq 0) -and $SetLocation) {
-                Set-Location -Path $worktreePath
+        $resolvedWorktreePath = if ($PSBoundParameters.ContainsKey('WorktreePath')) {
+            $WorktreePath
+        } else {
+            Get-WorktreePath -BranchName $BranchName
+        }
+        if (-not $resolvedWorktreePath) { return }
+
+        if ($PSCmdlet.ShouldProcess($resolvedWorktreePath, "Add worktree for branch '$BranchName'")) {
+            $created = Invoke-GitWorktreeAdd `
+                -Arguments @('worktree', 'add', $resolvedWorktreePath, $BranchName) `
+                -FailureContext "branch '$BranchName' at '$resolvedWorktreePath'"
+            if ($created -and $SetLocation) {
+                Set-Location -LiteralPath (Resolve-CreatedWorktreePath -Path $resolvedWorktreePath)
             }
         }
     }
@@ -271,6 +337,9 @@ function New-Worktree {
     .PARAMETER NoPrefix
     Use WorkName as the branch name verbatim, without the kind prefix
     (e.g. checking out an existing branch like 'main' or 'master').
+    .PARAMETER WorktreePath
+    Optional destination path for the new worktree. When omitted, the path is
+    derived from the repository container and branch name.
     .PARAMETER SetLocation
     Whether to change the current directory to the new worktree.
     .EXAMPLE
@@ -285,6 +354,9 @@ function New-Worktree {
     .EXAMPLE
     New-Worktree -WorkName main -NoPrefix -SetLocation
     Creates a worktree for a branch named exactly 'main' with no kind prefix.
+    .EXAMPLE
+    New-Worktree -WorkName my-feature -WorktreePath ../custom-feature
+    Creates branch user/<user>/my-feature in the supplied worktree path.
     #>
     [CmdletBinding(SupportsShouldProcess)]
     param(
@@ -299,6 +371,9 @@ function New-Worktree {
         [string]$UserName,
 
         [switch]$NoPrefix,
+
+        [ValidateNotNullOrEmpty()]
+        [string]$WorktreePath,
 
         [switch]$SetLocation = $false
     )
@@ -315,11 +390,19 @@ function New-Worktree {
                 'release' { "release/$WorkName" }
             }
         }
-        $worktreePath = Get-WorktreePath -BranchName $branchName
-        if ($PSCmdlet.ShouldProcess($worktreePath, "Create worktree for new branch '$branchName'")) {
-            git worktree add -b $branchName $worktreePath
-            if (($LASTEXITCODE -eq 0) -and $SetLocation) {
-                Set-Location -Path $worktreePath
+        $resolvedWorktreePath = if ($PSBoundParameters.ContainsKey('WorktreePath')) {
+            $WorktreePath
+        } else {
+            Get-WorktreePath -BranchName $branchName
+        }
+        if (-not $resolvedWorktreePath) { return }
+
+        if ($PSCmdlet.ShouldProcess($resolvedWorktreePath, "Create worktree for new branch '$branchName'")) {
+            $created = Invoke-GitWorktreeAdd `
+                -Arguments @('worktree', 'add', '-b', $branchName, $resolvedWorktreePath) `
+                -FailureContext "new branch '$branchName' at '$resolvedWorktreePath'"
+            if ($created -and $SetLocation) {
+                Set-Location -LiteralPath (Resolve-CreatedWorktreePath -Path $resolvedWorktreePath)
             }
         }
     }

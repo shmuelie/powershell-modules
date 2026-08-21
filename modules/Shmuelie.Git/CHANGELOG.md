@@ -6,6 +6,11 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+### Added
+- `New-Worktree` and `Add-Worktree` now accept `-WorktreePath` to place the
+  created worktree at an explicit destination while preserving the conventional
+  sibling path when omitted.
+
 ### Fixed
 - `Update-Worktrees` now reports behind worktrees with in-progress git
   operations as `InProgress` and skips stash/fast-forward handling so rebases,

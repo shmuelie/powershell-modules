@@ -21,8 +21,8 @@ Import-Module Shmuelie.Git
 | `Get-Worktrees` | List worktrees for the current repository |
 | `Get-CurrentWorktree` / `Get-RootWorktree` | Resolve the worktree for the current directory or the repository root |
 | `Get-WorktreePath` | Compute the path a branch's worktree would use |
-| `New-Worktree` | Create a branch and check it out to a worktree |
-| `Add-Worktree` | Check out an existing branch to a worktree |
+| `New-Worktree` | Create a branch and check it out to a worktree, optionally at `-WorktreePath` |
+| `Add-Worktree` | Check out an existing branch to a worktree, optionally at `-WorktreePath` |
 | `Remove-Worktree` | Remove a worktree by branch name or path (optionally deleting its branch) |
 | `Set-Worktree` | Switch to a worktree by branch name or path |
 | `Remove-StaleWorktree` | Prune stale worktree administrative entries for deleted worktree directories |
@@ -53,6 +53,7 @@ surfaces `user/alex/wim-work`.
 ```powershell
 New-Repository https://github.com/owner/repo
 New-Worktree -WorkName my-feature -SetLocation
+Add-Worktree -BranchName feature/my-feature -WorktreePath ../custom-feature
 Update-Worktrees | Where-Object Status -ne Current
 Find-StaleBranch | Remove-Worktree
 Get-GitStatusSummary
