@@ -26,6 +26,7 @@ AfterAll {
 
 Describe 'Get-NvmRoot' {
     BeforeEach {
+        Mock -CommandName Test-IsWindowsPlatform -ModuleName Shmuelie.Node -MockWith { $true }
         Mock -CommandName nvm -ModuleName Shmuelie.Node -MockWith {
             if ($args.Count -eq 1 -and $args[0] -eq 'root') {
                 'C:\nvm'
@@ -208,7 +209,51 @@ npm warn deprecated request@2.88.2: request has been deprecated
 Describe 'nvm wrapper cmdlets' {
     BeforeEach {
         $script:NvmOutput = $null
+        Mock -CommandName Test-IsWindowsPlatform -ModuleName Shmuelie.Node -MockWith { $true }
         Mock -CommandName nvm -ModuleName Shmuelie.Node -MockWith { $script:NvmOutput }
+    }
+
+    It 'throws a Windows-only error before invoking nvm for <Name>' -ForEach @(
+        @{ Name = 'Get-NodeVersion'; Command = 'Get-NodeVersion'; Parameters = @{} }
+        @{ Name = 'Get-NodeVersion -Current'; Command = 'Get-NodeVersion'; Parameters = @{ Current = $true }; ExpectedCommand = 'Get-NodeVersion' }
+        @{ Name = 'Get-NodeVersion -Available'; Command = 'Get-NodeVersion'; Parameters = @{ Available = $true }; ExpectedCommand = 'Get-NodeVersion' }
+        @{ Name = 'Install-NodeVersion'; Command = 'Install-NodeVersion'; Parameters = @{ Version = '20.11.1'; Architecture = '64'; Confirm = $false } }
+        @{ Name = 'Uninstall-NodeVersion'; Command = 'Uninstall-NodeVersion'; Parameters = @{ Version = '18.19.1'; Confirm = $false } }
+        @{ Name = 'Set-NodeVersion'; Command = 'Set-NodeVersion'; Parameters = @{ Version = '20.11.1'; Architecture = '64'; Confirm = $false } }
+        @{ Name = 'Set-NodeVersion -Latest'; Command = 'Set-NodeVersion'; Parameters = @{ Latest = $true; Confirm = $false }; ExpectedCommand = 'Set-NodeVersion' }
+        @{ Name = 'Set-NodeAlias'; Command = 'Set-NodeAlias'; Parameters = @{ Name = 'default'; Version = '20.11.1'; Confirm = $false } }
+        @{ Name = 'Remove-NodeAlias'; Command = 'Remove-NodeAlias'; Parameters = @{ Name = 'default'; Confirm = $false } }
+        @{ Name = 'Enable-Nvm'; Command = 'Enable-Nvm'; Parameters = @{ Confirm = $false } }
+        @{ Name = 'Disable-Nvm'; Command = 'Disable-Nvm'; Parameters = @{ Confirm = $false } }
+        @{ Name = 'Set-NvmProxy'; Command = 'Set-NvmProxy'; Parameters = @{ Url = 'http://proxy.example:8080'; Confirm = $false } }
+        @{ Name = 'Set-NvmProxy -Read'; Command = 'Set-NvmProxy'; Parameters = @{}; ExpectedCommand = 'Set-NvmProxy' }
+        @{ Name = 'Set-NvmNodeMirror'; Command = 'Set-NvmNodeMirror'; Parameters = @{ Url = 'https://nodejs.example/dist/'; Confirm = $false } }
+        @{ Name = 'Set-NvmNodeMirror -Read'; Command = 'Set-NvmNodeMirror'; Parameters = @{}; ExpectedCommand = 'Set-NvmNodeMirror' }
+        @{ Name = 'Set-NvmNpmMirror'; Command = 'Set-NvmNpmMirror'; Parameters = @{ Url = 'https://npm.example/cli/'; Confirm = $false } }
+        @{ Name = 'Set-NvmNpmMirror -Read'; Command = 'Set-NvmNpmMirror'; Parameters = @{}; ExpectedCommand = 'Set-NvmNpmMirror' }
+        @{ Name = 'Get-NvmRoot'; Command = 'Get-NvmRoot'; Parameters = @{} }
+        @{ Name = 'Get-NvmRoot -Path'; Command = 'Get-NvmRoot'; Parameters = @{ Path = 'C:\nvm'; Confirm = $false }; ExpectedCommand = 'Get-NvmRoot' }
+        @{ Name = 'Get-NvmVersion'; Command = 'Get-NvmVersion'; Parameters = @{} }
+        @{ Name = 'Test-NvmInstalled'; Command = 'Test-NvmInstalled'; Parameters = @{} }
+    ) {
+        $expectedCommand = if ($ExpectedCommand) { $ExpectedCommand } else { $Command }
+
+        InModuleScope Shmuelie.Node -Parameters @{
+            Command = $Command
+            CommandParameters = $Parameters
+            ExpectedCommand = $expectedCommand
+        } {
+            param($Command, $CommandParameters, $ExpectedCommand)
+
+            Mock -CommandName Test-IsWindowsPlatform -MockWith { $false }
+            Mock -CommandName nvm -MockWith { throw 'nvm should not be invoked' }
+            Mock -CommandName Get-Command -MockWith { throw 'Get-Command should not be invoked' }
+
+            { & $Command @CommandParameters } | Should -Throw -ExpectedMessage "$ExpectedCommand is only supported on Windows (nvm-windows)."
+
+            Should -Invoke -CommandName nvm -Times 0 -Exactly
+            Should -Invoke -CommandName Get-Command -Times 0 -Exactly
+        }
     }
 
     It 'gets installed Node.js versions' {
