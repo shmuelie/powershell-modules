@@ -11,6 +11,10 @@ Versions change only when a release is cut; unreleased work stays under
   created worktree at an explicit destination while preserving the conventional
   sibling path when omitted.
 
+### Changed
+- Register the bundled worktree predictor without eagerly importing PSReadLine,
+  preserving predictor behavior while reducing cold import overhead.
+
 ### Fixed
 - `Update-Worktrees` now reports behind worktrees with in-progress git
   operations as `InProgress` and skips stash/fast-forward handling so rebases,

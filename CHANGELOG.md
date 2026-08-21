@@ -7,6 +7,8 @@ between releases this file tracks catalog-level changes under `[Unreleased]`.
 ## [Unreleased]
 
 ### Changed
+- Document expected module import startup costs in the generated documentation
+  site.
 - `Build-Module.ps1` now stages optional module `Classes` folders for shared
   PowerShell class definitions.
 

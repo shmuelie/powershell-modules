@@ -8,6 +8,26 @@ title: Modules
 
 Each module is self-contained and independently versioned.
 
+## Import startup cost
+
+The modules use a directory-based Public script loader so newly added command
+and helper files are dot-sourced automatically. On a Windows PowerShell 7.4+
+host, measured from built artifacts with a fresh `pwsh -NoProfile` process per
+module and a stopwatch around `Import-Module`, the expected cold import medians
+are:
+
+| Module | Median import time |
+|---|---:|
+| Shmuelie.Utilities | 488.7 ms |
+| Shmuelie.Git | 612.0 ms |
+| Shmuelie.Copilot | 536.0 ms |
+| Shmuelie.Node | 344.3 ms |
+| **Combined** | **1981.0 ms** |
+
+`Shmuelie.Git` still performs predictor registration during import when the
+bundled `WorktreePredictor.dll` is present in the built module artifact, but it
+no longer eagerly imports PSReadLine before registering the predictor.
+
 ## Shmuelie.Git
 
 Git repository, worktree, status, completion, and PSReadLine prediction helpers.

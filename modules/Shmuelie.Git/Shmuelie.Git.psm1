@@ -40,9 +40,6 @@ function Update-WorktreePrediction {
 
 $predictorPath = Join-Path $PSScriptRoot 'bin\WorktreePredictor.dll'
 if (Test-Path $predictorPath) {
-    if ($null -eq (Get-Module PSReadLine)) {
-        Import-Module PSReadLine -ErrorAction SilentlyContinue
-    }
     $predictorRegistered = (Get-PSSubsystem -Kind CommandPredictor).Implementations.Name -contains 'Worktree'
     if (-not $predictorRegistered) {
         $script:predictorModule = Import-Module $predictorPath -Force -PassThru -ErrorAction Stop
