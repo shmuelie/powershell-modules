@@ -6,6 +6,8 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-08-21
+
 ### Added
 - Added consistent `-Path` repository targeting to Git status, worktree, sync,
   stale-branch, and worktree-update helpers so callers can operate on another

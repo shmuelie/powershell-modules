@@ -6,6 +6,8 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-08-21
+
 ### Changed
 - Fail fast with a clear Windows-only error when nvm-windows wrapper cmdlets are used on non-Windows platforms.
 
