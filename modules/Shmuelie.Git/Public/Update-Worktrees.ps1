@@ -8,8 +8,8 @@ function Update-Worktrees {
     per worktree describing the action taken.
 
     Uses a bulk 'git for-each-ref' call to get ahead/behind counts for all
-    branches in one pass, then only runs 'git status' on worktrees that
-    actually need merging (behind with no local commits).
+    branches in one pass, then checks only worktrees that need merging for
+    local changes or in-progress git operations.
     .PARAMETER CheckRemote
     Also query the remote for branches with no local upstream, reclassifying
     NoUpstream worktrees so deleted/stale remote branches are detected.
@@ -122,6 +122,7 @@ function Update-Worktrees {
                     Status     = $status
                     BehindBy   = 0
                     Stashed    = $false
+                    Operation  = $null
                 })
             }
             elseif ($bs.Gone) {
@@ -133,6 +134,7 @@ function Update-Worktrees {
                     Status     = 'Removed'
                     BehindBy   = 0
                     Stashed    = $false
+                    Operation  = $null
                 })
             }
             elseif ($bs.Ahead -gt 0) {
@@ -143,6 +145,7 @@ function Update-Worktrees {
                     Status     = 'Skipped'
                     BehindBy   = $bs.Behind
                     Stashed    = $false
+                    Operation  = $null
                 })
             }
             elseif ($bs.Behind -eq 0) {
@@ -153,6 +156,7 @@ function Update-Worktrees {
                     Status     = 'Current'
                     BehindBy   = 0
                     Stashed    = $false
+                    Operation  = $null
                 })
             }
             else {
@@ -196,7 +200,23 @@ function Update-Worktrees {
 
             $cleanWorktrees = [System.Collections.Generic.List[PSObject]]::new()
             $dirtyWorktrees = [System.Collections.Generic.List[PSObject]]::new()
+            $mergeResults = [System.Collections.Generic.List[PSObject]]::new()
             foreach ($wt in $behindWorktrees) {
+                $statusSummary = Get-GitStatusSummary -Path $wt.Path
+                if ($statusSummary.Operation) {
+                    $mergeResults.Add([PSCustomObject]@{
+                        PSTypeName = 'WorktreeUpdateResult'
+                        Branch     = $wt.Branch
+                        Path       = $wt.Path
+                        Status     = 'InProgress'
+                        BehindBy   = $wt.Behind
+                        Stashed    = $false
+                        Operation  = $statusSummary.Operation
+                        PopFailed  = $false
+                    })
+                    continue
+                }
+
                 Push-Location $wt.Path
                 try {
                     $dirtyOutput = git status --porcelain 2>&1
@@ -210,8 +230,6 @@ function Update-Worktrees {
                     Pop-Location
                 }
             }
-
-            $mergeResults = [System.Collections.Generic.List[PSObject]]::new()
 
             if ($cleanWorktrees.Count -gt 0) {
                 Write-Progress -Activity 'Updating Worktrees' -Status "Merging $($cleanWorktrees.Count) clean worktrees" -PercentComplete 60 -Id 0
@@ -229,6 +247,7 @@ function Update-Worktrees {
                             Status     = if ($mergeSuccess) { 'Updated' } else { 'Failed' }
                             BehindBy   = $wt.Behind
                             Stashed    = $false
+                            Operation  = $null
                             PopFailed  = $false
                         }
                     } finally {
@@ -267,6 +286,7 @@ function Update-Worktrees {
                             Status     = 'StashFailed'
                             BehindBy   = $wt.Behind
                             Stashed    = $false
+                            Operation  = $null
                             PopFailed  = $false
                         })
                         continue
@@ -287,6 +307,7 @@ function Update-Worktrees {
                         Status     = if ($mergeSuccess) { 'Updated' } else { 'Failed' }
                         BehindBy   = $wt.Behind
                         Stashed    = $stashed
+                        Operation  = $null
                         PopFailed  = if ($stashed) { $popFailed } else { $false }
                     })
                 } finally {
@@ -304,6 +325,8 @@ function Update-Worktrees {
                     Write-Warning "Fast-forward failed for $($mr.Branch)"
                 } elseif ($mr.Status -eq 'StashFailed') {
                     Write-Warning "git stash push failed for $($mr.Branch); skipped fast-forward to avoid disturbing the working tree"
+                } elseif ($mr.Status -eq 'InProgress') {
+                    Write-Warning "Skipped $($mr.Branch): git operation in progress ($($mr.Operation))"
                 }
                 $results.Add($mr)
             }
