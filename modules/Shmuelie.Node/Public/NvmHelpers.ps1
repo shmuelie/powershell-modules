@@ -3,9 +3,9 @@
 function Get-NodeVersion {
     <#
     .SYNOPSIS
-        Lists installed Node.js versions or shows current version
+        Lists installed Node.js versions or shows current version on Windows with nvm-windows
     .DESCRIPTION
-        Wrapper for 'nvm list' and 'nvm current' commands
+        Windows-only wrapper for 'nvm list' and 'nvm current' commands provided by nvm-windows
     .PARAMETER Current
         If specified, shows only the currently active Node.js version
     .PARAMETER Available
@@ -29,6 +29,8 @@ function Get-NodeVersion {
         [switch]$Available
     )
     
+
+    Assert-WindowsOnly -CommandName $MyInvocation.MyCommand.Name
     if ($Current) {
         nvm current
     }
@@ -43,9 +45,9 @@ function Get-NodeVersion {
 function Install-NodeVersion {
     <#
     .SYNOPSIS
-        Installs a specific Node.js version
+        Installs a specific Node.js version on Windows with nvm-windows
     .DESCRIPTION
-        Wrapper for 'nvm install' command
+        Windows-only wrapper for 'nvm install' command provided by nvm-windows
     .PARAMETER Version
         The Node.js version to install (e.g., '18.17.0', 'latest', 'lts')
     .PARAMETER Architecture
@@ -70,6 +72,8 @@ function Install-NodeVersion {
         [string]$Architecture
     )
     
+
+    Assert-WindowsOnly -CommandName $MyInvocation.MyCommand.Name
     $arguments = @('install', $Version)
     if ($Architecture) {
         $arguments += $Architecture
@@ -83,9 +87,9 @@ function Install-NodeVersion {
 function Uninstall-NodeVersion {
     <#
     .SYNOPSIS
-        Uninstalls a specific Node.js version
+        Uninstalls a specific Node.js version on Windows with nvm-windows
     .DESCRIPTION
-        Wrapper for 'nvm uninstall' command
+        Windows-only wrapper for 'nvm uninstall' command provided by nvm-windows
     .PARAMETER Version
         The Node.js version to uninstall
     .EXAMPLE
@@ -98,6 +102,8 @@ function Uninstall-NodeVersion {
         [string]$Version
     )
     
+
+    Assert-WindowsOnly -CommandName $MyInvocation.MyCommand.Name
     if ($PSCmdlet.ShouldProcess("Node.js version $Version", "Uninstall")) {
         nvm uninstall $Version
     }
@@ -106,9 +112,9 @@ function Uninstall-NodeVersion {
 function Set-NodeVersion {
     <#
     .SYNOPSIS
-        Switches to a specific Node.js version
+        Switches to a specific Node.js version on Windows with nvm-windows
     .DESCRIPTION
-        Wrapper for 'nvm use' command
+        Windows-only wrapper for 'nvm use' command provided by nvm-windows
     .PARAMETER Version
         The Node.js version to use
     .PARAMETER Architecture
@@ -135,6 +141,8 @@ function Set-NodeVersion {
         [switch]$Latest
     )
 
+
+    Assert-WindowsOnly -CommandName $MyInvocation.MyCommand.Name
     if ($Latest) {
         $Version = 'newest'
     }
@@ -152,9 +160,9 @@ function Set-NodeVersion {
 function Set-NodeAlias {
     <#
     .SYNOPSIS
-        Sets an alias for a Node.js version
+        Sets an alias for a Node.js version on Windows with nvm-windows
     .DESCRIPTION
-        Wrapper for 'nvm alias' command
+        Windows-only wrapper for 'nvm alias' command provided by nvm-windows
     .PARAMETER Name
         The alias name
     .PARAMETER Version
@@ -172,6 +180,8 @@ function Set-NodeAlias {
         [string]$Version
     )
     
+
+    Assert-WindowsOnly -CommandName $MyInvocation.MyCommand.Name
     if ($PSCmdlet.ShouldProcess("Alias '$Name' -> $Version", 'Set')) {
         nvm alias $Name $Version
     }
@@ -180,9 +190,9 @@ function Set-NodeAlias {
 function Remove-NodeAlias {
     <#
     .SYNOPSIS
-        Removes an alias for a Node.js version
+        Removes an alias for a Node.js version on Windows with nvm-windows
     .DESCRIPTION
-        Wrapper for 'nvm unalias' command
+        Windows-only wrapper for 'nvm unalias' command provided by nvm-windows
     .PARAMETER Name
         The alias name to remove
     .EXAMPLE
@@ -195,6 +205,8 @@ function Remove-NodeAlias {
         [string]$Name
     )
     
+
+    Assert-WindowsOnly -CommandName $MyInvocation.MyCommand.Name
     if ($PSCmdlet.ShouldProcess("Alias '$Name'", "Remove")) {
         nvm unalias $Name
     }
@@ -203,9 +215,9 @@ function Remove-NodeAlias {
 function Enable-Nvm {
     <#
     .SYNOPSIS
-        Enables nvm management
+        Enables nvm-windows management
     .DESCRIPTION
-        Wrapper for 'nvm on' command
+        Windows-only wrapper for 'nvm on' command provided by nvm-windows
     .EXAMPLE
         Enable-Nvm
         Enables nvm to manage Node.js versions
@@ -213,6 +225,8 @@ function Enable-Nvm {
     [CmdletBinding(SupportsShouldProcess)]
     param()
     
+
+    Assert-WindowsOnly -CommandName $MyInvocation.MyCommand.Name
     if ($PSCmdlet.ShouldProcess('nvm', 'Enable')) {
         nvm on
     }
@@ -221,9 +235,9 @@ function Enable-Nvm {
 function Disable-Nvm {
     <#
     .SYNOPSIS
-        Disables nvm management
+        Disables nvm-windows management
     .DESCRIPTION
-        Wrapper for 'nvm off' command
+        Windows-only wrapper for 'nvm off' command provided by nvm-windows
     .EXAMPLE
         Disable-Nvm
         Disables nvm version management
@@ -231,6 +245,8 @@ function Disable-Nvm {
     [CmdletBinding(SupportsShouldProcess)]
     param()
     
+
+    Assert-WindowsOnly -CommandName $MyInvocation.MyCommand.Name
     if ($PSCmdlet.ShouldProcess('nvm', 'Disable')) {
         nvm off
     }
@@ -239,9 +255,9 @@ function Disable-Nvm {
 function Set-NvmProxy {
     <#
     .SYNOPSIS
-        Sets proxy for nvm downloads
+        Sets proxy for nvm-windows downloads
     .DESCRIPTION
-        Wrapper for 'nvm proxy' command
+        Windows-only wrapper for 'nvm proxy' command provided by nvm-windows
     .PARAMETER Url
         The proxy URL. If not specified, shows current proxy setting
     .EXAMPLE
@@ -257,6 +273,8 @@ function Set-NvmProxy {
         [string]$Url
     )
     
+
+    Assert-WindowsOnly -CommandName $MyInvocation.MyCommand.Name
     if ($Url) {
         if ($PSCmdlet.ShouldProcess('nvm proxy', "Set to '$Url'")) {
             nvm proxy $Url
@@ -270,14 +288,14 @@ function Set-NvmProxy {
 function Set-NvmNodeMirror {
     <#
     .SYNOPSIS
-        Sets the Node.js download mirror
+        Sets the Node.js download mirror for nvm-windows
     .DESCRIPTION
-        Wrapper for 'nvm node_mirror' command
+        Windows-only wrapper for 'nvm node_mirror' command provided by nvm-windows
     .PARAMETER Url
         The mirror URL. If not specified, shows current mirror
     .EXAMPLE
         Set-NvmNodeMirror -Url "https://nodejs.org/dist/"
-        Sets the Node.js download mirror
+        Sets the Node.js download mirror for nvm-windows
     #>
     [CmdletBinding(SupportsShouldProcess)]
     param(
@@ -285,6 +303,8 @@ function Set-NvmNodeMirror {
         [string]$Url
     )
     
+
+    Assert-WindowsOnly -CommandName $MyInvocation.MyCommand.Name
     if ($Url) {
         if ($PSCmdlet.ShouldProcess('nvm node_mirror', "Set to '$Url'")) {
             nvm node_mirror $Url
@@ -298,14 +318,14 @@ function Set-NvmNodeMirror {
 function Set-NvmNpmMirror {
     <#
     .SYNOPSIS
-        Sets the npm download mirror
+        Sets the npm download mirror for nvm-windows
     .DESCRIPTION
-        Wrapper for 'nvm npm_mirror' command
+        Windows-only wrapper for 'nvm npm_mirror' command provided by nvm-windows
     .PARAMETER Url
         The mirror URL. If not specified, shows current mirror
     .EXAMPLE
         Set-NvmNpmMirror -Url "https://github.com/npm/cli/archive/"
-        Sets the npm download mirror
+        Sets the npm download mirror for nvm-windows
     #>
     [CmdletBinding(SupportsShouldProcess)]
     param(
@@ -313,6 +333,8 @@ function Set-NvmNpmMirror {
         [string]$Url
     )
     
+
+    Assert-WindowsOnly -CommandName $MyInvocation.MyCommand.Name
     if ($Url) {
         if ($PSCmdlet.ShouldProcess('nvm npm_mirror', "Set to '$Url'")) {
             nvm npm_mirror $Url
@@ -326,9 +348,9 @@ function Set-NvmNpmMirror {
 function Get-NvmRoot {
     <#
     .SYNOPSIS
-        Shows the nvm installation root directory
+        Shows the nvm-windows installation root directory
     .DESCRIPTION
-        Wrapper for 'nvm root' command
+        Windows-only wrapper for 'nvm root' command provided by nvm-windows
     .PARAMETER Path
         If specified, sets a new root directory
     .EXAMPLE
@@ -344,6 +366,8 @@ function Get-NvmRoot {
         [string]$Path
     )
     
+
+    Assert-WindowsOnly -CommandName $MyInvocation.MyCommand.Name
     if ($Path) {
         if ($PSCmdlet.ShouldProcess('nvm root', "Set to '$Path'")) {
             nvm root $Path
@@ -357,9 +381,9 @@ function Get-NvmRoot {
 function Get-NvmVersion {
     <#
     .SYNOPSIS
-        Shows the nvm version
+        Shows the nvm-windows version
     .DESCRIPTION
-        Wrapper for 'nvm version' command
+        Windows-only wrapper for 'nvm version' command provided by nvm-windows
     .EXAMPLE
         Get-NvmVersion
         Shows the current nvm for Windows version
@@ -367,15 +391,17 @@ function Get-NvmVersion {
     [CmdletBinding()]
     param()
     
+
+    Assert-WindowsOnly -CommandName $MyInvocation.MyCommand.Name
     nvm version
 }
 
 function Test-NvmInstalled {
     <#
     .SYNOPSIS
-        Tests if nvm is installed and available
+        Tests if nvm-windows is installed and available
     .DESCRIPTION
-        Checks if nvm command is available in the system
+        Windows-only check for the nvm-windows command in the system
     .EXAMPLE
         Test-NvmInstalled
         Returns $true if nvm is installed, $false otherwise
@@ -383,6 +409,8 @@ function Test-NvmInstalled {
     [CmdletBinding()]
     param()
     
+
+    Assert-WindowsOnly -CommandName $MyInvocation.MyCommand.Name
     try {
         $null = Get-Command nvm -ErrorAction Stop
         return $true

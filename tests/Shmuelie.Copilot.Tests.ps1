@@ -886,6 +886,132 @@ Describe 'Rename-CopilotSession' {
     }
 }
 
+Describe 'Select-CopilotSession' {
+    BeforeEach {
+        $script:Workspace = Join-Path $TestDrive 'workspace'
+        $script:OtherWorkspace = Join-Path $TestDrive 'other-workspace'
+        New-Item -ItemType Directory -Path $script:Workspace, $script:OtherWorkspace -Force | Out-Null
+
+        $script:RecentSessionId = '10101010-1111-2222-3333-444444444444'
+        $script:OlderSessionId = '20202020-1111-2222-3333-444444444444'
+        $script:OtherSessionId = '30303030-1111-2222-3333-444444444444'
+        $script:SelectSessions = @(
+            [PSCustomObject]@{
+                PSTypeName = 'CopilotSession'
+                Id         = $script:OlderSessionId
+                Name       = 'Older matching session'
+                Summary    = 'Older matching session'
+                Cwd        = $script:Workspace
+                Branch     = 'shmuelie/issue-101'
+                Repository = 'shmuelie/powershell-modules'
+                CreatedAt  = [DateTimeOffset]::Parse('2026-08-20T10:00:00Z')
+                UpdatedAt  = [DateTimeOffset]::Parse('2026-08-20T10:00:00Z')
+                EventCount = 4
+                EventSize  = 400
+                Path       = Join-Path $TestDrive 'older-session'
+            }
+            [PSCustomObject]@{
+                PSTypeName = 'CopilotSession'
+                Id         = $script:RecentSessionId
+                Name       = 'Recent matching session'
+                Summary    = 'Recent matching session'
+                Cwd        = $script:OtherWorkspace
+                Branch     = 'shmuelie/issue-101'
+                Repository = 'shmuelie/powershell-modules'
+                CreatedAt  = [DateTimeOffset]::Parse('2026-08-20T11:00:00Z')
+                UpdatedAt  = [DateTimeOffset]::Parse('2026-08-20T11:00:00Z')
+                EventCount = 8
+                EventSize  = 800
+                Path       = Join-Path $TestDrive 'recent-session'
+            }
+            [PSCustomObject]@{
+                PSTypeName = 'CopilotSession'
+                Id         = $script:OtherSessionId
+                Name       = 'Other repository session'
+                Summary    = 'Other repository session'
+                Cwd        = $script:Workspace
+                Branch     = 'main'
+                Repository = 'other/repository'
+                CreatedAt  = [DateTimeOffset]::Parse('2026-08-20T12:00:00Z')
+                UpdatedAt  = [DateTimeOffset]::Parse('2026-08-20T12:00:00Z')
+                EventCount = 12
+                EventSize  = 1200
+                Path       = Join-Path $TestDrive 'other-session'
+            }
+        )
+
+        $script:ResumedId = $null
+        $script:ResumeLocation = $null
+        $script:ResumePrompt = $null
+        $script:ResumeRemainingArgs = $null
+        $script:ResumeBoundParameters = $null
+        Mock -ModuleName Shmuelie.Copilot -CommandName Get-CopilotSession -MockWith { $script:SelectSessions }
+        Mock -ModuleName Shmuelie.Copilot -CommandName Resume-CopilotSession -MockWith {
+            $script:ResumedId = $Id
+            $script:ResumeLocation = (Get-Location).Path
+            $script:ResumePrompt = $Prompt
+            $script:ResumeRemainingArgs = $RemainingArgs
+            $script:ResumeBoundParameters = @{} + $PSBoundParameters
+        }
+    }
+
+    It 'uses filters and First to resume the newest matching session from its Cwd' {
+        Push-Location $script:Workspace
+        try {
+            Select-CopilotSession -Repository 'shmuelie/powershell-modules' -Branch 'shmuelie/issue-101' -First 1 -Prompt 'continue work'
+            $after = (Get-Location).Path
+        } finally {
+            Pop-Location
+        }
+
+        $script:ResumedId | Should -Be $script:RecentSessionId
+        $script:ResumePrompt | Should -Be 'continue work'
+        $script:ResumeLocation | Should -Be $script:OtherWorkspace
+        $after | Should -Be $script:Workspace
+        Should -Invoke -ModuleName Shmuelie.Copilot -CommandName Get-CopilotSession -Times 1 -Exactly -ParameterFilter { $All }
+        Should -Invoke -ModuleName Shmuelie.Copilot -CommandName Resume-CopilotSession -Times 1 -Exactly -ParameterFilter { $Id -eq $script:RecentSessionId }
+    }
+
+    It 'stays in the current directory when StayInDirectory is specified' {
+        Push-Location $script:Workspace
+        try {
+            Select-CopilotSession -Id $script:RecentSessionId -StayInDirectory
+            $after = (Get-Location).Path
+        } finally {
+            Pop-Location
+        }
+
+        $script:ResumedId | Should -Be $script:RecentSessionId
+        $script:ResumeLocation | Should -Be $script:Workspace
+        $after | Should -Be $script:Workspace
+        Should -Invoke -ModuleName Shmuelie.Copilot -CommandName Resume-CopilotSession -Times 1 -Exactly -ParameterFilter { $Id -eq $script:RecentSessionId }
+    }
+
+    It 'passes remaining arguments by name without binding them to Prompt' {
+        Select-CopilotSession -Id $script:RecentSessionId -StayInDirectory -RemainingArgs '--debug', '--log-level', 'info'
+
+        $script:ResumedId | Should -Be $script:RecentSessionId
+        $script:ResumePrompt | Should -BeNullOrEmpty
+        $script:ResumeRemainingArgs | Should -Be @('--debug', '--log-level', 'info')
+        $script:ResumeBoundParameters.ContainsKey('Prompt') | Should -BeFalse
+    }
+
+    It 'honors WhatIf without resuming the resolved session' {
+        Push-Location $script:Workspace
+        try {
+            Select-CopilotSession -Id $script:RecentSessionId -WhatIf
+            $after = (Get-Location).Path
+        } finally {
+            Pop-Location
+        }
+
+        $script:ResumedId | Should -BeNullOrEmpty
+        $script:ResumeLocation | Should -BeNullOrEmpty
+        $after | Should -Be $script:Workspace
+        Should -Invoke -ModuleName Shmuelie.Copilot -CommandName Resume-CopilotSession -Times 0 -Exactly
+    }
+}
+
 Describe 'Resume-CopilotSession' {
     BeforeEach {
         $testHome = Join-Path $TestDrive 'home'

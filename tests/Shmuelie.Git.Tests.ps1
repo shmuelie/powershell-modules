@@ -100,6 +100,74 @@ Describe 'Add-Worktree' {
     }
 }
 
+Describe 'Add-Worktree creation' -Skip:(-not (Get-Command git -ErrorAction SilentlyContinue)) {
+    It 'checks out an existing branch to an explicit worktree path' {
+        $repo = New-TestRepo -Path (Join-Path $TestDrive 'add-explicit-main')
+        $branch = 'feature/add-explicit'
+        $customPath = Join-Path $TestDrive 'custom-add-explicit'
+        Invoke-Git @('-C', $repo, 'branch', $branch)
+
+        Push-Location $repo
+        try {
+            Add-Worktree -BranchName $branch -WorktreePath $customPath -Confirm:$false
+            Test-Path -LiteralPath $customPath | Should -BeTrue
+            (@(Get-Worktrees) | Where-Object Branch -eq $branch).Path |
+                Should -BeExactly (Resolve-Path -LiteralPath $customPath).Path
+        } finally {
+            Pop-Location
+        }
+    }
+
+    It 'keeps the auto-generated location when no worktree path is supplied' {
+        $repo = New-TestRepo -Path (Join-Path $TestDrive 'add-auto-main')
+        $branch = 'feature/add-auto'
+        $expectedPath = Join-Path (Split-Path $repo -Parent) $branch
+        Invoke-Git @('-C', $repo, 'branch', $branch)
+
+        Push-Location $repo
+        try {
+            Add-Worktree -BranchName $branch -Confirm:$false
+            Test-Path -LiteralPath $expectedPath | Should -BeTrue
+            (@(Get-Worktrees) | Where-Object Branch -eq $branch).Path |
+                Should -BeExactly (Resolve-Path -LiteralPath $expectedPath).Path
+        } finally {
+            Pop-Location
+        }
+    }
+
+    It 'changes location to the resolved explicit worktree path when SetLocation is used' {
+        $repo = New-TestRepo -Path (Join-Path $TestDrive 'add-setlocation-main')
+        $branch = 'feature/add-setlocation'
+        $customPath = Join-Path $TestDrive 'custom-add-setlocation'
+        Invoke-Git @('-C', $repo, 'branch', $branch)
+
+        Push-Location $repo
+        try {
+            Add-Worktree -BranchName $branch -WorktreePath $customPath -SetLocation -Confirm:$false
+            (Get-Location).Path | Should -BeExactly (Resolve-Path -LiteralPath $customPath).Path
+        } finally {
+            Pop-Location
+        }
+    }
+
+    It 'surfaces git errors when the destination path is invalid' {
+        $repo = New-TestRepo -Path (Join-Path $TestDrive 'add-failure-main')
+        $branch = 'feature/add-failure'
+        $existingPath = Join-Path $TestDrive 'existing-add-destination'
+        New-Item -ItemType Directory -Path $existingPath -Force | Out-Null
+        Set-Content -Path (Join-Path $existingPath 'already-here.txt') -Value 'content'
+        Invoke-Git @('-C', $repo, 'branch', $branch)
+
+        Push-Location $repo
+        try {
+            { Add-Worktree -BranchName $branch -WorktreePath $existingPath -Confirm:$false -ErrorAction Stop } |
+                Should -Throw -ExpectedMessage '*git worktree add failed*already exists*'
+        } finally {
+            Pop-Location
+        }
+    }
+}
+
 Describe 'Get-GitStatusSummary' {
     It 'does not pop the caller location stack when -Path cannot be pushed' {
         $startingPath = (Get-Location).Path
@@ -966,6 +1034,104 @@ public static class GitShim
         $result[0].PopFailed | Should -BeFalse
         Get-Content -LiteralPath (Join-Path $clone 'README.md') -Raw | Should -BeExactly 'updated'
     }
+
+    $inProgressCases = @(
+        @{
+            Name              = 'merge'
+            ExpectedOperation = 'MERGING'
+            SetupSentinel     = {
+                param($GitDir, $RepositoryPath)
+
+                $head = Invoke-Git @('-C', $RepositoryPath, 'rev-parse', 'HEAD')
+                $sentinelPath = Join-Path $GitDir 'MERGE_HEAD'
+                Set-Content -Path $sentinelPath -Value $head -NoNewline
+                [PSCustomObject]@{
+                    Path    = $sentinelPath
+                    Content = $head
+                }
+            }
+        }
+        @{
+            Name              = 'interactive rebase'
+            ExpectedOperation = 'REBASE-i 1/3'
+            SetupSentinel     = {
+                param($GitDir)
+
+                $rebase = Join-Path $GitDir 'rebase-merge'
+                New-Item -ItemType Directory -Path $rebase -Force | Out-Null
+                New-Item -ItemType File -Path (Join-Path $rebase 'interactive') -Force | Out-Null
+                Set-Content -Path (Join-Path $rebase 'msgnum') -Value '1' -NoNewline
+                Set-Content -Path (Join-Path $rebase 'end') -Value '3' -NoNewline
+                $sentinelPath = Join-Path $rebase 'operation-marker.txt'
+                Set-Content -Path $sentinelPath -Value 'rebase in progress' -NoNewline
+                [PSCustomObject]@{
+                    Path    = $sentinelPath
+                    Content = 'rebase in progress'
+                }
+            }
+        }
+    )
+
+    It 'reports InProgress and leaves a behind <Name> worktree untouched' -ForEach $inProgressCases -Skip:(-not (Get-Command git -ErrorAction SilentlyContinue)) {
+        $safeName = $Name -replace '[^a-z0-9]+', '-'
+        $origin = Join-Path $TestDrive "in-progress-$safeName-origin.git"
+        Invoke-Git @('init', '--bare', '-b', 'main', '--quiet', $origin)
+
+        $seed = Join-Path $TestDrive "in-progress-$safeName-seed"
+        Invoke-Git @('clone', '--quiet', $origin, $seed)
+        Set-TestRepoConfig $seed
+        Set-Content -Path (Join-Path $seed 'README.md') -Value 'initial' -NoNewline
+        Invoke-Git @('-C', $seed, 'add', 'README.md')
+        Invoke-TestCommit -Path $seed -Message 'init'
+        Invoke-Git @('-C', $seed, 'push', '-u', 'origin', 'main', '--quiet')
+
+        $clone = Join-Path $TestDrive "in-progress-$safeName-clone"
+        Invoke-Git @('clone', '--quiet', $origin, $clone)
+        Set-TestRepoConfig $clone
+
+        $updater = Join-Path $TestDrive "in-progress-$safeName-updater"
+        Invoke-Git @('clone', '--quiet', $origin, $updater)
+        Set-TestRepoConfig $updater
+        Set-Content -Path (Join-Path $updater 'README.md') -Value 'updated' -NoNewline
+        Invoke-Git @('-C', $updater, 'add', 'README.md')
+        Invoke-TestCommit -Path $updater -Message 'update readme'
+        Invoke-Git @('-C', $updater, 'push', 'origin', 'main', '--quiet')
+
+        Invoke-Git @('-C', $clone, 'fetch', '--all', '--prune')
+        Invoke-Git @('-C', $clone, 'rev-list', '--count', 'main..origin/main') | Should -Be '1'
+
+        Set-Content -Path (Join-Path $clone 'local.txt') -Value 'local work' -NoNewline
+        $gitDir = Get-TestGitDir -Path $clone
+        $sentinel = & $SetupSentinel $gitDir $clone
+        $readmeBefore = Get-Content -LiteralPath (Join-Path $clone 'README.md') -Raw
+        $localBefore = Get-Content -LiteralPath (Join-Path $clone 'local.txt') -Raw
+        $stashBefore = @(Invoke-Git @('-C', $clone, 'stash', 'list')).Count
+
+        Mock -ModuleName Shmuelie.Git Sync-GitRemote { @() }
+
+        Push-Location $clone
+        try {
+            $results = Update-Worktrees -NoGitHubAccountResolve
+        } finally {
+            Pop-Location
+        }
+
+        $result = @($results | Where-Object Branch -eq 'main')
+        $result | Should -HaveCount 1
+        $result[0].Status | Should -Be 'InProgress'
+        $result[0].Status | Should -Not -Be 'Updated'
+        $result[0].Status | Should -Not -Be 'Failed'
+        $result[0].Operation | Should -Be $ExpectedOperation
+        $result[0].BehindBy | Should -Be 1
+        $result[0].Stashed | Should -BeFalse
+        $result[0].PopFailed | Should -BeFalse
+
+        Get-Content -LiteralPath (Join-Path $clone 'README.md') -Raw | Should -BeExactly $readmeBefore
+        Get-Content -LiteralPath (Join-Path $clone 'local.txt') -Raw | Should -BeExactly $localBefore
+        Get-Content -LiteralPath $sentinel.Path -Raw | Should -BeExactly $sentinel.Content
+        @(Invoke-Git @('-C', $clone, 'stash', 'list')).Count | Should -Be $stashBefore
+        Invoke-Git @('-C', $clone, 'rev-list', '--count', 'main..origin/main') | Should -Be '1'
+    }
 }
 
 
@@ -1743,7 +1909,14 @@ Describe 'New-Worktree' -Skip:(-not (Get-Command git -ErrorAction SilentlyContin
 
         Push-Location $repo
         try {
-            New-Worktree -WorkName 'dry-run' -UserName 'tester' -WhatIf -Confirm:$false
+            $transcriptPath = Join-Path $TestDrive 'new-worktree-auto-whatif.txt'
+            Start-Transcript -Path $transcriptPath -Force | Out-Null
+            try {
+                New-Worktree -WorkName 'dry-run' -UserName 'tester' -WhatIf -Confirm:$false
+            } finally {
+                Stop-Transcript | Out-Null
+            }
+            (Get-Content -LiteralPath $transcriptPath -Raw) | Should -Match ([regex]::Escape($expectedPath))
             Test-Path -LiteralPath $expectedPath | Should -BeFalse
             Invoke-Git @('-C', $repo, 'branch', '--list', $branchName) | Should -BeNullOrEmpty
         } finally {
@@ -1762,6 +1935,58 @@ Describe 'New-Worktree' -Skip:(-not (Get-Command git -ErrorAction SilentlyContin
             Test-Path -LiteralPath $expectedPath | Should -BeTrue
             Invoke-Git @('-C', $repo, 'rev-parse', '--verify', $branchName) | Should -Not -BeNullOrEmpty
             (@(Get-Worktrees) | Where-Object Branch -eq $branchName).Path | Should -BeExactly (Resolve-Path -LiteralPath $expectedPath).Path
+        } finally {
+            Pop-Location
+        }
+    }
+
+    It 'creates a new branch and worktree at an explicit worktree path' {
+        $repo = New-TestRepo -Path (Join-Path $TestDrive 'new-worktree-explicit-main')
+        $branchName = 'user/tester/explicit-path'
+        $customPath = Join-Path $TestDrive 'custom-new-explicit'
+
+        Push-Location $repo
+        try {
+            New-Worktree -WorkName 'explicit-path' -UserName 'tester' -WorktreePath $customPath -Confirm:$false
+            Test-Path -LiteralPath $customPath | Should -BeTrue
+            Invoke-Git @('-C', $repo, 'rev-parse', '--verify', $branchName) | Should -Not -BeNullOrEmpty
+            (@(Get-Worktrees) | Where-Object Branch -eq $branchName).Path |
+                Should -BeExactly (Resolve-Path -LiteralPath $customPath).Path
+        } finally {
+            Pop-Location
+        }
+    }
+
+    It 'changes location to the resolved explicit worktree path for a new branch when SetLocation is used' {
+        $repo = New-TestRepo -Path (Join-Path $TestDrive 'new-worktree-setlocation-main')
+        $customPath = Join-Path $TestDrive 'custom-new-setlocation'
+
+        Push-Location $repo
+        try {
+            New-Worktree -WorkName 'setlocation-path' -UserName 'tester' -WorktreePath $customPath -SetLocation -Confirm:$false
+            (Get-Location).Path | Should -BeExactly (Resolve-Path -LiteralPath $customPath).Path
+        } finally {
+            Pop-Location
+        }
+    }
+
+    It 'reports an explicit worktree path in WhatIf output and creates nothing' {
+        $repo = New-TestRepo -Path (Join-Path $TestDrive 'new-worktree-explicit-whatif-main')
+        $branchName = 'user/tester/explicit-dry-run'
+        $customPath = Join-Path $TestDrive 'custom-new-explicit-whatif'
+
+        Push-Location $repo
+        try {
+            $transcriptPath = Join-Path $TestDrive 'new-worktree-explicit-whatif.txt'
+            Start-Transcript -Path $transcriptPath -Force | Out-Null
+            try {
+                New-Worktree -WorkName 'explicit-dry-run' -UserName 'tester' -WorktreePath $customPath -WhatIf -Confirm:$false
+            } finally {
+                Stop-Transcript | Out-Null
+            }
+            (Get-Content -LiteralPath $transcriptPath -Raw) | Should -Match ([regex]::Escape($customPath))
+            Test-Path -LiteralPath $customPath | Should -BeFalse
+            Invoke-Git @('-C', $repo, 'branch', '--list', $branchName) | Should -BeNullOrEmpty
         } finally {
             Pop-Location
         }
