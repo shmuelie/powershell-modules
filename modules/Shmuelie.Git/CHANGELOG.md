@@ -6,6 +6,11 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+### Added
+- `New-Worktree` and `Add-Worktree` now accept `-WorktreePath` to place the
+  created worktree at an explicit destination while preserving the conventional
+  sibling path when omitted.
+
 ## [0.5.0] - 2026-08-20
 
 ### Added
