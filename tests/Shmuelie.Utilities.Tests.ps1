@@ -124,6 +124,116 @@ Describe 'Invoke-InLocation' {
     }
 }
 
+Describe 'Windows-only guards' {
+    Context 'when the platform is not Windows' {
+        BeforeEach {
+            Mock -ModuleName Shmuelie.Utilities Test-IsWindowsPlatform { $false }
+        }
+
+        It 'stops Get-InstalledApplications before registry or profile lookups' {
+            Mock -ModuleName Shmuelie.Utilities Test-IsElevated { throw 'elevation side effect' }
+            Mock -ModuleName Shmuelie.Utilities Get-CimInstance { throw 'profile side effect' }
+            Mock -ModuleName Shmuelie.Utilities Get-ItemProperty { throw 'registry side effect' }
+
+            { Get-InstalledApplications -Scope GlobalAndAllUsers } |
+                Should -Throw '*Get-InstalledApplications is only supported on Windows.*'
+
+            Should -Invoke -ModuleName Shmuelie.Utilities Test-IsElevated -Times 0
+            Should -Invoke -ModuleName Shmuelie.Utilities Get-CimInstance -Times 0
+            Should -Invoke -ModuleName Shmuelie.Utilities Get-ItemProperty -Times 0
+        }
+
+        It 'stops Get-WindowsTerminalSettings before filesystem access' {
+            Mock -ModuleName Shmuelie.Utilities Test-Path { throw 'filesystem side effect' }
+            Mock -ModuleName Shmuelie.Utilities Get-Content { throw 'content side effect' }
+
+            { Get-WindowsTerminalSettings } |
+                Should -Throw '*Get-WindowsTerminalSettings is only supported on Windows.*'
+
+            Should -Invoke -ModuleName Shmuelie.Utilities Test-Path -Times 0
+            Should -Invoke -ModuleName Shmuelie.Utilities Get-Content -Times 0
+        }
+
+        It 'stops Get-WindowsTerminalProfile before loading settings or fragments' {
+            Mock -ModuleName Shmuelie.Utilities Get-WindowsTerminalSettings { throw 'settings side effect' }
+            Mock -ModuleName Shmuelie.Utilities Test-Path { throw 'fragment side effect' }
+            Mock -ModuleName Shmuelie.Utilities Get-ChildItem { throw 'fragment enumeration side effect' }
+
+            { Get-WindowsTerminalProfile -Name PowerShell } |
+                Should -Throw '*Get-WindowsTerminalProfile is only supported on Windows.*'
+
+            Should -Invoke -ModuleName Shmuelie.Utilities Get-WindowsTerminalSettings -Times 0
+            Should -Invoke -ModuleName Shmuelie.Utilities Test-Path -Times 0
+            Should -Invoke -ModuleName Shmuelie.Utilities Get-ChildItem -Times 0
+        }
+
+        It 'stops Start-WindowsPerformanceRecorder before invoking WPR' {
+            { Start-WindowsPerformanceRecorder -PerformanceProfile GeneralProfile -Confirm:$false } |
+                Should -Throw '*Start-WindowsPerformanceRecorder is only supported on Windows.*'
+        }
+
+        It 'stops Stop-WindowsPerformanceRecorder before invoking WPR' {
+            { Stop-WindowsPerformanceRecorder -File C:\trace.etl -Confirm:$false } |
+                Should -Throw '*Stop-WindowsPerformanceRecorder is only supported on Windows.*'
+        }
+    }
+
+    Context 'when the platform is Windows' {
+        BeforeEach {
+            Mock -ModuleName Shmuelie.Utilities Test-IsWindowsPlatform { $true }
+        }
+
+        It 'allows Get-InstalledApplications to query global registry paths' {
+            Mock -ModuleName Shmuelie.Utilities Get-ItemProperty { [PSCustomObject]@{ DisplayName = 'Example App' } }
+
+            $apps = @(Get-InstalledApplications -Scope Global)
+
+            $apps | Should -HaveCount 2
+            Should -Invoke -ModuleName Shmuelie.Utilities Get-ItemProperty -Times 2
+        }
+
+        It 'allows Get-WindowsTerminalSettings to read settings JSON' {
+            Mock -ModuleName Shmuelie.Utilities Test-Path { $true } -ParameterFilter { $Path -like '*Microsoft.WindowsTerminal_8wekyb3d8bbwe*' }
+            Mock -ModuleName Shmuelie.Utilities Test-Path { $false }
+            Mock -ModuleName Shmuelie.Utilities Get-Content { '{"profiles":{"list":[{"name":"PowerShell","guid":"{11111111-1111-1111-1111-111111111111}"}]}}' }
+
+            $settings = Get-WindowsTerminalSettings
+
+            $settings.profiles.list[0].name | Should -BeExactly 'PowerShell'
+            Should -Invoke -ModuleName Shmuelie.Utilities Test-Path -Times 1 -ParameterFilter { $Path -like '*Microsoft.WindowsTerminal_8wekyb3d8bbwe*' }
+            Should -Invoke -ModuleName Shmuelie.Utilities Get-Content -Times 1
+        }
+
+        It 'allows Get-WindowsTerminalProfile to search loaded profiles' {
+            Mock -ModuleName Shmuelie.Utilities Get-WindowsTerminalSettings {
+                [PSCustomObject]@{
+                    profiles = [PSCustomObject]@{
+                        list = @(
+                            [PSCustomObject]@{
+                                name = 'PowerShell'
+                                guid = '{11111111-1111-1111-1111-111111111111}'
+                            }
+                        )
+                    }
+                }
+            }
+
+            $profile = Get-WindowsTerminalProfile -Name PowerShell
+
+            $profile.name | Should -BeExactly 'PowerShell'
+            Should -Invoke -ModuleName Shmuelie.Utilities Get-WindowsTerminalSettings -Times 1
+        }
+
+        It 'allows Start-WindowsPerformanceRecorder to reach ShouldProcess' {
+            { Start-WindowsPerformanceRecorder -PerformanceProfile GeneralProfile -WhatIf } | Should -Not -Throw
+        }
+
+        It 'allows Stop-WindowsPerformanceRecorder to reach ShouldProcess' {
+            { Stop-WindowsPerformanceRecorder -File C:\trace.etl -WhatIf } | Should -Not -Throw
+        }
+    }
+}
+
 Describe 'Get-InstalledApplications all-user hive handling' -Skip:(-not $IsWindows) {
     BeforeEach {
         Mock -ModuleName Shmuelie.Utilities Test-IsElevated { $true }

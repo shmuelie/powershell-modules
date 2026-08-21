@@ -9,6 +9,8 @@ function Start-WindowsPerformanceRecorder {
     .EXAMPLE
     Start-WindowsPerformanceRecorder -PerformanceProfile C:\my.wprp -FileMode
     Starts a WPR recording with a custom profile in file mode.
+    .NOTES
+    Windows only.
     #>
     [CmdletBinding(SupportsShouldProcess)]
     param(
@@ -19,6 +21,8 @@ function Start-WindowsPerformanceRecorder {
         [switch]$FileMode
     )
     process {
+        Assert-WindowsOnly -CommandName $MyInvocation.MyCommand.Name
+
         $arguments = @('wpr', '-start', $PerformanceProfile)
 
         if ($FileMode) {
@@ -42,6 +46,8 @@ function Stop-WindowsPerformanceRecorder {
     .EXAMPLE
     Stop-WindowsPerformanceRecorder -File C:\trace.etl
     Stops the recording and saves the trace to C:\trace.etl.
+    .NOTES
+    Windows only.
     #>
     [CmdletBinding(SupportsShouldProcess)]
     param(
@@ -49,6 +55,8 @@ function Stop-WindowsPerformanceRecorder {
         [string]$File
     )
     process {
+        Assert-WindowsOnly -CommandName $MyInvocation.MyCommand.Name
+
         if ($PSCmdlet.ShouldProcess($File, 'Stop WPR recording')) {
             & sudo wpr -stop $File
         }
