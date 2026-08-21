@@ -1,6 +1,15 @@
 $publicRoot = Join-Path $PSScriptRoot 'Public'
-foreach ($script in Get-ChildItem $publicRoot -Filter '*.ps1' | Sort-Object Name) {
-    . $script.FullName
+foreach ($scriptName in @(
+    'DotNetHelpers.ps1',
+    'Get-InstalledApplications.ps1',
+    'PythonHelpers.ps1',
+    'Utilities.ps1',
+    'UvHelpers.ps1',
+    'VsCodeHelpers.ps1',
+    'WindowsTerminalHelpers.ps1',
+    'WprHelpers.ps1'
+)) {
+    . (Join-Path $publicRoot $scriptName)
 }
 
 Export-ModuleMember -Function @(

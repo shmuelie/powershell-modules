@@ -1,6 +1,10 @@
 $publicRoot = Join-Path $PSScriptRoot 'Public'
-foreach ($script in Get-ChildItem $publicRoot -Filter '*.ps1' | Sort-Object Name) {
-    . $script.FullName
+foreach ($scriptName in @(
+    'NpmHelpers.ps1',
+    'NvmHelpers.ps1',
+    'Update-AdoNpmToken.ps1'
+)) {
+    . (Join-Path $publicRoot $scriptName)
 }
 
 Export-ModuleMember -Function @(

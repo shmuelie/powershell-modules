@@ -6,6 +6,13 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+### Changed
+- Avoid import-time Public script directory enumeration by loading the module's
+  existing scripts from an explicit list; exported commands and predictor
+  registration are unchanged.
+- Register the bundled worktree predictor without eagerly importing PSReadLine,
+  preserving predictor behavior while reducing cold import overhead.
+
 ## [0.5.0] - 2026-08-20
 
 ### Added
