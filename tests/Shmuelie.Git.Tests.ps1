@@ -966,6 +966,104 @@ public static class GitShim
         $result[0].PopFailed | Should -BeFalse
         Get-Content -LiteralPath (Join-Path $clone 'README.md') -Raw | Should -BeExactly 'updated'
     }
+
+    $inProgressCases = @(
+        @{
+            Name              = 'merge'
+            ExpectedOperation = 'MERGING'
+            SetupSentinel     = {
+                param($GitDir, $RepositoryPath)
+
+                $head = Invoke-Git @('-C', $RepositoryPath, 'rev-parse', 'HEAD')
+                $sentinelPath = Join-Path $GitDir 'MERGE_HEAD'
+                Set-Content -Path $sentinelPath -Value $head -NoNewline
+                [PSCustomObject]@{
+                    Path    = $sentinelPath
+                    Content = $head
+                }
+            }
+        }
+        @{
+            Name              = 'interactive rebase'
+            ExpectedOperation = 'REBASE-i 1/3'
+            SetupSentinel     = {
+                param($GitDir)
+
+                $rebase = Join-Path $GitDir 'rebase-merge'
+                New-Item -ItemType Directory -Path $rebase -Force | Out-Null
+                New-Item -ItemType File -Path (Join-Path $rebase 'interactive') -Force | Out-Null
+                Set-Content -Path (Join-Path $rebase 'msgnum') -Value '1' -NoNewline
+                Set-Content -Path (Join-Path $rebase 'end') -Value '3' -NoNewline
+                $sentinelPath = Join-Path $rebase 'operation-marker.txt'
+                Set-Content -Path $sentinelPath -Value 'rebase in progress' -NoNewline
+                [PSCustomObject]@{
+                    Path    = $sentinelPath
+                    Content = 'rebase in progress'
+                }
+            }
+        }
+    )
+
+    It 'reports InProgress and leaves a behind <Name> worktree untouched' -ForEach $inProgressCases -Skip:(-not (Get-Command git -ErrorAction SilentlyContinue)) {
+        $safeName = $Name -replace '[^a-z0-9]+', '-'
+        $origin = Join-Path $TestDrive "in-progress-$safeName-origin.git"
+        Invoke-Git @('init', '--bare', '-b', 'main', '--quiet', $origin)
+
+        $seed = Join-Path $TestDrive "in-progress-$safeName-seed"
+        Invoke-Git @('clone', '--quiet', $origin, $seed)
+        Set-TestRepoConfig $seed
+        Set-Content -Path (Join-Path $seed 'README.md') -Value 'initial' -NoNewline
+        Invoke-Git @('-C', $seed, 'add', 'README.md')
+        Invoke-TestCommit -Path $seed -Message 'init'
+        Invoke-Git @('-C', $seed, 'push', '-u', 'origin', 'main', '--quiet')
+
+        $clone = Join-Path $TestDrive "in-progress-$safeName-clone"
+        Invoke-Git @('clone', '--quiet', $origin, $clone)
+        Set-TestRepoConfig $clone
+
+        $updater = Join-Path $TestDrive "in-progress-$safeName-updater"
+        Invoke-Git @('clone', '--quiet', $origin, $updater)
+        Set-TestRepoConfig $updater
+        Set-Content -Path (Join-Path $updater 'README.md') -Value 'updated' -NoNewline
+        Invoke-Git @('-C', $updater, 'add', 'README.md')
+        Invoke-TestCommit -Path $updater -Message 'update readme'
+        Invoke-Git @('-C', $updater, 'push', 'origin', 'main', '--quiet')
+
+        Invoke-Git @('-C', $clone, 'fetch', '--all', '--prune')
+        Invoke-Git @('-C', $clone, 'rev-list', '--count', 'main..origin/main') | Should -Be '1'
+
+        Set-Content -Path (Join-Path $clone 'local.txt') -Value 'local work' -NoNewline
+        $gitDir = Get-TestGitDir -Path $clone
+        $sentinel = & $SetupSentinel $gitDir $clone
+        $readmeBefore = Get-Content -LiteralPath (Join-Path $clone 'README.md') -Raw
+        $localBefore = Get-Content -LiteralPath (Join-Path $clone 'local.txt') -Raw
+        $stashBefore = @(Invoke-Git @('-C', $clone, 'stash', 'list')).Count
+
+        Mock -ModuleName Shmuelie.Git Sync-GitRemote { @() }
+
+        Push-Location $clone
+        try {
+            $results = Update-Worktrees -NoGitHubAccountResolve
+        } finally {
+            Pop-Location
+        }
+
+        $result = @($results | Where-Object Branch -eq 'main')
+        $result | Should -HaveCount 1
+        $result[0].Status | Should -Be 'InProgress'
+        $result[0].Status | Should -Not -Be 'Updated'
+        $result[0].Status | Should -Not -Be 'Failed'
+        $result[0].Operation | Should -Be $ExpectedOperation
+        $result[0].BehindBy | Should -Be 1
+        $result[0].Stashed | Should -BeFalse
+        $result[0].PopFailed | Should -BeFalse
+
+        Get-Content -LiteralPath (Join-Path $clone 'README.md') -Raw | Should -BeExactly $readmeBefore
+        Get-Content -LiteralPath (Join-Path $clone 'local.txt') -Raw | Should -BeExactly $localBefore
+        Get-Content -LiteralPath $sentinel.Path -Raw | Should -BeExactly $sentinel.Content
+        @(Invoke-Git @('-C', $clone, 'stash', 'list')).Count | Should -Be $stashBefore
+        Invoke-Git @('-C', $clone, 'rev-list', '--count', 'main..origin/main') | Should -Be '1'
+    }
 }
 
 
