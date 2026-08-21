@@ -18,11 +18,11 @@ are:
 
 | Module | Median import time |
 |---|---:|
-| Shmuelie.Utilities | 548.3 ms |
-| Shmuelie.Git | 777.6 ms |
-| Shmuelie.Copilot | 600.5 ms |
-| Shmuelie.Node | 483.8 ms |
-| **Combined** | **2410.2 ms** |
+| Shmuelie.Utilities | 488.7 ms |
+| Shmuelie.Git | 612.0 ms |
+| Shmuelie.Copilot | 536.0 ms |
+| Shmuelie.Node | 344.3 ms |
+| **Combined** | **1981.0 ms** |
 
 `Shmuelie.Git` still performs predictor registration during import when the
 bundled `WorktreePredictor.dll` is present in the built module artifact, but it
