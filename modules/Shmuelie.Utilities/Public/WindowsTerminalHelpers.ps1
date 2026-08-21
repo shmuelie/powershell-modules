@@ -11,9 +11,13 @@ function Get-WindowsTerminalSettings {
     .EXAMPLE
         (Get-WindowsTerminalSettings).profiles.list | Select-Object name, guid
         Lists all profiles defined in settings.json.
+    .NOTES
+        Windows only.
     #>
     [CmdletBinding()]
     param()
+
+    Assert-WindowsOnly -CommandName $MyInvocation.MyCommand.Name
 
     foreach ($pkg in @('Microsoft.WindowsTerminal_8wekyb3d8bbwe', 'Microsoft.WindowsTerminalPreview_8wekyb3d8bbwe')) {
         $path = Join-Path $env:LOCALAPPDATA "Packages\$pkg\LocalState\settings.json"
@@ -51,6 +55,8 @@ function Get-WindowsTerminalProfile {
     .EXAMPLE
         Get-WindowsTerminalProfile -IncludeFragments
         Returns all profiles including those from fragment files.
+    .NOTES
+        Windows only.
     #>
     [CmdletBinding(DefaultParameterSetName = 'Current')]
     param(
@@ -62,6 +68,8 @@ function Get-WindowsTerminalProfile {
 
         [switch]$IncludeFragments
     )
+
+    Assert-WindowsOnly -CommandName $MyInvocation.MyCommand.Name
 
     $profiles = @()
 

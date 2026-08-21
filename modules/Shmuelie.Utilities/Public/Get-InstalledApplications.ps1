@@ -45,12 +45,16 @@ function Get-InstalledApplications {
     .EXAMPLE
     Get-InstalledApplications -Scope CurrentUser
     Returns applications installed for the current user only.
+    .NOTES
+    Windows only.
     #>
     [CmdletBinding(SupportsShouldProcess)]
     param(
         [ValidateSet('Global', 'GlobalAndCurrentUser', 'GlobalAndAllUsers', 'CurrentUser', 'AllUsers')]
         [string]$Scope = 'GlobalAndAllUsers'
     )
+
+    Assert-WindowsOnly -CommandName $MyInvocation.MyCommand.Name
 
     # Check if running with Administrative privileges if required
     if ($Scope -in @('GlobalAndAllUsers', 'AllUsers')) {
