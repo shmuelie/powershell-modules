@@ -23,9 +23,9 @@ Import-Module Shmuelie.Utilities
 | .NET tools | `Get-DotNetTool`, `Install-DotNetTool`, `Update-DotNetTool`, `Uninstall-DotNetTool` |
 | Python | `Get-PipPackages`, `Update-PipPackage`, `Get-UvPackages`, `Update-UvPackage` |
 | VS Code | `Start-VsCode`, `Start-VsCodeChat`, `Get-VsCodeExtension`, `Install-VsCodeExtension`, `Uninstall-VsCodeExtension`, `Update-VsCodeExtension` |
-| Windows Terminal | `Get-WindowsTerminalSettings`, `Get-WindowsTerminalProfile` |
-| Diagnostics | `Start-WindowsPerformanceRecorder`, `Stop-WindowsPerformanceRecorder` |
-| Inventory | `Get-InstalledApplications` |
+| Windows Terminal | `Get-WindowsTerminalSettings` (Windows only), `Get-WindowsTerminalProfile` (Windows only) |
+| Diagnostics | `Start-WindowsPerformanceRecorder` (Windows only), `Stop-WindowsPerformanceRecorder` (Windows only) |
+| Inventory | `Get-InstalledApplications` (Windows only) |
 
 ## Highlights
 
@@ -50,8 +50,9 @@ Reset-TerminalModes
 ## Requirements
 
 - PowerShell 7.4 or later.
-- Windows for the Windows-specific commands (services, Windows Terminal, WPR);
-  these report their platform requirements in command help.
+- Windows for the Windows-specific commands (installed applications, services,
+  Windows Terminal, WPR); these report their platform requirements in command
+  help.
 
 ## Changelog
 

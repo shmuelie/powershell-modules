@@ -59,6 +59,11 @@ Find-StaleBranch | Remove-Worktree
 Get-GitStatusSummary
 ```
 
+`Update-Worktrees` skips behind worktrees that have an in-progress git
+operation, returning `Status = 'InProgress'` with the existing operation string
+(for example `MERGING` or `REBASE-i 1/3`) instead of stashing or fast-forwarding
+them.
+
 ## Requirements
 
 - PowerShell 7.4 or later.

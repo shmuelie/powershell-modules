@@ -11,6 +11,11 @@ Versions change only when a release is cut; unreleased work stays under
   created worktree at an explicit destination while preserving the conventional
   sibling path when omitted.
 
+### Fixed
+- `Update-Worktrees` now reports behind worktrees with in-progress git
+  operations as `InProgress` and skips stash/fast-forward handling so rebases,
+  merges, cherry-picks, reverts, and bisects are left untouched.
+
 ## [0.5.0] - 2026-08-20
 
 ### Added
