@@ -1,19 +1,6 @@
 $publicRoot = Join-Path $PSScriptRoot 'Public'
-foreach ($scriptName in @(
-    'Find-StaleBranch.ps1',
-    'Format-GitStatusSegment.ps1',
-    'Get-GitStatusSummary.ps1',
-    'GitHubAccount.ps1',
-    'GitTabCompletion.ps1',
-    'New-Repository.ps1',
-    'Repair-RepositoryLayout.ps1',
-    'Sync-GitRemote.ps1',
-    'Update-Worktrees.ps1',
-    'WorktreeLock.ps1',
-    'WorktreeMaintenance.ps1',
-    'Worktrees.ps1'
-)) {
-    . (Join-Path $publicRoot $scriptName)
+foreach ($script in Get-ChildItem $publicRoot -Filter '*.ps1' | Sort-Object Name) {
+    . $script.FullName
 }
 
 Register-ArgumentCompleter -CommandName Set-Worktree, Remove-Worktree -ParameterName BranchName -ScriptBlock {
