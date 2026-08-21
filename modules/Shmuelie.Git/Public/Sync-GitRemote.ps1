@@ -32,6 +32,8 @@ function Sync-GitRemote {
     groups by remote.
     .PARAMETER Remote
     Fetch from a specific remote instead of all remotes.
+    .PARAMETER Path
+    Directory inside the git working tree to fetch. Defaults to the current location.
     .PARAMETER NoPrune
     Skip removing remote-tracking references that no longer exist on the remote.
     By default, deleted remote branches are pruned.
@@ -67,6 +69,10 @@ function Sync-GitRemote {
         [ValidateNotNullOrEmpty()]
         [string]$Remote,
 
+        [Parameter(ValueFromPipeline, ValueFromPipelineByPropertyName)]
+        [Alias('RepositoryPath', 'RepoPath')]
+        [string]$Path,
+
         [switch]$NoPrune,
 
         [hashtable]$GitHubAccountMap,
@@ -75,6 +81,10 @@ function Sync-GitRemote {
 
         [switch]$NoGitHubAccountResolve
     )
+
+    process {
+    $repoPath = Resolve-GitRepositoryPath -Path $Path
+    if (-not $repoPath) { return }
 
     if ($null -eq $script:GitHubAccountCache) {
         $script:GitHubAccountCache = [System.Collections.Concurrent.ConcurrentDictionary[string, string]]::new([System.StringComparer]::OrdinalIgnoreCase)
@@ -99,11 +109,11 @@ function Sync-GitRemote {
         @($accounts | Group-Object Host | Where-Object { $_.Count -gt 1 }).Count -gt 0
     )
     if ($canResolve) {
-        $remoteSet = if ($Remote) { @($Remote) } else { @(git remote 2>$null) }
+        $remoteSet = if ($Remote) { @($Remote) } else { @(git -C $repoPath remote 2>$null) }
 
         foreach ($remoteName in $remoteSet) {
             if (-not $remoteName) { continue }
-            $url = git remote get-url $remoteName 2>$null
+            $url = git -C $repoPath remote get-url $remoteName 2>$null
             if (-not $url) { continue }
             $info = Get-GitHubRemoteInfo -Url "$url"
             if (-not $info) { continue }
@@ -137,7 +147,7 @@ function Sync-GitRemote {
 
     $output = $null
     $failed = $false
-    $gitDirectoryArgs = @('-C', (Get-Location).ProviderPath)
+    $gitDirectoryArgs = @('-C', $repoPath)
 
     if ($resolvePlan.Count -eq 0) {
         # Original behavior: one 'git fetch' for the whole request.
@@ -208,10 +218,10 @@ function Sync-GitRemote {
             if ($deletedRef -match '^([^/]+)/(.+)$') {
                 $remoteName = $Matches[1]
                 $branchName = $Matches[2]
-                $existingRemote = git config --get "branch.$branchName.remote" 2>$null
-                if (-not $existingRemote -and (git rev-parse --verify "refs/heads/$branchName" 2>$null)) {
-                    git config "branch.$branchName.remote" $remoteName
-                    git config "branch.$branchName.merge" "refs/heads/$branchName"
+                $existingRemote = git -C $repoPath config --get "branch.$branchName.remote" 2>$null
+                if (-not $existingRemote -and (git -C $repoPath rev-parse --verify "refs/heads/$branchName" 2>$null)) {
+                    git -C $repoPath config "branch.$branchName.remote" $remoteName
+                    git -C $repoPath config "branch.$branchName.merge" "refs/heads/$branchName"
                     Write-Verbose "Set tracking config on '$branchName' -> '$remoteName/$branchName' (pruned) for [gone] detection"
                 }
             }
@@ -233,6 +243,7 @@ function Sync-GitRemote {
             }
         }
         # Skip "Fetching <remote>" and "From <url>" header lines
+    }
     }
 }
 

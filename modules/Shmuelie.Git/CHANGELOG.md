@@ -7,6 +7,9 @@ Versions change only when a release is cut; unreleased work stays under
 ## [Unreleased]
 
 ### Added
+- Added consistent `-Path` repository targeting to Git status, worktree, sync,
+  stale-branch, and worktree-update helpers so callers can operate on another
+  repository without changing the current location.
 - `New-Worktree` and `Add-Worktree` now accept `-WorktreePath` to place the
   created worktree at an explicit destination while preserving the conventional
   sibling path when omitted.

@@ -168,6 +168,114 @@ Describe 'Add-Worktree creation' -Skip:(-not (Get-Command git -ErrorAction Silen
     }
 }
 
+
+Describe 'Git repository -Path parameters' {
+    BeforeEach {
+        $script:pathCallerRepo = New-TestRepo -Path (Join-Path $TestDrive ([guid]::NewGuid().ToString('N')))
+        $script:pathTargetRepo = New-TestRepo -Path (Join-Path $TestDrive ([guid]::NewGuid().ToString('N')))
+    }
+
+    It 'preserves default current-directory behavior for read-only helpers' {
+        Push-Location $script:pathCallerRepo
+        try {
+            (Get-Worktrees | Select-Object -First 1).Path | Should -BeExactly $script:pathCallerRepo
+            (Get-CurrentWorktree).Path | Should -BeExactly $script:pathCallerRepo
+            (Get-RootWorktree).Path | Should -BeExactly $script:pathCallerRepo
+            (Get-GitStatusSummary).WorktreePath | Should -BeExactly $script:pathCallerRepo
+            Get-WorktreePath -BranchName sibling | Should -BeExactly (Join-Path (Split-Path $script:pathCallerRepo -Parent) 'sibling')
+        } finally {
+            Pop-Location
+        }
+    }
+
+    It 'targets an explicit repository path without changing the caller location' {
+        $targetChild = Join-Path $script:pathTargetRepo 'src'
+        New-Item -ItemType Directory -Path $targetChild -Force | Out-Null
+        Invoke-Git @('-C', $script:pathTargetRepo, 'branch', 'user/test/local-only')
+        $callerLocation = $null
+
+        Push-Location $script:pathCallerRepo
+        try {
+            $callerLocation = (Get-Location).Path
+            (Get-Worktrees -Path $script:pathTargetRepo | Select-Object -First 1).Path | Should -BeExactly $script:pathTargetRepo
+            (Get-CurrentWorktree -Path $targetChild).Path | Should -BeExactly $script:pathTargetRepo
+            (Get-RootWorktree -Path $targetChild).Path | Should -BeExactly $script:pathTargetRepo
+            (Get-GitStatusSummary -Path $targetChild).WorktreePath | Should -BeExactly $script:pathTargetRepo
+            (Find-StaleBranch -Path $script:pathTargetRepo -User test -IncludeNeverPushed).Branch | Should -Be 'user/test/local-only'
+            Get-WorktreePath -BranchName sibling -Path $script:pathTargetRepo | Should -BeExactly (Join-Path (Split-Path $script:pathTargetRepo -Parent) 'sibling')
+            (Get-Location).Path | Should -BeExactly $callerLocation
+        } finally {
+            Pop-Location
+        }
+    }
+
+    It 'accepts repository paths from pipeline input' {
+        $status = [PSCustomObject]@{ Path = $script:pathTargetRepo } | Get-GitStatusSummary
+        $worktree = [PSCustomObject]@{ Path = $script:pathTargetRepo } | Get-Worktrees | Select-Object -First 1
+
+        $status.WorktreePath | Should -BeExactly $script:pathTargetRepo
+        $worktree.Path | Should -BeExactly $script:pathTargetRepo
+    }
+
+    It 'reports a clear error for a non-git path' {
+        $notRepo = Join-Path $TestDrive 'not-a-git-worktree'
+        New-Item -ItemType Directory -Path $notRepo -Force | Out-Null
+
+        Get-Worktrees -Path $notRepo -ErrorAction SilentlyContinue -ErrorVariable errors | Should -BeNullOrEmpty
+
+        $errors | Should -HaveCount 1
+        $errors[0].Exception.Message | Should -Match 'not inside a git working tree'
+    }
+
+    It 'uses explicit source -Path with destination -WorktreePath for worktree creation without changing caller location' {
+        Invoke-Git @('-C', $script:pathTargetRepo, 'branch', 'existing-work')
+        $existingPath = Join-Path $TestDrive 'explicit-existing-worktree'
+        $newPath = Join-Path $TestDrive 'explicit-new-worktree'
+        $callerLocation = $null
+
+        Push-Location $script:pathCallerRepo
+        try {
+            $callerLocation = (Get-Location).Path
+            Add-Worktree -Path $script:pathTargetRepo -BranchName existing-work -WorktreePath $existingPath
+            Test-Path -LiteralPath $existingPath -PathType Container | Should -BeTrue
+            (Get-Worktrees -Path $script:pathTargetRepo).Path | Should -Contain (Resolve-Path -LiteralPath $existingPath).Path
+
+            New-Worktree -Path $script:pathTargetRepo -WorkName explicit-new -NoPrefix -WorktreePath $newPath
+            Test-Path -LiteralPath $newPath -PathType Container | Should -BeTrue
+            (Get-Worktrees -Path $script:pathTargetRepo).Path | Should -Contain (Resolve-Path -LiteralPath $newPath).Path
+
+            (Get-Location).Path | Should -BeExactly $callerLocation
+        } finally {
+            Pop-Location
+        }
+    }
+
+    It 'passes explicit -Path through Sync-GitRemote and Update-Worktrees without changing caller location' {
+        Invoke-Git @('-C', $script:pathTargetRepo, 'remote', 'add', 'origin', 'https://github.com/contoso/repo.git')
+        Mock -ModuleName Shmuelie.Git Get-GitHubSignedInAccount { @() }
+        Mock -ModuleName Shmuelie.Git Invoke-GitWithEnvironment {
+            $Arguments[0] | Should -Be '-C'
+            $Arguments[1] | Should -BeExactly $script:pathTargetRepo
+            [PSCustomObject]@{
+                PSTypeName = 'GitInvocationResult'
+                ExitCode   = 0
+                Output     = @(' * [new branch]      main       -> origin/main')
+            }
+        }
+
+        $callerLocation = $null
+        Push-Location $script:pathCallerRepo
+        try {
+            $callerLocation = (Get-Location).Path
+            (Sync-GitRemote -Path $script:pathTargetRepo -Remote origin -NoGitHubAccountResolve).Ref | Should -Be 'origin/main'
+            (Update-Worktrees -Path $script:pathTargetRepo -NoGitHubAccountResolve | Where-Object Branch -eq main).Status | Should -Be 'NoUpstream'
+            (Get-Location).Path | Should -BeExactly $callerLocation
+        } finally {
+            Pop-Location
+        }
+    }
+}
+
 Describe 'Get-GitStatusSummary' {
     It 'does not pop the caller location stack when -Path cannot be pushed' {
         $startingPath = (Get-Location).Path

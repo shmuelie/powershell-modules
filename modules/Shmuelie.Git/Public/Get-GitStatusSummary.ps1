@@ -33,18 +33,20 @@ function Get-GitStatusSummary {
     [OutputType('GitStatusSummary')]
     [CmdletBinding()]
     param(
-        [Parameter(Position = 0)]
+        [Parameter(Position = 0, ValueFromPipeline, ValueFromPipelineByPropertyName)]
+        [Alias('RepositoryPath', 'RepoPath')]
         [string]$Path
     )
 
-    $pushed = $false
-    if ($Path) {
-        Push-Location $Path -ErrorAction Stop
-        $pushed = $true
-    }
-    try {
+    process {
+        $targetPath = if ($Path) {
+            (Resolve-Path -LiteralPath $Path -ErrorAction Stop | Select-Object -First 1).ProviderPath
+        } else {
+            (Get-Location).ProviderPath
+        }
+
         # Quick check: are we in a git repo?
-        $null = git rev-parse --is-inside-work-tree 2>$null
+        $null = git -C $targetPath rev-parse --is-inside-work-tree 2>$null
         if ($LASTEXITCODE -ne 0) {
             return [PSCustomObject]@{
                 PSTypeName   = 'GitStatusSummary'
@@ -73,7 +75,7 @@ function Get-GitStatusSummary {
         }
 
         # Parse git status
-        $lines = git status --porcelain=v1 --branch 2>$null
+        $lines = git -C $targetPath status --porcelain=v1 --branch 2>$null
         $branch = $null; $upstream = $null; $ahead = 0; $behind = 0; $upstreamGone = $false
         $idxA = 0; $idxM = 0; $idxD = 0
         $wrkA = 0; $wrkM = 0; $wrkD = 0
@@ -129,10 +131,10 @@ function Get-GitStatusSummary {
 
         # Worktree path. Git prints '/' separators even on Windows; normalize only
         # there so Unix paths are not corrupted by replacing path separators.
-        $toplevel = ConvertTo-NativeGitPath (git rev-parse --show-toplevel 2>$null)
+        $toplevel = ConvertTo-NativeGitPath (git -C $targetPath rev-parse --show-toplevel 2>$null)
 
         # Detect in-progress git operations via .git/ sentinel files
-        $gitDir = ConvertTo-NativeGitPath (git rev-parse --git-dir 2>$null)
+        $gitDir = ConvertTo-NativeGitPath (git -C $targetPath rev-parse --path-format=absolute --git-dir 2>$null)
         $operation = if ($gitDir) {
             $rebaseMergePath = Join-Path $gitDir 'rebase-merge'
             $rebaseApplyPath = Join-Path $gitDir 'rebase-apply'
@@ -164,7 +166,7 @@ function Get-GitStatusSummary {
         }
 
         # Repo name from remote URL or directory name
-        $remoteUrl = git remote get-url origin 2>$null
+        $remoteUrl = git -C $targetPath remote get-url origin 2>$null
         $repoName = if ($remoteUrl) {
             ($remoteUrl.Substring($remoteUrl.LastIndexOf('/') + 1)) -replace '\.git$', ''
         } elseif ($toplevel) {
@@ -175,11 +177,11 @@ function Get-GitStatusSummary {
 
         # Stash count
         $stashCount = 0
-        $stashOutput = git rev-list --walk-reflogs --count refs/stash 2>$null
+        $stashOutput = git -C $targetPath rev-list --walk-reflogs --count refs/stash 2>$null
         if ($LASTEXITCODE -eq 0 -and $stashOutput) { $stashCount = [int]$stashOutput }
 
         # Relative path from worktree root
-        $currentPath = (Get-Location).Path
+        $currentPath = $targetPath
         $relativePath = ''
         if ($toplevel -and $currentPath.StartsWith($toplevel, [System.StringComparison]::OrdinalIgnoreCase)) {
             $relativePath = $currentPath.Substring($toplevel.Length)
@@ -253,7 +255,5 @@ function Get-GitStatusSummary {
             HasChanges      = ($hasIndex -or $hasWorking -or $hasUntracked -or $hasConflicts)
             StatusString    = $sb.ToString()
         }
-    } finally {
-        if ($pushed) { Pop-Location }
     }
 }
