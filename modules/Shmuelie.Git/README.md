@@ -17,20 +17,20 @@ Import-Module Shmuelie.Git
 |---|---|
 | `New-Repository` | Clone a URL into a standard `<root>/<org>/<repo>/<branch>` layout (parses GitHub and Azure DevOps URLs) |
 | `Repair-RepositoryLayout` | Conform existing clones and worktrees to that layout |
-| `Sync-GitRemote` | Fetch all remotes with pruning, returning typed results; picks the right `gh` account per host (github.com/GHE) when several are signed in |
-| `Get-Worktrees` | List worktrees for the current repository |
-| `Get-CurrentWorktree` / `Get-RootWorktree` | Resolve the worktree for the current directory or the repository root |
-| `Get-WorktreePath` | Compute the path a branch's worktree would use |
-| `New-Worktree` | Create a branch and check it out to a worktree |
-| `Add-Worktree` | Check out an existing branch to a worktree |
+| `Sync-GitRemote` | Fetch all remotes for the current or `-Path` repository with pruning, returning typed results; picks the right `gh` account per host (github.com/GHE) when several are signed in |
+| `Get-Worktrees` | List worktrees for the current or `-Path` repository |
+| `Get-CurrentWorktree` / `Get-RootWorktree` | Resolve the worktree for the current directory/`-Path` or the repository root |
+| `Get-WorktreePath` | Compute the path a branch's worktree would use for the current or `-Path` repository |
+| `New-Worktree` | Create a branch and check it out to a worktree from the current or `-Path` repository |
+| `Add-Worktree` | Check out an existing branch to a worktree from the current or `-Path` repository |
 | `Remove-Worktree` | Remove a worktree by branch name or path (optionally deleting its branch) |
 | `Set-Worktree` | Switch to a worktree by branch name or path |
 | `Remove-StaleWorktree` | Prune stale worktree administrative entries for deleted worktree directories |
 | `Repair-Worktree` | Repair worktree links after a repository or worktree move |
 | `Lock-Worktree` / `Unlock-Worktree` | Lock or unlock a worktree by branch name |
-| `Update-Worktrees` | Fast-forward every worktree from upstream (forwards the `Sync-GitRemote` GitHub-account options to the fetch) |
-| `Find-StaleBranch` | Find local branches whose upstream branch is gone (`-IncludeNeverPushed` also includes local-only branches) |
-| `Get-GitStatusSummary` | Parse `git status` into a typed object (branch, ahead/behind, conflicts, stash, operation) |
+| `Update-Worktrees` | Fast-forward every worktree for the current or `-Path` repository from upstream (forwards the `Sync-GitRemote` GitHub-account options to the fetch) |
+| `Find-StaleBranch` | Find local branches in the current or `-Path` repository whose upstream branch is gone (`-IncludeNeverPushed` also includes local-only branches) |
+| `Get-GitStatusSummary` | Parse `git status` for the current or `-Path` repository into a typed object (branch, ahead/behind, conflicts, stash, operation) |
 | `Format-GitStatusSegment` | Render a `GitStatusSummary` as a colored posh-git-style prompt segment (`$PSStyle` string; `-ShowChangeCounts` toggles the change counts) |
 | `Update-WorktreePrediction` | Refresh the bundled predictor for the current directory |
 

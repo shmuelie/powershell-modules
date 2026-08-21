@@ -12,6 +12,8 @@ function Find-StaleBranch {
         was deleted (completed/merged, abandoned, or manually deleted).
     .PARAMETER Remote
         The remote to check against. Defaults to 'origin'.
+    .PARAMETER Path
+        Directory inside the git working tree to inspect. Defaults to the current location.
     .PARAMETER User
         Filter to branches matching user/<name>/*. Defaults to the current
         git user name derived from user.email config.
@@ -44,6 +46,10 @@ function Find-StaleBranch {
     param(
         [string]$Remote = 'origin',
 
+        [Parameter(ValueFromPipeline, ValueFromPipelineByPropertyName)]
+        [Alias('RepositoryPath', 'RepoPath')]
+        [string]$Path,
+
         [string]$User,
 
         [switch]$IncludePrStatus,
@@ -53,6 +59,9 @@ function Find-StaleBranch {
         [switch]$All
     )
     process {
+        $repoPath = Resolve-GitRepositoryPath -Path $Path
+        if (-not $repoPath) { return }
+
         # Issue #4 / CVE-2024-1874: these arguments flow through az.cmd, so
         # neutralize cmd.exe metacharacter injection before invoking az.
         $SafeBranchNamePattern = '^[A-Za-z0-9._/-]+$'
@@ -70,7 +79,7 @@ function Find-StaleBranch {
 
         # Determine user filter
         if (-not $All -and -not $User) {
-            $email = git config user.email 2>$null
+            $email = git -C $repoPath config user.email 2>$null
             if ($email -match '^([^@]+)@') {
                 $User = $Matches[1]
             }
@@ -78,9 +87,9 @@ function Find-StaleBranch {
         $userPrefix = if (-not $All -and $User) { "user/$User/" } else { $null }
 
         # Get all local branches
-        $localBranches = git --no-pager for-each-ref --format='%(refname:short)|%(upstream:short)|%(upstream:track)' refs/heads/ 2>$null
+        $localBranches = git -C $repoPath --no-pager for-each-ref --format='%(refname:short)|%(upstream:short)|%(upstream:track)' refs/heads/ 2>$null
         if ($LASTEXITCODE -ne 0) {
-            throw "Not a git repository (or git failed) in '$((Get-Location).Path)'."
+            throw "Not a git repository (or git failed) in '$repoPath'."
         }
         $candidates = @()
         foreach ($line in $localBranches) {
@@ -104,7 +113,7 @@ function Find-StaleBranch {
         # Batch-fetch all remote refs matching user prefix in one call
         $remoteRefSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
         $lsRemoteFilter = if ($userPrefix) { "refs/heads/$userPrefix*" } else { 'refs/heads/*' }
-        $remoteRefs = git --no-pager ls-remote --heads $Remote $lsRemoteFilter 2>$null
+        $remoteRefs = git -C $repoPath --no-pager ls-remote --heads $Remote $lsRemoteFilter 2>$null
         foreach ($refLine in $remoteRefs) {
             if ($refLine -match '\trefs/heads/(.+)$') {
                 $remoteRefSet.Add($Matches[1]) | Out-Null
@@ -114,7 +123,7 @@ function Find-StaleBranch {
         # Build worktree lookup for path info
         $worktreePaths = @{}
         try {
-            $worktrees = Get-Worktrees
+            $worktrees = Get-Worktrees -Path $repoPath
             foreach ($wt in $worktrees) {
                 $worktreePaths[$wt.Branch] = $wt.Path
             }
@@ -123,7 +132,7 @@ function Find-StaleBranch {
         # ADO context for PR lookups
         $adoContext = $null
         if ($IncludePrStatus) {
-            $gitUrl = git config --get "remote.$Remote.url" 2>$null
+            $gitUrl = git -C $repoPath config --get "remote.$Remote.url" 2>$null
             if ($gitUrl -match 'dev\.azure\.com/(?<org>[^/]+)/(?<project>[^/]+)/_git/(?<repo>.+)$' -or
                 $gitUrl -match '(?<org>[^/]+)\.visualstudio\.com/(?:DefaultCollection/)?(?<project>[^/]+)/_git/(?<repo>.+)$') {
                 $org = & $decodeRemoteUrlComponent $Matches['org']
