@@ -10,6 +10,18 @@ Versions change only when a release is cut; unreleased work stays under
 - Added consistent `-Path` repository targeting to Git status, worktree, sync,
   stale-branch, and worktree-update helpers so callers can operate on another
   repository without changing the current location.
+- `New-Worktree` and `Add-Worktree` now accept `-WorktreePath` to place the
+  created worktree at an explicit destination while preserving the conventional
+  sibling path when omitted.
+
+### Changed
+- Register the bundled worktree predictor without eagerly importing PSReadLine,
+  preserving predictor behavior while reducing cold import overhead.
+
+### Fixed
+- `Update-Worktrees` now reports behind worktrees with in-progress git
+  operations as `InProgress` and skips stash/fast-forward handling so rebases,
+  merges, cherry-picks, reverts, and bisects are left untouched.
 
 ## [0.5.0] - 2026-08-20
 

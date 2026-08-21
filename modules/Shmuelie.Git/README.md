@@ -21,8 +21,8 @@ Import-Module Shmuelie.Git
 | `Get-Worktrees` | List worktrees for the current or `-Path` repository |
 | `Get-CurrentWorktree` / `Get-RootWorktree` | Resolve the worktree for the current directory/`-Path` or the repository root |
 | `Get-WorktreePath` | Compute the path a branch's worktree would use for the current or `-Path` repository |
-| `New-Worktree` | Create a branch and check it out to a worktree from the current or `-Path` repository |
-| `Add-Worktree` | Check out an existing branch to a worktree from the current or `-Path` repository |
+| `New-Worktree` | Create a branch from the current or `-Path` repository and check it out to a worktree, optionally at destination `-WorktreePath` |
+| `Add-Worktree` | Check out an existing branch from the current or `-Path` repository to a worktree, optionally at destination `-WorktreePath` |
 | `Remove-Worktree` | Remove a worktree by branch name or path (optionally deleting its branch) |
 | `Set-Worktree` | Switch to a worktree by branch name or path |
 | `Remove-StaleWorktree` | Prune stale worktree administrative entries for deleted worktree directories |
@@ -53,10 +53,16 @@ surfaces `user/alex/wim-work`.
 ```powershell
 New-Repository https://github.com/owner/repo
 New-Worktree -WorkName my-feature -SetLocation
+Add-Worktree -BranchName feature/my-feature -WorktreePath ../custom-feature
 Update-Worktrees | Where-Object Status -ne Current
 Find-StaleBranch | Remove-Worktree
 Get-GitStatusSummary
 ```
+
+`Update-Worktrees` skips behind worktrees that have an in-progress git
+operation, returning `Status = 'InProgress'` with the existing operation string
+(for example `MERGING` or `REBASE-i 1/3`) instead of stashing or fast-forwarding
+them.
 
 ## Requirements
 

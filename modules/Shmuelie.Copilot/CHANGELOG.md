@@ -6,6 +6,10 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+### Added
+- `Select-CopilotSession` resumes a session chosen from all Copilot sessions on
+  the machine, with scriptable filters and a picker fallback.
+
 ## [0.1.3] - 2026-08-20
 
 ### Added

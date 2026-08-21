@@ -15,12 +15,16 @@ Import-Module Shmuelie.Node
 
 | Area | Commands |
 |---|---|
-| Node versions | `Get-NodeVersion`, `Install-NodeVersion`, `Uninstall-NodeVersion`, `Set-NodeVersion` |
-| Node aliases | `Set-NodeAlias`, `Remove-NodeAlias` |
-| nvm control | `Enable-Nvm`, `Disable-Nvm`, `Get-NvmRoot`, `Get-NvmVersion`, `Test-NvmInstalled` |
-| nvm configuration | `Set-NvmProxy`, `Set-NvmNodeMirror`, `Set-NvmNpmMirror` |
+| Node versions (Windows/nvm-windows) | `Get-NodeVersion`, `Install-NodeVersion`, `Uninstall-NodeVersion`, `Set-NodeVersion` |
+| Node aliases (Windows/nvm-windows) | `Set-NodeAlias`, `Remove-NodeAlias` |
+| nvm control (Windows/nvm-windows) | `Enable-Nvm`, `Disable-Nvm`, `Get-NvmRoot`, `Get-NvmVersion`, `Test-NvmInstalled` |
+| nvm configuration (Windows/nvm-windows) | `Set-NvmProxy`, `Set-NvmNodeMirror`, `Set-NvmNpmMirror` |
 | npm packages | `Get-NpmPackage`, `Update-NpmPackage` |
 | ADO credentials | `Update-AdoNpmToken` |
+
+## nvm-windows commands
+
+The Node version, Node alias, and nvm commands wrap nvm-windows and are supported only on Windows. On non-Windows platforms, they fail before invoking `nvm` with a clear Windows-only error. The npm package and Azure DevOps credential helpers remain portable.
 
 ## Azure DevOps npm credentials
 

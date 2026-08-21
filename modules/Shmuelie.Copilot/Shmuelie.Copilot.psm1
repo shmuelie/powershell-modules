@@ -3,7 +3,7 @@ foreach ($script in Get-ChildItem $publicRoot -Filter '*.ps1' | Sort-Object Name
     . $script.FullName
 }
 
-Register-ArgumentCompleter -CommandName Get-CopilotSession, Remove-CopilotSession, Rename-CopilotSession, Resume-CopilotSession, Merge-CopilotSession, Compress-CopilotSession, Repair-CopilotSessionEvents -ParameterName Id -ScriptBlock {
+Register-ArgumentCompleter -CommandName Get-CopilotSession, Select-CopilotSession, Remove-CopilotSession, Rename-CopilotSession, Resume-CopilotSession, Merge-CopilotSession, Compress-CopilotSession, Repair-CopilotSessionEvents -ParameterName Id -ScriptBlock {
     param($commandName, $parameterName, $wordToComplete)
     $sessionStateDir = Join-Path (Get-CopilotHome) '.copilot' 'session-state'
     if (-not (Test-Path $sessionStateDir)) { return }
@@ -20,6 +20,7 @@ Export-ModuleMember -Function @(
     'Get-CopilotMcpServer', 'Register-CopilotMcpServer', 'Unregister-CopilotMcpServer',
     'Get-CopilotPlugin', 'Update-CopilotPlugin', 'Install-CopilotPlugin',
     'Uninstall-CopilotPlugin', 'Merge-CopilotSession', 'Compress-CopilotSession',
-    'Repair-CopilotSessionEvents', 'Get-CopilotSession', 'Remove-CopilotSession',
-    'Rename-CopilotSession', 'Resume-CopilotSession', 'Get-CopilotLaunchPlan', 'Start-Copilot'
+    'Repair-CopilotSessionEvents', 'Get-CopilotSession', 'Select-CopilotSession',
+    'Remove-CopilotSession', 'Rename-CopilotSession', 'Resume-CopilotSession',
+    'Get-CopilotLaunchPlan', 'Start-Copilot'
 )

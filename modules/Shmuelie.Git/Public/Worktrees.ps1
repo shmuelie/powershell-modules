@@ -307,39 +307,113 @@ function Get-WorktreePath {
     }
 }
 
+function Invoke-GitWorktreeAdd {
+    <#
+    .SYNOPSIS
+    Run git worktree add and surface git's error output.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string[]]$Arguments,
+
+        [Parameter(Mandatory)]
+        [string]$FailureContext,
+
+        [string]$RepositoryPath
+    )
+
+    $gitArguments = if ($RepositoryPath) { @('-C', $RepositoryPath) + $Arguments } else { $Arguments }
+    $output = & git @gitArguments 2>&1
+    $exitCode = $LASTEXITCODE
+    if ($exitCode -eq 0) {
+        return $true
+    }
+
+    $message = ($output | ForEach-Object { $_.ToString() } | Where-Object { $_ }) -join [Environment]::NewLine
+    if (-not $message) {
+        $message = 'No output.'
+    }
+
+    Write-Error "git worktree add failed for $FailureContext (exit $exitCode): $message"
+    $false
+}
+
+function Resolve-CreatedWorktreePath {
+    <#
+    .SYNOPSIS
+    Resolve a newly-created worktree path for Set-Location.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path,
+
+        [string]$BasePath
+    )
+
+    $candidate = if ($BasePath -and -not [IO.Path]::IsPathRooted($Path)) { Join-Path $BasePath $Path } else { $Path }
+    $resolved = Resolve-Path -LiteralPath $candidate -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($resolved) {
+        return $resolved.ProviderPath
+    }
+
+    [IO.Path]::GetFullPath($candidate)
+}
+
 function Add-Worktree {
     <#
     .SYNOPSIS
     Checkout an existing branch to a worktree
     .PARAMETER BranchName
-    Name of the branch
+    Name of the branch.
     .PARAMETER Path
     Directory inside the git working tree to add the worktree from. Defaults to the current location.
+    .PARAMETER WorktreePath
+    Optional destination path for the new worktree. When omitted, the path is
+    derived from the repository container and branch name.
     .PARAMETER SetLocation
-    Whether to change the current directory to the new worktree
+    Whether to change the current directory to the new worktree.
     .EXAMPLE
     Add-Worktree -BranchName feature/my-feature -SetLocation
     Checks out the existing branch to a new worktree and navigates to it.
+    .EXAMPLE
+    Add-Worktree -Path C:\repos\project -BranchName feature/my-feature -WorktreePath ../custom-feature
+    Checks out the existing branch from the specified repository to the supplied worktree path.
     #>
     [CmdletBinding(SupportsShouldProcess)]
     param(
         [Parameter(Mandatory)]
         [ValidateNotNullOrEmpty()]
         [string]$BranchName,
+
         [Parameter(ValueFromPipelineByPropertyName)]
         [Alias('RepositoryPath', 'RepoPath')]
         [string]$Path,
+
+        [ValidateNotNullOrEmpty()]
+        [string]$WorktreePath,
+
         [switch]$SetLocation = $false
     )
     process {
         $repoPath = Resolve-GitRepositoryPath -Path $Path
         if (-not $repoPath) { return }
 
-        $worktreePath = Get-WorktreePath -BranchName $BranchName -Path $repoPath
-        if ($PSCmdlet.ShouldProcess($worktreePath, "Add worktree for branch '$BranchName'")) {
-            git -C $repoPath worktree add $worktreePath $BranchName
-            if (($LASTEXITCODE -eq 0) -and $SetLocation) {
-                Set-Location -Path $worktreePath
+        $resolvedWorktreePath = if ($PSBoundParameters.ContainsKey('WorktreePath')) {
+            $WorktreePath
+        } else {
+            Get-WorktreePath -BranchName $BranchName -Path $repoPath
+        }
+        if (-not $resolvedWorktreePath) { return }
+
+        if ($PSCmdlet.ShouldProcess($resolvedWorktreePath, "Add worktree for branch '$BranchName'")) {
+            $created = Invoke-GitWorktreeAdd `
+                -RepositoryPath $repoPath `
+                -Arguments @('worktree', 'add', $resolvedWorktreePath, $BranchName) `
+                -FailureContext "branch '$BranchName' at '$resolvedWorktreePath'"
+            if ($created -and $SetLocation) {
+                Set-Location -LiteralPath (Resolve-CreatedWorktreePath -Path $resolvedWorktreePath -BasePath $repoPath)
             }
         }
     }
@@ -393,6 +467,9 @@ function New-Worktree {
     (e.g. checking out an existing branch like 'main' or 'master').
     .PARAMETER Path
     Directory inside the git working tree to create the worktree from. Defaults to the current location.
+    .PARAMETER WorktreePath
+    Optional destination path for the new worktree. When omitted, the path is
+    derived from the repository container and branch name.
     .PARAMETER SetLocation
     Whether to change the current directory to the new worktree.
     .EXAMPLE
@@ -407,6 +484,9 @@ function New-Worktree {
     .EXAMPLE
     New-Worktree -WorkName main -NoPrefix -SetLocation
     Creates a worktree for a branch named exactly 'main' with no kind prefix.
+    .EXAMPLE
+    New-Worktree -Path C:\repos\project -WorkName my-feature -WorktreePath ../custom-feature
+    Creates branch user/<user>/my-feature from the specified repository in the supplied worktree path.
     #>
     [CmdletBinding(SupportsShouldProcess)]
     param(
@@ -426,6 +506,9 @@ function New-Worktree {
         [Alias('RepositoryPath', 'RepoPath')]
         [string]$Path,
 
+        [ValidateNotNullOrEmpty()]
+        [string]$WorktreePath,
+
         [switch]$SetLocation = $false
     )
     process {
@@ -444,11 +527,20 @@ function New-Worktree {
                 'release' { "release/$WorkName" }
             }
         }
-        $worktreePath = Get-WorktreePath -BranchName $branchName -Path $repoPath
-        if ($PSCmdlet.ShouldProcess($worktreePath, "Create worktree for new branch '$branchName'")) {
-            git -C $repoPath worktree add -b $branchName $worktreePath
-            if (($LASTEXITCODE -eq 0) -and $SetLocation) {
-                Set-Location -Path $worktreePath
+        $resolvedWorktreePath = if ($PSBoundParameters.ContainsKey('WorktreePath')) {
+            $WorktreePath
+        } else {
+            Get-WorktreePath -BranchName $branchName -Path $repoPath
+        }
+        if (-not $resolvedWorktreePath) { return }
+
+        if ($PSCmdlet.ShouldProcess($resolvedWorktreePath, "Create worktree for new branch '$branchName'")) {
+            $created = Invoke-GitWorktreeAdd `
+                -RepositoryPath $repoPath `
+                -Arguments @('worktree', 'add', '-b', $branchName, $resolvedWorktreePath) `
+                -FailureContext "new branch '$branchName' at '$resolvedWorktreePath'"
+            if ($created -and $SetLocation) {
+                Set-Location -LiteralPath (Resolve-CreatedWorktreePath -Path $resolvedWorktreePath -BasePath $repoPath)
             }
         }
     }
@@ -502,13 +594,10 @@ function Resolve-WorktreeTarget {
         [string]$BranchName,
 
         [Parameter(Mandatory, ParameterSetName = 'Path')]
-        [string]$Path,
-
-        [string]$RepositoryPath
+        [string]$Path
     )
 
-    $contextPath = if ($RepositoryPath) { $RepositoryPath } elseif ($PSCmdlet.ParameterSetName -eq 'Path' -and (Test-Path -LiteralPath $Path -PathType Container)) { $Path } else { $null }
-    $worktrees = @(Get-Worktrees -Path $contextPath)
+    $worktrees = @(Get-Worktrees)
     if ($PSCmdlet.ParameterSetName -eq 'Path') {
         $matches = @($worktrees | Where-Object { Test-WorktreePathEquals -Left $_.Path -Right $Path })
         if ($matches.Count -eq 0) {
@@ -548,9 +637,8 @@ function Remove-Worktree {
     non-standard worktree locations are supported. Detached worktrees must be
     addressed by `-Path` because their branch label is ambiguous.
     .PARAMETER Path
-    With -BranchName, directory inside the git working tree used to resolve the branch.
-    Without -BranchName, the actual filesystem path of the worktree to remove.
-    Accepts pipeline input by property name from `Get-Worktrees` and related objects.
+    The actual filesystem path of the worktree to remove. Accepts pipeline input
+    by property name from `Get-Worktrees` and related objects.
     .PARAMETER RemoveBranch
     Also remove the branch when the target worktree is backed by a branch.
     .PARAMETER Force
@@ -565,11 +653,11 @@ function Remove-Worktree {
     [CmdletBinding(SupportsShouldProcess, DefaultParameterSetName = 'Path')]
     param(
         [Parameter(Mandatory, Position = 0, ParameterSetName = 'BranchName', ValueFromPipelineByPropertyName)]
+        [ValidateSet([WorktreeSetValuesGenerator])]
         [Alias('Branch')]
         [string]$BranchName,
 
         [Parameter(Mandatory, ParameterSetName = 'Path', ValueFromPipelineByPropertyName)]
-        [Parameter(ParameterSetName = 'BranchName')]
         [ValidateNotNullOrEmpty()]
         [string]$Path,
 
@@ -580,23 +668,13 @@ function Remove-Worktree {
         $target = if ($PSCmdlet.ParameterSetName -eq 'Path') {
             Resolve-WorktreeTarget -Path $Path
         } else {
-            Resolve-WorktreeTarget -BranchName $BranchName -RepositoryPath $Path
+            Resolve-WorktreeTarget -BranchName $BranchName
         }
         if (-not $target) { return }
 
-        $repositoryContextPath = if ($PSCmdlet.ParameterSetName -eq 'BranchName') { $Path } else { $null }
-        $targetWorktrees = @(Get-Worktrees -Path $(if ($repositoryContextPath) { $repositoryContextPath } elseif (Test-Path -LiteralPath $target.Path -PathType Container) { $target.Path } else { $null }))
-        $gitContextPath = @($targetWorktrees | Where-Object {
-            (Test-Path -LiteralPath $_.Path -PathType Container) -and -not (Test-WorktreePathEquals -Left $_.Path -Right $target.Path)
-        } | Select-Object -First 1).Path
-        if (-not $gitContextPath) {
-            $gitContextPath = if ($repositoryContextPath) { Resolve-GitRepositoryPath -Path $repositoryContextPath } elseif (Test-Path -LiteralPath $target.Path -PathType Container) { $target.Path } else { $null }
-        }
-        if (-not $gitContextPath) { return }
-
         $worktreePath = $target.Path
         if ($PSCmdlet.ShouldProcess($worktreePath, 'Remove worktree')) {
-            $removeArgs = @('-C', $gitContextPath, 'worktree', 'remove')
+            $removeArgs = @('worktree', 'remove')
             if ($Force) { $removeArgs += '--force' }
             $removeArgs += '--'
             $removeArgs += $worktreePath
@@ -606,7 +684,7 @@ function Remove-Worktree {
                 if ($target.Detached -or $target.Branch -eq '(detached)' -or -not $target.Branch) {
                     Write-Warning 'The target worktree is detached; no branch was removed.'
                 } elseif ($worktreeRemoved) {
-                    git -C $gitContextPath branch -D -- $target.Branch
+                    git branch -D -- $target.Branch
                 } else {
                     Write-Warning "Worktree removal failed; leaving branch '$($target.Branch)' in place."
                 }
@@ -624,9 +702,8 @@ function Set-Worktree {
     `Get-Worktrees`, so non-standard worktree locations are supported. Detached
     worktrees must be addressed by `-Path` because their branch label is ambiguous.
     .PARAMETER Path
-    With -BranchName, directory inside the git working tree used to resolve the branch.
-    Without -BranchName, the actual filesystem path of the worktree to change to.
-    Accepts pipeline input by property name from `Get-Worktrees` and related objects.
+    The actual filesystem path of the worktree to change to. Accepts pipeline
+    input by property name from `Get-Worktrees` and related objects.
     .EXAMPLE
     Set-Worktree -BranchName main
     Changes the current directory to the main branch worktree.
@@ -637,11 +714,11 @@ function Set-Worktree {
     [CmdletBinding(DefaultParameterSetName = 'Path')]
     param(
         [Parameter(Mandatory, Position = 0, ParameterSetName = 'BranchName', ValueFromPipelineByPropertyName)]
+        [ValidateSet([WorktreeSetValuesGenerator])]
         [Alias('Branch')]
         [string]$BranchName,
 
         [Parameter(Mandatory, ParameterSetName = 'Path', ValueFromPipelineByPropertyName)]
-        [Parameter(ParameterSetName = 'BranchName')]
         [ValidateNotNullOrEmpty()]
         [string]$Path
     )
@@ -649,7 +726,7 @@ function Set-Worktree {
         $target = if ($PSCmdlet.ParameterSetName -eq 'Path') {
             Resolve-WorktreeTarget -Path $Path
         } else {
-            Resolve-WorktreeTarget -BranchName $BranchName -RepositoryPath $Path
+            Resolve-WorktreeTarget -BranchName $BranchName
         }
         if (-not $target) { return }
 

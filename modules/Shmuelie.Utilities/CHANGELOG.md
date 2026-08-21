@@ -6,6 +6,10 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+### Changed
+- Windows-only utilities now fail fast with clear terminating errors on
+  non-Windows platforms before touching registry, Windows Terminal, or WPR state.
+
 ## [0.2.2] - 2026-08-20
 
 ### Fixed
