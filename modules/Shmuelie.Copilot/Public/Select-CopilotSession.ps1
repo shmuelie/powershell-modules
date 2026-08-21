@@ -183,7 +183,7 @@ function Select-CopilotSession {
 
     if ($StayInDirectory) {
         if ($RemainingArgs) {
-            Resume-CopilotSession @resumeParams @RemainingArgs
+            Resume-CopilotSession @resumeParams -RemainingArgs $RemainingArgs
         } else {
             Resume-CopilotSession @resumeParams
         }
@@ -198,7 +198,7 @@ function Select-CopilotSession {
     Push-Location -LiteralPath $session.Cwd
     try {
         if ($RemainingArgs) {
-            Resume-CopilotSession @resumeParams @RemainingArgs
+            Resume-CopilotSession @resumeParams -RemainingArgs $RemainingArgs
         } else {
             Resume-CopilotSession @resumeParams
         }

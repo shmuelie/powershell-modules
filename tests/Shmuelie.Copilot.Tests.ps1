@@ -943,11 +943,15 @@ Describe 'Select-CopilotSession' {
         $script:ResumedId = $null
         $script:ResumeLocation = $null
         $script:ResumePrompt = $null
+        $script:ResumeRemainingArgs = $null
+        $script:ResumeBoundParameters = $null
         Mock -ModuleName Shmuelie.Copilot -CommandName Get-CopilotSession -MockWith { $script:SelectSessions }
         Mock -ModuleName Shmuelie.Copilot -CommandName Resume-CopilotSession -MockWith {
             $script:ResumedId = $Id
             $script:ResumeLocation = (Get-Location).Path
             $script:ResumePrompt = $Prompt
+            $script:ResumeRemainingArgs = $RemainingArgs
+            $script:ResumeBoundParameters = @{} + $PSBoundParameters
         }
     }
 
@@ -981,6 +985,15 @@ Describe 'Select-CopilotSession' {
         $script:ResumeLocation | Should -Be $script:Workspace
         $after | Should -Be $script:Workspace
         Should -Invoke -ModuleName Shmuelie.Copilot -CommandName Resume-CopilotSession -Times 1 -Exactly -ParameterFilter { $Id -eq $script:RecentSessionId }
+    }
+
+    It 'passes remaining arguments by name without binding them to Prompt' {
+        Select-CopilotSession -Id $script:RecentSessionId -StayInDirectory -RemainingArgs '--debug', '--log-level', 'info'
+
+        $script:ResumedId | Should -Be $script:RecentSessionId
+        $script:ResumePrompt | Should -BeNullOrEmpty
+        $script:ResumeRemainingArgs | Should -Be @('--debug', '--log-level', 'info')
+        $script:ResumeBoundParameters.ContainsKey('Prompt') | Should -BeFalse
     }
 
     It 'honors WhatIf without resuming the resolved session' {
