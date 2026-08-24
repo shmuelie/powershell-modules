@@ -85,3 +85,17 @@ Highlights:
 - Core helpers: `Test-IsElevated`, `Invoke-InLocation`, `Reset-TerminalModes`.
 - Tool management for `dotnet`, `pip`, `uv`, and VS Code extensions.
 - `Get-ServiceProcess` resolves a service to its hosting process.
+
+## Shmuelie.Dsc
+
+Class-based [DSC v3](https://learn.microsoft.com/powershell/dsc/overview)
+resources for developer machine setup. **Version 0.1.0.**
+[README](https://github.com/shmuelie/powershell-modules/blob/main/modules/Shmuelie.Dsc/README.md)
+
+Highlights:
+
+- `SavePSResource` saves a PowerShell module to a local path; `SymbolicLink`
+  creates and verifies symbolic links.
+- `CopilotPlugin` and `CopilotMarketplace` install GitHub Copilot CLI plugins
+  and register marketplaces.
+- `UvTool` installs a Python tool via `uv tool install`.

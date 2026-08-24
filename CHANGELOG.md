@@ -11,8 +11,14 @@ between releases this file tracks catalog-level changes under `[Unreleased]`.
   site.
 - `Build-Module.ps1` now stages optional module `Classes` folders for shared
   PowerShell class definitions.
+- `Build-Module.ps1` now stages a module's `Public` folder only when it exists,
+  so modules without `Public` scripts (such as DSC resource modules) build; it
+  also fails fast if a module declares functions but has no `Public` folder.
 
 ### Added
+- New `Shmuelie.Dsc` module: class-based DSC v3 resources (`SavePSResource`,
+  `SymbolicLink`, `CopilotPlugin`, `CopilotMarketplace`, `UvTool`), wired into
+  the build, publish workflow, and documentation site.
 - GitHub Pages documentation workflow now redeploys automatically when docs or its workflow change.
 - Pester v5 unit test suite under `tests/`, a `build/Invoke-Tests.ps1` runner,
   and CI wiring (`ci.yml` plus a gate in `publish-module.yml`) so behavioral
