@@ -12,7 +12,8 @@ between releases this file tracks catalog-level changes under `[Unreleased]`.
 - `Build-Module.ps1` now stages optional module `Classes` folders for shared
   PowerShell class definitions.
 - `Build-Module.ps1` now stages a module's `Public` folder only when it exists,
-  so modules without `Public` scripts (such as DSC resource modules) build.
+  so modules without `Public` scripts (such as DSC resource modules) build; it
+  also fails fast if a module declares functions but has no `Public` folder.
 
 ### Added
 - New `Shmuelie.Dsc` module: class-based DSC v3 resources (`SavePSResource`,

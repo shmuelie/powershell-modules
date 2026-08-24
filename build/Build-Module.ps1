@@ -38,6 +38,9 @@ $public = Join-Path $source 'Public'
 if (Test-Path $public) {
     Copy-Item $public $stage -Recurse
 }
+if ($manifest.ExportedFunctions.Count -gt 0 -and -not (Test-Path $public)) {
+    throw "$Module declares FunctionsToExport but has no Public folder to stage."
+}
 $classes = Join-Path $source 'Classes'
 if (Test-Path $classes) {
     Copy-Item $classes $stage -Recurse

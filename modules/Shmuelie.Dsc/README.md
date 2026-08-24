@@ -58,6 +58,23 @@ These are DSC v3 resources, addressed as `Shmuelie.Dsc/<ResourceName>`:
     Name: fast-agent-mcp
 ```
 
+## Notes
+
+- **Idempotency / presence checks.** `CopilotPlugin`, `CopilotMarketplace`, and
+  `UvTool` determine "already installed" by a whole-token match against the
+  relevant CLI list output (color/ANSI is stripped first), so a desired name
+  that is a substring of another entry does not produce a false positive.
+- **`CopilotPlugin` URL sources.** The installed plugin name is derived from
+  `Source` for `owner/repo`, `plugin@marketplace`, and `market:plugin@marketplace`
+  forms. For a URL source the name cannot be derived reliably — set the optional
+  `Name` property so the presence check matches, otherwise the plugin is
+  re-installed on every apply.
+- **`SavePSResource` version.** Set the optional `Version` property to make the
+  presence check (and the save) version-specific.
+- **Shell-safe arguments.** Values passed to the `copilot`/`uv` CLIs are
+  validated to reject characters that Windows would re-parse when the CLI
+  resolves to a `.cmd`/`.bat` shim.
+
 ## Requirements
 
 - PowerShell 7.4 or later.
