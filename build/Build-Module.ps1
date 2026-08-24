@@ -9,7 +9,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)]
-    [ValidateSet('Shmuelie.Git', 'Shmuelie.Copilot', 'Shmuelie.Node', 'Shmuelie.Utilities')]
+    [ValidateSet('Shmuelie.Git', 'Shmuelie.Copilot', 'Shmuelie.Node', 'Shmuelie.Utilities', 'Shmuelie.Dsc')]
     [string]$Module,
 
     [string]$OutputPath
@@ -34,7 +34,10 @@ New-Item $stage -ItemType Directory -Force | Out-Null
 foreach ($name in @("$Module.psd1", "$Module.psm1", 'README.md', 'CHANGELOG.md')) {
     Copy-Item (Join-Path $source $name) $stage
 }
-Copy-Item (Join-Path $source 'Public') $stage -Recurse
+$public = Join-Path $source 'Public'
+if (Test-Path $public) {
+    Copy-Item $public $stage -Recurse
+}
 $classes = Join-Path $source 'Classes'
 if (Test-Path $classes) {
     Copy-Item $classes $stage -Recurse
