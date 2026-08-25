@@ -767,12 +767,10 @@ function Move-Worktree {
             return
         }
 
-        $basePath = (Get-Location).ProviderPath
-        $newPath = if ([IO.Path]::IsPathRooted($DestinationPath)) {
-            [IO.Path]::GetFullPath($DestinationPath)
-        } else {
-            [IO.Path]::GetFullPath((Join-Path $basePath $DestinationPath))
-        }
+        # Resolve the destination against PowerShell's current location (not the
+        # process directory) so relative and drive-relative paths behave as the
+        # caller sees them; the path need not exist yet.
+        $newPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($DestinationPath)
 
         if (Test-Path -LiteralPath $newPath) {
             Write-Error "Destination path '$newPath' already exists. Choose a path that does not exist before moving the worktree."

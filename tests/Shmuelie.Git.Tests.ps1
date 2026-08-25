@@ -2349,6 +2349,42 @@ Describe 'Move-Worktree' -Skip:(-not (Get-Command git -ErrorAction SilentlyConti
             Pop-Location
         }
     }
+
+    It 'resolves a relative destination against the caller PowerShell location' {
+        $repo = New-TestRepo -Path (Join-Path $TestDrive 'move-worktree-relative-main')
+        $branch = 'feature/move-relative'
+        $oldPath = Join-Path $TestDrive (Join-Path 'feature' 'move-relative')
+        Invoke-Git @('-C', $repo, 'branch', $branch)
+        Invoke-Git @('-C', $repo, 'worktree', 'add', '--quiet', $oldPath, $branch)
+
+        Push-Location $repo
+        try {
+            $result = Move-Worktree -BranchName $branch -DestinationPath 'moved-relative-here' -Confirm:$false
+            $expected = Join-Path $repo 'moved-relative-here'
+            Test-Path -LiteralPath $expected | Should -BeTrue
+            Test-Path -LiteralPath $oldPath | Should -BeFalse
+            $result.NewPath | Should -BeExactly (Resolve-Path -LiteralPath $expected).Path
+        } finally {
+            Pop-Location
+        }
+    }
+
+    It 'changes to the moved worktree path when -SetLocation is used' {
+        $repo = New-TestRepo -Path (Join-Path $TestDrive 'move-worktree-setloc-main')
+        $branch = 'feature/move-setloc'
+        $oldPath = Join-Path $TestDrive (Join-Path 'feature' 'move-setloc')
+        $newPath = Join-Path $TestDrive 'moved-setloc'
+        Invoke-Git @('-C', $repo, 'branch', $branch)
+        Invoke-Git @('-C', $repo, 'worktree', 'add', '--quiet', $oldPath, $branch)
+
+        Push-Location $repo
+        try {
+            Move-Worktree -BranchName $branch -DestinationPath $newPath -SetLocation -Confirm:$false
+            (Get-Location).ProviderPath | Should -BeExactly (Resolve-Path -LiteralPath $newPath).Path
+        } finally {
+            Pop-Location
+        }
+    }
 }
 
 Describe 'Worktree maintenance' -Skip:(-not (Get-Command git -ErrorAction SilentlyContinue)) {
