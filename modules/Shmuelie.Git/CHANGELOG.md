@@ -6,6 +6,10 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+### Added
+- Added `Move-Worktree` to move linked worktrees by branch name or path while
+  refusing the main/root worktree and surfacing `git worktree move` failures.
+
 ## [0.6.0] - 2026-08-21
 
 ### Added

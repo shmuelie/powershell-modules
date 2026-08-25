@@ -3,7 +3,7 @@ foreach ($script in Get-ChildItem $publicRoot -Filter '*.ps1' | Sort-Object Name
     . $script.FullName
 }
 
-Register-ArgumentCompleter -CommandName Set-Worktree, Remove-Worktree -ParameterName BranchName -ScriptBlock {
+Register-ArgumentCompleter -CommandName Set-Worktree, Remove-Worktree, Move-Worktree -ParameterName BranchName -ScriptBlock {
     param($commandName, $parameterName, $wordToComplete)
     Get-Worktrees |
         Select-Object -ExpandProperty Branch |
@@ -78,6 +78,7 @@ Export-ModuleMember -Function @(
     'Add-Worktree',
     'New-Worktree',
     'Remove-Worktree',
+    'Move-Worktree',
     'Set-Worktree',
     'Remove-StaleWorktree',
     'Repair-Worktree',

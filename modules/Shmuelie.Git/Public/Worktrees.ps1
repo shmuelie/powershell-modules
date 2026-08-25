@@ -693,6 +693,124 @@ function Remove-Worktree {
     }
 }
 
+function Move-Worktree {
+    <#
+    .SYNOPSIS
+    Move a worktree to a new filesystem location.
+    .DESCRIPTION
+    Resolves a worktree by branch name or by its real filesystem path, refuses
+    to move the repository's main/root worktree, and then runs
+    `git worktree move` for the target. Git failures such as an existing
+    destination or a locked worktree are reported with git's output.
+    .PARAMETER BranchName
+    Name of the branch whose worktree should be moved. The branch is resolved
+    through `Get-Worktrees`, so non-standard worktree locations are supported.
+    Detached worktrees must be addressed by `-Path` because their branch label
+    is ambiguous.
+    .PARAMETER Path
+    The actual filesystem path of the worktree to move. Accepts pipeline input
+    by property name from `Get-Worktrees` and related objects.
+    .PARAMETER DestinationPath
+    The new filesystem location for the worktree.
+    .PARAMETER Force
+    Pass `--force` to `git worktree move` for the cases git allows.
+    .PARAMETER SetLocation
+    Change the current location to the moved worktree path after a successful move.
+    .EXAMPLE
+    Move-Worktree -BranchName feature/my-work -DestinationPath ../moved-work
+    Moves the worktree for feature/my-work to ../moved-work.
+    .EXAMPLE
+    Get-Worktrees | Where-Object Branch -eq feature/my-work | Move-Worktree -DestinationPath ../moved-work -SetLocation
+    Moves a piped worktree by its Path property and then changes to the new path.
+    #>
+    [OutputType('WorktreeMoveResult')]
+    [CmdletBinding(SupportsShouldProcess, DefaultParameterSetName = 'Path')]
+    param(
+        [Parameter(Mandatory, Position = 0, ParameterSetName = 'BranchName', ValueFromPipelineByPropertyName)]
+        [ValidateSet([WorktreeSetValuesGenerator])]
+        [Alias('Branch')]
+        [string]$BranchName,
+
+        [Parameter(Mandatory, ParameterSetName = 'Path', ValueFromPipelineByPropertyName)]
+        [ValidateNotNullOrEmpty()]
+        [string]$Path,
+
+        [Parameter(Mandatory, Position = 1)]
+        [ValidateNotNullOrEmpty()]
+        [Alias('Destination', 'NewPath')]
+        [string]$DestinationPath,
+
+        [switch]$Force,
+        [switch]$SetLocation
+    )
+
+    process {
+        $repoPath = Resolve-GitRepositoryPath
+        if (-not $repoPath) { return }
+
+        $target = if ($PSCmdlet.ParameterSetName -eq 'Path') {
+            Resolve-WorktreeTarget -Path $Path
+        } else {
+            Resolve-WorktreeTarget -BranchName $BranchName
+        }
+        if (-not $target) { return }
+
+        $root = Get-RootWorktree -Path $repoPath | Select-Object -First 1
+        if (-not $root) {
+            Write-Error 'Could not identify the main/root worktree for this repository.'
+            return
+        }
+
+        $oldPath = $target.Path
+        if (Test-WorktreePathEquals -Left $oldPath -Right $root.Path) {
+            Write-Error "The main/root worktree at '$oldPath' cannot be moved. Move a linked worktree instead, or clone the repository to a new location."
+            return
+        }
+
+        # Resolve the destination against PowerShell's current location (not the
+        # process directory) so relative and drive-relative paths behave as the
+        # caller sees them; the path need not exist yet.
+        $newPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($DestinationPath)
+
+        if (Test-Path -LiteralPath $newPath) {
+            Write-Error "Destination path '$newPath' already exists. Choose a path that does not exist before moving the worktree."
+            return
+        }
+
+        $branch = if ($target.Branch) { $target.Branch } else { $BranchName }
+        if (-not $branch) { $branch = '(unknown)' }
+
+        if ($PSCmdlet.ShouldProcess($oldPath, "Move worktree for branch '$branch' to '$newPath'")) {
+            $moveArgs = @('-C', $repoPath, 'worktree', 'move')
+            if ($Force) { $moveArgs += '--force' }
+            $moveArgs += @($oldPath, $newPath)
+
+            $gitResult = Invoke-GitWorktreeMaintenance -Arguments $moveArgs
+            if ($gitResult.ExitCode -ne 0) {
+                $message = if ($gitResult.Messages) { $gitResult.Messages -join [Environment]::NewLine } else { 'No output.' }
+                Write-Error "git worktree move failed for branch '$branch' from '$oldPath' to '$newPath' (exit $($gitResult.ExitCode)): $message"
+                return
+            }
+
+            if ($SetLocation) {
+                Set-Location -LiteralPath $newPath
+            }
+
+            [PSCustomObject]@{
+                PSTypeName = 'WorktreeMoveResult'
+                Command    = 'move'
+                Branch     = $branch
+                OldPath    = $oldPath
+                NewPath    = $newPath
+                Force      = $Force.IsPresent
+                SetLocation = $SetLocation.IsPresent
+                ExitCode   = $gitResult.ExitCode
+                Messages   = $gitResult.Messages
+            }
+        }
+    }
+}
+
 function Set-Worktree {
     <#
     .SYNOPSIS
