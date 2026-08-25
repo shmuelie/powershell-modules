@@ -159,7 +159,10 @@ function Get-CopilotLaunchPlan {
     .PARAMETER AllowAllTools
         Allow all tools to run automatically without confirmation while keeping
         file-path and URL verification (unlike --allow-all, which also disables
-        path/URL checks). Implies not passing --allow-all.
+        path/URL checks). Implies not passing --allow-all. For fully
+        non-interactive use (-Prompt) where the agent may access paths outside
+        the working directory or external URLs, also pass -AllowAllPaths /
+        -AllowAllUrls so it does not stall on permission prompts.
 
     .PARAMETER UsageOutputFile
         Write final usage statistics as JSON to the specified file. Most useful
@@ -173,7 +176,8 @@ function Get-CopilotLaunchPlan {
         One or more MCP server names to enable at startup. Overrides the
         path-based autoConnect policy in the config and also passes the CLI's
         native --enable-mcp-server so a server disabled in the Copilot settings
-        is enabled for this run only (nothing is persisted).
+        is enabled for this run only (nothing is persisted). Passing a name whose
+        server is already enabled is a no-op.
 
     .PARAMETER Name
         Set a name for the new session. Cannot be combined with session resume.
@@ -616,7 +620,12 @@ function Get-CopilotLaunchPlan {
     if ($PluginDir) { foreach ($p in $PluginDir) { $copilotArgs += '--plugin-dir', $p } }
     if ($SecretEnvVars) { $copilotArgs += '--secret-env-vars', ($SecretEnvVars -join ',') }
     if ($ScreenReader) { $copilotArgs += '--screen-reader' }
-    if ($AssistedApproval) { $copilotArgs += '--assisted-approval' }
+    if ($AssistedApproval) {
+        if ($NoExperimental) {
+            Write-Warning '-AssistedApproval requires experimental mode; -NoExperimental will likely prevent the assisted-approval judge from engaging.'
+        }
+        $copilotArgs += '--assisted-approval'
+    }
     if ($UsageOutputFile) { $copilotArgs += '--usage-output-file', $UsageOutputFile }
     if ($PlainDiff) { $copilotArgs += '--plain-diff' }
     if ($Stream) { $copilotArgs += '--stream', $Stream }

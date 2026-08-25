@@ -33,7 +33,12 @@ Start-Copilot
   auto-resumes. Control it with `-NoResume`, `-ResumeLatest`, `-ResumeSession`,
   `-NoAutoResume`, and `-IncludeUnnamed`.
 - **Sensible defaults** (`--allow-all --experimental`), each disablable with
-  `-NoAllowAll` / `-NoExperimental`.
+  `-NoAllowAll` / `-NoExperimental`. Use `-AllowAllTools` for a middle ground
+  that auto-approves tools while keeping file-path and URL verification.
+- **More permission & scripting flags** — `-AssistedApproval`
+  (`--assisted-approval` safety judge), `-UsageOutputFile` (write usage JSON to
+  a file), and `-EnableMcpServer` (also re-enables a settings-disabled MCP
+  server for the run).
 - **Default deny rules** for destructive git operations (force push, hard reset,
   rebase, amend, `git pull`, and similar).
 - **Full flag mapping** — model, reasoning effort, MCP enable/disable, plan mode,

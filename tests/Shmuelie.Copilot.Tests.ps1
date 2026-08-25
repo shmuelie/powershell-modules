@@ -1262,6 +1262,44 @@ Describe 'Get-CopilotLaunchPlan additional flag mappings' {
         $plan.Args | Should -Contain '--assisted-approval'
         $plan.Args | Should -Contain '--allow-all-tools'
         $plan.Args | Should -Not -Contain '--allow-all'
-        $plan.Args | Should -Contain '--usage-output-file'
+        $usageIdx = [array]::IndexOf($plan.Args, '--usage-output-file')
+        $usageIdx | Should -BeGreaterOrEqual 0
+        $plan.Args[$usageIdx + 1] | Should -Be $target
+    }
+
+    It 'warns when -AssistedApproval is combined with -NoExperimental' {
+        Get-CopilotLaunchPlan -DeferResume -AssistedApproval -NoExperimental -WarningVariable warnings -WarningAction SilentlyContinue | Out-Null
+        ($warnings -join ' ') | Should -Match 'experimental'
+    }
+
+    It 'suppresses --allow-all when both -NoAllowAll and -AllowAllTools are set' {
+        $plan = Get-CopilotLaunchPlan -DeferResume -NoAllowAll -AllowAllTools
+        $plan.Args | Should -Contain '--allow-all-tools'
+        $plan.Args | Should -Not -Contain '--allow-all'
+    }
+
+    It 'enables a configured server via the native flag instead of disabling it' {
+        $mcpHome = Join-Path $TestDrive ([guid]::NewGuid())
+        $cfgDir = Join-Path $mcpHome '.copilot'
+        New-Item -ItemType Directory -Path $cfgDir -Force | Out-Null
+        $config = @{ mcpServers = @{ srv = @{ command = 'x'; autoConnect = @('Z:\no-such-path\*') } } } | ConvertTo-Json -Depth 6
+        Set-Content -Path (Join-Path $cfgDir 'mcp-config.json') -Value $config
+        Mock -ModuleName Shmuelie.Copilot -CommandName Get-CopilotHome -MockWith { $mcpHome }
+
+        $plan = Get-CopilotLaunchPlan -DeferResume -EnableMcpServer 'srv'
+
+        $plan.Args | Should -Contain '--enable-mcp-server'
+        $disabled = for ($j = 0; $j -lt $plan.Args.Count - 1; $j++) {
+            if ($plan.Args[$j] -eq '--disable-mcp-server') { $plan.Args[$j + 1] }
+        }
+        $disabled | Should -Not -Contain 'srv'
+    }
+
+    It 'forwards -EnableMcpServer through Start-Copilot -PassThru' {
+        $plan = Start-Copilot -PassThru -DeferResume -EnableMcpServer 'server-a'
+        $values = for ($j = 0; $j -lt $plan.Args.Count - 1; $j++) {
+            if ($plan.Args[$j] -eq '--enable-mcp-server') { $plan.Args[$j + 1] }
+        }
+        $values | Should -Contain 'server-a'
     }
 }
