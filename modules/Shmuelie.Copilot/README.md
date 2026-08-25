@@ -76,7 +76,9 @@ The path-glob form is useful for MCP servers that are only relevant in certain
 repositories. For example, a server configured with
 `"autoConnect": ["D:\\work\\*"]` connects only when you launch from under
 `D:\work`. Use `-EnableMcpServer <name>` to force a server on regardless of its
-`autoConnect` policy, or `-DisableMcpServer <name>` to force one off.
+`autoConnect` policy — this also passes the CLI's native `--enable-mcp-server`,
+so a server disabled in your Copilot settings is enabled for the run — or
+`-DisableMcpServer <name>` to force one off.
 
 ## Requirements
 

@@ -1212,3 +1212,56 @@ Describe 'Get-CopilotMcpServer' {
         @(Get-Content $script:CopilotTestLog | Where-Object { $_ -eq 'mcp list --json' }) | Should -HaveCount 2
     }
 }
+
+Describe 'Get-CopilotLaunchPlan additional flag mappings' {
+    BeforeEach {
+        $testHome = Join-Path $TestDrive 'home'
+        $env:USERPROFILE = Join-Path $TestDrive 'legacy-userprofile'
+        New-Item -ItemType Directory -Path $testHome -Force | Out-Null
+        Mock -ModuleName Shmuelie.Copilot -CommandName Get-CopilotHome -MockWith { $testHome }
+        Add-FakeCopilot -Path (Join-Path $TestDrive 'bin')
+    }
+
+    It 'emits --assisted-approval when -AssistedApproval is set' {
+        $plan = Get-CopilotLaunchPlan -DeferResume -AssistedApproval
+        $plan.Args | Should -Contain '--assisted-approval'
+    }
+
+    It 'emits --usage-output-file with its value' {
+        $target = Join-Path $TestDrive 'usage.json'
+        $plan = Get-CopilotLaunchPlan -DeferResume -UsageOutputFile $target
+        $i = [array]::IndexOf($plan.Args, '--usage-output-file')
+        $i | Should -BeGreaterOrEqual 0
+        $plan.Args[$i + 1] | Should -Be $target
+    }
+
+    It 'emits --allow-all-tools and suppresses --allow-all' {
+        $plan = Get-CopilotLaunchPlan -DeferResume -AllowAllTools
+        $plan.Args | Should -Contain '--allow-all-tools'
+        $plan.Args | Should -Not -Contain '--allow-all'
+    }
+
+    It 'emits --allow-all by default and not --allow-all-tools' {
+        $plan = Get-CopilotLaunchPlan -DeferResume
+        $plan.Args | Should -Contain '--allow-all'
+        $plan.Args | Should -Not -Contain '--allow-all-tools'
+    }
+
+    It 'emits native --enable-mcp-server for each -EnableMcpServer name' {
+        $plan = Get-CopilotLaunchPlan -DeferResume -EnableMcpServer 'server-a', 'server-b'
+        $values = for ($j = 0; $j -lt $plan.Args.Count - 1; $j++) {
+            if ($plan.Args[$j] -eq '--enable-mcp-server') { $plan.Args[$j + 1] }
+        }
+        $values | Should -Contain 'server-a'
+        $values | Should -Contain 'server-b'
+    }
+
+    It 'forwards the new flags from Start-Copilot -PassThru' {
+        $target = Join-Path $TestDrive 'usage2.json'
+        $plan = Start-Copilot -PassThru -DeferResume -AssistedApproval -AllowAllTools -UsageOutputFile $target
+        $plan.Args | Should -Contain '--assisted-approval'
+        $plan.Args | Should -Contain '--allow-all-tools'
+        $plan.Args | Should -Not -Contain '--allow-all'
+        $plan.Args | Should -Contain '--usage-output-file'
+    }
+}

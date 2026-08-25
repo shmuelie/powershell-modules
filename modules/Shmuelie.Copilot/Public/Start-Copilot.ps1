@@ -141,13 +141,30 @@ function Start-Copilot {
     .PARAMETER ScreenReader
         Enable screen reader accessibility optimizations.
 
+    .PARAMETER AssistedApproval
+        Review tool-permission requests with the assisted-approval safety judge
+        instead of approving them outright. Takes precedence over allowing all
+        tools when the judge engages; requires experimental mode (on by default
+        unless -NoExperimental is set).
+
+    .PARAMETER AllowAllTools
+        Allow all tools to run automatically without confirmation while keeping
+        file-path and URL verification (unlike the default --allow-all, which
+        also disables path/URL checks). Implies not passing --allow-all.
+
+    .PARAMETER UsageOutputFile
+        Write final usage statistics as JSON to the specified file. Most useful
+        with -Prompt (non-interactive mode).
+
     .PARAMETER DisableMcpServer
         One or more MCP server names to disable at startup, in addition to
         any servers disabled by path-based autoConnect policy in the config.
 
     .PARAMETER EnableMcpServer
-        One or more MCP server names to force-enable at startup, overriding
-        path-based autoConnect policy in the config.
+        One or more MCP server names to enable at startup. Overrides the
+        path-based autoConnect policy in the config and also passes the CLI's
+        native --enable-mcp-server so a server disabled in the Copilot settings
+        is enabled for this run only (nothing is persisted).
 
     .PARAMETER Name
         Set a name for the new session. Cannot be combined with session resume.
@@ -429,6 +446,12 @@ function Start-Copilot {
         [string[]]$SecretEnvVars,
 
         [switch]$ScreenReader,
+
+        [switch]$AssistedApproval,
+
+        [switch]$AllowAllTools,
+
+        [string]$UsageOutputFile,
 
         [string[]]$DisableMcpServer,
 
