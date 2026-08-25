@@ -1,7 +1,7 @@
 # Shmuelie PowerShell Modules
 
 Independently versioned PowerShell modules for Git, GitHub Copilot CLI, Node.js,
-and general developer tooling.
+Visual Studio, and general developer tooling.
 
 ```powershell
 Install-PSResource Shmuelie.Git
@@ -9,6 +9,7 @@ Install-PSResource Shmuelie.Copilot
 Install-PSResource Shmuelie.Node
 Install-PSResource Shmuelie.Utilities
 Install-PSResource Shmuelie.Dsc
+Install-PSResource Shmuelie.VisualStudio
 ```
 
 ## Modules
@@ -20,6 +21,7 @@ Install-PSResource Shmuelie.Dsc
 | [Shmuelie.Node](docs/modules.md#shmuelie-node) | Node.js, nvm-windows, npm, and ADO npm credentials |
 | [Shmuelie.Utilities](docs/modules.md#shmuelie-utilities) | .NET, Python, VS Code, Terminal, services, and WPR |
 | [Shmuelie.Dsc](docs/modules.md#shmuelie-dsc) | DSC v3 resources for setup: modules, symlinks, Copilot plugins/marketplaces, uv tools |
+| [Shmuelie.VisualStudio](docs/modules.md#shmuelie-visualstudio) | Visual Studio discovery and developer shell launch helpers |
 
 ## Documentation
 
