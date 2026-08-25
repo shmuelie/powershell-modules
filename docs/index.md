@@ -5,7 +5,7 @@ title: Shmuelie PowerShell Modules
 **[Home](index.md) · [Modules](modules.md) · [Installation](installation.md) · [Contributing](contributing.md) · [GitHub](https://github.com/shmuelie/powershell-modules)**
 
 Independently versioned PowerShell modules for developer workflows across Git,
-GitHub Copilot CLI, Node.js, and general tooling.
+GitHub Copilot CLI, Node.js, Visual Studio, and general tooling.
 
 Each module ships its own manifest, README, changelog, package artifact,
 semantic version, and release tag. Versions are not kept in lockstep, so you can
@@ -20,6 +20,7 @@ install and upgrade each module on its own.
 | [Shmuelie.Node](modules.md#shmuelie-node) | Node.js, nvm-windows, npm, and ADO npm credentials | 0.1.3 |
 | [Shmuelie.Utilities](modules.md#shmuelie-utilities) | .NET, Python, VS Code, Terminal, services, and WPR | 0.2.3 |
 | [Shmuelie.Dsc](modules.md#shmuelie-dsc) | DSC v3 resources for setup: modules, symlinks, Copilot plugins/marketplaces, uv tools | 0.1.0 |
+| [Shmuelie.VisualStudio](modules.md#shmuelie-visualstudio) | Visual Studio discovery and developer shell launch helpers | 0.1.0 |
 
 ## Quick start
 
