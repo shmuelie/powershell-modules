@@ -13,7 +13,7 @@
         'Get-CurrentWorktree', 'Get-RepositoryName', 'Get-RootWorktree',
         'Get-WorktreePath', 'Add-Worktree', 'New-Worktree', 'Remove-Worktree',
         'Move-Worktree', 'Set-Worktree', 'Remove-StaleWorktree', 'Repair-Worktree',
-        'Lock-Worktree', 'Unlock-Worktree', 'Update-Worktrees',
+        'Lock-Worktree', 'Unlock-Worktree', 'Update-Worktrees', 'Update-AllWorktrees',
         'Find-StaleBranch', 'New-Repository',
         'Repair-RepositoryLayout', 'Update-WorktreePrediction'
     )
