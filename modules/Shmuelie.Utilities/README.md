@@ -1,10 +1,9 @@
 # Shmuelie.Utilities
 
 General developer utilities for PowerShell, .NET tools, Python packages, VS
-Code, Windows Terminal, Windows services, installed applications, and WPR
-tracing.
+Code, terminal recovery, and general developer workflows.
 
-**Version:** 0.2.3
+**Version:** 0.3.0
 
 ## Install
 
@@ -19,40 +18,30 @@ Import-Module Shmuelie.Utilities
 |---|---|
 | Core | `Test-IsElevated`, `New-GlobalConstant`, `New-PathVariable`, `Get-SessionTitle`, `Invoke-InLocation`, `Import-ModuleSafe`, `Repair-GlobalJson`, `Format-Duration` |
 | Terminal | `Reset-TerminalModes` |
-| Services | `Get-ServiceProcess` |
 | .NET tools | `Get-DotNetTool`, `Install-DotNetTool`, `Update-DotNetTool`, `Uninstall-DotNetTool` |
 | Python | `Get-PipPackages`, `Update-PipPackage`, `Get-UvPackages`, `Update-UvPackage` |
 | VS Code | `Start-VsCode`, `Start-VsCodeChat`, `Get-VsCodeExtension`, `Install-VsCodeExtension`, `Uninstall-VsCodeExtension`, `Update-VsCodeExtension` |
-| Windows Terminal | `Get-WindowsTerminalSettings` (Windows only), `Get-WindowsTerminalProfile` (Windows only) |
-| Diagnostics | `Start-WindowsPerformanceRecorder` (Windows only), `Stop-WindowsPerformanceRecorder` (Windows only) |
-| Inventory | `Get-InstalledApplications` (Windows only) |
 
 ## Highlights
 
 - `Reset-TerminalModes` recovers a terminal left in a bad state (mouse tracking,
   alternate screen, bracketed paste, kitty keyboard flags) by a crashed TUI.
-- `Get-ServiceProcess` resolves a Windows service to its hosting process, so it
-  composes with `Stop-Process` and friends.
-- `Get-InstalledApplications -Scope AllUsers` honors `-WhatIf` for offline user
-  hive load/unload operations and reports registry mount failures.
 - `Invoke-InLocation` runs a script block in a location and always returns, even
   on Ctrl+C.
+- Tool helpers list and update .NET global tools, Python packages, uv tools, and
+  VS Code extensions.
 
 ## Examples
 
 ```powershell
 if (Test-IsElevated) { 'admin' }
 Get-DotNetTool | Update-DotNetTool
-Get-Service Spooler | Get-ServiceProcess | Stop-Process
 Reset-TerminalModes
 ```
 
 ## Requirements
 
 - PowerShell 7.4 or later.
-- Windows for the Windows-specific commands (installed applications, services,
-  Windows Terminal, WPR); these report their platform requirements in command
-  help.
 
 ## Changelog
 

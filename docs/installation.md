@@ -16,6 +16,7 @@ Install-PSResource Shmuelie.Git
 Install-PSResource Shmuelie.Copilot
 Install-PSResource Shmuelie.Node
 Install-PSResource Shmuelie.Utilities
+Install-PSResource Shmuelie.Windows
 ```
 
 Import a module before use:

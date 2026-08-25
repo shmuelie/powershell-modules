@@ -18,7 +18,8 @@ install and upgrade each module on its own.
 | [Shmuelie.Git](modules.md#shmuelie-git) | Git worktrees, layout, status, completion, and prediction | 0.6.0 |
 | [Shmuelie.Copilot](modules.md#shmuelie-copilot) | Copilot CLI sessions, plugins, marketplaces, MCP, and launcher | 0.2.0 |
 | [Shmuelie.Node](modules.md#shmuelie-node) | Node.js, nvm-windows, npm, and ADO npm credentials | 0.1.3 |
-| [Shmuelie.Utilities](modules.md#shmuelie-utilities) | .NET, Python, VS Code, Terminal, services, and WPR | 0.2.3 |
+| [Shmuelie.Utilities](modules.md#shmuelie-utilities) | .NET, Python, VS Code, and terminal helpers | 0.3.0 |
+| [Shmuelie.Windows](modules.md#shmuelie-windows) | Windows-only installed-apps, Terminal, WPR, and service helpers | 0.1.0 |
 | [Shmuelie.Dsc](modules.md#shmuelie-dsc) | DSC v3 resources for setup: modules, symlinks, Copilot plugins/marketplaces, uv tools | 0.1.0 |
 
 ## Quick start
