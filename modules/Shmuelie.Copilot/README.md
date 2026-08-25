@@ -33,7 +33,12 @@ Start-Copilot
   auto-resumes. Control it with `-NoResume`, `-ResumeLatest`, `-ResumeSession`,
   `-NoAutoResume`, and `-IncludeUnnamed`.
 - **Sensible defaults** (`--allow-all --experimental`), each disablable with
-  `-NoAllowAll` / `-NoExperimental`.
+  `-NoAllowAll` / `-NoExperimental`. Use `-AllowAllTools` for a middle ground
+  that auto-approves tools while keeping file-path and URL verification.
+- **More permission & scripting flags** — `-AssistedApproval`
+  (`--assisted-approval` safety judge), `-UsageOutputFile` (write usage JSON to
+  a file), and `-EnableMcpServer` (also re-enables a settings-disabled MCP
+  server for the run).
 - **Default deny rules** for destructive git operations (force push, hard reset,
   rebase, amend, `git pull`, and similar).
 - **Full flag mapping** — model, reasoning effort, MCP enable/disable, plan mode,
@@ -76,7 +81,9 @@ The path-glob form is useful for MCP servers that are only relevant in certain
 repositories. For example, a server configured with
 `"autoConnect": ["D:\\work\\*"]` connects only when you launch from under
 `D:\work`. Use `-EnableMcpServer <name>` to force a server on regardless of its
-`autoConnect` policy, or `-DisableMcpServer <name>` to force one off.
+`autoConnect` policy — this also passes the CLI's native `--enable-mcp-server`,
+so a server disabled in your Copilot settings is enabled for the run — or
+`-DisableMcpServer <name>` to force one off.
 
 ## Requirements
 

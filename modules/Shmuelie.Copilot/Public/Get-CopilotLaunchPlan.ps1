@@ -150,13 +150,34 @@ function Get-CopilotLaunchPlan {
     .PARAMETER ScreenReader
         Enable screen reader accessibility optimizations.
 
+    .PARAMETER AssistedApproval
+        Review tool-permission requests with the assisted-approval safety judge
+        instead of approving them outright. Takes precedence over allowing all
+        tools when the judge engages; requires experimental mode (on by default
+        unless -NoExperimental is set).
+
+    .PARAMETER AllowAllTools
+        Allow all tools to run automatically without confirmation while keeping
+        file-path and URL verification (unlike --allow-all, which also disables
+        path/URL checks). Implies not passing --allow-all. For fully
+        non-interactive use (-Prompt) where the agent may access paths outside
+        the working directory or external URLs, also pass -AllowAllPaths /
+        -AllowAllUrls so it does not stall on permission prompts.
+
+    .PARAMETER UsageOutputFile
+        Write final usage statistics as JSON to the specified file. Most useful
+        with -Prompt (non-interactive mode).
+
     .PARAMETER DisableMcpServer
         One or more MCP server names to disable at startup, in addition to
         any servers disabled by path-based autoConnect policy in the config.
 
     .PARAMETER EnableMcpServer
-        One or more MCP server names to force-enable at startup, overriding
-        path-based autoConnect policy in the config.
+        One or more MCP server names to enable at startup. Overrides the
+        path-based autoConnect policy in the config and also passes the CLI's
+        native --enable-mcp-server so a server disabled in the Copilot settings
+        is enabled for this run only (nothing is persisted). Passing a name whose
+        server is already enabled is a no-op.
 
     .PARAMETER Name
         Set a name for the new session. Cannot be combined with session resume.
@@ -414,6 +435,12 @@ function Get-CopilotLaunchPlan {
 
         [switch]$ScreenReader,
 
+        [switch]$AssistedApproval,
+
+        [switch]$AllowAllTools,
+
+        [string]$UsageOutputFile,
+
         [string[]]$DisableMcpServer,
 
         [string[]]$EnableMcpServer,
@@ -508,7 +535,8 @@ function Get-CopilotLaunchPlan {
 
     $copilotArgs = @()
     if (-not $NoExperimental) { $copilotArgs += '--experimental' }
-    if (-not $NoAllowAll) { $copilotArgs += '--allow-all' }
+    if (-not $NoAllowAll -and -not $AllowAllTools) { $copilotArgs += '--allow-all' }
+    if ($AllowAllTools) { $copilotArgs += '--allow-all-tools' }
 
     # Block destructive git force operations (--deny-tool takes precedence over --allow-all)
     if (-not $NoDefaultDenyTools) {
@@ -561,6 +589,13 @@ function Get-CopilotLaunchPlan {
         }
     }
 
+    # Re-enable servers disabled in the CLI's own settings for this run only.
+    if ($EnableMcpServer) {
+        foreach ($s in $EnableMcpServer) {
+            $copilotArgs += '--enable-mcp-server', $s
+        }
+    }
+
     # Named parameters mapped to CLI flags
     if ($Model) { $copilotArgs += '--model', $Model }
     if ($Version) { $copilotArgs += '--prefer-version', $Version; if ($copilotArgs -notcontains '--no-auto-update') { $copilotArgs += '--no-auto-update' } }
@@ -585,6 +620,13 @@ function Get-CopilotLaunchPlan {
     if ($PluginDir) { foreach ($p in $PluginDir) { $copilotArgs += '--plugin-dir', $p } }
     if ($SecretEnvVars) { $copilotArgs += '--secret-env-vars', ($SecretEnvVars -join ',') }
     if ($ScreenReader) { $copilotArgs += '--screen-reader' }
+    if ($AssistedApproval) {
+        if ($NoExperimental) {
+            Write-Warning '-AssistedApproval requires experimental mode; -NoExperimental will likely prevent the assisted-approval judge from engaging.'
+        }
+        $copilotArgs += '--assisted-approval'
+    }
+    if ($UsageOutputFile) { $copilotArgs += '--usage-output-file', $UsageOutputFile }
     if ($PlainDiff) { $copilotArgs += '--plain-diff' }
     if ($Stream) { $copilotArgs += '--stream', $Stream }
     if ($AvailableTool) { foreach ($t in $AvailableTool) { $copilotArgs += '--available-tools', $t } }
