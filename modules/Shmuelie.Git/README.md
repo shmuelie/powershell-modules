@@ -24,6 +24,7 @@ Import-Module Shmuelie.Git
 | `New-Worktree` | Create a branch from the current or `-Path` repository and check it out to a worktree, optionally at destination `-WorktreePath` |
 | `Add-Worktree` | Check out an existing branch from the current or `-Path` repository to a worktree, optionally at destination `-WorktreePath` |
 | `Remove-Worktree` | Remove a worktree by branch name or path (optionally deleting its branch) |
+| `Move-Worktree` | Move a linked worktree by branch name or path to a new filesystem location |
 | `Set-Worktree` | Switch to a worktree by branch name or path |
 | `Remove-StaleWorktree` | Prune stale worktree administrative entries for deleted worktree directories |
 | `Repair-Worktree` | Repair worktree links after a repository or worktree move |
@@ -54,6 +55,7 @@ surfaces `user/alex/wim-work`.
 New-Repository https://github.com/owner/repo
 New-Worktree -WorkName my-feature -SetLocation
 Add-Worktree -BranchName feature/my-feature -WorktreePath ../custom-feature
+Move-Worktree -BranchName feature/my-feature -DestinationPath ../moved-feature
 Update-Worktrees | Where-Object Status -ne Current
 Find-StaleBranch | Remove-Worktree
 Get-GitStatusSummary

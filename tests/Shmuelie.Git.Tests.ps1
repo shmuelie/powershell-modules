@@ -2226,6 +2226,131 @@ Describe 'Remove-Worktree' -Skip:(-not (Get-Command git -ErrorAction SilentlyCon
     }
 }
 
+Describe 'Move-Worktree' -Skip:(-not (Get-Command git -ErrorAction SilentlyContinue)) {
+    It 'moves a worktree by branch name to the requested destination' {
+        $repo = New-TestRepo -Path (Join-Path $TestDrive 'move-worktree-main')
+        $branch = 'feature/move-target'
+        $oldPath = Join-Path $TestDrive (Join-Path 'feature' 'move-target')
+        $newPath = Join-Path $TestDrive 'moved-target'
+        Invoke-Git @('-C', $repo, 'branch', $branch)
+        Invoke-Git @('-C', $repo, 'worktree', 'add', '--quiet', $oldPath, $branch)
+        $oldResolved = (Resolve-Path -LiteralPath $oldPath).Path
+
+        Push-Location $repo
+        try {
+            $result = Move-Worktree -BranchName $branch -DestinationPath $newPath -Confirm:$false
+            Test-Path -LiteralPath $oldPath | Should -BeFalse
+            Test-Path -LiteralPath $newPath | Should -BeTrue
+            (@(Get-Worktrees) | Where-Object Branch -eq $branch).Path |
+                Should -BeExactly (Resolve-Path -LiteralPath $newPath).Path
+            $result.PSTypeNames[0] | Should -Be 'WorktreeMoveResult'
+            $result.Branch | Should -BeExactly $branch
+            $result.OldPath | Should -BeExactly $oldResolved
+            $result.NewPath | Should -BeExactly (Resolve-Path -LiteralPath $newPath).Path
+        } finally {
+            Pop-Location
+        }
+    }
+
+    It 'does not move a worktree when WhatIf is used' {
+        $repo = New-TestRepo -Path (Join-Path $TestDrive 'move-worktree-whatif-main')
+        $branch = 'feature/move-whatif'
+        $oldPath = Join-Path $TestDrive (Join-Path 'feature' 'move-whatif')
+        $newPath = Join-Path $TestDrive 'moved-whatif'
+        Invoke-Git @('-C', $repo, 'branch', $branch)
+        Invoke-Git @('-C', $repo, 'worktree', 'add', '--quiet', $oldPath, $branch)
+
+        Push-Location $repo
+        try {
+            Move-Worktree -BranchName $branch -DestinationPath $newPath -WhatIf -Confirm:$false
+            Test-Path -LiteralPath $oldPath | Should -BeTrue
+            Test-Path -LiteralPath $newPath | Should -BeFalse
+            (@(Get-Worktrees) | Where-Object Branch -eq $branch).Path |
+                Should -BeExactly (Resolve-Path -LiteralPath $oldPath).Path
+        } finally {
+            Pop-Location
+        }
+    }
+
+    It 'refuses to move the main/root worktree with a clear error' {
+        $repo = New-TestRepo -Path (Join-Path $TestDrive 'move-worktree-root-main')
+        $newPath = Join-Path $TestDrive 'moved-root'
+
+        Push-Location $repo
+        try {
+            { Move-Worktree -BranchName 'main' -DestinationPath $newPath -Confirm:$false -ErrorAction Stop } |
+                Should -Throw -ExpectedMessage '*main/root worktree*cannot be moved*'
+            Test-Path -LiteralPath $repo | Should -BeTrue
+            Test-Path -LiteralPath $newPath | Should -BeFalse
+        } finally {
+            Pop-Location
+        }
+    }
+
+    It 'refuses to move into an existing destination path' {
+        $repo = New-TestRepo -Path (Join-Path $TestDrive 'move-worktree-destination-exists-main')
+        $branch = 'feature/move-destination-exists'
+        $oldPath = Join-Path $TestDrive (Join-Path 'feature' 'move-destination-exists')
+        $newPath = Join-Path $TestDrive 'existing-move-destination'
+        Invoke-Git @('-C', $repo, 'branch', $branch)
+        Invoke-Git @('-C', $repo, 'worktree', 'add', '--quiet', $oldPath, $branch)
+        New-Item -ItemType Directory -Path $newPath -Force | Out-Null
+        Set-Content -Path (Join-Path $newPath 'file.txt') -Value 'existing'
+
+        Push-Location $repo
+        try {
+            { Move-Worktree -BranchName $branch -DestinationPath $newPath -Confirm:$false -ErrorAction Stop } |
+                Should -Throw -ExpectedMessage '*Destination path*already exists*'
+            Test-Path -LiteralPath $oldPath | Should -BeTrue
+            (@(Get-Worktrees) | Where-Object Branch -eq $branch).Path |
+                Should -BeExactly (Resolve-Path -LiteralPath $oldPath).Path
+        } finally {
+            Pop-Location
+        }
+    }
+
+    It 'surfaces a clear git error when git rejects the move' {
+        $repo = New-TestRepo -Path (Join-Path $TestDrive 'move-worktree-locked-main')
+        $branch = 'feature/move-locked'
+        $oldPath = Join-Path $TestDrive (Join-Path 'feature' 'move-locked')
+        $newPath = Join-Path $TestDrive 'moved-locked'
+        Invoke-Git @('-C', $repo, 'branch', $branch)
+        Invoke-Git @('-C', $repo, 'worktree', 'add', '--quiet', $oldPath, $branch)
+        Invoke-Git @('-C', $repo, 'worktree', 'lock', '--reason', 'test lock', $oldPath)
+
+        Push-Location $repo
+        try {
+            { Move-Worktree -BranchName $branch -DestinationPath $newPath -Confirm:$false -ErrorAction Stop } |
+                Should -Throw -ExpectedMessage '*git worktree move failed*locked*'
+            Test-Path -LiteralPath $oldPath | Should -BeTrue
+            Test-Path -LiteralPath $newPath | Should -BeFalse
+        } finally {
+            Pop-Location
+        }
+    }
+
+    It 'moves a worktree from pipeline input by property name' {
+        $repo = New-TestRepo -Path (Join-Path $TestDrive 'move-worktree-pipeline-main')
+        $branch = 'feature/move-pipeline'
+        $oldPath = Join-Path $TestDrive (Join-Path 'feature' 'move-pipeline')
+        $newPath = Join-Path $TestDrive 'moved-pipeline'
+        Invoke-Git @('-C', $repo, 'branch', $branch)
+        Invoke-Git @('-C', $repo, 'worktree', 'add', '--quiet', $oldPath, $branch)
+
+        Push-Location $repo
+        try {
+            $result = Get-Worktrees | Where-Object Branch -eq $branch | Move-Worktree -DestinationPath $newPath -Confirm:$false
+            Test-Path -LiteralPath $oldPath | Should -BeFalse
+            Test-Path -LiteralPath $newPath | Should -BeTrue
+            $result.Branch | Should -BeExactly $branch
+            (@(Get-Worktrees) | Where-Object Branch -eq $branch).Path |
+                Should -BeExactly (Resolve-Path -LiteralPath $newPath).Path
+        } finally {
+            Pop-Location
+        }
+    }
+}
+
 Describe 'Worktree maintenance' -Skip:(-not (Get-Command git -ErrorAction SilentlyContinue)) {
     It 'prunes stale worktree entries' {
         $repo = New-TestRepo -Path (Join-Path $TestDrive 'prune-stale-main')

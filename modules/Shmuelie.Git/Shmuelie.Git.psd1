@@ -12,7 +12,7 @@
         'Sync-GitRemote', 'Get-GitStatusSummary', 'Format-GitStatusSegment', 'Get-Worktrees',
         'Get-CurrentWorktree', 'Get-RepositoryName', 'Get-RootWorktree',
         'Get-WorktreePath', 'Add-Worktree', 'New-Worktree', 'Remove-Worktree',
-        'Set-Worktree', 'Remove-StaleWorktree', 'Repair-Worktree',
+        'Move-Worktree', 'Set-Worktree', 'Remove-StaleWorktree', 'Repair-Worktree',
         'Lock-Worktree', 'Unlock-Worktree', 'Update-Worktrees',
         'Find-StaleBranch', 'New-Repository',
         'Repair-RepositoryLayout', 'Update-WorktreePrediction'
