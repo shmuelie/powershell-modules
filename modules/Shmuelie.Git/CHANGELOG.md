@@ -7,6 +7,8 @@ Versions change only when a release is cut; unreleased work stays under
 ## [Unreleased]
 
 ### Added
+- Added `Update-AllWorktrees` to discover repositories under a configurable root
+  and update each repository in parallel with org/repo tagging and filters.
 - Added `Move-Worktree` to move linked worktrees by branch name or path while
   refusing the main/root worktree and surfacing `git worktree move` failures.
 

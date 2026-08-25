@@ -689,6 +689,107 @@ Describe 'Find-StaleBranch' {
     }
 }
 
+Describe 'Update-AllWorktrees' -Skip:(-not (Get-Command git -ErrorAction SilentlyContinue)) {
+    BeforeAll {
+        function New-LayoutRepo {
+            param(
+                [Parameter(Mandatory)][string]$Root,
+                [Parameter(Mandatory)][string]$Organization,
+                [Parameter(Mandatory)][string]$Name,
+                [string]$Branch = 'main'
+            )
+
+            $path = Join-Path (Join-Path (Join-Path $Root $Organization) $Name) $Branch
+            New-TestRepo -Path $path
+        }
+    }
+
+    It 'discovers multiple repositories across organizations and returns one result per repo' {
+        $root = Join-Path $TestDrive 'all-discovery-root'
+        New-LayoutRepo -Root $root -Organization 'alpha' -Name 'one' | Out-Null
+        New-LayoutRepo -Root $root -Organization 'beta' -Name 'two' | Out-Null
+
+        $results = @(Update-AllWorktrees -Path $root -WhatIf -Confirm:$false)
+
+        $results | Should -HaveCount 2
+        $results[0].PSTypeNames[0] | Should -Be 'AllWorktreesUpdateResult'
+        ($results | ForEach-Object { "$($_.Organization)/$($_.Repository)" } | Sort-Object) |
+            Should -Be @('alpha/one', 'beta/two')
+        $results.Status | Should -Be @('WhatIf', 'WhatIf')
+    }
+
+    It 'applies multi-valued wildcard organization, name, and exclude filters' {
+        $root = Join-Path $TestDrive 'all-filter-root'
+        New-LayoutRepo -Root $root -Organization 'alpha' -Name 'one' | Out-Null
+        New-LayoutRepo -Root $root -Organization 'alpha' -Name 'two' | Out-Null
+        New-LayoutRepo -Root $root -Organization 'beta' -Name 'one' | Out-Null
+        New-LayoutRepo -Root $root -Organization 'beta' -Name 'skipme' | Out-Null
+
+        $results = @(Update-AllWorktrees `
+            -Path $root `
+            -Organization 'alpha,beta' `
+            -Name 'o*','two' `
+            -Exclude 'beta/one','*skip*' `
+            -WhatIf `
+            -Confirm:$false)
+
+        ($results | ForEach-Object { "$($_.Organization)/$($_.Repository)" } | Sort-Object) |
+            Should -Be @('alpha/one', 'alpha/two')
+    }
+
+    It 'reports a clear error for a non-existent root' {
+        $missing = Join-Path $TestDrive 'missing-root'
+
+        $results = @(Update-AllWorktrees -Path $missing -ErrorAction SilentlyContinue -ErrorVariable errors)
+
+        $results | Should -HaveCount 0
+        $errors | Should -HaveCount 1
+        $errors[0].Exception.Message | Should -Match 'Repository root not found'
+        $errors[0].Exception.Message | Should -Match ([regex]::Escape($missing))
+    }
+
+    It 'tags result objects with the discovered organization and repository' {
+        $root = Join-Path $TestDrive 'all-tagging-root'
+        $repoPath = New-LayoutRepo -Root $root -Organization 'org-name' -Name 'repo-name'
+
+        $result = @(Update-AllWorktrees -Path $root -WhatIf -Confirm:$false) | Select-Object -First 1
+
+        $result.Organization | Should -BeExactly 'org-name'
+        $result.Repository | Should -BeExactly 'repo-name'
+        $result.Path | Should -BeExactly (Resolve-Path -LiteralPath $repoPath).Path
+        $result.WorktreeResults | Should -BeNullOrEmpty
+    }
+
+    It 'updates an offline local repository end-to-end' {
+        $root = Join-Path $TestDrive 'all-e2e-root'
+        $origin = Join-Path $TestDrive 'all-e2e-origin.git'
+        Invoke-Git @('init', '--bare', '-b', 'main', '--quiet', $origin)
+
+        $seed = Join-Path $TestDrive 'all-e2e-seed'
+        Invoke-Git @('clone', '--quiet', $origin, $seed)
+        Set-TestRepoConfig $seed
+        Set-Content -Path (Join-Path $seed 'README.md') -Value 'initial' -NoNewline
+        Invoke-Git @('-C', $seed, 'add', 'README.md')
+        Invoke-TestCommit -Path $seed -Message 'init'
+        Invoke-Git @('-C', $seed, 'push', '-u', 'origin', 'main', '--quiet')
+
+        $target = Join-Path (Join-Path (Join-Path $root 'alpha') 'offline') 'main'
+        Invoke-Git @('clone', '--quiet', $origin, $target)
+        Set-TestRepoConfig $target
+
+        $results = @(Update-AllWorktrees -Path $root -NoGitHubAccountResolve -ThrottleLimit 2)
+
+        $results | Should -HaveCount 1
+        $results[0].Organization | Should -BeExactly 'alpha'
+        $results[0].Repository | Should -BeExactly 'offline'
+        $results[0].Status | Should -Be 'Completed'
+        $results[0].Error | Should -BeNullOrEmpty
+        $worktreeResult = @($results[0].WorktreeResults | Where-Object Branch -eq 'main')
+        $worktreeResult | Should -HaveCount 1
+        $worktreeResult[0].Status | Should -Be 'Current'
+    }
+}
+
 Describe 'Update-Worktrees' {
     It 'keeps each dirty worktree change with its own worktree while fast-forwarding' -Skip:(-not (Get-Command git -ErrorAction SilentlyContinue)) {
         $origin = Join-Path $TestDrive 'origin.git'

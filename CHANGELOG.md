@@ -16,6 +16,9 @@ between releases this file tracks catalog-level changes under `[Unreleased]`.
   also fails fast if a module declares functions but has no `Public` folder.
 
 ### Added
+- New `Shmuelie.VisualStudio` module: Visual Studio version discovery and nested
+  developer shell launch helpers, wired into build, publish workflow, tests, and
+  documentation.
 - New `Shmuelie.Windows` module for six Windows-only cmdlets moved out of `Shmuelie.Utilities`; `Shmuelie.Utilities` is bumped to 0.3.0 for the breaking catalog change.
 - New `Shmuelie.Dsc` module: class-based DSC v3 resources (`SavePSResource`,
   `SymbolicLink`, `CopilotPlugin`, `CopilotMarketplace`, `UvTool`), wired into

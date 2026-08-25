@@ -22,6 +22,7 @@ are:
 | Shmuelie.Git | 612.0 ms |
 | Shmuelie.Copilot | 536.0 ms |
 | Shmuelie.Node | 344.3 ms |
+| Shmuelie.VisualStudio | Not yet measured |
 | **Combined** | **1981.0 ms** |
 
 `Shmuelie.Git` still performs predictor registration during import when the
@@ -111,3 +112,16 @@ Highlights:
 - `CopilotPlugin` and `CopilotMarketplace` install GitHub Copilot CLI plugins
   and register marketplaces.
 - `UvTool` installs a Python tool via `uv tool install`.
+
+## Shmuelie.VisualStudio
+
+Visual Studio developer shell helpers for PowerShell. **Version 0.1.0.**
+[README](https://github.com/shmuelie/powershell-modules/blob/main/modules/Shmuelie.VisualStudio/README.md)
+
+Highlights:
+
+- `Get-InstalledVsVersion` lists installed Visual Studio years that have a
+  matching `Set-VS<year>` command available.
+- `Start-DevShell` launches a nested `pwsh` inline with `VSDEV_VERSION`,
+  `VSDEV_ARCH`, `VSDEV_HOSTARCH`, and a clean login `PATH` for profile-driven
+  Visual Studio environment loading.
