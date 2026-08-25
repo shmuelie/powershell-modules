@@ -6,6 +6,14 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+### Added
+- `Start-Copilot` / `Get-CopilotLaunchPlan` gained `-AssistedApproval`
+  (`--assisted-approval`), `-AllowAllTools` (`--allow-all-tools`, which implies
+  not passing `--allow-all`), and `-UsageOutputFile` (`--usage-output-file`).
+- `-EnableMcpServer` now also passes the CLI's native `--enable-mcp-server`, so a
+  server disabled in the Copilot settings is enabled for the run — in addition
+  to overriding the path-based `autoConnect` policy.
+
 ## [0.2.0] - 2026-08-21
 
 ### Added
