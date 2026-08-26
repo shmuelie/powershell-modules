@@ -26,6 +26,18 @@ Versions change only when a release is cut; unreleased work stays under
   (`Shmuelie.Windows.Cmdlets.dll`) backed by the Win32 `DefineDosDevice` /
   `QueryDosDevice` APIs instead of shelling out to `subst.exe`. Public behavior
   is unchanged.
+- Converted `Get-AppInstallerApp` and `Update-AppInstallerApp` from script
+  functions into compiled C# binary cmdlets. They now read App Installer
+  metadata and trigger updates through the in-process WinRT
+  `Windows.Management.Deployment.PackageManager` API
+  (`FindPackagesForUser` / `GetAppInstallerInfo` /
+  `AddPackageByAppInstallerFileAsync`), removing the shell-out to Windows
+  PowerShell 5.1. Because that API requires a Windows-targeted assembly
+  (`Shmuelie.Windows.AppInstaller.dll`, `net8.0-windows10.0.19041.0`) that
+  cannot load on Linux/macOS, these two cmdlets are now available only on
+  Windows; the rest of the module still imports on any platform. The emitted
+  object shape (`Shmuelie.Windows.AppInstallerApplication`) and the update
+  matching / update-all / `-WhatIf` behavior are unchanged.
 
 ## [0.1.0] - 2026-08-25
 
