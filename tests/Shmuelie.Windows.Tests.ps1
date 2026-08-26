@@ -346,34 +346,72 @@ Describe 'Windows Terminal settings parsing' -Skip:(-not $IsWindows) {
 }
 
 Describe 'Get-ServiceProcess' -Skip:(-not $IsWindows) {
-    It 'returns the hosting process when a single running service is matched' {
-        $fakeProcess = [PSCustomObject]@{
-            Id          = 4242
-            ProcessName = 'svchost'
-        }
-        Mock -ModuleName Shmuelie.Windows Get-CimInstance {
-            [PSCustomObject]@{
-                Name      = 'ExampleSvc'
-                ProcessId = 4242
-                PathName  = 'C:\Windows\System32\svchost.exe -k netsvcs'
-            }
-        }
-        Mock -ModuleName Shmuelie.Windows Get-Service {
-            [PSCustomObject]@{
-                Name        = 'ExampleSvc'
-                DisplayName = 'Example Service'
-                Status      = 'Running'
-            }
-        }
-        Mock -ModuleName Shmuelie.Windows Get-Process { $fakeProcess } -ParameterFilter { $Id -eq 4242 }
+    BeforeAll {
+        $script:runningService = Get-Service -ErrorAction SilentlyContinue |
+            Where-Object { $_.Status -eq 'Running' } |
+            Select-Object -First 1
+    }
 
-        $process = Get-ServiceProcess -Name ExampleSvc
+    It 'is a compiled binary cmdlet' {
+        (Get-Command Get-ServiceProcess).CommandType | Should -Be 'Cmdlet'
+    }
 
-        $process.Id | Should -Be 4242
-        $process.ProcessName | Should -BeExactly 'svchost'
-        Should -Invoke -ModuleName Shmuelie.Windows Get-CimInstance -Times 1
-        Should -Invoke -ModuleName Shmuelie.Windows Get-Service -Times 1
-        Should -Invoke -ModuleName Shmuelie.Windows Get-Process -Times 1 -ParameterFilter { $Id -eq 4242 }
+    It 'returns the hosting process for a single running service' {
+        if (-not $script:runningService) { Set-ItResult -Skipped -Because 'no running service is available' }
+        $result = Get-ServiceProcess -Name $script:runningService.Name
+
+        $result | Should -Not -BeNullOrEmpty
+        $result.Id | Should -BeGreaterThan 0
+        $result.ProcessName | Should -Not -BeNullOrEmpty
+    }
+
+    It 'returns a System.Diagnostics.Process when a single running service is matched' {
+        if (-not $script:runningService) { Set-ItResult -Skipped -Because 'no running service is available' }
+        $result = Get-ServiceProcess -Name $script:runningService.Name
+
+        $result | Should -BeOfType [System.Diagnostics.Process]
+        $realProcess = Get-Process -Id $result.Id -ErrorAction Stop
+        $result.Id | Should -Be $realProcess.Id
+    }
+
+    It 'accepts pipeline input from Get-Service' {
+        if (-not $script:runningService) { Set-ItResult -Skipped -Because 'no running service is available' }
+        $result = Get-Service -Name $script:runningService.Name | Get-ServiceProcess
+
+        $result | Should -Not -BeNullOrEmpty
+        $result.Id | Should -BeGreaterThan 0
+    }
+
+    It 'accepts input by property name from a custom object' {
+        if (-not $script:runningService) { Set-ItResult -Skipped -Because 'no running service is available' }
+        $result = [pscustomobject]@{ Name = $script:runningService.Name } | Get-ServiceProcess
+
+        $result | Should -Not -BeNullOrEmpty
+        $result.Id | Should -BeGreaterThan 0
+    }
+
+    It 'supports wildcards in -Name and emits ServiceProcessInfo objects for multiple matches' {
+        $results = @(Get-ServiceProcess -Name '*')
+
+        $results.Count | Should -BeGreaterThan 1
+        $results[0].PSObject.TypeNames | Should -Contain 'Shmuelie.Windows.Cmdlets.ServiceProcessInfo'
+        if ($script:runningService) {
+            $results.Name | Should -Contain $script:runningService.Name
+        }
+    }
+
+    It 'writes a non-terminating error when no service matches' {
+        Get-ServiceProcess -Name 'ThisServiceDoesNotExist_ZZZ*' -ErrorVariable svcErr -ErrorAction SilentlyContinue |
+            Out-Null
+
+        $svcErr | Should -Not -BeNullOrEmpty
+        [string]$svcErr[0] | Should -BeLike "*No service matched*"
+    }
+
+    It 'does not reconfigure anything with -PerService -WhatIf' {
+        if (-not $script:runningService) { Set-ItResult -Skipped -Because 'no running service is available' }
+        { Get-ServiceProcess -Name $script:runningService.Name -PerService -WhatIf } |
+            Should -Not -Throw
     }
 }
 

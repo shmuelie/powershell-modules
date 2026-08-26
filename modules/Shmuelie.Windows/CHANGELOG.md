@@ -14,6 +14,13 @@ Versions change only when a release is cut; unreleased work stays under
   of shelling out to `reg.exe`), guaranteeing each hive is unmounted even when a
   read fails. Public behavior — the `-Scope` values, emitted object shape, and
   `-WhatIf` preview of the mount/unmount operations — is unchanged.
+- Converted `Get-ServiceProcess` from a script function into a compiled C#
+  binary cmdlet (`Shmuelie.Windows.Cmdlets.dll`). The hosting process id and
+  status are now resolved through the Win32 Service Control Manager APIs
+  (`OpenSCManager` / `OpenService` / `QueryServiceStatusEx`), the binary command
+  line through `QueryServiceConfig`, and `-PerService` reconfigures a service to
+  its own process through `ChangeServiceConfig` instead of shelling out to
+  `sc.exe`. Public behavior and output shape are unchanged.
 - Converted `Get-SubstDrive`, `New-SubstDrive`, and `Remove-SubstDrive` from
   script functions into compiled C# binary cmdlets
   (`Shmuelie.Windows.Cmdlets.dll`) backed by the Win32 `DefineDosDevice` /
