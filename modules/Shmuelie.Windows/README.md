@@ -18,6 +18,7 @@ Import-Module Shmuelie.Windows
 |---|---|
 | Inventory | `Get-InstalledApplications` |
 | Services | `Get-ServiceProcess` |
+| Virtual drives | `Get-SubstDrive`, `New-SubstDrive`, `Remove-SubstDrive` |
 | Windows Terminal | `Get-WindowsTerminalSettings`, `Get-WindowsTerminalProfile` |
 | Diagnostics | `Start-WindowsPerformanceRecorder`, `Stop-WindowsPerformanceRecorder` |
 
