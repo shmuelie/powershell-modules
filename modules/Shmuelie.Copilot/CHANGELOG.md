@@ -6,6 +6,8 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-25
+
 ### Added
 - `Start-Copilot` / `Get-CopilotLaunchPlan` gained `-AssistedApproval`
   (`--assisted-approval`), `-AllowAllTools` (`--allow-all-tools`, which implies

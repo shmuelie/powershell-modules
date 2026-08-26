@@ -6,6 +6,8 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-25
+
 ### Added
 - `Update-InstalledPSResource` updates PowerShell resources discovered under a
   caller-supplied module path without touching modules outside that path.
