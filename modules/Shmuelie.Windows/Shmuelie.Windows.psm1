@@ -7,12 +7,12 @@ $exportedCmdlets = @()
 $binaryModule = Join-Path $PSScriptRoot 'bin\Shmuelie.Windows.Cmdlets.dll'
 if (Test-Path $binaryModule) {
     Import-Module $binaryModule -Force -ErrorAction Stop
-    $exportedCmdlets = @('Get-SubstDrive', 'New-SubstDrive', 'Remove-SubstDrive')
+    $exportedCmdlets = @('Get-InstalledApplications', 'Get-SubstDrive', 'New-SubstDrive', 'Remove-SubstDrive')
 }
 
 $exportParams = @{
     Function = @(
-        'Get-AppInstallerApp', 'Get-InstalledApplications', 'Get-ServiceProcess',
+        'Get-AppInstallerApp', 'Get-ServiceProcess',
         'Get-WindowsTerminalSettings', 'Get-WindowsTerminalProfile',
         'Start-WindowsPerformanceRecorder', 'Stop-WindowsPerformanceRecorder',
         'Update-AppInstallerApp'

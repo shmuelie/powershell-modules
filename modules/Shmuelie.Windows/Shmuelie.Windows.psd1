@@ -9,12 +9,12 @@
     PowerShellVersion    = '7.4'
     CompatiblePSEditions = @('Core')
     FunctionsToExport    = @(
-        'Get-AppInstallerApp', 'Get-InstalledApplications', 'Get-ServiceProcess',
+        'Get-AppInstallerApp', 'Get-ServiceProcess',
         'Get-WindowsTerminalSettings', 'Get-WindowsTerminalProfile',
         'Start-WindowsPerformanceRecorder', 'Stop-WindowsPerformanceRecorder',
         'Update-AppInstallerApp'
     )
-    CmdletsToExport      = @('Get-SubstDrive', 'New-SubstDrive', 'Remove-SubstDrive')
+    CmdletsToExport      = @('Get-InstalledApplications', 'Get-SubstDrive', 'New-SubstDrive', 'Remove-SubstDrive')
     VariablesToExport    = @()
     AliasesToExport      = @()
     FormatsToProcess  = @('Windows.format.ps1xml')

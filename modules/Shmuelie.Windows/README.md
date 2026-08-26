@@ -17,7 +17,7 @@ Import-Module Shmuelie.Windows
 | Area | Commands |
 |---|---|
 | App Installer | `Get-AppInstallerApp`, `Update-AppInstallerApp` |
-| Inventory | `Get-InstalledApplications` |
+| Inventory | `Get-InstalledApplications` (compiled binary cmdlet) |
 | Services | `Get-ServiceProcess` |
 | Virtual drives | `Get-SubstDrive`, `New-SubstDrive`, `Remove-SubstDrive` (compiled binary cmdlets) |
 | Windows Terminal | `Get-WindowsTerminalSettings`, `Get-WindowsTerminalProfile` |
