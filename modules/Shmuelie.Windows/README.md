@@ -16,8 +16,10 @@ Import-Module Shmuelie.Windows
 
 | Area | Commands |
 |---|---|
+| App Installer | `Get-AppInstallerApp`, `Update-AppInstallerApp` |
 | Inventory | `Get-InstalledApplications` |
 | Services | `Get-ServiceProcess` |
+| Virtual drives | `Get-SubstDrive`, `New-SubstDrive`, `Remove-SubstDrive` |
 | Windows Terminal | `Get-WindowsTerminalSettings`, `Get-WindowsTerminalProfile` |
 | Diagnostics | `Start-WindowsPerformanceRecorder`, `Stop-WindowsPerformanceRecorder` |
 

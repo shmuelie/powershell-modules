@@ -9,9 +9,11 @@
     PowerShellVersion    = '7.4'
     CompatiblePSEditions = @('Core')
     FunctionsToExport    = @(
-        'Get-InstalledApplications', 'Get-ServiceProcess',
-        'Get-WindowsTerminalSettings', 'Get-WindowsTerminalProfile',
-        'Start-WindowsPerformanceRecorder', 'Stop-WindowsPerformanceRecorder'
+        'Get-AppInstallerApp', 'Get-InstalledApplications', 'Get-ServiceProcess',
+        'Get-SubstDrive', 'Get-WindowsTerminalSettings', 'Get-WindowsTerminalProfile',
+        'New-SubstDrive', 'Remove-SubstDrive',
+        'Start-WindowsPerformanceRecorder', 'Stop-WindowsPerformanceRecorder',
+        'Update-AppInstallerApp'
     )
     CmdletsToExport      = @()
     VariablesToExport    = @()
