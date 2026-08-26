@@ -35,5 +35,27 @@
       </TableControl>
     </View>
 
+    <!-- SubstDrive: Get-SubstDrive -->
+    <View>
+      <Name>SubstDrive</Name>
+      <ViewSelectedBy>
+        <TypeName>SubstDrive</TypeName>
+      </ViewSelectedBy>
+      <TableControl>
+        <TableHeaders>
+          <TableColumnHeader><Label>DriveLetter</Label><Width>11</Width></TableColumnHeader>
+          <TableColumnHeader><Label>TargetPath</Label></TableColumnHeader>
+        </TableHeaders>
+        <TableRowEntries>
+          <TableRowEntry>
+            <TableColumnItems>
+              <TableColumnItem><PropertyName>DriveLetter</PropertyName></TableColumnItem>
+              <TableColumnItem><PropertyName>TargetPath</PropertyName></TableColumnItem>
+            </TableColumnItems>
+          </TableRowEntry>
+        </TableRowEntries>
+      </TableControl>
+    </View>
+
   </ViewDefinitions>
 </Configuration>

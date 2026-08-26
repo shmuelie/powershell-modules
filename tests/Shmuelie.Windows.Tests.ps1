@@ -60,6 +60,27 @@ Describe 'Windows-only guards' {
             { Stop-WindowsPerformanceRecorder -File C:\trace.etl -Confirm:$false } |
                 Should -Throw '*Stop-WindowsPerformanceRecorder is only supported on Windows.*'
         }
+
+        It 'stops subst cmdlets before filesystem or subst helper access' {
+            InModuleScope Shmuelie.Windows {
+                Mock Test-IsWindowsPlatform { $false }
+                Mock Get-SubstDriveMapping { throw 'subst list side effect' }
+                Mock New-SubstDriveMapping { throw 'subst create side effect' }
+                Mock Remove-SubstDriveMapping { throw 'subst remove side effect' }
+                Mock Get-Item { throw 'filesystem side effect' }
+
+                { Get-SubstDrive } | Should -Throw '*Get-SubstDrive is only supported on Windows.*'
+                { New-SubstDrive -DriveLetter S -TargetPath C:\Missing -Confirm:$false } |
+                    Should -Throw '*New-SubstDrive is only supported on Windows.*'
+                { Remove-SubstDrive -DriveLetter S -Confirm:$false } |
+                    Should -Throw '*Remove-SubstDrive is only supported on Windows.*'
+
+                Should -Invoke Get-SubstDriveMapping -Times 0
+                Should -Invoke New-SubstDriveMapping -Times 0
+                Should -Invoke Remove-SubstDriveMapping -Times 0
+                Should -Invoke Get-Item -Times 0
+            }
+        }
     }
 
     Context 'when the platform is Windows' {
@@ -114,6 +135,196 @@ Describe 'Windows-only guards' {
 
         It 'allows Stop-WindowsPerformanceRecorder to reach ShouldProcess' {
             { Stop-WindowsPerformanceRecorder -File C:\trace.etl -WhatIf } | Should -Not -Throw
+        }
+    }
+}
+
+Describe 'Get-SubstDrive' {
+    BeforeEach {
+        Mock -ModuleName Shmuelie.Windows Test-IsWindowsPlatform { $true }
+    }
+
+    It 'returns typed objects from subst mappings' {
+        $targetOne = New-Item -ItemType Directory -Path (Join-Path $TestDrive 'TargetOne')
+        $targetTwo = New-Item -ItemType Directory -Path (Join-Path $TestDrive 'TargetTwo')
+
+        InModuleScope Shmuelie.Windows -Parameters @{ TargetOne = $targetOne.FullName; TargetTwo = $targetTwo.FullName } {
+            param($TargetOne, $TargetTwo)
+
+            Mock Get-SubstDriveMapping {
+                @(
+                    [PSCustomObject]@{ DriveLetter = 'S:'; TargetPath = $TargetOne }
+                    [PSCustomObject]@{ DriveLetter = 'T:'; TargetPath = $TargetTwo }
+                )
+            }
+
+            $drives = @(Get-SubstDrive)
+
+            $drives | Should -HaveCount 2
+            $drives[0].PSTypeNames[0] | Should -BeExactly 'SubstDrive'
+            $drives[0].DriveLetter | Should -BeExactly 'S:'
+            $drives[0].TargetPath | Should -BeExactly $TargetOne
+            $drives[1].DriveLetter | Should -BeExactly 'T:'
+            $drives[1].TargetPath | Should -BeExactly $TargetTwo
+            Should -Invoke Get-SubstDriveMapping -Times 1
+        }
+    }
+
+    It 'filters by drive letter with or without a colon' {
+        $targetOne = New-Item -ItemType Directory -Path (Join-Path $TestDrive 'FilterOne')
+        $targetTwo = New-Item -ItemType Directory -Path (Join-Path $TestDrive 'FilterTwo')
+
+        InModuleScope Shmuelie.Windows -Parameters @{ TargetOne = $targetOne.FullName; TargetTwo = $targetTwo.FullName } {
+            param($TargetOne, $TargetTwo)
+
+            Mock Get-SubstDriveMapping {
+                @(
+                    [PSCustomObject]@{ DriveLetter = 'S:'; TargetPath = $TargetOne }
+                    [PSCustomObject]@{ DriveLetter = 'T:'; TargetPath = $TargetTwo }
+                )
+            }
+
+            $drive = Get-SubstDrive -DriveLetter t:
+
+            $drive.DriveLetter | Should -BeExactly 'T:'
+            $drive.TargetPath | Should -BeExactly $TargetTwo
+        }
+    }
+}
+
+Describe 'New-SubstDrive' {
+    BeforeEach {
+        Mock -ModuleName Shmuelie.Windows Test-IsWindowsPlatform { $true }
+    }
+
+    It 'creates a mapping with normalized drive letter and resolved path' {
+        $target = New-Item -ItemType Directory -Path (Join-Path $TestDrive 'CreateTarget')
+
+        InModuleScope Shmuelie.Windows -Parameters @{ ExpectedTargetPath = $target.FullName } {
+            param($ExpectedTargetPath)
+
+            Mock Test-SubstDriveLetterInUse { $false }
+            Mock New-SubstDriveMapping { }
+
+            $drive = New-SubstDrive -DriveLetter s -TargetPath $ExpectedTargetPath -Confirm:$false
+
+            $drive.PSTypeNames[0] | Should -BeExactly 'SubstDrive'
+            $drive.DriveLetter | Should -BeExactly 'S:'
+            $drive.TargetPath | Should -BeExactly $ExpectedTargetPath
+            Should -Invoke Test-SubstDriveLetterInUse -Times 1 -ParameterFilter { $DriveLetter -eq 'S:' }
+            Should -Invoke New-SubstDriveMapping -Times 1 -ParameterFilter {
+                $DriveLetter -eq 'S:' -and $TargetPath -eq $ExpectedTargetPath
+            }
+        }
+    }
+
+    It 'does not create a mapping under WhatIf' {
+        $target = New-Item -ItemType Directory -Path (Join-Path $TestDrive 'WhatIfTarget')
+
+        InModuleScope Shmuelie.Windows -Parameters @{ TargetPath = $target.FullName } {
+            param($TargetPath)
+
+            Mock Test-SubstDriveLetterInUse { $false }
+            Mock New-SubstDriveMapping { throw 'subst create side effect' }
+
+            New-SubstDrive -DriveLetter S -TargetPath $TargetPath -WhatIf | Should -BeNullOrEmpty
+
+            Should -Invoke New-SubstDriveMapping -Times 0
+        }
+    }
+
+    It 'rejects invalid drive letters without invoking the create helper' -ForEach @(
+        @{ DriveLetter = '1' }
+        @{ DriveLetter = 'AB' }
+        @{ DriveLetter = 'S:&' }
+    ) {
+        $safeName = $DriveLetter -replace '[^A-Za-z0-9]', '_'
+        $target = New-Item -ItemType Directory -Path (Join-Path $TestDrive "Invalid-$safeName")
+
+        InModuleScope Shmuelie.Windows -Parameters @{ DriveLetter = $DriveLetter; TargetPath = $target.FullName } {
+            param($DriveLetter, $TargetPath)
+
+            Mock Test-SubstDriveLetterInUse { throw 'in-use helper side effect' }
+            Mock New-SubstDriveMapping { throw 'subst create side effect' }
+
+            { New-SubstDrive -DriveLetter $DriveLetter -TargetPath $TargetPath -Confirm:$false } |
+                Should -Throw '*DriveLetter must be a single letter A-Z*'
+
+            Should -Invoke Test-SubstDriveLetterInUse -Times 0
+            Should -Invoke New-SubstDriveMapping -Times 0
+        }
+    }
+
+    It 'rejects a non-existent target without invoking the create helper' {
+        $target = Join-Path $TestDrive 'MissingTarget'
+
+        InModuleScope Shmuelie.Windows -Parameters @{ TargetPath = $target } {
+            param($TargetPath)
+
+            Mock Test-SubstDriveLetterInUse { throw 'in-use helper side effect' }
+            Mock New-SubstDriveMapping { throw 'subst create side effect' }
+
+            { New-SubstDrive -DriveLetter S -TargetPath $TargetPath -Confirm:$false } |
+                Should -Throw '*TargetPath must be an existing directory*'
+
+            Should -Invoke Test-SubstDriveLetterInUse -Times 0
+            Should -Invoke New-SubstDriveMapping -Times 0
+        }
+    }
+
+    It 'rejects an already-used drive letter without invoking the create helper' {
+        $target = New-Item -ItemType Directory -Path (Join-Path $TestDrive 'UsedDriveTarget')
+
+        InModuleScope Shmuelie.Windows -Parameters @{ TargetPath = $target.FullName } {
+            param($TargetPath)
+
+            Mock Test-SubstDriveLetterInUse { $true }
+            Mock New-SubstDriveMapping { throw 'subst create side effect' }
+
+            { New-SubstDrive -DriveLetter S -TargetPath $TargetPath -Confirm:$false } |
+                Should -Throw '*Drive letter S: is already in use*'
+
+            Should -Invoke New-SubstDriveMapping -Times 0
+        }
+    }
+}
+
+Describe 'Remove-SubstDrive' {
+    BeforeEach {
+        Mock -ModuleName Shmuelie.Windows Test-IsWindowsPlatform { $true }
+    }
+
+    It 'removes an existing mapping by drive letter' {
+        InModuleScope Shmuelie.Windows {
+            Mock Get-SubstDriveMapping { [PSCustomObject]@{ DriveLetter = 'S:'; TargetPath = 'Target' } }
+            Mock Remove-SubstDriveMapping { }
+
+            Remove-SubstDrive -DriveLetter s -Confirm:$false
+
+            Should -Invoke Get-SubstDriveMapping -Times 1
+            Should -Invoke Remove-SubstDriveMapping -Times 1 -ParameterFilter { $DriveLetter -eq 'S:' }
+        }
+    }
+
+    It 'does not remove a mapping under WhatIf' {
+        InModuleScope Shmuelie.Windows {
+            Mock Get-SubstDriveMapping { [PSCustomObject]@{ DriveLetter = 'S:'; TargetPath = 'Target' } }
+            Mock Remove-SubstDriveMapping { throw 'subst remove side effect' }
+
+            Remove-SubstDrive -DriveLetter S -WhatIf
+
+            Should -Invoke Remove-SubstDriveMapping -Times 0
+        }
+    }
+
+    It 'accepts pipeline input by property name' {
+        InModuleScope Shmuelie.Windows {
+            Mock Get-SubstDriveMapping { [PSCustomObject]@{ DriveLetter = 'R:'; TargetPath = 'Target' } }
+            Mock Remove-SubstDriveMapping { }
+
+            [PSCustomObject]@{ DriveLetter = 'R:' } | Remove-SubstDrive -Confirm:$false
+
+            Should -Invoke Remove-SubstDriveMapping -Times 1 -ParameterFilter { $DriveLetter -eq 'R:' }
         }
     }
 }
