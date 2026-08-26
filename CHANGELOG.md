@@ -7,6 +7,10 @@ between releases this file tracks catalog-level changes under `[Unreleased]`.
 ## [Unreleased]
 
 ### Changed
+- `Build-Module.ps1` now compiles the `Shmuelie.Windows` binary cmdlet project
+  (`Shmuelie.Windows.Cmdlets.csproj`) into the staged `bin` folder, mirroring the
+  existing `Shmuelie.Git` predictor build. This establishes the reusable
+  C#-binary-cmdlet build/load/test pattern for the module.
 - Document expected module import startup costs in the generated documentation
   site.
 - `Build-Module.ps1` now stages optional module `Classes` folders for shared

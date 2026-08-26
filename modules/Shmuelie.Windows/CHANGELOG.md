@@ -6,6 +6,13 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+### Changed
+- Converted `Get-SubstDrive`, `New-SubstDrive`, and `Remove-SubstDrive` from
+  script functions into compiled C# binary cmdlets
+  (`Shmuelie.Windows.Cmdlets.dll`) backed by the Win32 `DefineDosDevice` /
+  `QueryDosDevice` APIs instead of shelling out to `subst.exe`. Public behavior
+  is unchanged.
+
 ## [0.1.0] - 2026-08-25
 
 ### Added
