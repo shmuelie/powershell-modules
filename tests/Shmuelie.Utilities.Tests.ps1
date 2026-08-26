@@ -326,3 +326,83 @@ Describe 'Repair-GlobalJson' {
         (Get-Content $globalJson -Raw).Trim() | Should -BeExactly $original
     }
 }
+
+Describe 'Update-InstalledPSResource' {
+    BeforeEach {
+        $global:ShmuelieUtilitiesObservedPSResourceUpdates = @()
+        $script:OriginalTestPSModulePath = $env:PSModulePath
+
+        function New-TestInstalledResource {
+            param(
+                [Parameter(Mandatory)]
+                [string]$Root,
+
+                [Parameter(Mandatory)]
+                [string]$Name,
+
+                [string]$Version = '1.0.0'
+            )
+
+            $moduleRoot = Join-Path $Root $Name
+            $versionRoot = Join-Path $moduleRoot $Version
+            New-Item -ItemType Directory -Path $versionRoot -Force | Out-Null
+            New-ModuleManifest -Path (Join-Path $versionRoot "$Name.psd1") -RootModule "$Name.psm1" -ModuleVersion $Version
+            Set-Content -Path (Join-Path $versionRoot "$Name.psm1") -Value "function Get-$Name { '$Name' }"
+        }
+
+        Mock -ModuleName Shmuelie.Utilities Update-PSResource {
+            $global:ShmuelieUtilitiesObservedPSResourceUpdates += [PSCustomObject]@{
+                Name         = $Name
+                PSModulePath = $env:PSModulePath
+            }
+        }
+    }
+
+    AfterEach {
+        $env:PSModulePath = $script:OriginalTestPSModulePath
+        Remove-Variable -Name ShmuelieUtilitiesObservedPSResourceUpdates -Scope Global -ErrorAction SilentlyContinue
+    }
+
+    It 'updates each module discovered under the supplied path only' {
+        $modulesPath = Join-Path $TestDrive 'ModulesUpdate'
+        $otherPath = Join-Path $TestDrive 'OtherModules'
+        New-TestInstalledResource -Root $modulesPath -Name 'ModuleA'
+        New-TestInstalledResource -Root $modulesPath -Name 'ModuleB'
+        New-TestInstalledResource -Root $otherPath -Name 'ModuleC'
+
+        Update-InstalledPSResource -Path $modulesPath -Confirm:$false
+
+        Should -Invoke -ModuleName Shmuelie.Utilities Update-PSResource -Scope It -Times 1 -ParameterFilter { $Name -eq 'ModuleA' }
+        Should -Invoke -ModuleName Shmuelie.Utilities Update-PSResource -Scope It -Times 1 -ParameterFilter { $Name -eq 'ModuleB' }
+        Should -Invoke -ModuleName Shmuelie.Utilities Update-PSResource -Scope It -Times 0 -ParameterFilter { $Name -eq 'ModuleC' }
+        $global:ShmuelieUtilitiesObservedPSResourceUpdates.Name | Sort-Object | Should -Be @('ModuleA', 'ModuleB')
+        $global:ShmuelieUtilitiesObservedPSResourceUpdates.PSModulePath | Select-Object -Unique | Should -Be (Resolve-Path -LiteralPath $modulesPath).ProviderPath
+    }
+
+    It 'does not update modules under WhatIf' {
+        $modulesPath = Join-Path $TestDrive 'ModulesWhatIf'
+        New-TestInstalledResource -Root $modulesPath -Name 'ModuleA'
+
+        Update-InstalledPSResource -Path $modulesPath -WhatIf
+
+        Should -Invoke -ModuleName Shmuelie.Utilities Update-PSResource -Scope It -Times 0
+        $global:ShmuelieUtilitiesObservedPSResourceUpdates | Should -BeNullOrEmpty
+    }
+
+    It 'does nothing for an empty path' {
+        $modulesPath = Join-Path $TestDrive 'EmptyModules'
+        New-Item -ItemType Directory -Path $modulesPath -Force | Out-Null
+
+        { Update-InstalledPSResource -Path $modulesPath -Confirm:$false } | Should -Not -Throw
+
+        $global:ShmuelieUtilitiesObservedPSResourceUpdates | Should -BeNullOrEmpty
+    }
+
+    It 'does nothing for a missing path' {
+        $modulesPath = Join-Path $TestDrive 'MissingModules'
+
+        { Update-InstalledPSResource -Path $modulesPath -Confirm:$false } | Should -Not -Throw
+
+        $global:ShmuelieUtilitiesObservedPSResourceUpdates | Should -BeNullOrEmpty
+    }
+}
