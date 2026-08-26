@@ -26,6 +26,7 @@
         'Format-Duration',
         'Get-UvPackages',
         'Update-UvPackage',
+        'Update-InstalledPSResource',
         'Start-VsCode',
         'Start-VsCodeChat',
         'Get-VsCodeExtension',

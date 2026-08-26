@@ -20,6 +20,7 @@ Import-Module Shmuelie.Utilities
 | Terminal | `Reset-TerminalModes` |
 | .NET tools | `Get-DotNetTool`, `Install-DotNetTool`, `Update-DotNetTool`, `Uninstall-DotNetTool` |
 | Python | `Get-PipPackages`, `Update-PipPackage`, `Get-UvPackages`, `Update-UvPackage` |
+| PowerShell resources | `Update-InstalledPSResource` |
 | VS Code | `Start-VsCode`, `Start-VsCodeChat`, `Get-VsCodeExtension`, `Install-VsCodeExtension`, `Uninstall-VsCodeExtension`, `Update-VsCodeExtension` |
 
 ## Highlights
@@ -28,14 +29,15 @@ Import-Module Shmuelie.Utilities
   alternate screen, bracketed paste, kitty keyboard flags) by a crashed TUI.
 - `Invoke-InLocation` runs a script block in a location and always returns, even
   on Ctrl+C.
-- Tool helpers list and update .NET global tools, Python packages, uv tools, and
-  VS Code extensions.
+- Tool helpers list and update .NET global tools, Python packages, uv tools,
+  PowerShell resources in caller-supplied module paths, and VS Code extensions.
 
 ## Examples
 
 ```powershell
 if (Test-IsElevated) { 'admin' }
 Get-DotNetTool | Update-DotNetTool
+Update-InstalledPSResource -Path (Join-Path $HOME 'PowerShellModules')
 Reset-TerminalModes
 ```
 
