@@ -7,6 +7,7 @@
       <Name>ServiceProcess</Name>
       <ViewSelectedBy>
         <TypeName>ServiceProcess</TypeName>
+        <TypeName>Shmuelie.Windows.Cmdlets.ServiceProcessInfo</TypeName>
       </ViewSelectedBy>
       <TableControl>
         <TableHeaders>
