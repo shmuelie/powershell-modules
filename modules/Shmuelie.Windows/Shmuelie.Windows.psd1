@@ -10,12 +10,11 @@
     CompatiblePSEditions = @('Core')
     FunctionsToExport    = @(
         'Get-AppInstallerApp', 'Get-InstalledApplications', 'Get-ServiceProcess',
-        'Get-SubstDrive', 'Get-WindowsTerminalSettings', 'Get-WindowsTerminalProfile',
-        'New-SubstDrive', 'Remove-SubstDrive',
+        'Get-WindowsTerminalSettings', 'Get-WindowsTerminalProfile',
         'Start-WindowsPerformanceRecorder', 'Stop-WindowsPerformanceRecorder',
         'Update-AppInstallerApp'
     )
-    CmdletsToExport      = @()
+    CmdletsToExport      = @('Get-SubstDrive', 'New-SubstDrive', 'Remove-SubstDrive')
     VariablesToExport    = @()
     AliasesToExport      = @()
     FormatsToProcess  = @('Windows.format.ps1xml')

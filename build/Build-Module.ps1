@@ -65,6 +65,24 @@ if ($Module -eq 'Shmuelie.Git') {
     Remove-Item $predictorBuild -Recurse -Force
 }
 
+if ($Module -eq 'Shmuelie.Windows') {
+    $bin = Join-Path $stage 'bin'
+    $cmdletsBuild = Join-Path $OutputPath '.windows-cmdlets-build'
+    if (Test-Path $cmdletsBuild) {
+        Remove-Item $cmdletsBuild -Recurse -Force
+    }
+    New-Item $bin -ItemType Directory -Force | Out-Null
+    dotnet build (Join-Path $source 'Cmdlets\Shmuelie.Windows.Cmdlets.csproj') `
+        --configuration Release `
+        --output $cmdletsBuild `
+        --nologo
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Shmuelie.Windows.Cmdlets build failed.'
+    }
+    Copy-Item (Join-Path $cmdletsBuild 'Shmuelie.Windows.Cmdlets.dll') $bin
+    Remove-Item $cmdletsBuild -Recurse -Force
+}
+
 $stagedManifest = Join-Path $stage "$Module.psd1"
 Test-ModuleManifest $stagedManifest -ErrorAction Stop | Out-Null
 Import-Module $stagedManifest -Force -ErrorAction Stop

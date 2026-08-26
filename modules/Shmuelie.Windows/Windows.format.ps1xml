@@ -40,6 +40,7 @@
       <Name>SubstDrive</Name>
       <ViewSelectedBy>
         <TypeName>SubstDrive</TypeName>
+        <TypeName>Shmuelie.Windows.Cmdlets.SubstDrive</TypeName>
       </ViewSelectedBy>
       <TableControl>
         <TableHeaders>
