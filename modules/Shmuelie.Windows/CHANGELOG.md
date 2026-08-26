@@ -7,6 +7,13 @@ Versions change only when a release is cut; unreleased work stays under
 ## [Unreleased]
 
 ### Changed
+- Converted `Get-InstalledApplications` from a script function into a compiled
+  C# binary cmdlet (`Shmuelie.Windows.Cmdlets.dll`). It now enumerates the
+  uninstall registry keys through `Microsoft.Win32.RegistryKey` and mounts
+  offline user hives with the Win32 `RegLoadKey` / `RegUnLoadKey` APIs (instead
+  of shelling out to `reg.exe`), guaranteeing each hive is unmounted even when a
+  read fails. Public behavior — the `-Scope` values, emitted object shape, and
+  `-WhatIf` preview of the mount/unmount operations — is unchanged.
 - Converted `Get-ServiceProcess` from a script function into a compiled C#
   binary cmdlet (`Shmuelie.Windows.Cmdlets.dll`). The hosting process id and
   status are now resolved through the Win32 Service Control Manager APIs

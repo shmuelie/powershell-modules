@@ -36,19 +36,6 @@ Describe 'Windows-only guards' {
             Mock -ModuleName Shmuelie.Windows Test-IsWindowsPlatform { $false }
         }
 
-        It 'stops Get-InstalledApplications before registry or profile lookups' {
-            Mock -ModuleName Shmuelie.Windows Test-IsElevated { throw 'elevation side effect' }
-            Mock -ModuleName Shmuelie.Windows Get-CimInstance { throw 'profile side effect' }
-            Mock -ModuleName Shmuelie.Windows Get-ItemProperty { throw 'registry side effect' }
-
-            { Get-InstalledApplications -Scope GlobalAndAllUsers } |
-                Should -Throw '*Get-InstalledApplications is only supported on Windows.*'
-
-            Should -Invoke -ModuleName Shmuelie.Windows Test-IsElevated -Times 0
-            Should -Invoke -ModuleName Shmuelie.Windows Get-CimInstance -Times 0
-            Should -Invoke -ModuleName Shmuelie.Windows Get-ItemProperty -Times 0
-        }
-
         It 'stops Get-WindowsTerminalSettings before filesystem access' {
             Mock -ModuleName Shmuelie.Windows Test-Path { throw 'filesystem side effect' }
             Mock -ModuleName Shmuelie.Windows Get-Content { throw 'content side effect' }
@@ -107,15 +94,6 @@ Describe 'Windows-only guards' {
     Context 'when the platform is Windows' {
         BeforeEach {
             Mock -ModuleName Shmuelie.Windows Test-IsWindowsPlatform { $true }
-        }
-
-        It 'allows Get-InstalledApplications to query global registry paths' {
-            Mock -ModuleName Shmuelie.Windows Get-ItemProperty { [PSCustomObject]@{ DisplayName = 'Example App' } }
-
-            $apps = @(Get-InstalledApplications -Scope Global)
-
-            $apps | Should -HaveCount 2
-            Should -Invoke -ModuleName Shmuelie.Windows Get-ItemProperty -Times 2
         }
 
         It 'allows Get-WindowsTerminalSettings to read settings JSON' {
@@ -261,67 +239,65 @@ Describe 'subst drive integration' -Skip:(-not $IsWindows) {
     }
 }
 
-Describe 'Get-InstalledApplications all-user hive handling' -Skip:(-not $IsWindows) {
-    BeforeEach {
-        Mock -ModuleName Shmuelie.Windows Test-IsElevated { $true }
-        Mock -ModuleName Shmuelie.Windows Get-CimInstance {
-            [PSCustomObject]@{
-                LocalPath = 'C:\Users\OfflineUser'
-                SID       = 'S-1-5-21-1000'
-                Loaded    = $false
-                Special   = $false
-            }
-        } -ParameterFilter { $ClassName -eq 'Win32_UserProfile' }
-        Mock -ModuleName Shmuelie.Windows Test-Path { $true } -ParameterFilter { $Path -eq 'C:\Users\OfflineUser\NTUSER.DAT' }
+Describe 'Get-InstalledApplications' -Skip:(-not $IsWindows) {
+    $isElevated = $IsWindows -and ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+
+    It 'is a compiled binary cmdlet' {
+        (Get-Command Get-InstalledApplications).CommandType | Should -Be 'Cmdlet'
     }
 
-    It 'does not load or unload offline hives under WhatIf' {
-        Mock -ModuleName Shmuelie.Windows Invoke-RegistryHiveCommand { throw 'REG should not be invoked under WhatIf' }
-        Mock -ModuleName Shmuelie.Windows Get-ItemProperty { throw 'Offline hive should not be read when WhatIf skips loading' }
+    It 'returns machine-wide applications carrying a DisplayName' {
+        # Every Windows install has HKLM uninstall entries; no elevation needed.
+        $apps = @(Get-InstalledApplications -Scope Global)
 
-        Get-InstalledApplications -Scope AllUsers -WhatIf | Should -BeNullOrEmpty
-
-        Should -Invoke -ModuleName Shmuelie.Windows Invoke-RegistryHiveCommand -Times 0
-        Should -Invoke -ModuleName Shmuelie.Windows Get-ItemProperty -Times 0
+        $apps.Count | Should -BeGreaterThan 0
+        $named = @($apps | Where-Object { $_.DisplayName })
+        $named.Count | Should -BeGreaterThan 0
+        $named[0].PSTypeNames | Should -Contain 'System.Management.Automation.PSCustomObject'
+        $named[0].PSObject.Properties.Name | Should -Contain 'PSChildName'
     }
 
-    It 'surfaces failed loads and skips dependent reads' {
-        Mock -ModuleName Shmuelie.Windows Invoke-RegistryHiveCommand { 5 } -ParameterFilter { $Action -eq 'LOAD' }
-        Mock -ModuleName Shmuelie.Windows Invoke-RegistryHiveCommand { throw 'Unload should not run after a failed load' } -ParameterFilter { $Action -eq 'UNLOAD' }
-        Mock -ModuleName Shmuelie.Windows Get-ItemProperty { throw 'Offline hive should not be read after a failed load' }
-        Mock -ModuleName Shmuelie.Windows Write-Warning { }
+    It 'shapes each uninstall subkey value into a note property on the emitted object' {
+        $keyName = "ShmuelieWindowsPesterApp_$([guid]::NewGuid().ToString('N'))"
+        $key = "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\$keyName"
+        try {
+            New-Item -Path $key -Force | Out-Null
+            Set-ItemProperty -Path $key -Name DisplayName -Value 'Pester Fake App'
+            Set-ItemProperty -Path $key -Name DisplayVersion -Value '9.9.9'
 
-        Get-InstalledApplications -Scope AllUsers | Should -BeNullOrEmpty
+            $match = @(Get-InstalledApplications -Scope CurrentUser |
+                Where-Object { $_.PSChildName -eq $keyName })
 
-        Should -Invoke -ModuleName Shmuelie.Windows Invoke-RegistryHiveCommand -Times 1 -ParameterFilter { $Action -eq 'LOAD' }
-        Should -Invoke -ModuleName Shmuelie.Windows Invoke-RegistryHiveCommand -Times 0 -ParameterFilter { $Action -eq 'UNLOAD' }
-        Should -Invoke -ModuleName Shmuelie.Windows Get-ItemProperty -Times 0
-        Should -Invoke -ModuleName Shmuelie.Windows Write-Warning -Times 1 -ParameterFilter { $Message -like '*REG LOAD exited with code 5*' }
+            $match | Should -HaveCount 1
+            $match[0].DisplayName | Should -BeExactly 'Pester Fake App'
+            $match[0].DisplayVersion | Should -BeExactly '9.9.9'
+        }
+        finally {
+            Remove-Item -Path $key -Recurse -Force -ErrorAction SilentlyContinue
+        }
     }
 
-    It 'unloads offline hives in a finally block when reads throw' {
-        Mock -ModuleName Shmuelie.Windows Invoke-RegistryHiveCommand { 0 } -ParameterFilter { $Action -eq 'LOAD' }
-        Mock -ModuleName Shmuelie.Windows Invoke-RegistryHiveCommand { 0 } -ParameterFilter { $Action -eq 'UNLOAD' }
-        Mock -ModuleName Shmuelie.Windows Get-ItemProperty { throw 'read failed' }
+    It 'previews AllUsers under -WhatIf without elevation and without mounting a hive' {
+        # -WhatIf performs no offline mount, so it must not require elevation and
+        # must not surface any load/unload failure warnings.
+        $warnings = $null
+        { Get-InstalledApplications -Scope AllUsers -WhatIf -WarningVariable warnings -WarningAction SilentlyContinue } |
+            Should -Not -Throw
 
-        { Get-InstalledApplications -Scope AllUsers } | Should -Throw '*read failed*'
-
-        Should -Invoke -ModuleName Shmuelie.Windows Invoke-RegistryHiveCommand -Times 1 -ParameterFilter { $Action -eq 'LOAD' }
-        Should -Invoke -ModuleName Shmuelie.Windows Invoke-RegistryHiveCommand -Times 1 -ParameterFilter { $Action -eq 'UNLOAD' }
+        @($warnings | Where-Object { $_ -like '*Failed to load*' -or $_ -like '*Failed to unload*' }) |
+            Should -BeNullOrEmpty
     }
 
-    It 'surfaces failed unloads' {
-        Mock -ModuleName Shmuelie.Windows Invoke-RegistryHiveCommand { 0 } -ParameterFilter { $Action -eq 'LOAD' }
-        Mock -ModuleName Shmuelie.Windows Invoke-RegistryHiveCommand { 7 } -ParameterFilter { $Action -eq 'UNLOAD' }
-        Mock -ModuleName Shmuelie.Windows Get-ItemProperty { [PSCustomObject]@{ DisplayName = 'Example App' } }
-        Mock -ModuleName Shmuelie.Windows Write-Warning { }
+    It 'requires an elevated session for AllUsers when not previewing' -Skip:($isElevated) {
+        { Get-InstalledApplications -Scope AllUsers } |
+            Should -Throw '*requires an elevated*'
+    }
 
-        $apps = @(Get-InstalledApplications -Scope AllUsers)
-
-        $apps | Should -HaveCount 2
-        Should -Invoke -ModuleName Shmuelie.Windows Invoke-RegistryHiveCommand -Times 1 -ParameterFilter { $Action -eq 'LOAD' }
-        Should -Invoke -ModuleName Shmuelie.Windows Invoke-RegistryHiveCommand -Times 1 -ParameterFilter { $Action -eq 'UNLOAD' }
-        Should -Invoke -ModuleName Shmuelie.Windows Write-Warning -Times 1 -ParameterFilter { $Message -like '*REG UNLOAD exited with code 7*' }
+    It 'mounts and unmounts offline hives without throwing when elevated' -Skip:(-not $isElevated) {
+        # Real offline-hive coverage: exercises RegLoadKey/RegUnLoadKey against
+        # the machine's actual unmounted profiles. Requires elevation.
+        { Get-InstalledApplications -Scope AllUsers -WarningAction SilentlyContinue | Out-Null } |
+            Should -Not -Throw
     }
 }
 
