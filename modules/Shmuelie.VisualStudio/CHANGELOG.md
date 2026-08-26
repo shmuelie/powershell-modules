@@ -6,6 +6,8 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-08-25
+
 ### Added
 - Initial `Shmuelie.VisualStudio` module with `Get-InstalledVsVersion` for
   discoverable Visual Studio years and `Start-DevShell` for launching a nested

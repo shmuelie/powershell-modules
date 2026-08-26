@@ -6,6 +6,8 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-08-25
+
 ### Added
 - Added `Update-AllWorktrees` to discover repositories under a configurable root
   and update each repository in parallel with org/repo tagging and filters.
