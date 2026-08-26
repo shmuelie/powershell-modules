@@ -16,6 +16,7 @@ Import-Module Shmuelie.Windows
 
 | Area | Commands |
 |---|---|
+| App Installer | `Get-AppInstallerApp`, `Update-AppInstallerApp` |
 | Inventory | `Get-InstalledApplications` |
 | Services | `Get-ServiceProcess` |
 | Windows Terminal | `Get-WindowsTerminalSettings`, `Get-WindowsTerminalProfile` |
