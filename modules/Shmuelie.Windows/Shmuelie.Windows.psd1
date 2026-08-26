@@ -10,7 +10,8 @@
     CompatiblePSEditions = @('Core')
     FunctionsToExport    = @(
         'Get-AppInstallerApp', 'Get-InstalledApplications', 'Get-ServiceProcess',
-        'Get-WindowsTerminalSettings', 'Get-WindowsTerminalProfile',
+        'Get-SubstDrive', 'Get-WindowsTerminalSettings', 'Get-WindowsTerminalProfile',
+        'New-SubstDrive', 'Remove-SubstDrive',
         'Start-WindowsPerformanceRecorder', 'Stop-WindowsPerformanceRecorder',
         'Update-AppInstallerApp'
     )
