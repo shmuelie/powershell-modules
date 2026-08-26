@@ -81,6 +81,26 @@ Describe 'Windows-only guards' {
                 Should -Invoke Get-Item -Times 0
             }
         }
+
+        It 'stops Get-AppInstallerApp before shelling out to Windows PowerShell' {
+            Mock -ModuleName Shmuelie.Windows Invoke-AppInstallerEnumeration { throw 'shell-out side effect' }
+
+            { Get-AppInstallerApp } |
+                Should -Throw '*Get-AppInstallerApp is only supported on Windows.*'
+
+            Should -Invoke -ModuleName Shmuelie.Windows Invoke-AppInstallerEnumeration -Times 0
+        }
+
+        It 'stops Update-AppInstallerApp before discovery or update side effects' {
+            Mock -ModuleName Shmuelie.Windows Get-AppInstallerApp { throw 'discovery side effect' }
+            Mock -ModuleName Shmuelie.Windows Invoke-AppInstallerUpdate { throw 'update side effect' }
+
+            { Update-AppInstallerApp -Confirm:$false } |
+                Should -Throw '*Update-AppInstallerApp is only supported on Windows.*'
+
+            Should -Invoke -ModuleName Shmuelie.Windows Get-AppInstallerApp -Times 0
+            Should -Invoke -ModuleName Shmuelie.Windows Invoke-AppInstallerUpdate -Times 0
+        }
     }
 
     Context 'when the platform is Windows' {
@@ -466,5 +486,116 @@ Describe 'Get-ServiceProcess' -Skip:(-not $IsWindows) {
         Should -Invoke -ModuleName Shmuelie.Windows Get-CimInstance -Times 1
         Should -Invoke -ModuleName Shmuelie.Windows Get-Service -Times 1
         Should -Invoke -ModuleName Shmuelie.Windows Get-Process -Times 1 -ParameterFilter { $Id -eq 4242 }
+    }
+}
+
+Describe 'Get-AppInstallerApp' {
+    BeforeEach {
+        Mock -ModuleName Shmuelie.Windows Test-IsWindowsPlatform { $true }
+    }
+
+    It 'shapes enumerated App Installer entries' {
+        Mock -ModuleName Shmuelie.Windows Invoke-AppInstallerEnumeration {
+            @(
+                [PSCustomObject]@{
+                    Name              = 'Contoso.App'
+                    PackageFullName   = 'Contoso.App_1.0.0.0_x64__8wekyb3d8bbwe'
+                    PackageFamilyName = 'Contoso.App_8wekyb3d8bbwe'
+                    Publisher         = 'CN=Contoso'
+                    Version           = '1.0.0.0'
+                    Architecture      = 'X64'
+                    Uri               = [Uri]'https://example.com/contoso.appinstaller'
+                }
+            )
+        }
+
+        $apps = @(Get-AppInstallerApp)
+
+        $apps | Should -HaveCount 1
+        $apps[0].Name | Should -BeExactly 'Contoso.App'
+        $apps[0].PackageFullName | Should -BeExactly 'Contoso.App_1.0.0.0_x64__8wekyb3d8bbwe'
+        $apps[0].PackageFamilyName | Should -BeExactly 'Contoso.App_8wekyb3d8bbwe'
+        $apps[0].AppInstallerUri | Should -BeExactly 'https://example.com/contoso.appinstaller'
+        Should -Invoke -ModuleName Shmuelie.Windows Invoke-AppInstallerEnumeration -Times 1
+    }
+
+    It 'returns an empty result when no App Installer apps are found' {
+        Mock -ModuleName Shmuelie.Windows Invoke-AppInstallerEnumeration { @() }
+
+        Get-AppInstallerApp | Should -BeNullOrEmpty
+
+        Should -Invoke -ModuleName Shmuelie.Windows Invoke-AppInstallerEnumeration -Times 1
+    }
+}
+
+Describe 'Update-AppInstallerApp' {
+    BeforeEach {
+        Mock -ModuleName Shmuelie.Windows Test-IsWindowsPlatform { $true }
+        Mock -ModuleName Shmuelie.Windows Get-AppInstallerApp {
+            @(
+                [PSCustomObject]@{
+                    Name              = 'Contoso.App'
+                    PackageFullName   = 'Contoso.App_1.0.0.0_x64__8wekyb3d8bbwe'
+                    PackageFamilyName = 'Contoso.App_8wekyb3d8bbwe'
+                    AppInstallerUri   = 'https://example.com/contoso.appinstaller'
+                }
+                [PSCustomObject]@{
+                    Name              = 'Fabrikam.App'
+                    PackageFullName   = 'Fabrikam.App_2.0.0.0_x64__8wekyb3d8bbwe'
+                    PackageFamilyName = 'Fabrikam.App_8wekyb3d8bbwe'
+                    AppInstallerUri   = 'https://example.com/fabrikam.appinstaller'
+                }
+            )
+        }
+        Mock -ModuleName Shmuelie.Windows Invoke-AppInstallerUpdate { }
+    }
+
+    It 'updates a named app by App Installer URI' {
+        Update-AppInstallerApp -Name 'Contoso.App' -Confirm:$false
+
+        Should -Invoke -ModuleName Shmuelie.Windows Get-AppInstallerApp -Times 1
+        Should -Invoke -ModuleName Shmuelie.Windows Invoke-AppInstallerUpdate -Times 1 -ParameterFilter {
+            $AppInstallerUri -eq 'https://example.com/contoso.appinstaller'
+        }
+        Should -Invoke -ModuleName Shmuelie.Windows Invoke-AppInstallerUpdate -Times 0 -ParameterFilter {
+            $AppInstallerUri -eq 'https://example.com/fabrikam.appinstaller'
+        }
+    }
+
+    It 'accepts pipeline input by package identity property name' {
+        [PSCustomObject]@{ PackageFamilyName = 'Fabrikam.App_8wekyb3d8bbwe' } | Update-AppInstallerApp -Confirm:$false
+
+        Should -Invoke -ModuleName Shmuelie.Windows Invoke-AppInstallerUpdate -Times 1 -ParameterFilter {
+            $AppInstallerUri -eq 'https://example.com/fabrikam.appinstaller'
+        }
+        Should -Invoke -ModuleName Shmuelie.Windows Invoke-AppInstallerUpdate -Times 0 -ParameterFilter {
+            $AppInstallerUri -eq 'https://example.com/contoso.appinstaller'
+        }
+    }
+
+    It 'updates all discovered apps when no name is specified' {
+        Update-AppInstallerApp -Confirm:$false
+
+        Should -Invoke -ModuleName Shmuelie.Windows Invoke-AppInstallerUpdate -Times 1 -ParameterFilter {
+            $AppInstallerUri -eq 'https://example.com/contoso.appinstaller'
+        }
+        Should -Invoke -ModuleName Shmuelie.Windows Invoke-AppInstallerUpdate -Times 1 -ParameterFilter {
+            $AppInstallerUri -eq 'https://example.com/fabrikam.appinstaller'
+        }
+    }
+
+    It 'does not invoke the update helper under WhatIf' {
+        Update-AppInstallerApp -WhatIf
+
+        Should -Invoke -ModuleName Shmuelie.Windows Get-AppInstallerApp -Times 1
+        Should -Invoke -ModuleName Shmuelie.Windows Invoke-AppInstallerUpdate -Times 0
+    }
+
+    It 'is a no-op when no App Installer apps are found' {
+        Mock -ModuleName Shmuelie.Windows Get-AppInstallerApp { @() }
+
+        { Update-AppInstallerApp -Confirm:$false } | Should -Not -Throw
+
+        Should -Invoke -ModuleName Shmuelie.Windows Invoke-AppInstallerUpdate -Times 0
     }
 }
