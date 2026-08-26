@@ -78,14 +78,26 @@ Highlights:
 ## Shmuelie.Utilities
 
 General developer utilities for PowerShell, .NET tools, Python packages, VS
-Code, Windows Terminal, services, applications, and WPR. **Version 0.2.3.**
+Code, terminal recovery, and general developer workflows. **Version 0.3.0.**
 [README](https://github.com/shmuelie/powershell-modules/blob/main/modules/Shmuelie.Utilities/README.md)
 
 Highlights:
 
 - Core helpers: `Test-IsElevated`, `Invoke-InLocation`, `Reset-TerminalModes`.
 - Tool management for `dotnet`, `pip`, `uv`, and VS Code extensions.
-- `Get-ServiceProcess` resolves a service to its hosting process.
+
+## Shmuelie.Windows
+
+Windows-only developer utilities for installed applications, Windows Terminal,
+Windows Performance Recorder, and service host processes. **Version 0.1.0.**
+[README](https://github.com/shmuelie/powershell-modules/blob/main/modules/Shmuelie.Windows/README.md)
+
+Highlights:
+
+- `Get-InstalledApplications` queries Windows uninstall registry state.
+- `Get-ServiceProcess` resolves a Windows service to its hosting process.
+- `Get-WindowsTerminalSettings` and `Get-WindowsTerminalProfile` inspect Windows Terminal configuration.
+- `Start-WindowsPerformanceRecorder` and `Stop-WindowsPerformanceRecorder` wrap WPR tracing.
 
 ## Shmuelie.Dsc
 

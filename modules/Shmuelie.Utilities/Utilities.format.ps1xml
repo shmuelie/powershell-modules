@@ -24,38 +24,5 @@
       </TableControl>
     </View>
 
-    <!-- ServiceProcess: Get-ServiceProcess -->
-    <View>
-      <Name>ServiceProcess</Name>
-      <ViewSelectedBy>
-        <TypeName>ServiceProcess</TypeName>
-      </ViewSelectedBy>
-      <TableControl>
-        <TableHeaders>
-          <TableColumnHeader><Label>Name</Label></TableColumnHeader>
-          <TableColumnHeader><Label>Status</Label></TableColumnHeader>
-          <TableColumnHeader><Label>ProcessId</Label><Width>9</Width><Alignment>Right</Alignment></TableColumnHeader>
-          <TableColumnHeader><Label>ProcessName</Label></TableColumnHeader>
-        </TableHeaders>
-        <TableRowEntries>
-          <TableRowEntry>
-            <TableColumnItems>
-              <TableColumnItem><PropertyName>Name</PropertyName></TableColumnItem>
-              <TableColumnItem><ScriptBlock>
-                $color = switch ([string]$_.Status) {
-                    'Running' { $PSStyle.Foreground.Green }
-                    'Stopped' { $PSStyle.Foreground.Red }
-                    default   { $PSStyle.Foreground.BrightBlack }
-                }
-                "$color$($_.Status)$($PSStyle.Reset)"
-              </ScriptBlock></TableColumnItem>
-              <TableColumnItem><ScriptBlock>if ($_.ProcessId -gt 0) { $_.ProcessId } else { '' }</ScriptBlock></TableColumnItem>
-              <TableColumnItem><PropertyName>ProcessName</PropertyName></TableColumnItem>
-            </TableColumnItems>
-          </TableRowEntry>
-        </TableRowEntries>
-      </TableControl>
-    </View>
-
   </ViewDefinitions>
 </Configuration>

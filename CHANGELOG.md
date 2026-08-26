@@ -19,6 +19,7 @@ between releases this file tracks catalog-level changes under `[Unreleased]`.
 - New `Shmuelie.VisualStudio` module: Visual Studio version discovery and nested
   developer shell launch helpers, wired into build, publish workflow, tests, and
   documentation.
+- New `Shmuelie.Windows` module for six Windows-only cmdlets moved out of `Shmuelie.Utilities`; `Shmuelie.Utilities` is bumped to 0.3.0 for the breaking catalog change.
 - New `Shmuelie.Dsc` module: class-based DSC v3 resources (`SavePSResource`,
   `SymbolicLink`, `CopilotPlugin`, `CopilotMarketplace`, `UvTool`), wired into
   the build, publish workflow, and documentation site.
@@ -33,6 +34,7 @@ between releases this file tracks catalog-level changes under `[Unreleased]`.
 ## [0.1.0] - 2026-08-05
 
 ### Added
+- New `Shmuelie.Windows` module for six Windows-only cmdlets moved out of `Shmuelie.Utilities`; `Shmuelie.Utilities` is bumped to 0.3.0 for the breaking catalog change.
 - Initial `Shmuelie.Git`, `Shmuelie.Copilot`, `Shmuelie.Node`, and
   `Shmuelie.Utilities` modules, all published at 0.1.0.
 - Independent build, validation, publishing, and documentation infrastructure,

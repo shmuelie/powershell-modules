@@ -6,6 +6,9 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+### Changed
+- Breaking: `Get-InstalledApplications`, `Get-ServiceProcess`, `Get-WindowsTerminalSettings`, `Get-WindowsTerminalProfile`, `Start-WindowsPerformanceRecorder`, and `Stop-WindowsPerformanceRecorder` moved to the new `Shmuelie.Windows` module; import `Shmuelie.Windows` to keep using them.
+
 ## [0.2.3] - 2026-08-21
 
 ### Changed
