@@ -81,6 +81,26 @@ if ($Module -eq 'Shmuelie.Windows') {
     }
     Copy-Item (Join-Path $cmdletsBuild 'Shmuelie.Windows.Cmdlets.dll') $bin
     Remove-Item $cmdletsBuild -Recurse -Force
+
+    $appInstallerBuild = Join-Path $OutputPath '.windows-appinstaller-build'
+    if (Test-Path $appInstallerBuild) {
+        Remove-Item $appInstallerBuild -Recurse -Force
+    }
+    # Publish (not build) so the WinRT projection runtime assemblies
+    # (Microsoft.Windows.SDK.NET.dll / WinRT.Runtime.dll) are emitted alongside
+    # the cmdlet assembly; a plain build leaves them out and the WinRT calls fail
+    # to load at runtime.
+    dotnet publish (Join-Path $source 'Cmdlets.AppInstaller\Shmuelie.Windows.AppInstaller.csproj') `
+        --configuration Release `
+        --output $appInstallerBuild `
+        --nologo
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Shmuelie.Windows.AppInstaller publish failed.'
+    }
+    foreach ($dll in 'Shmuelie.Windows.AppInstaller.dll', 'Microsoft.Windows.SDK.NET.dll', 'WinRT.Runtime.dll') {
+        Copy-Item (Join-Path $appInstallerBuild $dll) $bin
+    }
+    Remove-Item $appInstallerBuild -Recurse -Force
 }
 
 $stagedManifest = Join-Path $stage "$Module.psd1"
