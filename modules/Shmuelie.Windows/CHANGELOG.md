@@ -6,6 +6,8 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-08-26
+
 ### Changed
 - Converted `Get-InstalledApplications` from a script function into a compiled
   C# binary cmdlet (`Shmuelie.Windows.Cmdlets.dll`). It now enumerates the
