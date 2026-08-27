@@ -329,10 +329,7 @@ Describe 'Repair-GlobalJson' {
 
 Describe 'Update-InstalledPSResource' {
     BeforeEach {
-        $global:ShmuelieUtilitiesObservedPSResourceUpdates = @()
-        $script:OriginalTestPSModulePath = $env:PSModulePath
-
-        function New-TestInstalledResource {
+        function New-TestSaveLayout {
             param(
                 [Parameter(Mandatory)]
                 [string]$Root,
@@ -343,66 +340,81 @@ Describe 'Update-InstalledPSResource' {
                 [string]$Version = '1.0.0'
             )
 
-            $moduleRoot = Join-Path $Root $Name
-            $versionRoot = Join-Path $moduleRoot $Version
+            # Create a versioned Save-PSResource layout: <Root>/<Name>/<Version>/<Name>.psd1
+            $versionRoot = Join-Path $Root $Name $Version
             New-Item -ItemType Directory -Path $versionRoot -Force | Out-Null
-            New-ModuleManifest -Path (Join-Path $versionRoot "$Name.psd1") -RootModule "$Name.psm1" -ModuleVersion $Version
-            Set-Content -Path (Join-Path $versionRoot "$Name.psm1") -Value "function Get-$Name { '$Name' }"
+            New-ModuleManifest -Path (Join-Path $versionRoot "$Name.psd1") -ModuleVersion $Version -RootModule "$Name.psm1"
         }
 
-        Mock -ModuleName Shmuelie.Utilities Update-PSResource {
-            $global:ShmuelieUtilitiesObservedPSResourceUpdates += [PSCustomObject]@{
-                Name         = $Name
-                PSModulePath = $env:PSModulePath
-            }
+        # Default: remote has 2.0.0 available; individual tests set their own installed version.
+        Mock -ModuleName Shmuelie.Utilities Find-PSResource {
+            [PSCustomObject]@{ Version = [version]'2.0.0' }
         }
+        Mock -ModuleName Shmuelie.Utilities Save-PSResource {}
     }
 
-    AfterEach {
-        $env:PSModulePath = $script:OriginalTestPSModulePath
-        Remove-Variable -Name ShmuelieUtilitiesObservedPSResourceUpdates -Scope Global -ErrorAction SilentlyContinue
-    }
-
-    It 'updates each module discovered under the supplied path only' {
-        $modulesPath = Join-Path $TestDrive 'ModulesUpdate'
-        $otherPath = Join-Path $TestDrive 'OtherModules'
-        New-TestInstalledResource -Root $modulesPath -Name 'ModuleA'
-        New-TestInstalledResource -Root $modulesPath -Name 'ModuleB'
-        New-TestInstalledResource -Root $otherPath -Name 'ModuleC'
+    It 'calls Save-PSResource with correct parameters for an outdated module (1.0.0 installed, 2.0.0 available)' {
+        $modulesPath = Join-Path $TestDrive 'Outdated'
+        New-TestSaveLayout -Root $modulesPath -Name 'ModuleA' -Version '1.0.0'
 
         Update-InstalledPSResource -Path $modulesPath -Confirm:$false
 
-        Should -Invoke -ModuleName Shmuelie.Utilities Update-PSResource -Scope It -Times 1 -ParameterFilter { $Name -eq 'ModuleA' }
-        Should -Invoke -ModuleName Shmuelie.Utilities Update-PSResource -Scope It -Times 1 -ParameterFilter { $Name -eq 'ModuleB' }
-        Should -Invoke -ModuleName Shmuelie.Utilities Update-PSResource -Scope It -Times 0 -ParameterFilter { $Name -eq 'ModuleC' }
-        $global:ShmuelieUtilitiesObservedPSResourceUpdates.Name | Sort-Object | Should -Be @('ModuleA', 'ModuleB')
-        $global:ShmuelieUtilitiesObservedPSResourceUpdates.PSModulePath | Select-Object -Unique | Should -Be (Resolve-Path -LiteralPath $modulesPath).ProviderPath
+        Should -Invoke -ModuleName Shmuelie.Utilities Save-PSResource -Times 1 -ParameterFilter {
+            $Name -eq 'ModuleA' -and
+            $Version -eq '2.0.0' -and
+            $Path -eq (Resolve-Path -LiteralPath $modulesPath).ProviderPath -and
+            $Repository -eq 'PSGallery' -and
+            $TrustRepository -and $IncludeXml -and $AcceptLicense -and $SkipDependencyCheck
+        }
     }
 
-    It 'does not update modules under WhatIf' {
-        $modulesPath = Join-Path $TestDrive 'ModulesWhatIf'
-        New-TestInstalledResource -Root $modulesPath -Name 'ModuleA'
+    It 'does not call Save-PSResource for a module already at the latest version' {
+        $modulesPath = Join-Path $TestDrive 'Current'
+        New-TestSaveLayout -Root $modulesPath -Name 'ModuleA' -Version '2.0.0'
+
+        Update-InstalledPSResource -Path $modulesPath -Confirm:$false
+
+        Should -Invoke -ModuleName Shmuelie.Utilities Save-PSResource -Times 0
+    }
+
+    It 'updates only modules under the supplied path, not those in other paths' {
+        $modulesPath = Join-Path $TestDrive 'InScope'
+        $otherPath = Join-Path $TestDrive 'OutOfScope'
+        New-TestSaveLayout -Root $modulesPath -Name 'ModuleA' -Version '1.0.0'
+        New-TestSaveLayout -Root $otherPath -Name 'ModuleB' -Version '1.0.0'
+
+        Update-InstalledPSResource -Path $modulesPath -Confirm:$false
+
+        Should -Invoke -ModuleName Shmuelie.Utilities Save-PSResource -Times 1 -ParameterFilter { $Name -eq 'ModuleA' }
+        Should -Invoke -ModuleName Shmuelie.Utilities Save-PSResource -Times 0 -ParameterFilter { $Name -eq 'ModuleB' }
+    }
+
+    It 'does not call Save-PSResource under -WhatIf, but still queries the repository' {
+        $modulesPath = Join-Path $TestDrive 'WhatIf'
+        New-TestSaveLayout -Root $modulesPath -Name 'ModuleA' -Version '1.0.0'
 
         Update-InstalledPSResource -Path $modulesPath -WhatIf
 
-        Should -Invoke -ModuleName Shmuelie.Utilities Update-PSResource -Scope It -Times 0
-        $global:ShmuelieUtilitiesObservedPSResourceUpdates | Should -BeNullOrEmpty
+        Should -Invoke -ModuleName Shmuelie.Utilities Find-PSResource -Times 1
+        Should -Invoke -ModuleName Shmuelie.Utilities Save-PSResource -Times 0
     }
 
-    It 'does nothing for an empty path' {
-        $modulesPath = Join-Path $TestDrive 'EmptyModules'
+    It 'is a no-op for a missing path' {
+        $modulesPath = Join-Path $TestDrive 'MissingPath'
+
+        { Update-InstalledPSResource -Path $modulesPath -Confirm:$false } | Should -Not -Throw
+
+        Should -Invoke -ModuleName Shmuelie.Utilities Find-PSResource -Times 0
+        Should -Invoke -ModuleName Shmuelie.Utilities Save-PSResource -Times 0
+    }
+
+    It 'is a no-op for an empty path' {
+        $modulesPath = Join-Path $TestDrive 'EmptyPath'
         New-Item -ItemType Directory -Path $modulesPath -Force | Out-Null
 
         { Update-InstalledPSResource -Path $modulesPath -Confirm:$false } | Should -Not -Throw
 
-        $global:ShmuelieUtilitiesObservedPSResourceUpdates | Should -BeNullOrEmpty
-    }
-
-    It 'does nothing for a missing path' {
-        $modulesPath = Join-Path $TestDrive 'MissingModules'
-
-        { Update-InstalledPSResource -Path $modulesPath -Confirm:$false } | Should -Not -Throw
-
-        $global:ShmuelieUtilitiesObservedPSResourceUpdates | Should -BeNullOrEmpty
+        Should -Invoke -ModuleName Shmuelie.Utilities Find-PSResource -Times 0
+        Should -Invoke -ModuleName Shmuelie.Utilities Save-PSResource -Times 0
     }
 }
