@@ -10,8 +10,8 @@ Each module is self-contained and independently versioned.
 
 ## Import startup cost
 
-The modules use a directory-based Public script loader so newly added command
-and helper files are dot-sourced automatically. On a Windows PowerShell 7.4+
+The modules use a root-level script loader so newly added command and helper
+`.ps1` files are dot-sourced automatically. On a Windows PowerShell 7.4+
 host, measured from built artifacts with a fresh `pwsh -NoProfile` process per
 module and a stopwatch around `Import-Module`, the expected cold import medians
 are:

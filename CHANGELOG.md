@@ -15,9 +15,10 @@ between releases this file tracks catalog-level changes under `[Unreleased]`.
   site.
 - `Build-Module.ps1` now stages optional module `Classes` folders for shared
   PowerShell class definitions.
-- `Build-Module.ps1` now stages a module's `Public` folder only when it exists,
-  so modules without `Public` scripts (such as DSC resource modules) build; it
-  also fails fast if a module declares functions but has no `Public` folder.
+- Flattened module script layout by moving `Public/*.ps1` files into each module
+  root. Module loaders and `Build-Module.ps1` now discover/stage root-level
+  scripts; the build still fails fast when a module declares functions but has
+  no script files.
 
 ### Added
 - New `Shmuelie.VisualStudio` module: Visual Studio version discovery and nested

@@ -1,5 +1,4 @@
-$publicRoot = Join-Path $PSScriptRoot 'Public'
-foreach ($script in Get-ChildItem $publicRoot -Filter '*.ps1' | Sort-Object Name) {
+foreach ($script in Get-ChildItem $PSScriptRoot -Filter '*.ps1' -File | Sort-Object Name) {
     . $script.FullName
 }
 
