@@ -109,15 +109,19 @@ function Update-AdoNpmToken {
             continue
         }
 
-        # Build a temporary .npmrc with the feed entry so the credprovider writes the token into it
-        $tempDir = New-Item -ItemType Directory -Path (Join-Path ([System.IO.Path]::GetTempPath()) "ado-npm-$([System.IO.Path]::GetRandomFileName())")
-        Set-AdoNpmTokenOwnerOnlyAcl -Path $tempDir.FullName -Directory
-        $tempNpmrc = Join-Path $tempDir.FullName '.npmrc'
-        New-Item -ItemType File -Path $tempNpmrc -Force | Out-Null
-        Set-AdoNpmTokenOwnerOnlyAcl -Path $tempNpmrc
-        Set-Content -Path $tempNpmrc -Value "//$($entry.Feed -replace '^https?://', ''):_authToken="
-
+        $tempDir = $null
+        $tempNpmrc = $null
         try {
+            # Build a temporary .npmrc with the feed entry so the credprovider
+            # writes the token into it. Keep setup inside the cleanup scope so
+            # partial initialization is removed if ACL/file operations fail.
+            $tempDir = New-Item -ItemType Directory -Path (Join-Path ([System.IO.Path]::GetTempPath()) "ado-npm-$([System.IO.Path]::GetRandomFileName())")
+            Set-AdoNpmTokenOwnerOnlyAcl -Path $tempDir.FullName -Directory
+            $tempNpmrc = Join-Path $tempDir.FullName '.npmrc'
+            New-Item -ItemType File -Path $tempNpmrc -Force | Out-Null
+            Set-AdoNpmTokenOwnerOnlyAcl -Path $tempNpmrc
+            Set-Content -Path $tempNpmrc -Value "//$($entry.Feed -replace '^https?://', ''):_authToken="
+
             Write-Verbose "Requesting token for feed: $($entry.Feed)"
             $arguments = @('-c', $tempNpmrc)
             if ($Force) {
@@ -145,8 +149,12 @@ function Update-AdoNpmToken {
             }
         }
         finally {
-            Clear-AdoNpmTokenFile -Path $tempNpmrc
-            Remove-Item $tempDir.FullName -Recurse -Force -ErrorAction SilentlyContinue
+            if ($tempNpmrc) {
+                Clear-AdoNpmTokenFile -Path $tempNpmrc
+            }
+            if ($tempDir) {
+                Remove-Item -LiteralPath $tempDir.FullName -Recurse -Force -ErrorAction SilentlyContinue
+            }
         }
     }
 }
