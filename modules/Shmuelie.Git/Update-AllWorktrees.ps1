@@ -290,7 +290,7 @@ function Update-AllWorktrees {
         return
     }
 
-    $modulePath = Join-Path (Split-Path $PSScriptRoot -Parent) 'Shmuelie.Git.psd1'
+    $modulePath = Join-Path $PSScriptRoot 'Shmuelie.Git.psd1'
     $repositories = @(Get-UpdateAllWorktreesRepository -Root $Path -Organization $Organization -Name $Name -Exclude $Exclude)
     if ($repositories.Count -eq 0) { return }
 

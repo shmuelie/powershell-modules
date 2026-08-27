@@ -1,5 +1,5 @@
 # Private helpers backing the GitHub-account-aware fetch in Sync-GitRemote.
-# None of these are exported; they are dot-sourced with the rest of Public/.
+# None of these are exported; they are dot-sourced with the other root scripts.
 #
 # The mechanism keeps the globally-active `gh` account unchanged: a per-account
 # token is acquired with `gh auth token` and injected into the git child

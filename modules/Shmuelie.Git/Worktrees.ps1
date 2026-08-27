@@ -1,4 +1,4 @@
-using module ../Classes/WorktreeSetValuesGenerator.psm1
+using module ./Classes/WorktreeSetValuesGenerator.psm1
 
 function Resolve-GitRepositoryPath {
     <#

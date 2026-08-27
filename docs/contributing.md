@@ -14,14 +14,14 @@ Each module is a self-contained directory under `modules/`:
 modules/<Module>/
 ├── <Module>.psd1     # manifest and exported members
 ├── <Module>.psm1     # loader and Export-ModuleMember
+├── *.ps1             # one file per topic; functions are dot-sourced
 ├── README.md
-├── CHANGELOG.md
-└── Public/*.ps1      # one file per topic; functions are dot-sourced
+└── CHANGELOG.md
 ```
 
 ## Adding or changing a command
 
-1. Add or edit a function under the owning module's `Public/`.
+1. Add or edit a root-level `.ps1` file under the owning module.
 2. Export it from both the `.psm1` `Export-ModuleMember` list and the `.psd1`
    `FunctionsToExport` list.
 3. Include comment-based help and use `SupportsShouldProcess` for destructive or

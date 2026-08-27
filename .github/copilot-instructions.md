@@ -21,9 +21,9 @@ see [`docs/contributing.md`](../docs/contributing.md).
 modules/<Module>/
 ├── <Module>.psd1     # manifest: ModuleVersion + FunctionsToExport
 ├── <Module>.psm1     # loader + Export-ModuleMember (+ any C#/predictor wiring)
+├── *.ps1             # one file per topic; every *.ps1 is dot-sourced on import
 ├── README.md         # command table + Version header
-├── CHANGELOG.md      # Keep a Changelog; [Unreleased] holds pending work
-└── Public/*.ps1      # one file per topic; every *.ps1 is dot-sourced on import
+└── CHANGELOG.md      # Keep a Changelog; [Unreleased] holds pending work
 modules/Shmuelie.Git/Predictor/   # C# source for the bundled predictor
 build/                            # Build-Module / Test-Modules / Invoke-Tests / Publish-Module
 tests/<Module>.Tests.ps1          # Pester v5, imports the module from source
@@ -49,10 +49,10 @@ docs/                             # Markdown docs site (contributing, modules, i
 
 ## Adding or changing a command
 
-1. Add or edit a function under the owning module's `Public/`.
+1. Add or edit a root-level `.ps1` file under the owning module.
 2. Export it from **both** the `.psm1` `Export-ModuleMember -Function` list
    **and** the `.psd1` `FunctionsToExport` list. Private helpers stay out of both
-   lists (dot-sourcing a helper in a `Public/*.ps1` file does not export it).
+   lists (dot-sourcing a helper from a root-level `.ps1` file does not export it).
 3. Include comment-based help, and add `[CmdletBinding(SupportsShouldProcess)]`
    for any destructive or state-changing operation (honor `-WhatIf`/`-Confirm`).
 4. Update the module README command table and add an entry under `[Unreleased]`

@@ -34,12 +34,12 @@ New-Item $stage -ItemType Directory -Force | Out-Null
 foreach ($name in @("$Module.psd1", "$Module.psm1", 'README.md', 'CHANGELOG.md')) {
     Copy-Item (Join-Path $source $name) $stage
 }
-$public = Join-Path $source 'Public'
-if (Test-Path $public) {
-    Copy-Item $public $stage -Recurse
+$scripts = @(Get-ChildItem $source -Filter '*.ps1' -File)
+if ($scripts.Count -gt 0) {
+    $scripts | Copy-Item -Destination $stage
 }
-if ($manifest.ExportedFunctions.Count -gt 0 -and -not (Test-Path $public)) {
-    throw "$Module declares FunctionsToExport but has no Public folder to stage."
+if ($manifest.ExportedFunctions.Count -gt 0 -and $scripts.Count -eq 0) {
+    throw "$Module declares FunctionsToExport but has no root-level script files to stage."
 }
 $classes = Join-Path $source 'Classes'
 if (Test-Path $classes) {
