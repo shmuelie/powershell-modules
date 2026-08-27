@@ -28,7 +28,8 @@ Install-PSResource Shmuelie.VisualStudio
   major number to a Visual Studio year.
 - `Start-DevShell` passes `VSDEV_VERSION`, `VSDEV_ARCH`, and `VSDEV_HOSTARCH` to
   the child session. A profile or provider module in that child session should
-  load the matching `Set-VS<year>` command.
+  load the matching `Set-VS<year>` command. It supports `-WhatIf` and `-Confirm`
+  so the nested process launch can be previewed or confirmed.
 
 ## Changelog
 
