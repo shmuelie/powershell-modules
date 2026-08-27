@@ -375,7 +375,7 @@ Describe 'Update-AdoNpmToken' {
 
     BeforeEach {
         $script:CredentialProviderRoot = Join-Path $TestDrive 'global-node-modules'
-        $script:CredentialProviderBin = Join-Path $script:CredentialProviderRoot '@microsoft\artifacts-npm-credprovider\bin\index.js'
+        $script:CredentialProviderBin = Join-Path $script:CredentialProviderRoot '@microsoft' 'artifacts-npm-credprovider' 'bin' 'index.js'
         $script:TokenTempDir = Join-Path $TestDrive 'ado-npm-temp'
         $script:NodeInvocationNpmrc = $null
         $script:NodeInvocationArgs = $null

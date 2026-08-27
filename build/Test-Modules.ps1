@@ -15,7 +15,7 @@ foreach ($module in $modules) {
 # broken local links.
 # ---------------------------------------------------------------------------
 foreach ($docFile in @('index.md', 'modules.md', 'installation.md', 'contributing.md', '_config.yml')) {
-    if (-not (Test-Path (Join-Path $repoRoot "docs\$docFile"))) {
+    if (-not (Test-Path (Join-Path $repoRoot 'docs' $docFile))) {
         throw "Missing documentation site file: docs/$docFile"
     }
 }
@@ -47,7 +47,7 @@ foreach ($markdown in $markdownFiles) {
 # changes land there instead of forcing a version bump between releases.
 # ---------------------------------------------------------------------------
 foreach ($module in $modules) {
-    $moduleDir = Join-Path $repoRoot "modules\$module"
+    $moduleDir = Join-Path $repoRoot 'modules' $module
     $moduleChangelog = Join-Path $moduleDir 'CHANGELOG.md'
     if (-not (Test-Path $moduleChangelog)) {
         throw "Each module must have its own CHANGELOG.md: missing modules/$module/CHANGELOG.md"

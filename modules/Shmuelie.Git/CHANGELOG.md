@@ -6,6 +6,12 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+### Fixed
+- The bundled worktree predictor path is now constructed with multi-segment
+  `Join-Path` (`'bin' 'WorktreePredictor.dll'`) instead of a hard-coded
+  backslash (`'bin\WorktreePredictor.dll'`), so the predictor is found
+  correctly on Linux and macOS. (Fixes #155.)
+
 ## [0.8.0] - 2026-08-27
 
 ### Added

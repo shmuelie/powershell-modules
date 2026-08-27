@@ -3,7 +3,7 @@ foreach ($script in Get-ChildItem $PSScriptRoot -Filter '*.ps1' -File | Sort-Obj
 }
 
 $exportedCmdlets = @()
-$binaryModule = Join-Path $PSScriptRoot 'bin\Shmuelie.Windows.Cmdlets.dll'
+$binaryModule = Join-Path $PSScriptRoot 'bin' 'Shmuelie.Windows.Cmdlets.dll'
 if (Test-Path $binaryModule) {
     Import-Module $binaryModule -Force -ErrorAction Stop
     $exportedCmdlets = @('Get-InstalledApplications', 'Get-ServiceProcess', 'Get-SubstDrive', 'New-SubstDrive', 'Remove-SubstDrive')
@@ -13,7 +13,7 @@ if (Test-Path $binaryModule) {
 # requires a Windows-targeted assembly that cannot load on Linux/macOS. Load that
 # second DLL only on Windows; off Windows the two cmdlets are simply absent.
 if ($IsWindows) {
-    $appInstallerModule = Join-Path $PSScriptRoot 'bin\Shmuelie.Windows.AppInstaller.dll'
+    $appInstallerModule = Join-Path $PSScriptRoot 'bin' 'Shmuelie.Windows.AppInstaller.dll'
     if (Test-Path $appInstallerModule) {
         Import-Module $appInstallerModule -Force -ErrorAction Stop
         $exportedCmdlets += 'Get-AppInstallerApp', 'Update-AppInstallerApp'

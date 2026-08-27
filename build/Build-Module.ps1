@@ -15,9 +15,29 @@ param(
     [string]$OutputPath
 )
 
+function Invoke-RetryingDelete {
+    # Retry Remove-Item on transient lock errors (e.g. antivirus holding a file).
+    # Only catches IO/access-denied errors; other errors still propagate.
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [int]$MaxAttempts = 3,
+        [int]$DelayMs = 300
+    )
+    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+        try {
+            Remove-Item $Path -Recurse -Force -ErrorAction Stop
+            return
+        }
+        catch [System.IO.IOException], [System.UnauthorizedAccessException] {
+            if ($attempt -ge $MaxAttempts) { throw }
+            Start-Sleep -Milliseconds $DelayMs
+        }
+    }
+}
+
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path $PSScriptRoot -Parent
-$source = Join-Path $repoRoot "modules\$Module"
+$source = Join-Path $repoRoot 'modules' $Module
 $manifestPath = Join-Path $source "$Module.psd1"
 $manifest = Test-ModuleManifest $manifestPath
 
@@ -27,7 +47,7 @@ if (-not $OutputPath) {
 
 $stage = Join-Path $OutputPath $Module $manifest.Version
 if (Test-Path $stage) {
-    Remove-Item $stage -Recurse -Force
+    Invoke-RetryingDelete $stage
 }
 New-Item $stage -ItemType Directory -Force | Out-Null
 
@@ -54,7 +74,7 @@ if ($Module -eq 'Shmuelie.Git') {
         Remove-Item $predictorBuild -Recurse -Force
     }
     New-Item $bin -ItemType Directory -Force | Out-Null
-    dotnet build (Join-Path $source 'Predictor\WorktreePredictor.csproj') `
+    dotnet build (Join-Path $source 'Predictor' 'WorktreePredictor.csproj') `
         --configuration Release `
         --output $predictorBuild `
         --nologo
@@ -72,7 +92,7 @@ if ($Module -eq 'Shmuelie.Windows') {
         Remove-Item $cmdletsBuild -Recurse -Force
     }
     New-Item $bin -ItemType Directory -Force | Out-Null
-    dotnet build (Join-Path $source 'Cmdlets\Shmuelie.Windows.Cmdlets.csproj') `
+    dotnet build (Join-Path $source 'Cmdlets' 'Shmuelie.Windows.Cmdlets.csproj') `
         --configuration Release `
         --output $cmdletsBuild `
         --nologo
@@ -90,7 +110,7 @@ if ($Module -eq 'Shmuelie.Windows') {
     # (Microsoft.Windows.SDK.NET.dll / WinRT.Runtime.dll) are emitted alongside
     # the cmdlet assembly; a plain build leaves them out and the WinRT calls fail
     # to load at runtime.
-    dotnet publish (Join-Path $source 'Cmdlets.AppInstaller\Shmuelie.Windows.AppInstaller.csproj') `
+    dotnet publish (Join-Path $source 'Cmdlets.AppInstaller' 'Shmuelie.Windows.AppInstaller.csproj') `
         --configuration Release `
         --output $appInstallerBuild `
         --nologo
@@ -103,9 +123,23 @@ if ($Module -eq 'Shmuelie.Windows') {
     Remove-Item $appInstallerBuild -Recurse -Force
 }
 
-$stagedManifest = Join-Path $stage "$Module.psd1"
-Test-ModuleManifest $stagedManifest -ErrorAction Stop | Out-Null
-Import-Module $stagedManifest -Force -ErrorAction Stop
-Remove-Module $Module -Force -ErrorAction Stop
+# Validate the staged module by importing from a temporary shadow copy so the
+# stage DLL files are never locked.  On Windows, Assembly.LoadFrom() holds the
+# file handle for the process lifetime (default, non-collectible ALC), so a
+# same-process rebuild must be able to delete the stage directory without the
+# DLL being in use.  Loading from a shadow copy instead means only the temp
+# copy is locked — the stage directory itself stays unlocked.
+$shadowStage = Join-Path ([System.IO.Path]::GetTempPath()) "psmod-validate-$([guid]::NewGuid())"
+Copy-Item $stage $shadowStage -Recurse -Force
+$shadowManifest = Join-Path $shadowStage "$Module.psd1"
+try {
+    Test-ModuleManifest $shadowManifest -ErrorAction Stop | Out-Null
+    Import-Module $shadowManifest -Force -ErrorAction Stop
+    Remove-Module $Module -Force -ErrorAction Stop
+} finally {
+    # Best-effort: DLLs in the shadow copy may remain locked (non-collectible ALC),
+    # but they live in a temp path the OS cleans up on reboot.
+    Remove-Item $shadowStage -Recurse -Force -ErrorAction Ignore
+}
 
 Get-Item $stage

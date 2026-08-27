@@ -70,7 +70,7 @@ Describe 'SavePSResource' {
             New-Item -ItemType Directory -Path (Join-Path $dir 'Pester') -Force | Out-Null
             ([SavePSResource]@{ Name = 'Pester'; Path = $dir; Version = '5.5.0' }).Test() | Should -BeFalse
 
-            New-Item -ItemType Directory -Path (Join-Path $dir 'Pester\5.5.0') -Force | Out-Null
+            New-Item -ItemType Directory -Path (Join-Path $dir 'Pester' '5.5.0') -Force | Out-Null
             ([SavePSResource]@{ Name = 'Pester'; Path = $dir; Version = '5.5.0' }).Test() | Should -BeTrue
         }
     }
@@ -156,7 +156,7 @@ Describe 'SymbolicLink' {
             param($Root)
 
             Mock New-DscSymbolicLink { }
-            $linkPath = Join-Path $Root 'sub\link'
+            $linkPath = Join-Path $Root 'sub' 'link'
 
             ([SymbolicLink]@{ Path = $linkPath; Target = 'C:\target' }).Set()
 
