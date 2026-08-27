@@ -190,6 +190,60 @@ function ConvertTo-UpdateAllWorktreesOutput {
     }
 }
 
+function Resolve-AllWorktreesAccountMap {
+    <#
+    .SYNOPSIS
+        Build a per-repository GitHubAccountMap in the parent runspace.
+    .DESCRIPTION
+        A scriptblock cannot be passed into a ForEach-Object -Parallel worker via
+        `$using:` (PowerShell rejects it), so the -GitHubAccountResolver scriptblock
+        must never cross that boundary. This resolves each of a repository's GitHub
+        remotes to a `gh` account by invoking the caller's resolver here, in the
+        parent, and returns a serializable hashtable ("host/owner" -> account) that
+        a worker can forward to Update-Worktrees as -GitHubAccountMap.
+
+        Caller-supplied map entries override resolver-derived ones, preserving the
+        map-before-resolver precedence Sync-GitRemote applies. The worker still runs
+        Sync-GitRemote's reactive multi-account fallback for remotes the map does not
+        cover, so parallel account awareness is unchanged apart from the resolver now
+        running in the parent.
+    #>
+    [OutputType([hashtable])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$RepositoryPath,
+        [hashtable]$BaseMap,
+        [scriptblock]$Resolver
+    )
+
+    $merged = @{}
+
+    if ($Resolver) {
+        foreach ($remoteName in @(git -C $RepositoryPath remote 2>$null)) {
+            if (-not $remoteName) { continue }
+            $url = git -C $RepositoryPath remote get-url $remoteName 2>$null
+            if (-not $url) { continue }
+            $info = Get-GitHubRemoteInfo -Url "$url"
+            if (-not $info) { continue }
+
+            try {
+                $account = "$(& $Resolver $info.Host $info.Owner)".Trim()
+            } catch {
+                Write-Error "GitHubAccountResolver failed for '$($info.Host)/$($info.Owner)' in '$RepositoryPath': $($_.Exception.Message)"
+                continue
+            }
+            if ($account) { $merged["$($info.Host)/$($info.Owner)"] = $account }
+        }
+    }
+
+    # Caller-supplied map wins over resolver-derived entries.
+    if ($BaseMap) {
+        foreach ($key in $BaseMap.Keys) { $merged[$key] = $BaseMap[$key] }
+    }
+
+    $merged
+}
+
 function Update-AllWorktrees {
     <#
     .SYNOPSIS
@@ -230,7 +284,12 @@ function Update-AllWorktrees {
     .PARAMETER GitHubAccountMap
     Forwarded to Update-Worktrees for each repository.
     .PARAMETER GitHubAccountResolver
-    Forwarded to Update-Worktrees for each repository.
+    A scriptblock that receives a remote's host and owner and returns the `gh`
+    account name to use. It is invoked in the parent runspace (once per GitHub
+    remote of each repository), never inside a parallel worker, because a
+    scriptblock cannot cross the ForEach-Object -Parallel boundary. Its results
+    are merged into a per-repository GitHubAccountMap that is forwarded to the
+    worker; caller-supplied -GitHubAccountMap entries take precedence.
     .PARAMETER NoGitHubAccountResolve
     Forwarded to Update-Worktrees for each repository.
     .PARAMETER ChangedOnly
@@ -323,6 +382,20 @@ function Update-AllWorktrees {
     $accountMap = $GitHubAccountMap
     $accountResolver = $GitHubAccountResolver
 
+    # Resolve GitHub accounts in the parent runspace and bake them into a
+    # per-repository, serializable GitHubAccountMap. A scriptblock cannot be
+    # passed into a ForEach-Object -Parallel worker via `$using:`, so the
+    # resolver must never cross that boundary; only the resulting hashtable does.
+    $resolverForBuild = if ($forwardGitHubAccountResolver -and -not $forwardNoGitHubAccountResolve) { $accountResolver } else { $null }
+    $baseMapForBuild = if ($forwardGitHubAccountMap) { $accountMap } else { $null }
+    foreach ($repository in $repositoriesToUpdate) {
+        $mapArgs = @{ RepositoryPath = $repository.Path }
+        if ($baseMapForBuild) { $mapArgs.BaseMap = $baseMapForBuild }
+        if ($resolverForBuild) { $mapArgs.Resolver = $resolverForBuild }
+        $repositoryAccountMap = Resolve-AllWorktreesAccountMap @mapArgs
+        Add-Member -InputObject $repository -NotePropertyName AccountMap -NotePropertyValue $repositoryAccountMap -Force
+    }
+
     $repositoriesToUpdate | ForEach-Object -Parallel {
         $repository = $_
         $errors = @()
@@ -332,8 +405,11 @@ function Update-AllWorktrees {
 
             $updateParams = @{ Path = $repository.Path }
             if ($using:forwardCheckRemote) { $updateParams.CheckRemote = $true }
-            if ($using:forwardGitHubAccountMap) { $updateParams.GitHubAccountMap = $using:accountMap }
-            if ($using:forwardGitHubAccountResolver) { $updateParams.GitHubAccountResolver = $using:accountResolver }
+            # The resolver already ran in the parent; the worker only ever
+            # receives the serializable, per-repository account map it produced.
+            if ($repository.AccountMap -and $repository.AccountMap.Count -gt 0) {
+                $updateParams.GitHubAccountMap = $repository.AccountMap
+            }
             if ($using:forwardNoGitHubAccountResolve) { $updateParams.NoGitHubAccountResolve = $true }
 
             $updateErrors = @()

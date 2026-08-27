@@ -113,10 +113,26 @@ function Find-StaleBranch {
         # Batch-fetch all remote refs matching user prefix in one call
         $remoteRefSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
         $lsRemoteFilter = if ($userPrefix) { "refs/heads/$userPrefix*" } else { 'refs/heads/*' }
-        $remoteRefs = git -C $repoPath --no-pager ls-remote --heads $Remote $lsRemoteFilter 2>$null
-        foreach ($refLine in $remoteRefs) {
-            if ($refLine -match '\trefs/heads/(.+)$') {
-                $remoteRefSet.Add($Matches[1]) | Out-Null
+        # Only query the remote when it is actually configured. When no such
+        # remote exists, every candidate is legitimately absent from it (this is
+        # the documented -IncludeNeverPushed / local-only case), so an empty ref
+        # set is correct rather than a failure.
+        $remoteConfigured = [bool](git -C $repoPath remote get-url $Remote 2>$null)
+        if ($remoteConfigured) {
+            # Capture stderr and the exit code: a configured-but-unreachable
+            # remote otherwise returns an empty ref set, which would misclassify
+            # every candidate as stale. Fail loudly instead of guessing from
+            # nothing.
+            $remoteRefs = git -C $repoPath --no-pager ls-remote --heads $Remote $lsRemoteFilter 2>&1
+            if ($LASTEXITCODE -ne 0) {
+                $detail = ($remoteRefs | ForEach-Object { "$_" }) -join ' '
+                Write-Error "Failed to list remote branches from '$Remote' (git ls-remote exit $LASTEXITCODE): $detail"
+                return
+            }
+            foreach ($refLine in $remoteRefs) {
+                if ($refLine -match '\trefs/heads/(.+)$') {
+                    $remoteRefSet.Add($Matches[1]) | Out-Null
+                }
             }
         }
 
