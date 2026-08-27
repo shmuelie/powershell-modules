@@ -5,7 +5,7 @@ installed Visual Studio years that have matching `Set-VS<year>` provider
 commands and can launch a nested PowerShell session configured for one of those
 environments.
 
-**Version:** 0.1.0
+**Version:** 0.1.1
 
 ## Install
 

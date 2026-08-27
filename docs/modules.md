@@ -32,7 +32,7 @@ no longer eagerly imports PSReadLine before registering the predictor.
 ## Shmuelie.Git
 
 Git repository, worktree, status, completion, and PSReadLine prediction helpers.
-**Version 0.7.0.**
+**Version 0.8.0.**
 [README](https://github.com/shmuelie/powershell-modules/blob/main/modules/Shmuelie.Git/README.md)
 
 Highlights:
@@ -78,7 +78,7 @@ Highlights:
 ## Shmuelie.Utilities
 
 General developer utilities for PowerShell, .NET tools, Python packages, VS
-Code, terminal recovery, and general developer workflows. **Version 0.3.0.**
+Code, terminal recovery, and general developer workflows. **Version 0.3.1.**
 [README](https://github.com/shmuelie/powershell-modules/blob/main/modules/Shmuelie.Utilities/README.md)
 
 Highlights:
@@ -115,7 +115,7 @@ Highlights:
 
 ## Shmuelie.VisualStudio
 
-Visual Studio developer shell helpers for PowerShell. **Version 0.1.0.**
+Visual Studio developer shell helpers for PowerShell. **Version 0.1.1.**
 [README](https://github.com/shmuelie/powershell-modules/blob/main/modules/Shmuelie.VisualStudio/README.md)
 
 Highlights:
