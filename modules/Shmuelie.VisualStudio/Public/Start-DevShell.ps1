@@ -80,8 +80,12 @@ function Start-DevShell {
     .EXAMPLE
         Start-DevShell 2022
         Starts a nested PowerShell session requesting Visual Studio 2022.
+    .EXAMPLE
+        Start-DevShell 2022 -WhatIf
+        Shows the nested developer shell that would be launched without
+        starting a child process.
     #>
-    [CmdletBinding()]
+    [CmdletBinding(SupportsShouldProcess)]
     param(
         [Parameter(Position = 0)]
         [ArgumentCompleter({
@@ -118,5 +122,8 @@ function Start-DevShell {
         PATH           = Get-CleanLoginPath
     }
 
-    Invoke-DevShellProcess -Environment $environment
+    $target = "Visual Studio $selectedVersion ($Arch, host $HostArch) in $((Get-Location).Path)"
+    if ($PSCmdlet.ShouldProcess($target, 'Start nested developer shell')) {
+        Invoke-DevShellProcess -Environment $environment
+    }
 }
