@@ -833,6 +833,34 @@ Describe 'Update-AllWorktrees' -Skip:(-not (Get-Command git -ErrorAction Silentl
         }
     }
 
+    It 'retains a repository-level failure alongside a successful worktree row' {
+        InModuleScope Shmuelie.Git {
+            $repositoryResult = [PSCustomObject]@{
+                PSTypeName      = 'AllWorktreesUpdateResult'
+                Organization    = 'example'
+                Repository      = 'repo'
+                Path            = 'repo-path'
+                Status          = 'Failed'
+                WorktreeResults = @(
+                    [PSCustomObject]@{
+                        Branch = 'updated'
+                        Status = 'Updated'
+                        BehindBy = 1
+                        Path = 'updated-path'
+                    }
+                )
+                Error           = 'worker emitted a separate error'
+            }
+
+            $results = @($repositoryResult | ConvertTo-UpdateAllWorktreesOutput -ChangedOnly)
+
+            $results | Should -HaveCount 2
+            $results.Status | Should -Be @('Updated', 'Failed')
+            $results[1].Branch | Should -Be ''
+            $results[1].Error | Should -Be 'worker emitted a separate error'
+        }
+    }
+
     It 'keeps ChangedOnly WhatIf previews visible as compact rows' {
         $root = Join-Path $TestDrive 'all-changed-whatif-root'
         New-LayoutRepo -Root $root -Organization 'alpha' -Name 'one' | Out-Null

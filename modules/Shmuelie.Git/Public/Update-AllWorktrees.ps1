@@ -168,9 +168,14 @@ function ConvertTo-UpdateAllWorktreesOutput {
             }
         }
 
-        # A worker can fail before Update-Worktrees returns any worktree rows.
-        # Surface that repository-level failure instead of hiding it.
-        if ($InputObject.Status -eq 'Failed' -and $matchingWorktrees.Count -eq 0) {
+        # A worker can fail before Update-Worktrees returns a failed worktree
+        # row (even if another worktree was updated). Surface that repository
+        # failure unless a flattened failure row already represents it.
+        $hasWorktreeFailure = @(
+            $matchingWorktrees |
+                Where-Object { $_.Status -in @('Failed', 'StashFailed') }
+        ).Count -gt 0
+        if ($InputObject.Status -eq 'Failed' -and -not $hasWorktreeFailure) {
             [PSCustomObject]@{
                 PSTypeName   = 'AllWorktreesChangedResult'
                 Organization = $InputObject.Organization
