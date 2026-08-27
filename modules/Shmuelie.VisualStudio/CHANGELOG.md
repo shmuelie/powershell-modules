@@ -6,6 +6,8 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-08-27
+
 ### Fixed
 - `Start-DevShell` once again supports `-WhatIf` and `-Confirm`, and does not
   start a nested PowerShell process when `ShouldProcess` declines the launch.

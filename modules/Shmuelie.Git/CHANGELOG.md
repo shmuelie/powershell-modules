@@ -6,6 +6,8 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-08-27
+
 ### Added
 - `Update-AllWorktrees -ChangedOnly` emits one compact row per updated,
   removed, or failed worktree while retaining organization/repository context.

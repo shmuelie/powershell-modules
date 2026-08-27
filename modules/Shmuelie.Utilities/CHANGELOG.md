@@ -6,6 +6,8 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-08-27
+
 ### Fixed
 - `Update-InstalledPSResource` now updates modules deployed with `Save-PSResource`
   to a custom path. The previous implementation called `Update-PSResource` (which
