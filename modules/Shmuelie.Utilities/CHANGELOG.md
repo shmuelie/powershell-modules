@@ -6,6 +6,17 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+### Fixed
+- `Update-InstalledPSResource` now updates modules deployed with `Save-PSResource`
+  to a custom path. The previous implementation called `Update-PSResource` (which
+  only recognises `Install-PSResource`-tracked modules in standard scopes and
+  ignores `$env:PSModulePath`), causing every custom-path module to error with
+  "No installed packages". The cmdlet now discovers the highest installed version
+  from the on-disk layout, queries the repository with `Find-PSResource`, and
+  saves a newer version alongside the existing ones via `Save-PSResource -Path`.
+  An optional `-Repository` parameter (default `PSGallery`) has been added; `-WhatIf`
+  still reports modules that would be updated without saving anything.
+
 ## [0.3.0] - 2026-08-25
 
 ### Added

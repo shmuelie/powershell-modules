@@ -29,8 +29,9 @@ Import-Module Shmuelie.Utilities
   alternate screen, bracketed paste, kitty keyboard flags) by a crashed TUI.
 - `Invoke-InLocation` runs a script block in a location and always returns, even
   on Ctrl+C.
-- Tool helpers list and update .NET global tools, Python packages, uv tools,
-  PowerShell resources in caller-supplied module paths, and VS Code extensions.
+- Tool helpers list and update .NET global tools, Python packages, uv tools, VS
+  Code extensions, and PowerShell resources deployed with `Save-PSResource` to
+  caller-supplied module paths (`Update-InstalledPSResource`).
 
 ## Examples
 
