@@ -14,6 +14,10 @@ function Merge-CopilotSession {
 
         The original sessions are preserved unless -RemoveSource is specified.
 
+        If the merge fails part-way through, the partially written destination
+        session is removed so no broken session is left behind, and the source
+        sessions are never removed unless the destination completes successfully.
+
     .PARAMETER Id
         Two or more session IDs to merge.
 
@@ -89,6 +93,11 @@ function Merge-CopilotSession {
         }
 
         $activity = "Merging $($collectedSessions.Count) sessions"
+
+        # Track destination creation and completion so a failure part-way through
+        # the merge does not leave a partial session directory behind.
+        $newSessionPath = $null
+        $mergeSucceeded = $false
 
         try {
 
@@ -270,6 +279,10 @@ function Merge-CopilotSession {
         Write-Verbose "  Summary: $mergedSummary"
         Write-Verbose "  Events: $totalEvents"
 
+        # The destination is fully written and repaired; only now is it safe to
+        # treat the merge as successful and to remove the source sessions.
+        $mergeSucceeded = $true
+
         # Remove source sessions if requested
         if ($RemoveSource) {
             Write-Progress -Activity $activity -Status 'Removing source sessions' -PercentComplete 95 -Id 1
@@ -283,10 +296,23 @@ function Merge-CopilotSession {
 
         } finally {
             Write-Progress -Activity $activity -Id 1 -Completed
+
+            # On any mid-merge failure, remove the partial destination so a broken
+            # session is never left behind. Cleanup failures must not mask the
+            # original error, so surface them as a warning instead.
+            if (-not $mergeSucceeded -and $newSessionPath -and (Test-Path -LiteralPath $newSessionPath)) {
+                try {
+                    Remove-Item -LiteralPath $newSessionPath -Recurse -Force
+                } catch {
+                    Write-Warning "Failed to clean up partial merged session at '$newSessionPath': $($_.Exception.Message)"
+                }
+            }
         }
 
         # Return the new session
-        Get-CopilotSession -Id $newId
+        if ($mergeSucceeded) {
+            Get-CopilotSession -Id $newId
+        }
     }
 }
 

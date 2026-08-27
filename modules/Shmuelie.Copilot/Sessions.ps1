@@ -15,7 +15,10 @@ function Get-CopilotSession {
         Return sessions for all directories, not just the current one.
 
     .PARAMETER Id
-        Return only the session with the specified ID.
+        Return only the session with the specified ID. The ID must be a single
+        session directory name (a GUID for CLI-created sessions); values with path
+        separators, drive qualifiers, or relative segments are rejected so they
+        cannot escape the session-state root.
 
     .EXAMPLE
         Get-CopilotSession
@@ -48,8 +51,8 @@ function Get-CopilotSession {
     $cwd = (Get-Location).Path
 
     $dirs = if ($Id) {
-        $target = Join-Path $sessionStateDir $Id
-        if (Test-Path $target) { Get-Item $target } else { return }
+        $target = Resolve-CopilotSessionPath -Id $Id
+        if ($target) { Get-Item -LiteralPath $target } else { return }
     } else {
         Get-ChildItem $sessionStateDir -Directory
     }
@@ -110,6 +113,10 @@ function Remove-CopilotSession {
         Deletes session-state directories by ID or by pipeline input from
         Get-CopilotSession. Supports -WhatIf and -Confirm via ShouldProcess.
 
+        Each target is re-resolved by its ID through the session-state root guard
+        before deletion, so an untrusted pipeline object's Path is never used and
+        an ID that escapes the session-state root is rejected.
+
     .PARAMETER Id
         One or more session IDs to remove.
 
@@ -139,14 +146,26 @@ function Remove-CopilotSession {
     )
 
     process {
-        $sessions = if ($PSCmdlet.ParameterSetName -eq 'ById') {
-            $Id | ForEach-Object { Get-CopilotSession -Id $_ }
+        $ids = if ($PSCmdlet.ParameterSetName -eq 'ById') {
+            $Id
+        } elseif ($null -ne $InputObject) {
+            @($InputObject.Id)
         } else {
-            $InputObject
+            @()
         }
 
-        foreach ($s in $sessions) {
-            if ($null -eq $s) { continue }
+        foreach ($sid in $ids) {
+            if ([string]::IsNullOrWhiteSpace($sid)) {
+                Write-Error 'The pipeline input does not contain a session Id.'
+                continue
+            }
+            # Re-resolve by ID so the deletion target is the guard-validated
+            # canonical path, never a caller-supplied InputObject.Path.
+            $s = Get-CopilotSession -Id $sid
+            if ($null -eq $s) {
+                Write-Error "Session '$sid' not found."
+                continue
+            }
             if ($PSCmdlet.ShouldProcess("$($s.Summary) ($($s.Id))", 'Remove session')) {
                 Remove-Item -LiteralPath $s.Path -Recurse -Force
             }
@@ -163,6 +182,10 @@ function Rename-CopilotSession {
         Updates the name and/or summary field in workspace.yaml for the specified
         session. Handles both the newer 'name' field (including YAML block scalars)
         and the legacy 'summary' field. If both exist, both are updated.
+
+        The session is re-resolved by its ID through the session-state root guard
+        before workspace.yaml is rewritten, so an untrusted pipeline object's Path
+        is never used and an ID that escapes the session-state root is rejected.
 
     .PARAMETER Id
         The session ID to rename.
@@ -197,14 +220,17 @@ function Rename-CopilotSession {
     )
 
     process {
-        $session = if ($PSCmdlet.ParameterSetName -eq 'ById') {
-            Get-CopilotSession -Id $Id
-        } else {
-            $InputObject
+        $sessionId = if ($PSCmdlet.ParameterSetName -eq 'ById') { $Id } else { $InputObject.Id }
+        if ([string]::IsNullOrWhiteSpace($sessionId)) {
+            Write-Error 'The pipeline input does not contain a session Id.'
+            return
         }
 
+        # Re-resolve by ID so the rewrite target is the guard-validated canonical
+        # path, never a caller-supplied InputObject.Path.
+        $session = Get-CopilotSession -Id $sessionId
         if ($null -eq $session) {
-            Write-Error 'Session not found.'
+            Write-Error "Session '$sessionId' not found."
             return
         }
 
