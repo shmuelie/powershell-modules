@@ -111,6 +111,85 @@ function Get-UpdateAllWorktreesRepository {
         Sort-Object Organization, Repository
 }
 
+function ConvertTo-UpdateAllWorktreesOutput {
+    <#
+    .SYNOPSIS
+        Convert repository-level update results to the requested output shape.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory, ValueFromPipeline)]
+        [PSObject]$InputObject,
+
+        [switch]$ChangedOnly
+    )
+
+    process {
+        if (-not $ChangedOnly) {
+            $InputObject
+            return
+        }
+
+        # Keep WhatIf previews visible even though no worktree operation ran.
+        if ($InputObject.Status -eq 'WhatIf') {
+            [PSCustomObject]@{
+                PSTypeName   = 'AllWorktreesChangedResult'
+                Organization = $InputObject.Organization
+                Repository   = $InputObject.Repository
+                Branch       = ''
+                Status       = 'WhatIf'
+                BehindBy     = 0
+                Path         = $InputObject.Path
+                Error        = $null
+            }
+            return
+        }
+
+        $actionableStatuses = @('Updated', 'Removed', 'Failed', 'StashFailed')
+        $matchingWorktrees = @(
+            $InputObject.WorktreeResults |
+                Where-Object { $_.Status -in $actionableStatuses }
+        )
+
+        foreach ($worktree in $matchingWorktrees) {
+            [PSCustomObject]@{
+                PSTypeName   = 'AllWorktreesChangedResult'
+                Organization = $InputObject.Organization
+                Repository   = $InputObject.Repository
+                Branch       = $worktree.Branch
+                Status       = $worktree.Status
+                BehindBy     = $worktree.BehindBy
+                Path         = $worktree.Path
+                Error        = if ($worktree.Status -in @('Failed', 'StashFailed')) {
+                    $InputObject.Error
+                } else {
+                    $null
+                }
+            }
+        }
+
+        # A worker can fail before Update-Worktrees returns a failed worktree
+        # row (even if another worktree was updated). Surface that repository
+        # failure unless a flattened failure row already represents it.
+        $hasWorktreeFailure = @(
+            $matchingWorktrees |
+                Where-Object { $_.Status -in @('Failed', 'StashFailed') }
+        ).Count -gt 0
+        if ($InputObject.Status -eq 'Failed' -and -not $hasWorktreeFailure) {
+            [PSCustomObject]@{
+                PSTypeName   = 'AllWorktreesChangedResult'
+                Organization = $InputObject.Organization
+                Repository   = $InputObject.Repository
+                Branch       = ''
+                Status       = 'Failed'
+                BehindBy     = 0
+                Path         = $InputObject.Path
+                Error        = $InputObject.Error
+            }
+        }
+    }
+}
+
 function Update-AllWorktrees {
     <#
     .SYNOPSIS
@@ -122,6 +201,11 @@ function Update-AllWorktrees {
     Update-Worktrees. Returns one AllWorktreesUpdateResult object per repository
     with the organization, repository name, selected path, overall status, and
     the underlying WorktreeUpdateResult objects.
+
+    Use -ChangedOnly to emit one compact AllWorktreesChangedResult row per
+    updated, removed, or failed worktree. Repository context is retained on
+    every row. The default repository-level result objects are unchanged when
+    -ChangedOnly is omitted.
 
     The default root is `$env:SOURCE_REPOS` when it is set; otherwise the current
     directory is used. A missing root produces a clear non-terminating error and
@@ -149,6 +233,10 @@ function Update-AllWorktrees {
     Forwarded to Update-Worktrees for each repository.
     .PARAMETER NoGitHubAccountResolve
     Forwarded to Update-Worktrees for each repository.
+    .PARAMETER ChangedOnly
+    Emit only actionable worktree rows (Updated, Removed, Failed, or
+    StashFailed), flattened with organization and repository context.
+    Repository-level failures and WhatIf previews are also retained.
     .EXAMPLE
     Update-AllWorktrees
     Updates every repository under `$env:SOURCE_REPOS`, or the current directory
@@ -163,8 +251,11 @@ function Update-AllWorktrees {
     .EXAMPLE
     Update-AllWorktrees -Path ~/src -WhatIf
     Shows which repositories would be updated without fetching or merging.
+    .EXAMPLE
+    Update-AllWorktrees -Organization example -ChangedOnly
+    Shows a compact row for each updated, removed, or failed worktree.
     #>
-    [OutputType('AllWorktreesUpdateResult')]
+    [OutputType('AllWorktreesUpdateResult', 'AllWorktreesChangedResult')]
     [CmdletBinding(SupportsShouldProcess)]
     param(
         [Alias('Root')]
@@ -185,7 +276,9 @@ function Update-AllWorktrees {
 
         [scriptblock]$GitHubAccountResolver,
 
-        [switch]$NoGitHubAccountResolve
+        [switch]$NoGitHubAccountResolve,
+
+        [switch]$ChangedOnly
     )
 
     if (-not $Path) {
@@ -220,7 +313,7 @@ function Update-AllWorktrees {
         }
     }
 
-    foreach ($result in $whatIfResults) { $result }
+    $whatIfResults | ConvertTo-UpdateAllWorktreesOutput -ChangedOnly:$ChangedOnly
     if ($repositoriesToUpdate.Count -eq 0) { return }
 
     $forwardCheckRemote = $CheckRemote.IsPresent
@@ -272,5 +365,6 @@ function Update-AllWorktrees {
                 Error           = $_.Exception.Message
             }
         }
-    } -ThrottleLimit $ThrottleLimit
+    } -ThrottleLimit $ThrottleLimit |
+        ConvertTo-UpdateAllWorktreesOutput -ChangedOnly:$ChangedOnly
 }

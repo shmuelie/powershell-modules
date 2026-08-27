@@ -760,6 +760,126 @@ Describe 'Update-AllWorktrees' -Skip:(-not (Get-Command git -ErrorAction Silentl
         $result.WorktreeResults | Should -BeNullOrEmpty
     }
 
+    It 'preserves repository-level structured output when ChangedOnly is omitted' {
+        InModuleScope Shmuelie.Git {
+            $repositoryResult = [PSCustomObject]@{
+                PSTypeName      = 'AllWorktreesUpdateResult'
+                Organization    = 'example'
+                Repository      = 'repo'
+                Path            = 'repo-path'
+                Status          = 'Completed'
+                WorktreeResults = @()
+                Error           = $null
+            }
+
+            $result = $repositoryResult | ConvertTo-UpdateAllWorktreesOutput
+
+            [object]::ReferenceEquals($result, $repositoryResult) | Should -BeTrue
+            $result.PSTypeNames[0] | Should -Be 'AllWorktreesUpdateResult'
+        }
+    }
+
+    It 'flattens only actionable worktree statuses with repository context' {
+        InModuleScope Shmuelie.Git {
+            $worktrees = @(
+                [PSCustomObject]@{ Branch = 'current'; Status = 'Current'; BehindBy = 0; Path = 'current-path' }
+                [PSCustomObject]@{ Branch = 'no-upstream'; Status = 'NoUpstream'; BehindBy = 0; Path = 'no-upstream-path' }
+                [PSCustomObject]@{ Branch = 'updated'; Status = 'Updated'; BehindBy = 2; Path = 'updated-path' }
+                [PSCustomObject]@{ Branch = 'removed'; Status = 'Removed'; BehindBy = 0; Path = 'removed-path' }
+                [PSCustomObject]@{ Branch = 'failed'; Status = 'Failed'; BehindBy = 1; Path = 'failed-path' }
+                [PSCustomObject]@{ Branch = 'stash'; Status = 'StashFailed'; BehindBy = 3; Path = 'stash-path' }
+            )
+            $repositoryResult = [PSCustomObject]@{
+                PSTypeName      = 'AllWorktreesUpdateResult'
+                Organization    = 'example'
+                Repository      = 'repo'
+                Path            = 'repo-path'
+                Status          = 'Failed'
+                WorktreeResults = $worktrees
+                Error           = 'update failed'
+            }
+
+            $results = @($repositoryResult | ConvertTo-UpdateAllWorktreesOutput -ChangedOnly)
+
+            $results | Should -HaveCount 4
+            $results[0].PSTypeNames[0] | Should -Be 'AllWorktreesChangedResult'
+            $results.Branch | Should -Be @('updated', 'removed', 'failed', 'stash')
+            $results.Organization | Should -Be @('example', 'example', 'example', 'example')
+            $results.Repository | Should -Be @('repo', 'repo', 'repo', 'repo')
+            ($results | Where-Object Status -eq 'Updated').BehindBy | Should -Be 2
+            ($results | Where-Object Status -eq 'Failed').Error | Should -Be 'update failed'
+            ($results | Where-Object Status -eq 'Updated').Error | Should -BeNullOrEmpty
+        }
+    }
+
+    It 'retains a repository-level failure when no worktree result was produced' {
+        InModuleScope Shmuelie.Git {
+            $repositoryResult = [PSCustomObject]@{
+                PSTypeName      = 'AllWorktreesUpdateResult'
+                Organization    = 'example'
+                Repository      = 'repo'
+                Path            = 'repo-path'
+                Status          = 'Failed'
+                WorktreeResults = @()
+                Error           = 'worker failed before update'
+            }
+
+            $result = $repositoryResult | ConvertTo-UpdateAllWorktreesOutput -ChangedOnly
+
+            $result.PSTypeNames[0] | Should -Be 'AllWorktreesChangedResult'
+            $result.Status | Should -Be 'Failed'
+            $result.Branch | Should -Be ''
+            $result.Error | Should -Be 'worker failed before update'
+        }
+    }
+
+    It 'retains a repository-level failure alongside a successful worktree row' {
+        InModuleScope Shmuelie.Git {
+            $repositoryResult = [PSCustomObject]@{
+                PSTypeName      = 'AllWorktreesUpdateResult'
+                Organization    = 'example'
+                Repository      = 'repo'
+                Path            = 'repo-path'
+                Status          = 'Failed'
+                WorktreeResults = @(
+                    [PSCustomObject]@{
+                        Branch = 'updated'
+                        Status = 'Updated'
+                        BehindBy = 1
+                        Path = 'updated-path'
+                    }
+                )
+                Error           = 'worker emitted a separate error'
+            }
+
+            $results = @($repositoryResult | ConvertTo-UpdateAllWorktreesOutput -ChangedOnly)
+
+            $results | Should -HaveCount 2
+            $results.Status | Should -Be @('Updated', 'Failed')
+            $results[1].Branch | Should -Be ''
+            $results[1].Error | Should -Be 'worker emitted a separate error'
+        }
+    }
+
+    It 'keeps ChangedOnly WhatIf previews visible as compact rows' {
+        $root = Join-Path $TestDrive 'all-changed-whatif-root'
+        New-LayoutRepo -Root $root -Organization 'alpha' -Name 'one' | Out-Null
+
+        $result = Update-AllWorktrees -Path $root -ChangedOnly -WhatIf -Confirm:$false
+
+        $result.PSTypeNames[0] | Should -Be 'AllWorktreesChangedResult'
+        $result.Organization | Should -Be 'alpha'
+        $result.Repository | Should -Be 'one'
+        $result.Status | Should -Be 'WhatIf'
+    }
+
+    It 'loads compact format views for both result shapes' {
+        (Get-FormatData -TypeName AllWorktreesUpdateResult).FormatViewDefinition.Name |
+            Should -Contain 'AllWorktreesUpdateResult'
+        (Get-FormatData -TypeName AllWorktreesChangedResult).FormatViewDefinition.Name |
+            Should -Contain 'AllWorktreesChangedResult'
+    }
+
     It 'updates an offline local repository end-to-end' {
         $root = Join-Path $TestDrive 'all-e2e-root'
         $origin = Join-Path $TestDrive 'all-e2e-origin.git'
