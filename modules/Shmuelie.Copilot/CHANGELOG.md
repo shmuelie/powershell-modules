@@ -6,6 +6,21 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+### Fixed
+- `Get-CopilotSession -Id`, `Remove-CopilotSession`, and `Rename-CopilotSession`
+  now validate the session ID through one canonical session-state guard that
+  rejects path separators, rooted paths, drive qualifiers, and `.`/`..`
+  segments, and confirms the resolved directory is a direct child of the
+  session-state root. `Remove`/`Rename` re-resolve the target by ID instead of
+  trusting a pipeline object's `Path`, so a crafted ID or `InputObject` can no
+  longer read, rewrite, or recursively delete directories outside
+  `~/.copilot/session-state`.
+- `Merge-CopilotSession` now removes the partially written destination session
+  when a merge fails part-way through (JSON parse, timestamp, copy, or repair
+  errors), instead of leaving a broken session behind. Source sessions are still
+  removed only after the destination completes successfully, and a cleanup
+  failure is surfaced as a warning without masking the original error.
+
 ## [0.3.0] - 2026-08-25
 
 ### Added
