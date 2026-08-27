@@ -6,6 +6,14 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+### Fixed
+- `Get-InstalledApplications -AllUsers`: after a successful `RegLoadKey`, the
+  `RegUnLoadKey` cleanup in `finally` was gated behind a second `ShouldProcess`
+  call, allowing a user to decline the unload and leave `HKU\temp` mounted.
+  Unload is now unconditional once the load succeeds. `-WhatIf` is unaffected
+  because the initial load is declined and `finally` is never entered.
+  Closes #149.
+
 ## [0.1.1] - 2026-08-26
 
 ### Changed
