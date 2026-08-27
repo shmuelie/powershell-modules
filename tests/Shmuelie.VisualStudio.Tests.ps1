@@ -101,6 +101,17 @@ Describe 'Start-DevShell' {
                 $script:SeenEnvironment.VSDEV_VERSION | Should -Be '2026'
             }
         }
+
+        It 'does not launch a child process under WhatIf' {
+            InModuleScope Shmuelie.VisualStudio {
+                Mock Get-InstalledVsVersion { 2022 }
+                Mock Invoke-DevShellProcess { throw 'launch side effect' }
+
+                Start-DevShell -Version 2022 -WhatIf
+
+                Should -Invoke Invoke-DevShellProcess -Times 0
+            }
+        }
     }
 
     Context 'when the platform is not Windows' {
