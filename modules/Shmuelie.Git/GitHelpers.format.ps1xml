@@ -82,5 +82,65 @@
       </TableControl>
     </View>
 
+    <!-- AllWorktreesUpdateResult: Update-AllWorktrees (default repository summary) -->
+    <View>
+      <Name>AllWorktreesUpdateResult</Name>
+      <ViewSelectedBy>
+        <TypeName>AllWorktreesUpdateResult</TypeName>
+      </ViewSelectedBy>
+      <TableControl>
+        <TableHeaders>
+          <TableColumnHeader><Label>Organization</Label></TableColumnHeader>
+          <TableColumnHeader><Label>Repository</Label></TableColumnHeader>
+          <TableColumnHeader><Label>Status</Label><Width>10</Width></TableColumnHeader>
+          <TableColumnHeader><Label>Changes</Label><Width>8</Width><Alignment>Right</Alignment></TableColumnHeader>
+          <TableColumnHeader><Label>Error</Label></TableColumnHeader>
+        </TableHeaders>
+        <TableRowEntries>
+          <TableRowEntry>
+            <TableColumnItems>
+              <TableColumnItem><PropertyName>Organization</PropertyName></TableColumnItem>
+              <TableColumnItem><PropertyName>Repository</PropertyName></TableColumnItem>
+              <TableColumnItem><PropertyName>Status</PropertyName></TableColumnItem>
+              <TableColumnItem><ScriptBlock>@($_.WorktreeResults | Where-Object Status -in Updated, Removed, Failed, StashFailed).Count</ScriptBlock></TableColumnItem>
+              <TableColumnItem><ScriptBlock>if ($_.Error) { $_.Error } else { '' }</ScriptBlock></TableColumnItem>
+            </TableColumnItems>
+          </TableRowEntry>
+        </TableRowEntries>
+      </TableControl>
+    </View>
+
+    <!-- AllWorktreesChangedResult: Update-AllWorktrees -ChangedOnly -->
+    <View>
+      <Name>AllWorktreesChangedResult</Name>
+      <ViewSelectedBy>
+        <TypeName>AllWorktreesChangedResult</TypeName>
+      </ViewSelectedBy>
+      <TableControl>
+        <TableHeaders>
+          <TableColumnHeader><Label>Organization</Label></TableColumnHeader>
+          <TableColumnHeader><Label>Repository</Label></TableColumnHeader>
+          <TableColumnHeader><Label>Branch</Label></TableColumnHeader>
+          <TableColumnHeader><Label>Status</Label><Width>11</Width></TableColumnHeader>
+          <TableColumnHeader><Label>Behind</Label><Width>7</Width><Alignment>Right</Alignment></TableColumnHeader>
+          <TableColumnHeader><Label>Path</Label></TableColumnHeader>
+          <TableColumnHeader><Label>Error</Label></TableColumnHeader>
+        </TableHeaders>
+        <TableRowEntries>
+          <TableRowEntry>
+            <TableColumnItems>
+              <TableColumnItem><PropertyName>Organization</PropertyName></TableColumnItem>
+              <TableColumnItem><PropertyName>Repository</PropertyName></TableColumnItem>
+              <TableColumnItem><PropertyName>Branch</PropertyName></TableColumnItem>
+              <TableColumnItem><PropertyName>Status</PropertyName></TableColumnItem>
+              <TableColumnItem><PropertyName>BehindBy</PropertyName></TableColumnItem>
+              <TableColumnItem><PropertyName>Path</PropertyName></TableColumnItem>
+              <TableColumnItem><ScriptBlock>if ($_.Error) { $_.Error } else { '' }</ScriptBlock></TableColumnItem>
+            </TableColumnItems>
+          </TableRowEntry>
+        </TableRowEntries>
+      </TableControl>
+    </View>
+
   </ViewDefinitions>
 </Configuration>

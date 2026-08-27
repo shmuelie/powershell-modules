@@ -30,7 +30,7 @@ Import-Module Shmuelie.Git
 | `Repair-Worktree` | Repair worktree links after a repository or worktree move |
 | `Lock-Worktree` / `Unlock-Worktree` | Lock or unlock a worktree by branch name |
 | `Update-Worktrees` | Fast-forward every worktree for the current or `-Path` repository from upstream (forwards the `Sync-GitRemote` GitHub-account options to the fetch) |
-| `Update-AllWorktrees` | Discover repositories under `$env:SOURCE_REPOS` or a supplied `-Path` root and update each repository in parallel |
+| `Update-AllWorktrees` | Discover repositories under `$env:SOURCE_REPOS` or a supplied `-Path` root and update each repository in parallel (`-ChangedOnly` emits compact actionable worktree rows) |
 | `Find-StaleBranch` | Find local branches in the current or `-Path` repository whose upstream branch is gone (`-IncludeNeverPushed` also includes local-only branches) |
 | `Get-GitStatusSummary` | Parse `git status` for the current or `-Path` repository into a typed object (branch, ahead/behind, conflicts, stash, operation) |
 | `Format-GitStatusSegment` | Render a `GitStatusSummary` as a colored posh-git-style prompt segment (`$PSStyle` string; `-ShowChangeCounts` toggles the change counts) |
@@ -59,6 +59,7 @@ Add-Worktree -BranchName feature/my-feature -WorktreePath ../custom-feature
 Move-Worktree -BranchName feature/my-feature -DestinationPath ../moved-feature
 Update-Worktrees | Where-Object Status -ne Current
 Update-AllWorktrees -Organization shmuelie,microsoft -Exclude 'archive/*'
+Update-AllWorktrees -Organization shmuelie -ChangedOnly
 Find-StaleBranch | Remove-Worktree
 Get-GitStatusSummary
 ```

@@ -6,6 +6,13 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+### Added
+- `Update-AllWorktrees -ChangedOnly` emits one compact row per updated,
+  removed, or failed worktree while retaining organization/repository context.
+- Added compact default table views for repository-level
+  `AllWorktreesUpdateResult` objects and flattened
+  `AllWorktreesChangedResult` rows.
+
 ## [0.7.0] - 2026-08-25
 
 ### Added
