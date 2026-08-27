@@ -93,6 +93,10 @@ function Get-GitStatusSummary {
                         if ($trackInfo -match 'behind (\d+)') { $behind = [int]$Matches[1] }
                         if ($trackInfo -match 'gone') { $upstreamGone = $true }
                     }
+                } elseif ($branchLine -match '^No commits yet on (.+)$') {
+                    # Unborn branch (empty repository): git emits
+                    # '## No commits yet on <branch>' with no HEAD yet.
+                    $branch = $Matches[1].Trim()
                 } elseif ($branchLine -match '^(.+?)$') {
                     $branch = $branchLine.Trim()
                     if ($branch -eq 'HEAD (no branch)') { $branch = 'HEAD' }

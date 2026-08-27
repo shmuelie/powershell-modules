@@ -332,6 +332,25 @@ Describe 'Get-GitStatusSummary' {
         }
     }
 
+    Context 'empty repository (unborn branch)' {
+        BeforeAll {
+            # A freshly initialized repo with no commits yet. git status emits
+            # '## No commits yet on <branch>' instead of the usual branch header.
+            $script:emptyRepo = Join-Path $TestDrive 'empty-unborn'
+            New-Item -ItemType Directory -Path $script:emptyRepo -Force | Out-Null
+            Invoke-Git @('-C', $script:emptyRepo, '-c', 'init.templateDir=', 'init', '-b', 'main', '--quiet')
+            Set-TestRepoConfig $script:emptyRepo
+        }
+
+        It 'parses the unborn branch name rather than the whole status phrase' {
+            (Get-GitStatusSummary -Path $script:emptyRepo).Branch | Should -Be 'main'
+        }
+
+        It 'renders a status string beginning with the branch' {
+            (Get-GitStatusSummary -Path $script:emptyRepo).StatusString | Should -Match '^\[main'
+        }
+    }
+
     Context 'repository paths' {
         BeforeAll {
             $script:pathRepo = New-TestRepo -Path (Join-Path $TestDrive 'paths')
@@ -592,6 +611,27 @@ Describe 'Find-StaleBranch' {
         }
 
         $result.Branch | Sort-Object | Should -Be @('user/test/gone-branch', 'user/test/never-pushed')
+    }
+
+    It 'reports a clear error and no stale branches when the remote is unreachable' {
+        $repo = New-TestRepo -Path (Join-Path $TestDrive 'stale-unreachable-repo')
+        # Point origin at a path that is not a git repository so ls-remote fails.
+        $missing = Join-Path $TestDrive 'stale-unreachable-missing'
+        $missingUrl = 'file:///' + (($missing -replace '\\', '/'))
+        Invoke-Git @('-C', $repo, 'remote', 'add', 'origin', $missingUrl)
+        Invoke-Git @('-C', $repo, 'branch', 'user/test/local-only')
+
+        Push-Location $repo
+        try {
+            $result = @(Find-StaleBranch -All -IncludeNeverPushed -ErrorAction SilentlyContinue -ErrorVariable staleErrors)
+        } finally {
+            Pop-Location
+        }
+
+        $result | Should -HaveCount 0
+        $staleErrors | Should -HaveCount 1
+        $staleErrors[0].Exception.Message | Should -Match 'Failed to list remote branches'
+        $staleErrors[0].Exception.Message | Should -Match 'ls-remote'
     }
 
     It 'queries PR status for branch names in the safe allow-list' {
@@ -907,6 +947,67 @@ Describe 'Update-AllWorktrees' -Skip:(-not (Get-Command git -ErrorAction Silentl
         $worktreeResult = @($results[0].WorktreeResults | Where-Object Branch -eq 'main')
         $worktreeResult | Should -HaveCount 1
         $worktreeResult[0].Status | Should -Be 'Current'
+    }
+
+    It 'resolves GitHub accounts in the parent runspace and merges them into a per-repository map' {
+        $repo = New-TestRepo -Path (Join-Path $TestDrive 'resolver-parent-repo')
+        Invoke-Git @('-C', $repo, 'remote', 'add', 'origin', 'https://github.com/contoso/repo.git')
+
+        $result = InModuleScope Shmuelie.Git -ArgumentList $repo {
+            param($repoPath)
+            # A closure variable proves the resolver runs in the parent: it could
+            # not be captured if the scriptblock were serialized into a worker.
+            $captured = 'work-account'
+            $resolver = { param($h, $o) if ($o -eq 'contoso') { $captured } }
+            Resolve-AllWorktreesAccountMap -RepositoryPath $repoPath -Resolver $resolver
+        }
+
+        $result['github.com/contoso'] | Should -Be 'work-account'
+    }
+
+    It 'lets a caller-supplied GitHubAccountMap override resolver-derived entries' {
+        $repo = New-TestRepo -Path (Join-Path $TestDrive 'resolver-override-repo')
+        Invoke-Git @('-C', $repo, 'remote', 'add', 'origin', 'https://github.com/contoso/repo.git')
+
+        $result = InModuleScope Shmuelie.Git -ArgumentList $repo {
+            param($repoPath)
+            Resolve-AllWorktreesAccountMap `
+                -RepositoryPath $repoPath `
+                -Resolver { param($h, $o) 'resolved' } `
+                -BaseMap @{ 'github.com/contoso' = 'explicit' }
+        }
+
+        $result['github.com/contoso'] | Should -Be 'explicit'
+    }
+
+    It 'accepts a GitHubAccountResolver scriptblock without a ForEach-Object -Parallel binding error' {
+        $root = Join-Path $TestDrive 'resolver-e2e-root'
+        $origin = Join-Path $TestDrive 'resolver-e2e-origin.git'
+        Invoke-Git @('init', '--bare', '-b', 'main', '--quiet', $origin)
+
+        $seed = Join-Path $TestDrive 'resolver-e2e-seed'
+        Invoke-Git @('clone', '--quiet', $origin, $seed)
+        Set-TestRepoConfig $seed
+        Set-Content -Path (Join-Path $seed 'README.md') -Value 'initial' -NoNewline
+        Invoke-Git @('-C', $seed, 'add', 'README.md')
+        Invoke-TestCommit -Path $seed -Message 'init'
+        Invoke-Git @('-C', $seed, 'push', '-u', 'origin', 'main', '--quiet')
+
+        $target = Join-Path (Join-Path (Join-Path $root 'alpha') 'offline') 'main'
+        Invoke-Git @('clone', '--quiet', $origin, $target)
+        Set-TestRepoConfig $target
+
+        # The file:// origin keeps the fetch offline and means no GitHub host is
+        # ever contacted; passing the resolver scriptblock at all is what
+        # reproduced the original ForEach-Object -Parallel binding failure.
+        $results = @(Update-AllWorktrees `
+            -Path $root `
+            -GitHubAccountResolver { param($h, $o) 'work' } `
+            -ThrottleLimit 2)
+
+        $results | Should -HaveCount 1
+        $results[0].Status | Should -Be 'Completed'
+        $results[0].Error | Should -BeNullOrEmpty
     }
 }
 
@@ -1317,6 +1418,35 @@ public static class GitShim
         $result[0].Status | Should -Be 'NoUpstream'
         $result[0].BehindBy | Should -Be 0
         $result[0].Stashed | Should -BeFalse
+    }
+
+    It 'leaves NoUpstream worktrees unclassified and warns when -CheckRemote cannot reach the remote' -Skip:(-not (Get-Command git -ErrorAction SilentlyContinue)) {
+        $clone = Join-Path $TestDrive 'checkremote-unreachable-clone'
+        New-TestRepo -Path $clone | Out-Null
+        # Origin points at a path that is not a git repository, so the
+        # -CheckRemote ls-remote call fails rather than returning an empty set.
+        $missing = Join-Path $TestDrive 'checkremote-unreachable-missing'
+        $missingUrl = 'file:///' + (($missing -replace '\\', '/'))
+        Invoke-Git @('-C', $clone, 'remote', 'add', 'origin', $missingUrl)
+        Invoke-Git @('-C', $clone, 'branch', 'local-only')
+        $worktree = Join-Path $TestDrive 'checkremote-unreachable-worktree'
+        Invoke-Git @('-C', $clone, 'worktree', 'add', '--quiet', $worktree, 'local-only')
+        Set-TestRepoConfig $worktree
+
+        Mock -ModuleName Shmuelie.Git Sync-GitRemote { @() }
+
+        Push-Location $clone
+        try {
+            $results = Update-Worktrees -CheckRemote -NoGitHubAccountResolve -WarningVariable checkWarnings
+        } finally {
+            Pop-Location
+        }
+
+        $result = @($results | Where-Object Branch -eq 'local-only')
+        $result | Should -HaveCount 1
+        # The unreachable remote must NOT cause a false 'Removed' classification.
+        $result[0].Status | Should -Be 'NoUpstream'
+        ($checkWarnings | ForEach-Object { "$_" }) -join "`n" | Should -Match 'ls-remote failed'
     }
 
     It 'reports Updated for a clean fast-forwarded worktree' -Skip:(-not (Get-Command git -ErrorAction SilentlyContinue)) {
