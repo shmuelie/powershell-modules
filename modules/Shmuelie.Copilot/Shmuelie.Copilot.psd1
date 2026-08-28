@@ -1,6 +1,6 @@
 @{
     RootModule        = 'Shmuelie.Copilot.psm1'
-    ModuleVersion = '0.3.0'
+    ModuleVersion = '0.3.1'
     GUID              = 'f7928388-cc43-454f-8265-a7e1664422dd'
     Author            = 'Shmueli Englard'
     CompanyName       = 'Shmuelie'

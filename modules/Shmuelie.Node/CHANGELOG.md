@@ -6,6 +6,8 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-08-27
+
 ### Fixed
 - `Update-AdoNpmToken` now cleans up its temporary directory and partially
   initialized `.npmrc` when ACL hardening, file creation, or initial writes

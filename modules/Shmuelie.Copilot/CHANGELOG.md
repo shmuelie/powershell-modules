@@ -6,6 +6,8 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-08-27
+
 ### Fixed
 - `Get-CopilotSession -Id`, `Remove-CopilotSession`, and `Rename-CopilotSession`
   now validate the session ID through one canonical session-state guard that

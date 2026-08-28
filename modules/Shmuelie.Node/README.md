@@ -2,7 +2,7 @@
 
 Node.js, nvm-windows, npm package, and Azure DevOps npm credential helpers.
 
-**Version:** 0.1.3
+**Version:** 0.1.4
 
 ## Install
 

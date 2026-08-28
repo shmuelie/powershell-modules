@@ -3,7 +3,7 @@
 Windows-only developer utilities for installed applications, Windows Terminal,
 Windows Performance Recorder, and Windows service host processes.
 
-**Version:** 0.1.1
+**Version:** 0.1.2
 
 ## Install
 
