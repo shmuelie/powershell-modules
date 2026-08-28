@@ -337,13 +337,26 @@ Describe 'Update-InstalledPSResource' {
                 [Parameter(Mandatory)]
                 [string]$Name,
 
-                [string]$Version = '1.0.0'
+                [string]$Version = '1.0.0',
+
+                [string]$Repository,
+
+                [string]$RepositorySourceLocation
             )
 
             # Create a versioned Save-PSResource layout: <Root>/<Name>/<Version>/<Name>.psd1
             $versionRoot = Join-Path $Root $Name $Version
             New-Item -ItemType Directory -Path $versionRoot -Force | Out-Null
             New-ModuleManifest -Path (Join-Path $versionRoot "$Name.psd1") -ModuleVersion $Version -RootModule "$Name.psm1"
+
+            if ($Repository -or $RepositorySourceLocation) {
+                [PSCustomObject]@{
+                    Name                     = $Name
+                    Version                  = [version]$Version
+                    Repository               = $Repository
+                    RepositorySourceLocation = $RepositorySourceLocation
+                } | Export-Clixml -LiteralPath (Join-Path $versionRoot 'PSGetModuleInfo.xml')
+            }
         }
 
         # Default: remote has 2.0.0 available; individual tests set their own installed version.
@@ -391,12 +404,179 @@ Describe 'Update-InstalledPSResource' {
 
     It 'does not call Save-PSResource under -WhatIf, but still queries the repository' {
         $modulesPath = Join-Path $TestDrive 'WhatIf'
-        New-TestSaveLayout -Root $modulesPath -Name 'ModuleA' -Version '1.0.0'
+        New-TestSaveLayout -Root $modulesPath -Name 'ModuleA' -Version '1.0.0' -Repository 'RepoA'
 
         Update-InstalledPSResource -Path $modulesPath -WhatIf
 
         Should -Invoke -ModuleName Shmuelie.Utilities Find-PSResource -Times 1
         Should -Invoke -ModuleName Shmuelie.Utilities Save-PSResource -Times 0
+    }
+
+    It 'updates resources from their recorded repositories in a mixed module root' {
+        $modulesPath = Join-Path $TestDrive 'MixedRepositories'
+        New-TestSaveLayout -Root $modulesPath -Name 'ModuleA' -Version '1.0.0' -Repository 'RepoA'
+        New-TestSaveLayout -Root $modulesPath -Name 'ModuleB' -Version '1.0.0' -Repository 'RepoB'
+        Mock -ModuleName Shmuelie.Utilities Find-PSResource {
+            if ($Repository -eq 'RepoA') { [PSCustomObject]@{ Version = [version]'2.0.0' } }
+            if ($Repository -eq 'RepoB') { [PSCustomObject]@{ Version = [version]'3.0.0' } }
+        }
+
+        Update-InstalledPSResource -Path $modulesPath -Confirm:$false
+
+        Should -Invoke -ModuleName Shmuelie.Utilities Find-PSResource -Times 1 -ParameterFilter {
+            $Name -eq 'ModuleA' -and $Repository -eq 'RepoA'
+        }
+        Should -Invoke -ModuleName Shmuelie.Utilities Find-PSResource -Times 1 -ParameterFilter {
+            $Name -eq 'ModuleB' -and $Repository -eq 'RepoB'
+        }
+        Should -Invoke -ModuleName Shmuelie.Utilities Save-PSResource -Times 1 -ParameterFilter {
+            $Name -eq 'ModuleA' -and $Version -eq '2.0.0' -and $Repository -eq 'RepoA'
+        }
+        Should -Invoke -ModuleName Shmuelie.Utilities Save-PSResource -Times 1 -ParameterFilter {
+            $Name -eq 'ModuleB' -and $Version -eq '3.0.0' -and $Repository -eq 'RepoB'
+        }
+    }
+
+    It 'uses an explicitly supplied repository instead of recorded provenance' {
+        $modulesPath = Join-Path $TestDrive 'RepositoryOverride'
+        New-TestSaveLayout -Root $modulesPath -Name 'ModuleA' -Version '1.0.0' -Repository 'RecordedRepo'
+
+        Update-InstalledPSResource -Path $modulesPath -Repository 'OverrideRepo' -Confirm:$false
+
+        Should -Invoke -ModuleName Shmuelie.Utilities Find-PSResource -Times 1 -ParameterFilter {
+            $Name -eq 'ModuleA' -and $Repository -eq 'OverrideRepo'
+        }
+        Should -Invoke -ModuleName Shmuelie.Utilities Save-PSResource -Times 1 -ParameterFilter {
+            $Name -eq 'ModuleA' -and $Repository -eq 'OverrideRepo'
+        }
+    }
+
+    It 'resolves source-only provenance to a configured repository name' {
+        $modulesPath = Join-Path $TestDrive 'SourceOnly'
+        New-TestSaveLayout -Root $modulesPath -Name 'ModuleA' -Version '1.0.0' `
+            -RepositorySourceLocation 'https://packages.example.test/v3/index.json'
+        Mock -ModuleName Shmuelie.Utilities Get-PSResourceRepository {
+            [PSCustomObject]@{
+                Name = 'SourceRepo'
+                Uri  = [uri]'https://packages.example.test/v3/index.json'
+            }
+        }
+
+        Update-InstalledPSResource -Path $modulesPath -Confirm:$false
+
+        Should -Invoke -ModuleName Shmuelie.Utilities Find-PSResource -Times 1 -ParameterFilter {
+            $Name -eq 'ModuleA' -and $Repository -eq 'SourceRepo'
+        }
+        Should -Invoke -ModuleName Shmuelie.Utilities Save-PSResource -Times 1 -ParameterFilter {
+            $Name -eq 'ModuleA' -and $Repository -eq 'SourceRepo'
+        }
+    }
+
+    It 'keeps a versioned module discoverable when its manifest contains dynamic expressions' {
+        $modulesPath = Join-Path $TestDrive 'DynamicManifest'
+        $versionRoot = Join-Path $modulesPath 'Dynamic.Module' '1.2.3'
+        New-Item -ItemType Directory -Path $versionRoot -Force | Out-Null
+        @'
+@{
+    RootModule = 'Dynamic.Module.psm1'
+    ModuleVersion = '1.2.3'
+    FormatsToProcess = "$PSScriptRoot/Dynamic.format.ps1xml"
+}
+'@ | Set-Content -LiteralPath (Join-Path $versionRoot 'Dynamic.Module.psd1')
+
+        Update-InstalledPSResource -Path $modulesPath -Confirm:$false
+
+        Should -Invoke -ModuleName Shmuelie.Utilities Find-PSResource -Times 1 -ParameterFilter {
+            $Name -eq 'Dynamic.Module'
+        }
+        Should -Invoke -ModuleName Shmuelie.Utilities Save-PSResource -Times 1 -ParameterFilter {
+            $Name -eq 'Dynamic.Module' -and $Repository -eq 'PSGallery'
+        }
+    }
+
+    It 'inherits recorded provenance from an older version when the newest lacks metadata' {
+        $modulesPath = Join-Path $TestDrive 'OlderProvenance'
+        New-TestSaveLayout -Root $modulesPath -Name 'ModuleA' -Version '1.0.0' -Repository 'RepoA'
+        New-TestSaveLayout -Root $modulesPath -Name 'ModuleA' -Version '1.5.0'
+
+        Update-InstalledPSResource -Path $modulesPath -Confirm:$false
+
+        Should -Invoke -ModuleName Shmuelie.Utilities Find-PSResource -Times 1 -ParameterFilter {
+            $Name -eq 'ModuleA' -and $Repository -eq 'RepoA'
+        }
+        Should -Invoke -ModuleName Shmuelie.Utilities Save-PSResource -Times 1 -ParameterFilter {
+            $Name -eq 'ModuleA' -and $Repository -eq 'RepoA'
+        }
+    }
+
+    It 'skips a module whose recorded source URI cannot be resolved instead of falling back' {
+        $modulesPath = Join-Path $TestDrive 'UnresolvedSource'
+        New-TestSaveLayout -Root $modulesPath -Name 'Private.Module' -Version '1.0.0' `
+            -RepositorySourceLocation 'https://unknown.example.test/v3/index.json'
+        Mock -ModuleName Shmuelie.Utilities Get-PSResourceRepository {
+            [PSCustomObject]@{
+                Name = 'PSGallery'
+                Uri  = [uri]'https://www.powershellgallery.com/api/v2'
+            }
+        }
+
+        Update-InstalledPSResource -Path $modulesPath -Confirm:$false `
+            -WarningVariable warnings -WarningAction SilentlyContinue
+
+        $warnings | Should -HaveCount 1
+        $warnings[0].Message | Should -Match 'unknown.example.test'
+        Should -Invoke -ModuleName Shmuelie.Utilities Find-PSResource -Times 0
+        Should -Invoke -ModuleName Shmuelie.Utilities Save-PSResource -Times 0
+    }
+
+    It 'rejects an explicitly empty repository override' {
+        $modulesPath = Join-Path $TestDrive 'EmptyRepository'
+        New-TestSaveLayout -Root $modulesPath -Name 'ModuleA' -Version '1.0.0'
+
+        { Update-InstalledPSResource -Path $modulesPath -Repository '' -Confirm:$false } |
+            Should -Throw
+
+        Should -Invoke -ModuleName Shmuelie.Utilities Find-PSResource -Times 0
+    }
+
+    It 'filters module names before repository lookup without warning' {
+        $modulesPath = Join-Path $TestDrive 'Filtered'
+        New-TestSaveLayout -Root $modulesPath -Name 'Managed.One' -Version '1.0.0'
+        New-TestSaveLayout -Root $modulesPath -Name 'Managed.Two' -Version '1.0.0'
+        New-TestSaveLayout -Root $modulesPath -Name 'Local.Build' -Version '1.0.0'
+
+        Update-InstalledPSResource -Path $modulesPath -Name 'Managed.*' -Exclude '*.Two' `
+            -Confirm:$false -WarningVariable warnings
+
+        Should -Invoke -ModuleName Shmuelie.Utilities Find-PSResource -Times 1 -ParameterFilter {
+            $Name -eq 'Managed.One'
+        }
+        Should -Invoke -ModuleName Shmuelie.Utilities Find-PSResource -Times 0 -ParameterFilter {
+            $Name -in @('Managed.Two', 'Local.Build')
+        }
+        $warnings | Should -BeNullOrEmpty
+    }
+
+    It 'warns for an unavailable recorded repository and continues other resources' {
+        $modulesPath = Join-Path $TestDrive 'UnavailableRepository'
+        New-TestSaveLayout -Root $modulesPath -Name 'ModuleA' -Version '1.0.0' -Repository 'MissingRepo'
+        New-TestSaveLayout -Root $modulesPath -Name 'ModuleB' -Version '1.0.0' -Repository 'RepoB'
+        Mock -ModuleName Shmuelie.Utilities Find-PSResource {
+            if ($Repository -eq 'MissingRepo') { throw 'repository is not registered' }
+            [PSCustomObject]@{ Version = [version]'2.0.0' }
+        }
+
+        Update-InstalledPSResource -Path $modulesPath -Confirm:$false `
+            -WarningVariable warnings -WarningAction SilentlyContinue
+
+        $warnings | Should -HaveCount 1
+        $warnings[0].Message | Should -Match 'MissingRepo'
+        Should -Invoke -ModuleName Shmuelie.Utilities Save-PSResource -Times 0 -ParameterFilter {
+            $Name -eq 'ModuleA'
+        }
+        Should -Invoke -ModuleName Shmuelie.Utilities Save-PSResource -Times 1 -ParameterFilter {
+            $Name -eq 'ModuleB' -and $Repository -eq 'RepoB'
+        }
     }
 
     It 'is a no-op for a missing path' {

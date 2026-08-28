@@ -31,7 +31,11 @@ Import-Module Shmuelie.Utilities
   on Ctrl+C.
 - Tool helpers list and update .NET global tools, Python packages, uv tools, VS
   Code extensions, and PowerShell resources deployed with `Save-PSResource` to
-  caller-supplied module paths (`Update-InstalledPSResource`).
+  caller-supplied module paths (`Update-InstalledPSResource`). The PowerShell
+  resource updater honors recorded repository provenance, supports explicit
+  repository override, and can include/exclude module names with wildcards.
+  If recorded source provenance cannot be matched to a configured repository,
+  the module is skipped rather than silently falling back to PSGallery.
 
 ## Examples
 
@@ -39,6 +43,7 @@ Import-Module Shmuelie.Utilities
 if (Test-IsElevated) { 'admin' }
 Get-DotNetTool | Update-DotNetTool
 Update-InstalledPSResource -Path (Join-Path $HOME 'PowerShellModules')
+Update-InstalledPSResource -Path (($env:PSModulePath -split [IO.Path]::PathSeparator)[0]) -Name 'Shmuelie.*' -Exclude '*.Local'
 Reset-TerminalModes
 ```
 
