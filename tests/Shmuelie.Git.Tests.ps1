@@ -542,9 +542,9 @@ Describe 'Find-StaleBranch' {
                 [switch]$EncodeSpaces
             )
 
-            $remotePath = Join-Path $Path "dev.azure.com\$Organization\$Project\_git\$Repository"
+            $remotePath = Join-Path $Path 'dev.azure.com' $Organization $Project '_git' $Repository
             Invoke-Git @('init', '--bare', '--quiet', $remotePath)
-            $remoteUrlPath = $remotePath -replace '\\', '/'
+            $remoteUrlPath = ($remotePath -replace '\\', '/').TrimStart('/')
             if ($EncodeSpaces) {
                 $remoteUrlPath = $remoteUrlPath -replace ' ', '%20'
             }

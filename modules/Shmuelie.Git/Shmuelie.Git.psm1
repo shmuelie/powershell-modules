@@ -37,7 +37,7 @@ function Update-WorktreePrediction {
     }
 }
 
-$predictorPath = Join-Path $PSScriptRoot 'bin\WorktreePredictor.dll'
+$predictorPath = Join-Path $PSScriptRoot 'bin' 'WorktreePredictor.dll'
 if (Test-Path $predictorPath) {
     $predictorRegistered = (Get-PSSubsystem -Kind CommandPredictor).Implementations.Name -contains 'Worktree'
     if (-not $predictorRegistered) {

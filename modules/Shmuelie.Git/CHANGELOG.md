@@ -7,6 +7,10 @@ Versions change only when a release is cut; unreleased work stays under
 ## [Unreleased]
 
 ### Fixed
+- The bundled worktree predictor path is now constructed with multi-segment
+  `Join-Path` (`'bin' 'WorktreePredictor.dll'`) instead of a hard-coded
+  backslash (`'bin\WorktreePredictor.dll'`), so the predictor is found
+  correctly on Linux and macOS. (Fixes #155.)
 - `Get-GitStatusSummary` now reports the branch name for an empty repository
   (unborn branch) instead of the literal `No commits yet on <branch>` phrase.
 - `Find-StaleBranch` now surfaces a clear error and classifies nothing when

@@ -2,7 +2,7 @@
 
 BeforeAll {
     $repoRoot = Split-Path (Split-Path $PSCommandPath -Parent) -Parent
-    Import-Module (Join-Path $repoRoot 'modules\Shmuelie.Copilot\Shmuelie.Copilot.psd1') -Force
+    Import-Module (Join-Path $repoRoot 'modules' 'Shmuelie.Copilot' 'Shmuelie.Copilot.psd1') -Force
 
     $script:OriginalUserProfile = $env:USERPROFILE
     $script:OriginalPath = $env:PATH
@@ -412,7 +412,7 @@ Describe 'Get-CopilotHome' {
 
 Describe 'Shmuelie.Copilot source' {
     It 'does not reference the Windows-only USERPROFILE environment variable' {
-        $moduleRoot = Join-Path $repoRoot 'modules\Shmuelie.Copilot'
+        $moduleRoot = Join-Path $repoRoot 'modules' 'Shmuelie.Copilot'
         $matches = @(Get-ChildItem -Path $moduleRoot -Recurse -Include *.ps1, *.psm1 | Select-String -Pattern '\$env:USERPROFILE')
 
         $matches.Count | Should -Be 0

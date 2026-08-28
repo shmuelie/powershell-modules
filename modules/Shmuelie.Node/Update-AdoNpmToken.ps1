@@ -98,7 +98,7 @@ function Update-AdoNpmToken {
         Write-Error "npm is not installed or not in PATH."
         return
     }
-    $credProviderBin = Join-Path $npmRoot '@microsoft\artifacts-npm-credprovider\bin\index.js'
+    $credProviderBin = Join-Path $npmRoot '@microsoft' 'artifacts-npm-credprovider' 'bin' 'index.js'
     if (-not (Test-Path $credProviderBin)) {
         Write-Error "artifacts-npm-credprovider is not installed globally. Install with: npm install -g @microsoft/artifacts-npm-credprovider"
         return

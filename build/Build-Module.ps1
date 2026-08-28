@@ -15,9 +15,29 @@ param(
     [string]$OutputPath
 )
 
+function Invoke-RetryingDelete {
+    # Safety net for transient lock errors (e.g. antivirus briefly holding a
+    # file).  Only catches IO/access-denied errors; other errors still propagate.
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [int]$MaxAttempts = 3,
+        [int]$DelayMs = 300
+    )
+    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+        try {
+            Remove-Item $Path -Recurse -Force -ErrorAction Stop
+            return
+        }
+        catch [System.IO.IOException], [System.UnauthorizedAccessException] {
+            if ($attempt -ge $MaxAttempts) { throw }
+            Start-Sleep -Milliseconds $DelayMs
+        }
+    }
+}
+
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path $PSScriptRoot -Parent
-$source = Join-Path $repoRoot "modules\$Module"
+$source = Join-Path $repoRoot 'modules' $Module
 $manifestPath = Join-Path $source "$Module.psd1"
 $manifest = Test-ModuleManifest $manifestPath
 
@@ -27,7 +47,7 @@ if (-not $OutputPath) {
 
 $stage = Join-Path $OutputPath $Module $manifest.Version
 if (Test-Path $stage) {
-    Remove-Item $stage -Recurse -Force
+    Invoke-RetryingDelete $stage
 }
 New-Item $stage -ItemType Directory -Force | Out-Null
 
@@ -54,7 +74,7 @@ if ($Module -eq 'Shmuelie.Git') {
         Remove-Item $predictorBuild -Recurse -Force
     }
     New-Item $bin -ItemType Directory -Force | Out-Null
-    dotnet build (Join-Path $source 'Predictor\WorktreePredictor.csproj') `
+    dotnet build (Join-Path $source 'Predictor' 'WorktreePredictor.csproj') `
         --configuration Release `
         --output $predictorBuild `
         --nologo
@@ -72,7 +92,7 @@ if ($Module -eq 'Shmuelie.Windows') {
         Remove-Item $cmdletsBuild -Recurse -Force
     }
     New-Item $bin -ItemType Directory -Force | Out-Null
-    dotnet build (Join-Path $source 'Cmdlets\Shmuelie.Windows.Cmdlets.csproj') `
+    dotnet build (Join-Path $source 'Cmdlets' 'Shmuelie.Windows.Cmdlets.csproj') `
         --configuration Release `
         --output $cmdletsBuild `
         --nologo
@@ -90,7 +110,7 @@ if ($Module -eq 'Shmuelie.Windows') {
     # (Microsoft.Windows.SDK.NET.dll / WinRT.Runtime.dll) are emitted alongside
     # the cmdlet assembly; a plain build leaves them out and the WinRT calls fail
     # to load at runtime.
-    dotnet publish (Join-Path $source 'Cmdlets.AppInstaller\Shmuelie.Windows.AppInstaller.csproj') `
+    dotnet publish (Join-Path $source 'Cmdlets.AppInstaller' 'Shmuelie.Windows.AppInstaller.csproj') `
         --configuration Release `
         --output $appInstallerBuild `
         --nologo
@@ -103,9 +123,27 @@ if ($Module -eq 'Shmuelie.Windows') {
     Remove-Item $appInstallerBuild -Recurse -Force
 }
 
+# Validate the staged module in a short-lived child pwsh process so that every
+# DLL file handle is released when the child exits.  The stage directory is
+# never locked in the parent process, allowing a same-process rebuild to delete
+# it freely without shadow copies, GC tricks, or temp-directory leakage.
+# The manifest path is forwarded through an environment variable rather than
+# interpolated into the command string, eliminating any path-injection risk.
 $stagedManifest = Join-Path $stage "$Module.psd1"
-Test-ModuleManifest $stagedManifest -ErrorAction Stop | Out-Null
-Import-Module $stagedManifest -Force -ErrorAction Stop
-Remove-Module $Module -Force -ErrorAction Stop
+$envKey = 'PSMOD_VALIDATE_MANIFEST'
+$savedEnv = [System.Environment]::GetEnvironmentVariable($envKey)
+try {
+    [System.Environment]::SetEnvironmentVariable($envKey, $stagedManifest)
+    $childOut = & pwsh -NoProfile -NonInteractive -Command {
+        $ErrorActionPreference = 'Stop'
+        Test-ModuleManifest $env:PSMOD_VALIDATE_MANIFEST -ErrorAction Stop | Out-Null
+        Import-Module $env:PSMOD_VALIDATE_MANIFEST -Force -ErrorAction Stop
+    } 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "Staged module validation failed (exit $LASTEXITCODE):`n$($childOut -join [System.Environment]::NewLine)"
+    }
+} finally {
+    [System.Environment]::SetEnvironmentVariable($envKey, $savedEnv)
+}
 
 Get-Item $stage

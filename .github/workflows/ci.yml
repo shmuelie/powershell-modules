@@ -19,3 +19,25 @@ jobs:
       - name: Run unit tests
         shell: pwsh
         run: ./build/Invoke-Tests.ps1
+
+  validate-portable:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 8.0.x
+      - name: Build and import portable modules
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # Build and import each portable module (Windows module is excluded; it
+          # contains WinRT-only assemblies that cannot load on Linux).
+          foreach ($module in @('Shmuelie.Git', 'Shmuelie.Copilot', 'Shmuelie.Node', 'Shmuelie.Utilities', 'Shmuelie.Dsc')) {
+              Write-Host "::group::Building $module"
+              & ./build/Build-Module.ps1 -Module $module | Out-Null
+              Write-Host "::endgroup::"
+          }
+      - name: Run repeat-build tests
+        shell: pwsh
+        run: ./build/Invoke-Tests.ps1 -Path ./tests/Build.Tests.ps1

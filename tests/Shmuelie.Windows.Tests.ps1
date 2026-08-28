@@ -2,14 +2,14 @@
 
 BeforeAll {
     $repoRoot = Split-Path (Split-Path $PSCommandPath -Parent) -Parent
-    $cmdletsProject = Join-Path $repoRoot 'modules\Shmuelie.Windows\Cmdlets\Shmuelie.Windows.Cmdlets.csproj'
-    $cmdletsBin = Join-Path $repoRoot 'modules\Shmuelie.Windows\bin'
+    $cmdletsProject = Join-Path $repoRoot 'modules' 'Shmuelie.Windows' 'Cmdlets' 'Shmuelie.Windows.Cmdlets.csproj'
+    $cmdletsBin = Join-Path $repoRoot 'modules' 'Shmuelie.Windows' 'bin'
     dotnet build $cmdletsProject --configuration Release --output $cmdletsBin --nologo
     if ($LASTEXITCODE -ne 0) {
         throw 'Shmuelie.Windows.Cmdlets build failed; cannot run Shmuelie.Windows tests.'
     }
     if ($IsWindows) {
-        $appInstallerProject = Join-Path $repoRoot 'modules\Shmuelie.Windows\Cmdlets.AppInstaller\Shmuelie.Windows.AppInstaller.csproj'
+        $appInstallerProject = Join-Path $repoRoot 'modules' 'Shmuelie.Windows' 'Cmdlets.AppInstaller' 'Shmuelie.Windows.AppInstaller.csproj'
         # Publish so the WinRT projection runtime assemblies land next to the
         # cmdlet DLL in the shared source bin; a plain build omits them.
         dotnet publish $appInstallerProject --configuration Release --output $cmdletsBin --nologo
@@ -17,7 +17,7 @@ BeforeAll {
             throw 'Shmuelie.Windows.AppInstaller publish failed; cannot run Shmuelie.Windows tests.'
         }
     }
-    Import-Module (Join-Path $repoRoot 'modules\Shmuelie.Windows\Shmuelie.Windows.psd1') -Force
+    Import-Module (Join-Path $repoRoot 'modules' 'Shmuelie.Windows' 'Shmuelie.Windows.psd1') -Force
 
     function Get-FreeSubstDriveLetter {
         $used = [System.IO.Directory]::GetLogicalDrives() |
@@ -293,7 +293,7 @@ Describe 'Get-InstalledApplications' -Skip:(-not $IsWindows) {
 Describe 'Get-InstalledApplications hive-cleanup regression' -Skip:(-not $IsWindows) {
     BeforeAll {
         $repoRoot    = Split-Path (Split-Path $PSCommandPath -Parent) -Parent
-        $cmdletsBin  = Join-Path $repoRoot 'modules\Shmuelie.Windows\bin'
+        $cmdletsBin  = Join-Path $repoRoot 'modules' 'Shmuelie.Windows' 'bin'
         $script:cmdletsDll = Join-Path $cmdletsBin 'Shmuelie.Windows.Cmdlets.dll'
         $script:helperDll  = Join-Path $cmdletsBin 'Shmuelie.Windows.Tests.Helpers.dll'
         $script:smaDll     = [PSObject].Assembly.Location
@@ -301,7 +301,7 @@ Describe 'Get-InstalledApplications hive-cleanup regression' -Skip:(-not $IsWind
         # Build the test helper project; its AssemblyName matches the
         # InternalsVisibleTo("Shmuelie.Windows.Tests.Helpers") attribute in the
         # cmdlets assembly, granting access to internal types.
-        $helpersProject = Join-Path $repoRoot 'tests\TestHelpers\TestHelpers.csproj'
+        $helpersProject = Join-Path $repoRoot 'tests' 'TestHelpers' 'TestHelpers.csproj'
         dotnet build $helpersProject --configuration Release --output $cmdletsBin --nologo
         if ($LASTEXITCODE -ne 0) {
             throw 'TestHelpers build failed; cannot run hive-cleanup regression tests.'
