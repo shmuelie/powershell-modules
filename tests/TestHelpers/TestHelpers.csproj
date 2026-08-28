@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <!--
+      Assembly name must match the InternalsVisibleTo("Shmuelie.Windows.Tests.Helpers")
+      attribute in Shmuelie.Windows.Cmdlets so the fake can access internal types.
+    -->
+    <AssemblyName>Shmuelie.Windows.Tests.Helpers</AssemblyName>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Reference the built cmdlets DLL directly; it is produced by the outer BeforeAll. -->
+    <Reference Include="Shmuelie.Windows.Cmdlets">
+      <HintPath>$(MSBuildThisFileDirectory)..\..\modules\Shmuelie.Windows\bin\Shmuelie.Windows.Cmdlets.dll</HintPath>
+    </Reference>
+    <PackageReference Include="Microsoft.PowerShell.SDK" Version="7.4.0" PrivateAssets="all" />
+  </ItemGroup>
+
+</Project>

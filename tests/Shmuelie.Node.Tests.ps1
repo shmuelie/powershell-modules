@@ -458,6 +458,43 @@ Describe 'Update-AdoNpmToken' {
         Should -Invoke -CommandName New-Item -ModuleName Shmuelie.Node -Times 0 -Exactly
     }
 
+    It 'removes the temporary directory when directory ACL setup fails' {
+        Mock -CommandName Set-AdoNpmTokenOwnerOnlyAcl -ModuleName Shmuelie.Node -MockWith {
+            throw 'directory ACL failed'
+        }
+
+        { Update-AdoNpmToken -Feed 'https://pkgs.dev.azure.com/example/_packaging/feed/npm/registry/' -Confirm:$false } |
+            Should -Throw '*directory ACL failed*'
+
+        Test-Path -LiteralPath $script:TokenTempDir | Should -BeFalse
+        Should -Invoke -CommandName node -ModuleName Shmuelie.Node -Times 0
+    }
+
+    It 'removes the temporary directory when npmrc creation fails' {
+        Mock -CommandName New-Item -ModuleName Shmuelie.Node -MockWith {
+            throw 'npmrc creation failed'
+        } -ParameterFilter { $ItemType -eq 'File' -and $Path -like '*.npmrc' }
+
+        { Update-AdoNpmToken -Feed 'https://pkgs.dev.azure.com/example/_packaging/feed/npm/registry/' -Confirm:$false } |
+            Should -Throw '*npmrc creation failed*'
+
+        Test-Path -LiteralPath $script:TokenTempDir | Should -BeFalse
+        Should -Invoke -CommandName node -ModuleName Shmuelie.Node -Times 0
+    }
+
+    It 'removes the temporary directory when initial npmrc writing fails' {
+        Mock -CommandName Set-Content -ModuleName Shmuelie.Node -MockWith {
+            throw 'npmrc write failed'
+        } -ParameterFilter { $Path -like '*.npmrc' }
+
+        { Update-AdoNpmToken -Feed 'https://pkgs.dev.azure.com/example/_packaging/feed/npm/registry/' -Confirm:$false } |
+            Should -Throw '*npmrc write failed*'
+
+        Test-Path -LiteralPath $script:TokenTempDir | Should -BeFalse
+        @(Get-ChildItem -LiteralPath $TestDrive -Filter '.npmrc' -Recurse -Force) | Should -HaveCount 0
+        Should -Invoke -CommandName node -ModuleName Shmuelie.Node -Times 0
+    }
+
     It 'restricts token scratch file ACLs to the current owner on Windows' -Skip:(-not $IsWindows) {
         InModuleScope Shmuelie.Node {
             $directory = Join-Path $TestDrive 'secure-token'

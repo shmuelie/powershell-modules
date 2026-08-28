@@ -290,6 +290,102 @@ Describe 'Get-InstalledApplications' -Skip:(-not $IsWindows) {
     }
 }
 
+Describe 'Get-InstalledApplications hive-cleanup regression' -Skip:(-not $IsWindows) {
+    BeforeAll {
+        $repoRoot    = Split-Path (Split-Path $PSCommandPath -Parent) -Parent
+        $cmdletsBin  = Join-Path $repoRoot 'modules' 'Shmuelie.Windows' 'bin'
+        $script:cmdletsDll = Join-Path $cmdletsBin 'Shmuelie.Windows.Cmdlets.dll'
+        $script:helperDll  = Join-Path $cmdletsBin 'Shmuelie.Windows.Tests.Helpers.dll'
+        $script:smaDll     = [PSObject].Assembly.Location
+
+        # Build the test helper project; its AssemblyName matches the
+        # InternalsVisibleTo("Shmuelie.Windows.Tests.Helpers") attribute in the
+        # cmdlets assembly, granting access to internal types.
+        $helpersProject = Join-Path $repoRoot 'tests' 'TestHelpers' 'TestHelpers.csproj'
+        dotnet build $helpersProject --configuration Release --output $cmdletsBin --nologo
+        if ($LASTEXITCODE -ne 0) {
+            throw 'TestHelpers build failed; cannot run hive-cleanup regression tests.'
+        }
+        [System.Reflection.Assembly]::LoadFrom($script:helperDll) | Out-Null
+    }
+
+    AfterEach {
+        [FakeHiveOperations]::Uninstall()
+    }
+
+    It 'always calls UnloadHive once after a successful LoadHive' {
+        $tempProfile = Join-Path $TestDrive 'FakeProfile'
+        $null = New-Item -ItemType Directory -Path $tempProfile -Force
+        $null = New-Item -ItemType File -Path (Join-Path $tempProfile 'NTUSER.DAT') -Force
+
+        $fake = [FakeHiveOperations]::new()
+        $fake.AddOfflineProfile('S-1-5-21-fake', $tempProfile)
+        $fake.Install()
+
+        Get-InstalledApplications -Scope AllUsers -Confirm:$false
+
+        $fake.LoadCallCount   | Should -BeExactly 1
+        $fake.UnloadCallCount | Should -BeExactly 1
+    }
+
+    It 'calls UnloadHive even when ReadMountedUserHive throws' {
+        # Verifies the finally guarantee: unload is unconditional cleanup, not
+        # conditioned on the read succeeding.
+        $tempProfile = Join-Path $TestDrive 'FakeProfileThrow'
+        $null = New-Item -ItemType Directory -Path $tempProfile -Force
+        $null = New-Item -ItemType File -Path (Join-Path $tempProfile 'NTUSER.DAT') -Force
+
+        $fake = [FakeHiveOperations]::new()
+        $fake.AddOfflineProfile('S-1-5-21-fake', $tempProfile)
+        $fake.ThrowInRead = $true
+        $fake.Install()
+
+        { Get-InstalledApplications -Scope AllUsers -Confirm:$false } | Should -Throw
+
+        $fake.LoadCallCount   | Should -BeExactly 1
+        $fake.UnloadCallCount | Should -BeExactly 1
+    }
+
+    It 'does not call LoadHive or UnloadHive under -WhatIf' {
+        $tempProfile = Join-Path $TestDrive 'FakeProfileWhatIf'
+        $null = New-Item -ItemType Directory -Path $tempProfile -Force
+        $null = New-Item -ItemType File -Path (Join-Path $tempProfile 'NTUSER.DAT') -Force
+
+        $fake = [FakeHiveOperations]::new()
+        $fake.AddOfflineProfile('S-1-5-21-fake', $tempProfile)
+        $fake.Install()
+
+        Get-InstalledApplications -Scope AllUsers -WhatIf
+
+        $fake.LoadCallCount   | Should -BeExactly 0
+        $fake.UnloadCallCount | Should -BeExactly 0
+    }
+
+    It 'does not call UnloadHive when LoadHive fails' {
+        $tempProfile = Join-Path $TestDrive 'FakeProfileFailedLoad'
+        $null = New-Item -ItemType Directory -Path $tempProfile -Force
+        $null = New-Item -ItemType File -Path (Join-Path $tempProfile 'NTUSER.DAT') -Force
+
+        $fake = [FakeHiveOperations]::new()
+        $fake.AddOfflineProfile('S-1-5-21-fake', $tempProfile)
+        $fake.LoadReturnValue = 5  # non-zero = RegLoadKey failure; try/finally never entered
+        $fake.Install()
+
+        Get-InstalledApplications -Scope AllUsers -Confirm:$false -WarningAction SilentlyContinue
+
+        $fake.LoadCallCount   | Should -BeExactly 1
+        $fake.UnloadCallCount | Should -BeExactly 0
+    }
+
+    It 'source has no ShouldProcess gate around REG UNLOAD' {
+        # Belt-and-suspenders: structural verification that the fix is present.
+        $srcPath = Join-Path (Split-Path (Split-Path $PSCommandPath -Parent) -Parent) `
+            'modules\Shmuelie.Windows\Cmdlets\GetInstalledApplicationsCommand.cs'
+        $source = Get-Content $srcPath -Raw
+        $source | Should -Not -Match 'ShouldProcess[^;]*REG\s*UNLOAD'
+    }
+}
+
 Describe 'Windows Terminal settings parsing' -Skip:(-not $IsWindows) {
     BeforeEach {
         $script:OriginalLocalAppData = $env:LOCALAPPDATA

@@ -259,6 +259,26 @@ Describe 'Merge-CopilotSession' {
         Test-Path $thirdPath | Should -BeTrue
         Test-Path $fourthPath | Should -BeTrue
     }
+
+    It 'removes the partial destination and preserves sources when the merge fails mid-way' {
+        $first = 'e1e1e1e1-e1e1-e1e1-e1e1-e1e1e1e1e1e1'
+        $second = 'e2e2e2e2-e2e2-e2e2-e2e2-e2e2e2e2e2e2'
+        $firstPath = New-CopilotSessionState -SessionRoot $script:SessionRoot -Id $first -Cwd $script:Workspace -Summary 'Fail first'
+        $secondPath = New-CopilotSessionState -SessionRoot $script:SessionRoot -Id $second -Cwd $script:Workspace -Summary 'Fail second'
+        Set-CopilotTestEvents -SessionPath $firstPath -Lines (New-CopilotTestConversationEvents -Prefix 'fail-first' -SessionId $first -Count 1 -Start ([datetimeoffset]'2026-08-20T20:00:00Z'))
+        Set-CopilotTestEvents -SessionPath $secondPath -Lines (New-CopilotTestConversationEvents -Prefix 'fail-second' -SessionId $second -Count 1 -Start ([datetimeoffset]'2026-08-20T20:10:00Z'))
+
+        # Force a deterministic failure once the destination directory already exists.
+        Mock -ModuleName Shmuelie.Copilot -CommandName Repair-CopilotSessionEvents -MockWith { throw 'forced mid-merge failure' }
+
+        $beforeDirs = @(Get-ChildItem -Path $script:SessionRoot -Directory | Select-Object -ExpandProperty Name | Sort-Object)
+
+        { Merge-CopilotSession -Id $first, $second -Confirm:$false } | Should -Throw
+
+        @(Get-ChildItem -Path $script:SessionRoot -Directory | Select-Object -ExpandProperty Name | Sort-Object) | Should -Be $beforeDirs
+        Test-Path $firstPath | Should -BeTrue
+        Test-Path $secondPath | Should -BeTrue
+    }
 }
 
 Describe 'Compress-CopilotSession' {
@@ -818,6 +838,47 @@ Describe 'Get-CopilotSession' {
     }
 }
 
+Describe 'Get-CopilotSession ID path traversal guard' {
+    BeforeEach {
+        $testHome = Join-Path $TestDrive 'home'
+        Remove-Item -LiteralPath $testHome -Recurse -Force -ErrorAction SilentlyContinue
+        $script:SessionRoot = Join-Path $testHome '.copilot' 'session-state'
+        $script:Workspace = Join-Path $TestDrive 'workspace'
+        New-Item -ItemType Directory -Path $script:SessionRoot, $script:Workspace -Force | Out-Null
+        Mock -ModuleName Shmuelie.Copilot -CommandName Get-CopilotHome -MockWith { $testHome }
+    }
+
+    It 'still resolves a valid session directory by ID' {
+        $sessionId = 'c3c3c3c3-0000-0000-0000-000000000000'
+        $sessionPath = New-CopilotSessionState -SessionRoot $script:SessionRoot -Id $sessionId -Cwd $script:Workspace -Summary 'Valid session'
+
+        $session = Get-CopilotSession -Id $sessionId
+
+        $session.Id | Should -Be $sessionId
+        $session.Path | Should -Be $sessionPath
+    }
+
+    It 'rejects IDs that escape the session-state root' -ForEach @(
+        @{ Id = '..\review-canary' }
+        @{ Id = '../review-canary' }
+        @{ Id = 'nested\child' }
+        @{ Id = 'nested/child' }
+        @{ Id = '..' }
+    ) {
+        # A sibling directory that a traversal ID would resolve to.
+        New-Item -ItemType Directory -Path (Join-Path (Join-Path $testHome '.copilot') 'review-canary') -Force | Out-Null
+
+        { Get-CopilotSession -Id $Id } | Should -Throw
+    }
+
+    It 'rejects a rooted absolute path as an ID' {
+        $rooted = Join-Path $TestDrive 'elsewhere'
+        New-Item -ItemType Directory -Path $rooted -Force | Out-Null
+
+        { Get-CopilotSession -Id $rooted } | Should -Throw
+    }
+}
+
 Describe 'Remove-CopilotSession' {
     BeforeEach {
         $testHome = Join-Path $TestDrive 'home'
@@ -848,6 +909,28 @@ Describe 'Remove-CopilotSession' {
         Test-Path $removePath | Should -BeFalse
         Test-Path $keepPath | Should -BeTrue
         @(Get-ChildItem -Path $script:SessionRoot -Directory | Select-Object -ExpandProperty Name) | Should -Be @($keepId)
+    }
+
+    It 'rejects a traversal ID instead of deleting outside the session-state root' {
+        $canaryDir = Join-Path (Join-Path $testHome '.copilot') 'review-canary'
+        New-Item -ItemType Directory -Path $canaryDir -Force | Out-Null
+
+        { Remove-CopilotSession -Id '..\review-canary' -Confirm:$false } | Should -Throw
+
+        Test-Path $canaryDir | Should -BeTrue
+    }
+
+    It 'ignores a malicious InputObject Path and never deletes an external canary' {
+        $canaryDir = Join-Path (Join-Path $testHome '.copilot') 'review-canary'
+        New-Item -ItemType Directory -Path $canaryDir -Force | Out-Null
+        $sessionId = 'a1a1a1a1-0000-0000-0000-000000000000'
+        $sessionPath = New-CopilotSessionState -SessionRoot $script:SessionRoot -Id $sessionId -Cwd $script:Workspace -Summary 'Real session'
+
+        $malicious = [PSCustomObject]@{ Id = $sessionId; Summary = 'Spoofed'; Path = $canaryDir }
+        $malicious | Remove-CopilotSession -Confirm:$false
+
+        Test-Path $canaryDir | Should -BeTrue
+        Test-Path $sessionPath | Should -BeFalse
     }
 }
 
@@ -883,6 +966,23 @@ Describe 'Rename-CopilotSession' {
         $content = Get-Content $workspaceFile -Raw
         $content | Should -Match '(?m)^name: Renamed session\r?$'
         $content | Should -Match '(?m)^summary: Renamed session\r?$'
+    }
+
+    It 'ignores a malicious InputObject Path and never rewrites an external canary' {
+        $canaryDir = Join-Path (Join-Path $testHome '.copilot') 'review-canary'
+        New-Item -ItemType Directory -Path $canaryDir -Force | Out-Null
+        $canaryFile = Join-Path $canaryDir 'workspace.yaml'
+        Set-Content -Path $canaryFile -Value @('id: canary', 'name: canary', 'summary: canary')
+        $canaryBefore = Get-Content $canaryFile -Raw
+
+        $sessionId = 'b2b2b2b2-0000-0000-0000-000000000000'
+        $sessionPath = New-CopilotSessionState -SessionRoot $script:SessionRoot -Id $sessionId -Cwd $script:Workspace -Summary 'Real session'
+
+        $malicious = [PSCustomObject]@{ Id = $sessionId; Summary = 'Spoofed'; Path = $canaryDir }
+        $malicious | Rename-CopilotSession -Summary 'Renamed via pipeline' -Confirm:$false
+
+        Get-Content $canaryFile -Raw | Should -Be $canaryBefore
+        Get-Content (Join-Path $sessionPath 'workspace.yaml') -Raw | Should -Match '(?m)^name: Renamed via pipeline\r?$'
     }
 }
 

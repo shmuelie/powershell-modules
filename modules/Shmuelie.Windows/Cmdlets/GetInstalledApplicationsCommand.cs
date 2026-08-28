@@ -13,13 +13,22 @@ namespace Shmuelie.Windows.Cmdlets;
 /// scope mounts each offline profile's <c>NTUSER.DAT</c> hive with the Win32
 /// <c>RegLoadKey</c>/<c>RegUnLoadKey</c> APIs (which require elevation), reads its
 /// uninstall keys, and always unmounts the hive again. Use <c>-WhatIf</c> to
-/// preview the offline mount/unmount operations without changing the registry.
+/// preview the offline mount operations without changing the registry.
 /// </remarks>
 [Cmdlet(VerbsCommon.Get, "InstalledApplications", SupportsShouldProcess = true)]
 [OutputType(typeof(PSObject))]
 [SupportedOSPlatform("windows")]
 public sealed class GetInstalledApplicationsCommand : InstalledApplicationsCommandBase
 {
+    /// <summary>
+    /// Test injection point: when set, hive operations are delegated to this
+    /// instance instead of the real Win32 API. Always <see langword="null"/>
+    /// in production.
+    /// </summary>
+    internal static IHiveOperations? TestHiveOperations;
+
+    private IHiveOperations HiveOps => TestHiveOperations ?? DefaultHiveOperations.Instance;
+
     /// <summary>
     /// The scope of applications to query. Defaults to <c>GlobalAndAllUsers</c>.
     /// </summary>
@@ -42,7 +51,7 @@ public sealed class GetInstalledApplicationsCommand : InstalledApplicationsComma
 
         // Mounting offline hives requires elevation. The preview (-WhatIf) path
         // performs no mount, so it does not require an elevated session.
-        if (wantsAllUsers && !IsWhatIf() && !RegistryHiveService.IsElevated())
+        if (wantsAllUsers && !IsWhatIf() && !HiveOps.IsElevated())
         {
             ThrowTerminatingError(new ErrorRecord(
                 new InvalidOperationException("Finding all user applications requires an elevated (Administrator) PowerShell session."),
@@ -78,14 +87,14 @@ public sealed class GetInstalledApplicationsCommand : InstalledApplicationsComma
     private void CollectAllUsers(List<PSObject> applications)
     {
         WriteVerbose("Collecting hive data for all users");
-        IReadOnlyList<UserProfile> profiles = RegistryHiveService.GetUserProfiles();
+        IReadOnlyList<UserProfile> profiles = HiveOps.GetUserProfiles();
 
         WriteVerbose("Processing mounted hives");
         foreach (UserProfile profile in profiles)
         {
             if (profile.Loaded)
             {
-                applications.AddRange(InstalledApplicationsService.ReadMountedUserHive(profile.Sid));
+                applications.AddRange(HiveOps.ReadMountedUserHive(profile.Sid));
             }
         }
 
@@ -114,11 +123,11 @@ public sealed class GetInstalledApplicationsCommand : InstalledApplicationsComma
 
             if (!privilegesEnabled)
             {
-                RegistryHiveService.EnableHivePrivileges();
+                HiveOps.EnableHivePrivileges();
                 privilegesEnabled = true;
             }
 
-            int loadStatus = RegistryHiveService.LoadHive("temp", hive);
+            int loadStatus = HiveOps.LoadHive("temp", hive);
             if (loadStatus != 0)
             {
                 WriteWarning($"Failed to load registry hive '{hive}' into HKU\\temp. RegLoadKey returned {loadStatus}; skipping this profile.");
@@ -127,7 +136,7 @@ public sealed class GetInstalledApplicationsCommand : InstalledApplicationsComma
 
             try
             {
-                applications.AddRange(InstalledApplicationsService.ReadMountedUserHive("temp"));
+                applications.AddRange(HiveOps.ReadMountedUserHive("temp"));
             }
             finally
             {
@@ -135,13 +144,12 @@ public sealed class GetInstalledApplicationsCommand : InstalledApplicationsComma
                 GC.Collect();
                 GC.WaitForPendingFinalizers();
 
-                if (ShouldProcess("HKU\\temp", "REG UNLOAD"))
+                // Unload is unconditional cleanup: once a load succeeds, the hive
+                // must always be unmounted regardless of user confirmation state.
+                int unloadStatus = HiveOps.UnloadHive("temp");
+                if (unloadStatus != 0)
                 {
-                    int unloadStatus = RegistryHiveService.UnloadHive("temp");
-                    if (unloadStatus != 0)
-                    {
-                        WriteWarning($"Failed to unload registry hive HKU\\temp after reading '{hive}'. RegUnLoadKey returned {unloadStatus}.");
-                    }
+                    WriteWarning($"Failed to unload registry hive HKU\\temp after reading '{hive}'. RegUnLoadKey returned {unloadStatus}.");
                 }
             }
         }

@@ -184,18 +184,27 @@ function Update-Worktrees {
             $noUpstream = @($results | Where-Object { $_.Status -eq 'NoUpstream' })
             if ($noUpstream.Count -gt 0) {
                 Write-Progress -Activity 'Updating Worktrees' -Status 'Checking remote refs' -PercentComplete 40 -Id 0
-                $remoteRefSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-                $remoteRefs = git -C $repoPath --no-pager ls-remote --heads origin 2>$null
-                foreach ($refLine in $remoteRefs) {
-                    if ($refLine -match '\trefs/heads/(.+)$') {
-                        $remoteRefSet.Add($Matches[1]) | Out-Null
+                # A failed `ls-remote` (e.g. an unreachable remote) returns an
+                # empty ref set; reclassifying from that would wrongly mark every
+                # NoUpstream worktree as Removed. Skip the reclassification and
+                # warn instead of guessing from nothing.
+                $remoteRefs = git -C $repoPath --no-pager ls-remote --heads origin 2>&1
+                if ($LASTEXITCODE -ne 0) {
+                    $detail = ($remoteRefs | ForEach-Object { "$_" }) -join ' '
+                    Write-Warning "Skipping remote branch check: git ls-remote failed for 'origin' (exit $LASTEXITCODE): $detail. NoUpstream worktrees left unclassified."
+                } else {
+                    $remoteRefSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+                    foreach ($refLine in $remoteRefs) {
+                        if ($refLine -match '\trefs/heads/(.+)$') {
+                            $remoteRefSet.Add($Matches[1]) | Out-Null
+                        }
                     }
-                }
 
-                foreach ($entry in $noUpstream) {
-                    if (-not $remoteRefSet.Contains($entry.Branch)) {
-                        $entry.Status = 'Removed'
-                        Write-Verbose "$($entry.Branch) not found on remote"
+                    foreach ($entry in $noUpstream) {
+                        if (-not $remoteRefSet.Contains($entry.Branch)) {
+                            $entry.Status = 'Removed'
+                            Write-Verbose "$($entry.Branch) not found on remote"
+                        }
                     }
                 }
             }

@@ -11,6 +11,19 @@ Versions change only when a release is cut; unreleased work stays under
   `Join-Path` (`'bin' 'WorktreePredictor.dll'`) instead of a hard-coded
   backslash (`'bin\WorktreePredictor.dll'`), so the predictor is found
   correctly on Linux and macOS. (Fixes #155.)
+- `Get-GitStatusSummary` now reports the branch name for an empty repository
+  (unborn branch) instead of the literal `No commits yet on <branch>` phrase.
+- `Find-StaleBranch` now surfaces a clear error and classifies nothing when
+  `git ls-remote` fails (e.g. an unreachable remote), rather than treating the
+  empty remote ref set as proof that every local branch is stale.
+- `Update-Worktrees -CheckRemote` now warns and leaves `NoUpstream` worktrees
+  unclassified when `git ls-remote` fails, instead of marking them all
+  `Removed` from the empty ref set.
+- `Update-AllWorktrees -GitHubAccountResolver` no longer fails with a
+  ForEach-Object -Parallel binding error. The resolver now runs in the parent
+  runspace and its results are merged into a per-repository `GitHubAccountMap`
+  passed to each worker; caller-supplied `-GitHubAccountMap` entries still take
+  precedence and the parallel reactive fallback is preserved.
 
 ## [0.8.0] - 2026-08-27
 
