@@ -32,7 +32,7 @@ no longer eagerly imports PSReadLine before registering the predictor.
 ## Shmuelie.Git
 
 Git repository, worktree, status, completion, and PSReadLine prediction helpers.
-**Version 0.8.0.**
+**Version 0.8.1.**
 [README](https://github.com/shmuelie/powershell-modules/blob/main/modules/Shmuelie.Git/README.md)
 
 Highlights:
@@ -46,7 +46,7 @@ Highlights:
 ## Shmuelie.Copilot
 
 GitHub Copilot CLI sessions, plugins, marketplaces, MCP servers, and the
-`Start-Copilot` launcher. **Version 0.3.0.**
+`Start-Copilot` launcher. **Version 0.3.1.**
 [README](https://github.com/shmuelie/powershell-modules/blob/main/modules/Shmuelie.Copilot/README.md)
 
 Highlights:
@@ -66,7 +66,7 @@ Highlights:
 ## Shmuelie.Node
 
 Node.js, nvm-windows, npm package, and Azure DevOps npm credential helpers.
-**Version 0.1.3.**
+**Version 0.1.4.**
 [README](https://github.com/shmuelie/powershell-modules/blob/main/modules/Shmuelie.Node/README.md)
 
 Highlights:
@@ -89,7 +89,7 @@ Highlights:
 ## Shmuelie.Windows
 
 Windows-only developer utilities for installed applications, Windows Terminal,
-Windows Performance Recorder, and service host processes. **Version 0.1.1.**
+Windows Performance Recorder, and service host processes. **Version 0.1.2.**
 [README](https://github.com/shmuelie/powershell-modules/blob/main/modules/Shmuelie.Windows/README.md)
 
 Highlights:

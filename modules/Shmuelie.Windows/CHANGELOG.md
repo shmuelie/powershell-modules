@@ -6,6 +6,8 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-08-27
+
 ### Fixed
 - `Get-InstalledApplications -AllUsers`: after a successful `RegLoadKey`, the
   `RegUnLoadKey` cleanup in `finally` was gated behind a second `ShouldProcess`
