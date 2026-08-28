@@ -404,7 +404,7 @@ Describe 'Update-InstalledPSResource' {
 
     It 'does not call Save-PSResource under -WhatIf, but still queries the repository' {
         $modulesPath = Join-Path $TestDrive 'WhatIf'
-        New-TestSaveLayout -Root $modulesPath -Name 'ModuleA' -Version '1.0.0'
+        New-TestSaveLayout -Root $modulesPath -Name 'ModuleA' -Version '1.0.0' -Repository 'RepoA'
 
         Update-InstalledPSResource -Path $modulesPath -WhatIf
 
@@ -470,6 +470,73 @@ Describe 'Update-InstalledPSResource' {
         Should -Invoke -ModuleName Shmuelie.Utilities Save-PSResource -Times 1 -ParameterFilter {
             $Name -eq 'ModuleA' -and $Repository -eq 'SourceRepo'
         }
+    }
+
+    It 'keeps a versioned module discoverable when its manifest contains dynamic expressions' {
+        $modulesPath = Join-Path $TestDrive 'DynamicManifest'
+        $versionRoot = Join-Path $modulesPath 'Dynamic.Module' '1.2.3'
+        New-Item -ItemType Directory -Path $versionRoot -Force | Out-Null
+        @'
+@{
+    RootModule = 'Dynamic.Module.psm1'
+    ModuleVersion = '1.2.3'
+    FormatsToProcess = "$PSScriptRoot/Dynamic.format.ps1xml"
+}
+'@ | Set-Content -LiteralPath (Join-Path $versionRoot 'Dynamic.Module.psd1')
+
+        Update-InstalledPSResource -Path $modulesPath -Confirm:$false
+
+        Should -Invoke -ModuleName Shmuelie.Utilities Find-PSResource -Times 1 -ParameterFilter {
+            $Name -eq 'Dynamic.Module'
+        }
+        Should -Invoke -ModuleName Shmuelie.Utilities Save-PSResource -Times 1 -ParameterFilter {
+            $Name -eq 'Dynamic.Module' -and $Repository -eq 'PSGallery'
+        }
+    }
+
+    It 'inherits recorded provenance from an older version when the newest lacks metadata' {
+        $modulesPath = Join-Path $TestDrive 'OlderProvenance'
+        New-TestSaveLayout -Root $modulesPath -Name 'ModuleA' -Version '1.0.0' -Repository 'RepoA'
+        New-TestSaveLayout -Root $modulesPath -Name 'ModuleA' -Version '1.5.0'
+
+        Update-InstalledPSResource -Path $modulesPath -Confirm:$false
+
+        Should -Invoke -ModuleName Shmuelie.Utilities Find-PSResource -Times 1 -ParameterFilter {
+            $Name -eq 'ModuleA' -and $Repository -eq 'RepoA'
+        }
+        Should -Invoke -ModuleName Shmuelie.Utilities Save-PSResource -Times 1 -ParameterFilter {
+            $Name -eq 'ModuleA' -and $Repository -eq 'RepoA'
+        }
+    }
+
+    It 'skips a module whose recorded source URI cannot be resolved instead of falling back' {
+        $modulesPath = Join-Path $TestDrive 'UnresolvedSource'
+        New-TestSaveLayout -Root $modulesPath -Name 'Private.Module' -Version '1.0.0' `
+            -RepositorySourceLocation 'https://unknown.example.test/v3/index.json'
+        Mock -ModuleName Shmuelie.Utilities Get-PSResourceRepository {
+            [PSCustomObject]@{
+                Name = 'PSGallery'
+                Uri  = [uri]'https://www.powershellgallery.com/api/v2'
+            }
+        }
+
+        Update-InstalledPSResource -Path $modulesPath -Confirm:$false `
+            -WarningVariable warnings -WarningAction SilentlyContinue
+
+        $warnings | Should -HaveCount 1
+        $warnings[0].Message | Should -Match 'unknown.example.test'
+        Should -Invoke -ModuleName Shmuelie.Utilities Find-PSResource -Times 0
+        Should -Invoke -ModuleName Shmuelie.Utilities Save-PSResource -Times 0
+    }
+
+    It 'rejects an explicitly empty repository override' {
+        $modulesPath = Join-Path $TestDrive 'EmptyRepository'
+        New-TestSaveLayout -Root $modulesPath -Name 'ModuleA' -Version '1.0.0'
+
+        { Update-InstalledPSResource -Path $modulesPath -Repository '' -Confirm:$false } |
+            Should -Throw
+
+        Should -Invoke -ModuleName Shmuelie.Utilities Find-PSResource -Times 0
     }
 
     It 'filters module names before repository lookup without warning' {

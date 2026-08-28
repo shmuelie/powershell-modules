@@ -34,6 +34,8 @@ Import-Module Shmuelie.Utilities
   caller-supplied module paths (`Update-InstalledPSResource`). The PowerShell
   resource updater honors recorded repository provenance, supports explicit
   repository override, and can include/exclude module names with wildcards.
+  If recorded source provenance cannot be matched to a configured repository,
+  the module is skipped rather than silently falling back to PSGallery.
 
 ## Examples
 

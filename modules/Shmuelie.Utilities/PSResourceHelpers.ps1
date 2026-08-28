@@ -78,12 +78,23 @@ function Get-InstalledPSResourceInfoInPath {
         $manifestPath = Join-Path $versionDirectory.FullName "$Name.psd1"
         if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) { continue }
 
+        # Save-PSResource's versioned layout already carries the authoritative
+        # version in the directory name. Prefer it so dynamic manifests (which
+        # Import-PowerShellDataFile cannot evaluate) remain discoverable.
+        $version = $null
         try {
-            $version = [version](Import-PowerShellDataFile -LiteralPath $manifestPath -ErrorAction Stop).ModuleVersion
+            $version = [version]$versionDirectory.Name
         }
-        catch {
-            Write-Verbose "Could not read module version from '$manifestPath': $_"
-            continue
+        catch { }
+
+        if ($null -eq $version) {
+            try {
+                $version = [version](Import-PowerShellDataFile -LiteralPath $manifestPath -ErrorAction Stop).ModuleVersion
+            }
+            catch {
+                Write-Warning "Could not determine module version from '$versionDirectory' or '$manifestPath'; skipping this version."
+                continue
+            }
         }
 
         $provenance = Get-PSResourceProvenance -Directory $versionDirectory.FullName
@@ -114,9 +125,23 @@ function Get-InstalledPSResourceInfoInPath {
         }
     }
 
-    $candidates |
+    $ordered = @($candidates |
         Sort-Object Version -Descending |
-        Select-Object -First 1
+        Select-Object)
+    if ($ordered.Count -eq 0) { return $null }
+
+    $highest = $ordered[0]
+    if (-not $highest.Repository -and -not $highest.RepositorySourceLocation) {
+        $recorded = $ordered |
+            Where-Object { $_.Repository -or $_.RepositorySourceLocation } |
+            Select-Object -First 1
+        if ($recorded) {
+            $highest.Repository = $recorded.Repository
+            $highest.RepositorySourceLocation = $recorded.RepositorySourceLocation
+        }
+    }
+
+    return $highest
 }
 
 function Get-InstalledPSResourceInPath {
@@ -177,6 +202,9 @@ function Resolve-PSResourceRepository {
         catch {
             Write-Verbose "Could not resolve repository source '$($Resource.RepositorySourceLocation)': $_"
         }
+
+        Write-Warning "Could not resolve recorded repository source '$($Resource.RepositorySourceLocation)' for '$($Resource.Name)'; skipping instead of falling back to '$Repository'."
+        return $null
     }
 
     return $Repository
@@ -251,6 +279,7 @@ function Update-InstalledPSResource {
         [string]$Path,
 
         [Parameter()]
+        [ValidateNotNullOrEmpty()]
         [string]$Repository = 'PSGallery',
 
         [string[]]$Name,
@@ -278,6 +307,7 @@ function Update-InstalledPSResource {
                 -Resource $resource `
                 -Repository $Repository `
                 -Override:$repositoryOverride
+            if (-not $selectedRepository) { continue }
 
             $latestRemote = $null
             try {
@@ -301,7 +331,7 @@ function Update-InstalledPSResource {
                 continue
             }
 
-            if ($PSCmdlet.ShouldProcess($resourceName, "Update from $installedVersion to $remoteVersion in '$resolvedPath'")) {
+            if ($PSCmdlet.ShouldProcess($resourceName, "Update from $installedVersion to $remoteVersion from '$selectedRepository' in '$resolvedPath'")) {
                 Save-PSResource -Name $resourceName -Version $remoteVersion.ToString() -Path $resolvedPath `
                     -Repository $selectedRepository -TrustRepository -IncludeXml -AcceptLicense `
                     -SkipDependencyCheck -ErrorAction Stop

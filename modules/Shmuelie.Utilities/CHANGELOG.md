@@ -11,7 +11,10 @@ Versions change only when a release is cut; unreleased work stays under
   provenance from `PSGetModuleInfo.xml`, resolves source-only provenance against
   registered repositories, and supports wildcard `-Name` / `-Exclude` filters.
   An explicitly bound `-Repository` overrides recorded metadata; modules without
-  provenance continue to fall back to PSGallery.
+  provenance continue to fall back to PSGallery, while modules with recorded but
+  unresolvable source provenance are skipped to avoid cross-feed substitution.
+  Versioned layouts use their directory version first so dynamic manifests remain
+  discoverable, and a newer metadata-less version inherits older recorded provenance.
 
 ## [0.3.1] - 2026-08-27
 
