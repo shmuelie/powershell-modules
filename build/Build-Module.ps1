@@ -16,8 +16,8 @@ param(
 )
 
 function Invoke-RetryingDelete {
-    # Retry Remove-Item on transient lock errors (e.g. antivirus holding a file).
-    # Only catches IO/access-denied errors; other errors still propagate.
+    # Safety net for transient lock errors (e.g. antivirus briefly holding a
+    # file).  Only catches IO/access-denied errors; other errors still propagate.
     param(
         [Parameter(Mandatory)][string]$Path,
         [int]$MaxAttempts = 3,
@@ -123,23 +123,27 @@ if ($Module -eq 'Shmuelie.Windows') {
     Remove-Item $appInstallerBuild -Recurse -Force
 }
 
-# Validate the staged module by importing from a temporary shadow copy so the
-# stage DLL files are never locked.  On Windows, Assembly.LoadFrom() holds the
-# file handle for the process lifetime (default, non-collectible ALC), so a
-# same-process rebuild must be able to delete the stage directory without the
-# DLL being in use.  Loading from a shadow copy instead means only the temp
-# copy is locked — the stage directory itself stays unlocked.
-$shadowStage = Join-Path ([System.IO.Path]::GetTempPath()) "psmod-validate-$([guid]::NewGuid())"
-Copy-Item $stage $shadowStage -Recurse -Force
-$shadowManifest = Join-Path $shadowStage "$Module.psd1"
+# Validate the staged module in a short-lived child pwsh process so that every
+# DLL file handle is released when the child exits.  The stage directory is
+# never locked in the parent process, allowing a same-process rebuild to delete
+# it freely without shadow copies, GC tricks, or temp-directory leakage.
+# The manifest path is forwarded through an environment variable rather than
+# interpolated into the command string, eliminating any path-injection risk.
+$stagedManifest = Join-Path $stage "$Module.psd1"
+$envKey = 'PSMOD_VALIDATE_MANIFEST'
+$savedEnv = [System.Environment]::GetEnvironmentVariable($envKey)
 try {
-    Test-ModuleManifest $shadowManifest -ErrorAction Stop | Out-Null
-    Import-Module $shadowManifest -Force -ErrorAction Stop
-    Remove-Module $Module -Force -ErrorAction Stop
+    [System.Environment]::SetEnvironmentVariable($envKey, $stagedManifest)
+    $childOut = & pwsh -NoProfile -NonInteractive -Command {
+        $ErrorActionPreference = 'Stop'
+        Test-ModuleManifest $env:PSMOD_VALIDATE_MANIFEST -ErrorAction Stop | Out-Null
+        Import-Module $env:PSMOD_VALIDATE_MANIFEST -Force -ErrorAction Stop
+    } 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "Staged module validation failed (exit $LASTEXITCODE):`n$($childOut -join [System.Environment]::NewLine)"
+    }
 } finally {
-    # Best-effort: DLLs in the shadow copy may remain locked (non-collectible ALC),
-    # but they live in a temp path the OS cleans up on reboot.
-    Remove-Item $shadowStage -Recurse -Force -ErrorAction Ignore
+    [System.Environment]::SetEnvironmentVariable($envKey, $savedEnv)
 }
 
 Get-Item $stage
