@@ -18,6 +18,10 @@ between releases this file tracks catalog-level changes under `[Unreleased]`.
   build and import correctly on Linux and macOS. (Fixes #155.)
 
 ### Added
+- Contributor and Copilot instructions now document **bash port parity**:
+  changes that also apply to [`shmuelie/bash-scripts`](https://github.com/shmuelie/bash-scripts)
+  should be tracked with an `upstream-parity` issue filed in that repo
+  (`.github/copilot-instructions.md`, `docs/contributing.md`).
 - CI job `validate-portable` on `ubuntu-latest` builds and imports the five
   portable modules (Git, Copilot, Node, Utilities, Dsc) and runs the new
   `Build.Tests.ps1` repeat-build suite, providing cross-platform separator and

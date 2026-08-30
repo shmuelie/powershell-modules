@@ -31,6 +31,8 @@ modules/<Module>/
 5. Add or update tests for the behavior you added or changed — see
    [Testing](#testing). Every new cmdlet and every behavioral change ships with
    tests in the same pull request.
+6. If the change also applies to the bash port, file an `upstream-parity` issue
+   in `shmuelie/bash-scripts` — see [Bash port parity](#bash-port-parity).
 
 **Do not bump `ModuleVersion` for a content change.** A module's version changes
 only when a release is cut — see [Releasing](#releasing). Between releases the
@@ -46,6 +48,27 @@ A release is the only time a `ModuleVersion` changes:
 3. Move the module's `[Unreleased]` notes into a dated version section in its
    `CHANGELOG.md`.
 4. Commit, tag the release as `<Module>-v<version>`, and publish.
+
+## Bash port parity
+
+[`shmuelie/bash-scripts`](https://github.com/shmuelie/bash-scripts) is a bash
+port of these modules. It is a separate repository and is not changed from a pull
+request here. When a change also applies to the port — a new command, a changed
+parameter or output shape, a cross-platform bug fix, or corrected help/docs for
+shared behavior — open a tracking issue in the port so the update isn't lost:
+
+```powershell
+gh issue create --repo shmuelie/bash-scripts --label upstream-parity `
+  --title "Port: <short description>" `
+  --body "Upstream shmuelie/powershell-modules#<PR-or-issue>: <what changed and why the port needs it>."
+```
+
+Use the `upstream-parity` label (it exists to track parity with this repo),
+reference the upstream PR/issue, and describe the behavior to port rather than
+the PowerShell implementation. Check for an existing open `upstream-parity` issue
+first to avoid duplicates. Skip this only when the change can't apply to the port
+— Windows-only commands, PowerShell-specific packaging, or repo-internal
+build/CI/docs with no bash equivalent.
 
 ## Public-content policy
 
