@@ -78,7 +78,7 @@ Highlights:
 ## Shmuelie.Utilities
 
 General developer utilities for PowerShell, .NET tools, Python packages, VS
-Code, terminal recovery, and general developer workflows. **Version 0.3.1.**
+Code, terminal recovery, and general developer workflows. **Version 0.4.0.**
 [README](https://github.com/shmuelie/powershell-modules/blob/main/modules/Shmuelie.Utilities/README.md)
 
 Highlights:
