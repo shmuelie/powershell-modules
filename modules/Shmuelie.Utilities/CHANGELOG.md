@@ -6,6 +6,8 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-31
+
 ### Added
 - `Update-InstalledPSResource` now honors each installed module's repository
   provenance from `PSGetModuleInfo.xml`, resolves source-only provenance against
