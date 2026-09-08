@@ -5,6 +5,8 @@ under [Unreleased]; versions change only when a release is cut.
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-09-08
+
 ### Added
 - Initial 0.1.0 orchestration foundation with `Update-AllPackages`, provider
   selection/exclusion, provider-specific option tables, lazy dependencies,

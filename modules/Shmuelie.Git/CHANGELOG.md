@@ -6,6 +6,8 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-09-08
+
 ### Fixed
 - Shared git execution for fetch and worktree creation/maintenance now resolves
   the native executable, preserves literal arguments and the PowerShell working

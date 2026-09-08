@@ -5,6 +5,8 @@ Versions change only when a release is cut; pending work lives under [Unreleased
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-09-08
+
 ### Added
 
 - Establish `Shmuelie.DotNet` as the canonical home for `Get-DotNetTool`,
