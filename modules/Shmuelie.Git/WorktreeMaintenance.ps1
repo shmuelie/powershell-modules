@@ -9,13 +9,18 @@ function Invoke-GitWorktreeMaintenance {
         [string[]]$Arguments
     )
 
-    $output = & git @Arguments 2>&1
-    $exitCode = $LASTEXITCODE
+    $result = Invoke-GitProcess -Arguments $Arguments
+    $messages = foreach ($block in @($result.StandardOutput, $result.StandardError)) {
+        if ($block) {
+            # Native line output omits the final newline, not internal blank lines.
+            ($block -replace '\r?\n$', '') -split "\r?\n"
+        }
+    }
 
     [PSCustomObject]@{
         PSTypeName = 'GitWorktreeCommandResult'
-        ExitCode   = $exitCode
-        Messages   = [string[]]($output | ForEach-Object { $_.ToString() })
+        ExitCode   = $result.ExitCode
+        Messages   = [string[]]@($messages)
     }
 }
 

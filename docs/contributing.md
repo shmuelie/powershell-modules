@@ -38,6 +38,38 @@ modules/<Module>/
 only when a release is cut — see [Releasing](#releasing). Between releases the
 manifest version stays fixed and changes accumulate under `[Unreleased]`.
 
+## Running git from module commands
+
+Within `Shmuelie.Git`, use the private `Invoke-Git` helper with `-Arguments`
+containing individual tokens and optional `-Path` (alias `-RepositoryPath`).
+It resolves the directory with `Resolve-GitRepositoryPath`, supplies `-C`,
+and never changes the caller's location or `$LASTEXITCODE`. Pass `-AllowBare`
+only for commands that support bare repositories.
+
+The returned `GitInvocationResult` contains `ExitCode`, `StandardOutput`,
+`StandardError`, `Output`, and `RepositoryPath`. The two text streams preserve
+newlines; `Output` is the legacy stdout-then-stderr line array, not a
+chronological merge. On failure, the helper writes `GitCommandFailed` and emits
+no result. Use `-ErrorAction Stop` for a terminating error, or
+`-AllowNonZeroExit` when the command must interpret an expected non-zero exit
+itself. The error's `TargetObject` retains the complete result.
+
+Keep `ShouldProcess` and command-specific operand validation in the calling
+cmdlet. Pass `--` before operand values where git supports it; token boundaries
+prevent shell injection but do not make arbitrary git options safe.
+`-Environment` supplies child-only overrides for discovery and execution (null
+removes a variable).
+The runner disables pagers, interactive editors, and credential prompts, and
+closes stdin; supply commit messages and other required input as arguments.
+Custom hooks or credential/SSH helpers remain responsible for their own
+non-interactive behavior and network timeouts.
+
+Repository discovery and legacy callers that already own error handling use
+`Invoke-GitProcess`, the same low-level runner without repository validation
+or non-zero-exit errors. `Invoke-GitWithEnvironment` remains its fetch
+compatibility wrapper. All three helpers are private root-level script
+functions and must stay out of both export lists.
+
 ## Releasing
 
 A release is the only time a `ModuleVersion` changes:

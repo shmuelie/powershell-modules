@@ -17,6 +17,9 @@ without a full build.
   `Get-SessionTitle`, `New-GlobalConstant`, `New-PathVariable`,
   `Import-ModuleSafe`, `Invoke-InLocation`) and `Format-Duration` boundary/
   rounding cases.
+- `Shmuelie.PackageManagement.Tests.ps1` - deterministic fake-provider coverage
+  for selection, options, lazy dependencies, result preservation, failures,
+  fail-fast control, previews, and confirmation.
 - `Shmuelie.DotNet.Tests.ps1` - canonical .NET tool parsing, parameter and
   pipeline contracts, scope selection, typed results, failure reporting,
   `ShouldProcess`, isolated import, and publishable module layout.

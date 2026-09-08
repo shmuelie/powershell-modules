@@ -12,6 +12,7 @@ Install-PSResource Shmuelie.Utilities
 Install-PSResource Shmuelie.Windows
 Install-PSResource Shmuelie.Dsc
 Install-PSResource Shmuelie.VisualStudio
+Install-PSResource Shmuelie.PackageManagement
 ```
 
 ## Modules
@@ -26,6 +27,7 @@ Install-PSResource Shmuelie.VisualStudio
 | [Shmuelie.Windows](docs/modules.md#shmuelie-windows) | Windows-only installed-apps, Terminal, WPR, and service helpers |
 | [Shmuelie.Dsc](docs/modules.md#shmuelie-dsc) | DSC v3 resources for setup: modules, symlinks, Copilot plugins/marketplaces, uv tools |
 | [Shmuelie.VisualStudio](docs/modules.md#shmuelie-visualstudio) | Visual Studio discovery and developer shell launch helpers |
+| [Shmuelie.PackageManagement](docs/modules.md#shmuelie-packagemanagement) | Package update orchestration foundation; provider adapters are not yet implemented |
 
 ## Documentation
 

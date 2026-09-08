@@ -169,11 +169,9 @@ function Invoke-GitWithEnvironment {
     .SYNOPSIS
     Run git with extra environment variables set on the child process only.
     .DESCRIPTION
-    Uses a redirected .NET process so GH_TOKEN/GH_HOST are visible to the git
-    child (and the `gh` credential helper it invokes) without touching the
-    caller's $env: — safe under same-process parallel callers. Captures both
-    stdout and stderr (git fetch writes ref updates to stderr) and returns an
-    object with ExitCode and the merged Output lines.
+    Compatibility wrapper for account-aware fetch callers that handle errors
+    and retries themselves. The shared process runner preserves ExitCode and
+    merged Output lines, and also exposes StandardOutput and StandardError.
     #>
     [OutputType('GitInvocationResult')]
     [CmdletBinding()]
@@ -182,42 +180,7 @@ function Invoke-GitWithEnvironment {
         [hashtable]$Environment
     )
 
-    $psi = [System.Diagnostics.ProcessStartInfo]::new()
-    $psi.FileName = 'git'
-    foreach ($arg in $Arguments) { $psi.ArgumentList.Add($arg) }
-    $psi.RedirectStandardOutput = $true
-    $psi.RedirectStandardError = $true
-    $psi.UseShellExecute = $false
-    if ($Environment) {
-        foreach ($key in $Environment.Keys) {
-            $psi.EnvironmentVariables[$key] = [string]$Environment[$key]
-        }
-    }
-
-    $proc = [System.Diagnostics.Process]::new()
-    $proc.StartInfo = $psi
-    $null = $proc.Start()
-    # Read stdout async while draining stderr synchronously to avoid a
-    # full-pipe deadlock when either stream fills its buffer.
-    $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
-    $stderrText = $proc.StandardError.ReadToEnd()
-    $proc.WaitForExit()
-    $stdoutText = $stdoutTask.GetAwaiter().GetResult()
-    $exitCode = $proc.ExitCode
-    $proc.Dispose()
-
-    $lines = [System.Collections.Generic.List[string]]::new()
-    foreach ($block in @($stdoutText, $stderrText)) {
-        if ($block) {
-            foreach ($l in ($block -split "\r?\n")) { $lines.Add($l) }
-        }
-    }
-
-    [PSCustomObject]@{
-        PSTypeName = 'GitInvocationResult'
-        ExitCode   = $exitCode
-        Output     = $lines.ToArray()
-    }
+    Invoke-GitProcess -Arguments $Arguments -Environment $Environment
 }
 
 function Test-GitHubAuthFailure {

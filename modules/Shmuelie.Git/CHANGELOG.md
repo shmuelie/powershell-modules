@@ -6,6 +6,12 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+### Fixed
+- Shared git execution for fetch and worktree creation/maintenance now resolves
+  the native executable, preserves literal arguments and the PowerShell working
+  directory, and disables interactive credential/editor prompts. Redirected
+  streams are drained concurrently without changing the caller's environment.
+
 ## [0.8.1] - 2026-08-27
 
 ### Fixed

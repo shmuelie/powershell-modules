@@ -149,3 +149,18 @@ Highlights:
 - `Start-DevShell` launches a nested `pwsh` inline with `VSDEV_VERSION`,
   `VSDEV_ARCH`, `VSDEV_HOSTARCH`, and a clean login `PATH` for profile-driven
   Visual Studio environment loading.
+
+## Shmuelie.PackageManagement
+
+Provider-neutral package update orchestration. **Version 0.1.0.**
+[README](https://github.com/shmuelie/powershell-modules/blob/main/modules/Shmuelie.PackageManagement/README.md)
+
+`Update-AllPackages` provides provider selection/exclusion, provider-specific
+option tables, lazy dependency discovery, per-target `ShouldProcess`, typed
+results, and optional fail-fast behavior.
+
+This is the M2 foundation only. PSResourceGet, DotNet, Npm, Pip, Uv, VSCode,
+WinGet, and AppInstaller are reserved names with **no adapters implemented in
+this version**; each reports `Skipped` with a reason. The complete provider
+set is planned for M6, through separate adapter issues. Importing the core is
+portable and does not import optional provider modules.
