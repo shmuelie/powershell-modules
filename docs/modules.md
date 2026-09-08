@@ -46,7 +46,7 @@ Highlights:
 ## Shmuelie.Copilot
 
 GitHub Copilot CLI sessions, plugins, marketplaces, MCP servers, and the
-`Start-Copilot` launcher. **Version 0.3.1.**
+`Start-Copilot` launcher. **Version 0.3.2.**
 [README](https://github.com/shmuelie/powershell-modules/blob/main/modules/Shmuelie.Copilot/README.md)
 
 Highlights:
@@ -78,7 +78,7 @@ Highlights:
 ## Shmuelie.Utilities
 
 General developer utilities for PowerShell, .NET tools, Python packages, VS
-Code, terminal recovery, and general developer workflows. **Version 0.4.0.**
+Code, terminal recovery, and general developer workflows. **Version 0.4.1.**
 [README](https://github.com/shmuelie/powershell-modules/blob/main/modules/Shmuelie.Utilities/README.md)
 
 Highlights:

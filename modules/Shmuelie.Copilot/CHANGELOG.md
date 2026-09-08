@@ -6,6 +6,8 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-09-08
+
 ### Fixed
 - `Register-CopilotMcpServer` and `Unregister-CopilotMcpServer` now refuse native
   mutations of a symbolic-link-managed `~/.copilot/mcp-config.json`, including
