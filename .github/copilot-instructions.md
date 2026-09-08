@@ -13,6 +13,7 @@ see [`docs/contributing.md`](../docs/contributing.md).
 | `Shmuelie.Git` | Git repository, worktree, status, completion, and PSReadLine prediction helpers (includes the compiled `WorktreePredictor`) |
 | `Shmuelie.Copilot` | GitHub Copilot CLI session, plugin, marketplace, and MCP helpers, plus the `Start-Copilot` launcher |
 | `Shmuelie.Node` | Node.js, nvm-windows, npm, and Azure DevOps npm credential helpers |
+| `Shmuelie.DotNet` | Canonical .NET tool discovery, installation, updates, and removal |
 | `Shmuelie.Utilities` | General developer utilities (dotnet/pip/uv/VS Code tools, services, WPR, terminal) |
 
 ## Repository layout
@@ -63,6 +64,15 @@ docs/                             # Markdown docs site (contributing, modules, i
 5. Add or update tests in the same pull request (see Testing).
 6. If the change applies to the bash port, file an `upstream-parity` issue in
    `shmuelie/bash-scripts` (see [Bash port parity](#bash-port-parity)).
+
+## Staged .NET tool migration
+
+#186 adds the canonical `Shmuelie.DotNet` implementation without removing the
+Utilities commands. This short-lived additive exception prevents a regression
+between separate PRs. #187 must replace the retained Utilities implementations
+with thin, lazy, module-qualified wrappers before the M2 release. Do not ship
+duplicate implementations at M2 completion; keep the Utilities entry points
+until Utilities 1.0.
 
 ## Changelogs
 

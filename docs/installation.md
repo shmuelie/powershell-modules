@@ -15,6 +15,7 @@ preview. Once published, install each module independently:
 Install-PSResource Shmuelie.Git
 Install-PSResource Shmuelie.Copilot
 Install-PSResource Shmuelie.Node
+Install-PSResource Shmuelie.DotNet
 Install-PSResource Shmuelie.Utilities
 Install-PSResource Shmuelie.Windows
 ```
