@@ -6,6 +6,8 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-09-08
+
 ### Fixed
 - `Update-InstalledPSResource` preserves full prerelease versions from saved
   metadata in versioned and direct module layouts, queries prereleases only for
