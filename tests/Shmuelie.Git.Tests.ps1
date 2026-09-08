@@ -94,6 +94,387 @@ BeforeAll {
     }
 }
 
+Describe 'Private git invocation error contracts' {
+    BeforeAll {
+        $script:invocationRepo = New-TestRepo -Path (Join-Path $TestDrive 'invocation-contract')
+    }
+
+    It 'does not export any invocation helper' {
+        $exports = (Get-Module Shmuelie.Git).ExportedFunctions.Keys
+        foreach ($name in @('Invoke-Git', 'Invoke-GitProcess', 'Invoke-GitWithEnvironment')) {
+            $exports | Should -Not -Contain $name
+        }
+    }
+
+    It 'reports any non-zero exit as one structured error and no result' -ForEach @(
+        @{ ExitCode = 1; StdOut = ''; StdErr = 'ordinary failure' }
+        @{ ExitCode = 128; StdOut = ''; StdErr = 'fatal failure' }
+        @{ ExitCode = 129; StdOut = 'usage on stdout'; StdErr = '' }
+        @{ ExitCode = 42; StdOut = ''; StdErr = '' }
+    ) {
+        InModuleScope Shmuelie.Git -Parameters @{
+            Repo = $script:invocationRepo; Code = $ExitCode; StdOut = $StdOut; StdErr = $StdErr
+        } {
+            param($Repo, $Code, $StdOut, $StdErr)
+            Mock Resolve-GitRepositoryPath { $Repo }
+            Mock Invoke-GitProcess {
+                [PSCustomObject]@{
+                    PSTypeName = 'GitInvocationResult'; ExitCode = $Code
+                    StandardOutput = $StdOut; StandardError = $StdErr; Output = @()
+                }
+            }
+
+            Invoke-Git -Arguments @('status') -ErrorAction SilentlyContinue -ErrorVariable failures |
+                Should -BeNullOrEmpty
+
+            $failures | Should -HaveCount 1
+            $failures[0].FullyQualifiedErrorId | Should -Match '^GitCommandFailed'
+            $failures[0].CategoryInfo.Category | Should -Be 'InvalidOperation'
+            $failures[0].TargetObject.ExitCode | Should -Be $Code
+            $failures[0].TargetObject.StandardOutput | Should -BeExactly $StdOut
+            $failures[0].TargetObject.StandardError | Should -BeExactly $StdErr
+            $failures[0].TargetObject.RepositoryPath | Should -BeExactly $Repo
+            $detail = if ($StdErr) { $StdErr } elseif ($StdOut) { $StdOut } else { 'No output.' }
+            $failures[0].Exception.Message | Should -BeLike "*$detail*"
+            Should -Invoke Invoke-GitProcess -Times 1 -ParameterFilter {
+                $Arguments.Count -eq 3 -and $Arguments[0] -eq '-C' -and
+                $Arguments[1] -ceq $Repo -and $Arguments[2] -eq 'status'
+            }
+        }
+    }
+
+    It 'supports ErrorAction Stop and expected non-zero exits' {
+        InModuleScope Shmuelie.Git -Parameters @{ Repo = $script:invocationRepo } {
+            param($Repo)
+            Mock Resolve-GitRepositoryPath { $Repo }
+            Mock Invoke-GitProcess {
+                [PSCustomObject]@{
+                    PSTypeName = 'GitInvocationResult'; ExitCode = 7
+                    StandardOutput = ''; StandardError = 'specific failure'; Output = @('specific failure')
+                }
+            }
+            { Invoke-Git -Arguments @('status') -ErrorAction Stop } |
+                Should -Throw -ExpectedMessage '*exit 7*specific failure*'
+            $result = Invoke-Git -Arguments @('status') -AllowNonZeroExit -ErrorAction Stop
+            $result.ExitCode | Should -Be 7
+            $result.StandardError | Should -BeExactly 'specific failure'
+        }
+    }
+
+    It 'preserves worktree-add false and single-error behavior' {
+        InModuleScope Shmuelie.Git -Parameters @{ Repo = $script:invocationRepo } {
+            param($Repo)
+            Mock Resolve-GitRepositoryPath { $Repo }
+            Mock Invoke-GitProcess {
+                [PSCustomObject]@{
+                    PSTypeName = 'GitInvocationResult'; ExitCode = 5
+                    StandardOutput = ''; StandardError = "creation failed`n"; Output = @('creation failed', '')
+                }
+            }
+            Invoke-GitWorktreeAdd -Arguments @('worktree', 'add', 'new') -RepositoryPath $Repo `
+                -FailureContext 'the destination' -ErrorAction SilentlyContinue -ErrorVariable failures |
+                Should -BeFalse
+            $failures | Should -HaveCount 1
+            $failures[0].Exception.Message |
+                Should -BeExactly 'git worktree add failed for the destination (exit 5): creation failed'
+        }
+    }
+
+    It 'preserves maintenance result type and native line shape without writing an error' {
+        InModuleScope Shmuelie.Git {
+            Mock Invoke-GitProcess {
+                [PSCustomObject]@{
+                    PSTypeName = 'GitInvocationResult'; ExitCode = 9
+                    StandardOutput = "one`n`ntwo`n"; StandardError = "failure`n"; Output = @()
+                }
+            }
+            $result = Invoke-GitWorktreeMaintenance -Arguments @('worktree', 'prune') -ErrorAction Stop
+            $result.PSTypeNames[0] | Should -Be 'GitWorktreeCommandResult'
+            $result.ExitCode | Should -Be 9
+            $result.Messages | Should -Be @('one', '', 'two', 'failure')
+        }
+    }
+
+    It 'reports a missing executable without falling through to shell resolution' {
+        InModuleScope Shmuelie.Git {
+            Mock Get-Command { $null }
+            { Invoke-GitProcess -Arguments @('--version') } |
+                Should -Throw -ErrorId 'GitExecutableNotFound,Invoke-GitProcess'
+            Should -Invoke Get-Command -Times 1 -ParameterFilter {
+                $CommandType -eq 'Application' -and $Name -eq $(if ($IsWindows) { 'git.exe' } else { 'git' })
+            }
+        }
+    }
+
+    It 'terminates with a structured error when the process cannot start' {
+        InModuleScope Shmuelie.Git -Parameters @{ MissingExe = (Join-Path $TestDrive 'missing-git.exe') } {
+            param($MissingExe)
+            Mock Get-Command { [PSCustomObject]@{ Source = $MissingExe } }
+            { Invoke-GitProcess -Arguments @('--version') } |
+                Should -Throw -ErrorId 'GitProcessFailed,Invoke-GitProcess'
+        }
+    }
+
+    It 'does not execute the command after repository validation fails' {
+        InModuleScope Shmuelie.Git {
+            Mock Resolve-GitRepositoryPath { Write-Error 'Invalid repository.' }
+            Mock Invoke-GitProcess { throw 'Must not run.' }
+            Invoke-Git -Arguments @('status') -ErrorAction SilentlyContinue -ErrorVariable failures |
+                Should -BeNullOrEmpty
+            $failures | Should -HaveCount 1
+            Should -Invoke Invoke-GitProcess -Times 0
+        }
+    }
+
+    It 'rejects NUL arguments before starting any process' {
+        InModuleScope Shmuelie.Git {
+            Mock Get-Command { throw 'Should not resolve an executable.' }
+            { Invoke-GitProcess -Arguments @('config', "bad`0value") } |
+                Should -Throw -ExpectedMessage '*NUL*'
+            Should -Invoke Get-Command -Times 0
+        }
+    }
+}
+
+Describe 'Private git invocation integration' -Skip:(-not (Get-Command git -ErrorAction SilentlyContinue)) {
+    BeforeAll {
+        $script:literalInvocationRepo = New-TestRepo -Path (Join-Path $TestDrive 'repo [literal] & ; (space)') -NoCommit
+        $script:callerInvocationRepo = New-TestRepo -Path (Join-Path $TestDrive 'caller')
+    }
+
+    It 'resolves relative literal paths via -C without changing location or LASTEXITCODE' {
+        Push-Location $script:callerInvocationRepo
+        try {
+            $relative = Join-Path '..' (Split-Path $script:literalInvocationRepo -Leaf)
+            $result = InModuleScope Shmuelie.Git -Parameters @{ Relative = $relative } {
+                param($Relative)
+                $LASTEXITCODE = 37
+                $result = Invoke-Git -Path $Relative -Arguments @('rev-parse', '--show-toplevel')
+                $LASTEXITCODE | Should -Be 37
+                $result
+            }
+            $result.PSTypeNames[0] | Should -Be 'GitInvocationResult'
+            $result.ExitCode | Should -Be 0
+            ConvertTo-NativeTestPath $result.StandardOutput.Trim() | Should -BeExactly $script:literalInvocationRepo
+            $result.StandardError | Should -BeExactly ''
+            $result.RepositoryPath | Should -BeExactly $script:literalInvocationRepo
+            (Get-Location).ProviderPath | Should -BeExactly $script:callerInvocationRepo
+        } finally {
+            Pop-Location
+        }
+    }
+
+    It 'defaults to the PowerShell location rather than the process working directory' {
+        Push-Location -LiteralPath $script:literalInvocationRepo
+        try {
+            $result = InModuleScope Shmuelie.Git { Invoke-Git -Arguments @('rev-parse', '--show-toplevel') }
+            ConvertTo-NativeTestPath $result.StandardOutput.Trim() | Should -BeExactly $script:literalInvocationRepo
+            $raw = InModuleScope Shmuelie.Git { Invoke-GitWithEnvironment -Arguments @('rev-parse', '--show-toplevel') }
+            ConvertTo-NativeTestPath $raw.StandardOutput.Trim() | Should -BeExactly $script:literalInvocationRepo
+            $raw.Output.Count | Should -Be 2
+            $raw.Output[1] | Should -BeExactly ''
+        } finally {
+            Pop-Location
+        }
+    }
+
+    It 'preserves literal argument boundaries for <Name>' -ForEach @(
+        @{ Name = 'quotes and shell metacharacters'; Value = 'space "quotes" & | ; $() <> ` %PATH% ! ^' }
+        @{ Name = 'empty string'; Value = '' }
+        @{ Name = 'trailing backslashes'; Value = 'some path\\' }
+        @{ Name = 'newlines and Unicode'; Value = "line one`nline two $([char]0x03A9)" }
+    ) {
+        InModuleScope Shmuelie.Git -Parameters @{ Repo = $script:literalInvocationRepo; Value = $Value } {
+            param($Repo, $Value)
+            $arguments = @('config', '--local', 'test.literal', $Value)
+            $savedArguments = $arguments.Clone()
+            (Invoke-Git -Path $Repo -Arguments $arguments).ExitCode | Should -Be 0
+            $arguments | Should -Be $savedArguments
+            $result = Invoke-Git -Path $Repo -Arguments @('config', '--local', '--get', 'test.literal')
+            $result.StandardOutput | Should -BeExactly "$Value`n"
+        }
+    }
+
+    It 'captures real stderr and exit code even when native exit errors are enabled' {
+        InModuleScope Shmuelie.Git -Parameters @{ Repo = $script:literalInvocationRepo } {
+            param($Repo)
+            $PSNativeCommandUseErrorActionPreference = $true
+            $result = Invoke-Git -Path $Repo -Arguments @('rev-parse', '--verify', 'refs/heads/nonexistent') `
+                -AllowNonZeroExit -ErrorAction Stop
+            $result.ExitCode | Should -Not -Be 0
+            $result.StandardOutput | Should -BeExactly ''
+            $result.StandardError | Should -Not -BeNullOrEmpty
+        }
+    }
+
+    It 'uses an explicit FileSystem path even from another provider' {
+        Push-Location Env:
+        try {
+            InModuleScope Shmuelie.Git -Parameters @{ Repo = $script:literalInvocationRepo } {
+                param($Repo)
+                (Invoke-Git -Path $Repo -Arguments @('rev-parse', '--is-inside-work-tree')).StandardOutput.Trim() |
+                    Should -BeExactly 'true'
+            }
+            (Get-Location).Provider.Name | Should -BeExactly 'Environment'
+        } finally {
+            Pop-Location
+        }
+    }
+
+    It 'ignores a PowerShell function shadowing git during discovery and execution' {
+        InModuleScope Shmuelie.Git -Parameters @{ Repo = $script:literalInvocationRepo } {
+            param($Repo)
+            function git { throw 'A shell function must not run.' }
+            (Invoke-Git -Path $Repo -Arguments @('rev-parse', '--is-inside-work-tree')).StandardOutput.Trim() |
+                Should -BeExactly 'true'
+        }
+    }
+
+    It 'keeps simultaneous invocations and the parent environment isolated' {
+        $modulePath = (Get-Module Shmuelie.Git).Path
+        $target = $script:literalInvocationRepo
+        $oldValue = $env:SHMUELIE_GIT_INVOCATION_TEST
+        $env:SHMUELIE_GIT_INVOCATION_TEST = 'parent'
+        try {
+            $results = 1..4 | ForEach-Object -Parallel {
+                Import-Module $using:modulePath -Force
+                & (Get-Module Shmuelie.Git) {
+                    param($Repo, $Value)
+                    $result = Invoke-Git -Path $Repo -Arguments @(
+                        '--config-env=test.parallel=SHMUELIE_GIT_INVOCATION_TEST',
+                        'config', '--get', 'test.parallel'
+                    ) -Environment @{ SHMUELIE_GIT_INVOCATION_TEST = $Value }
+                    [PSCustomObject]@{ Expected = $Value; Actual = $result.StandardOutput.Trim() }
+                } $using:target "child-$_"
+            } -ThrottleLimit 4
+            $results | Should -HaveCount 4
+            foreach ($result in $results) {
+                $result.Actual | Should -BeExactly $result.Expected
+            }
+            $env:SHMUELIE_GIT_INVOCATION_TEST | Should -BeExactly 'parent'
+        } finally {
+            $env:SHMUELIE_GIT_INVOCATION_TEST = $oldValue
+        }
+    }
+
+    It 'reports invalid repositories once' -ForEach @(
+        @{ Kind = 'missing' }
+        @{ Kind = 'plain directory' }
+        @{ Kind = 'file' }
+        @{ Kind = 'provider' }
+    ) {
+        $path = Join-Path $TestDrive "invalid-$Kind"
+        switch ($Kind) {
+            'plain directory' { New-Item -ItemType Directory -Path $path -Force | Out-Null }
+            'file' { Set-Content -LiteralPath $path -Value 'not a directory' }
+            'provider' { $path = 'Env:' }
+        }
+        InModuleScope Shmuelie.Git -Parameters @{ InvalidPath = $path } {
+            param($InvalidPath)
+            Invoke-Git -Path $InvalidPath -Arguments @('status') -ErrorAction SilentlyContinue -ErrorVariable failures |
+                Should -BeNullOrEmpty
+            $failures | Should -HaveCount 1
+        }
+    }
+
+    It 'allows bare repositories only when explicitly requested' {
+        $bare = Join-Path $TestDrive 'bare.git'
+        Invoke-Git @('init', '--bare', '--quiet', $bare)
+        InModuleScope Shmuelie.Git -Parameters @{ BarePath = $bare } {
+            param($BarePath)
+            # Keep the bare fixture independent of the host's discovery policy.
+            $environment = @{
+                GIT_CONFIG_COUNT = '1'
+                GIT_CONFIG_KEY_0 = 'safe.bareRepository'
+                GIT_CONFIG_VALUE_0 = 'all'
+            }
+            Invoke-Git -Path $BarePath -Arguments @('rev-parse', '--is-bare-repository') `
+                -Environment $environment -ErrorAction SilentlyContinue -ErrorVariable failures | Should -BeNullOrEmpty
+            $failures | Should -HaveCount 1
+            (Invoke-Git -Path $BarePath -AllowBare -Environment $environment -Arguments @('rev-parse', '--is-bare-repository')).StandardOutput.Trim() |
+                Should -BeExactly 'true'
+        }
+    }
+}
+
+Describe 'Private git process stream and environment handling' {
+    BeforeAll {
+        $script:invocationPwsh = (Get-Command pwsh -CommandType Application | Select-Object -First 1).Source
+    }
+
+    It 'drains large stdout and stderr concurrently and returns a non-zero exit without errors' {
+        InModuleScope Shmuelie.Git -Parameters @{ Pwsh = $script:invocationPwsh } {
+            param($Pwsh)
+            # Substitute a deterministic native child; no git installation, remote,
+            # credential helper or shell alias is involved in the stream contract.
+            Mock Get-Command { [PSCustomObject]@{ Source = $Pwsh } }
+            $script = '[Console]::Out.Write(("o" * 262144)); [Console]::Error.Write(("e" * 262144)); exit 23'
+            $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($script))
+            $result = Invoke-GitProcess -Arguments @('-NoProfile', '-NonInteractive', '-EncodedCommand', $encoded) -ErrorAction Stop
+            $result.ExitCode | Should -Be 23
+            $result.StandardOutput | Should -BeExactly ('o' * 262144)
+            $result.StandardError | Should -BeExactly ('e' * 262144)
+            $result.Output | Should -HaveCount 2
+        }
+    }
+
+    It 'returns empty strings and an empty legacy array for a silent success' {
+        InModuleScope Shmuelie.Git -Parameters @{ Pwsh = $script:invocationPwsh } {
+            param($Pwsh)
+            Mock Get-Command { [PSCustomObject]@{ Source = $Pwsh } }
+            $result = Invoke-GitWithEnvironment -Arguments @('-NoProfile', '-NonInteractive', '-Command', 'exit 0')
+            $result.ExitCode | Should -Be 0
+            $result.StandardOutput | Should -BeExactly ''
+            $result.StandardError | Should -BeExactly ''
+            $result.Output | Should -HaveCount 0
+        }
+    }
+
+    It 'isolates environment overrides, removes inherited values, and prevents interactive input' {
+        $oldValue = $env:SHMUELIE_GIT_INVOCATION_TEST
+        $env:SHMUELIE_GIT_INVOCATION_TEST = 'parent'
+        try {
+            InModuleScope Shmuelie.Git -Parameters @{ Pwsh = $script:invocationPwsh } {
+                param($Pwsh)
+                Mock Get-Command { [PSCustomObject]@{ Source = $Pwsh } }
+                $script = @'
+[ordered]@{
+    Value = $env:SHMUELIE_GIT_INVOCATION_TEST
+    Prompt = $env:GIT_TERMINAL_PROMPT
+    Gcm = $env:GCM_INTERACTIVE
+    AskPass = $env:GIT_ASKPASS
+    Pager = $env:GIT_PAGER
+    Editor = $env:GIT_EDITOR
+    SequenceEditor = $env:GIT_SEQUENCE_EDITOR
+    Input = [Console]::In.ReadToEnd()
+} | ConvertTo-Json -Compress
+'@
+                $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($script))
+                $environment = @{ SHMUELIE_GIT_INVOCATION_TEST = 'child'; GIT_TERMINAL_PROMPT = '1' }
+                $result = Invoke-GitWithEnvironment -Arguments @('-NoProfile', '-NonInteractive', '-EncodedCommand', $encoded) `
+                    -Environment $environment
+                $values = $result.StandardOutput | ConvertFrom-Json
+                $values.Value | Should -BeExactly 'child'
+                $values.Prompt | Should -BeExactly '0'
+                $values.Gcm | Should -BeExactly 'never'
+                $values.AskPass | Should -BeExactly 'false'
+                $values.Pager | Should -BeExactly 'cat'
+                $values.Editor | Should -BeExactly 'false'
+                $values.SequenceEditor | Should -BeExactly 'false'
+                $values.Input | Should -BeExactly ''
+                $env:SHMUELIE_GIT_INVOCATION_TEST | Should -BeExactly 'parent'
+                $environment.GIT_TERMINAL_PROMPT | Should -BeExactly '1'
+                $removed = Invoke-GitProcess -Arguments @('-NoProfile', '-NonInteractive', '-EncodedCommand', $encoded) `
+                    -Environment @{ SHMUELIE_GIT_INVOCATION_TEST = $null }
+                ($removed.StandardOutput | ConvertFrom-Json).Value | Should -BeNullOrEmpty
+                $env:SHMUELIE_GIT_INVOCATION_TEST | Should -BeExactly 'parent'
+            }
+        } finally {
+            $env:SHMUELIE_GIT_INVOCATION_TEST = $oldValue
+        }
+    }
+}
+
 Describe 'Add-Worktree' {
     It 'requires a non-empty branch name' {
         { Add-Worktree -BranchName '' } | Should -Throw
