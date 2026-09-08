@@ -18,6 +18,8 @@ between releases this file tracks catalog-level changes under `[Unreleased]`.
   build and import correctly on Linux and macOS. (Fixes #155.)
 
 ### Added
+- Build, validation, publishing, portable CI, and documentation catalogs include
+  the independently versioned `Shmuelie.PackageManagement` foundation module.
 - Contributor and Copilot instructions now document **bash port parity**:
   changes that also apply to [`shmuelie/bash-scripts`](https://github.com/shmuelie/bash-scripts)
   should be tracked with an `upstream-parity` issue filed in that repo

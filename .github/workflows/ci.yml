@@ -33,7 +33,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           # Build and import each portable module (Windows module is excluded; it
           # contains WinRT-only assemblies that cannot load on Linux).
-          foreach ($module in @('Shmuelie.Git', 'Shmuelie.Copilot', 'Shmuelie.Node', 'Shmuelie.Utilities', 'Shmuelie.Dsc')) {
+          foreach ($module in @('Shmuelie.Git', 'Shmuelie.Copilot', 'Shmuelie.Node', 'Shmuelie.Utilities', 'Shmuelie.Dsc', 'Shmuelie.PackageManagement')) {
               Write-Host "::group::Building $module"
               & ./build/Build-Module.ps1 -Module $module | Out-Null
               Write-Host "::endgroup::"
@@ -41,3 +41,6 @@ jobs:
       - name: Run repeat-build tests
         shell: pwsh
         run: ./build/Invoke-Tests.ps1 -Path ./tests/Build.Tests.ps1
+      - name: Run package orchestration tests
+        shell: pwsh
+        run: ./build/Invoke-Tests.ps1 -Path ./tests/Shmuelie.PackageManagement.Tests.ps1

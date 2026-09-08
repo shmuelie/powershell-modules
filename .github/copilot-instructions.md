@@ -14,6 +14,7 @@ see [`docs/contributing.md`](../docs/contributing.md).
 | `Shmuelie.Copilot` | GitHub Copilot CLI session, plugin, marketplace, and MCP helpers, plus the `Start-Copilot` launcher |
 | `Shmuelie.Node` | Node.js, nvm-windows, npm, and Azure DevOps npm credential helpers |
 | `Shmuelie.Utilities` | General developer utilities (dotnet/pip/uv/VS Code tools, services, WPR, terminal) |
+| `Shmuelie.PackageManagement` | Provider-neutral package update orchestration foundation; adapters are separate follow-up work |
 
 ## Repository layout
 

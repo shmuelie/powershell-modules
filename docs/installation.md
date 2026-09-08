@@ -17,6 +17,7 @@ Install-PSResource Shmuelie.Copilot
 Install-PSResource Shmuelie.Node
 Install-PSResource Shmuelie.Utilities
 Install-PSResource Shmuelie.Windows
+Install-PSResource Shmuelie.PackageManagement
 ```
 
 Import a module before use:
@@ -24,6 +25,10 @@ Import a module before use:
 ```powershell
 Import-Module Shmuelie.Git
 ```
+
+`Shmuelie.PackageManagement` 0.1.0 is the orchestration foundation only.
+Its provider integrations are not yet implemented and report explicit skipped
+outcomes; installing the module does not install or update provider tools.
 
 ## Update and remove
 
