@@ -18,6 +18,8 @@ between releases this file tracks catalog-level changes under `[Unreleased]`.
   build and import correctly on Linux and macOS. (Fixes #155.)
 
 ### Added
+- Build, validation, publishing, portable CI, and documentation catalogs include
+  the independently versioned `Shmuelie.PackageManagement` foundation module.
 - Add `Shmuelie.DotNet` to the module catalog, build/publish selectors, and
   Windows/Ubuntu validation. Its initial version is 0.1.0; the additive
   Utilities migration must finish in #187 before the M2 release.
