@@ -1,12 +1,13 @@
 # Shmuelie PowerShell Modules
 
 Independently versioned PowerShell modules for Git, GitHub Copilot CLI, Node.js,
-Visual Studio, and general developer tooling.
+.NET, Visual Studio, and general developer tooling.
 
 ```powershell
 Install-PSResource Shmuelie.Git
 Install-PSResource Shmuelie.Copilot
 Install-PSResource Shmuelie.Node
+Install-PSResource Shmuelie.DotNet
 Install-PSResource Shmuelie.Utilities
 Install-PSResource Shmuelie.Windows
 Install-PSResource Shmuelie.Dsc
@@ -20,7 +21,8 @@ Install-PSResource Shmuelie.VisualStudio
 | [Shmuelie.Git](docs/modules.md#shmuelie-git) | Git worktrees, layout, status, completion, and prediction |
 | [Shmuelie.Copilot](docs/modules.md#shmuelie-copilot) | Copilot CLI sessions, plugins, marketplaces, MCP, and launcher |
 | [Shmuelie.Node](docs/modules.md#shmuelie-node) | Node.js, nvm-windows, npm, and ADO npm credentials |
-| [Shmuelie.Utilities](docs/modules.md#shmuelie-utilities) | .NET, Python, VS Code, and terminal helpers |
+| [Shmuelie.DotNet](docs/modules.md#shmuelie-dotnet) | .NET tool discovery, installation, updates, and removal |
+| [Shmuelie.Utilities](docs/modules.md#shmuelie-utilities) | Python, VS Code, terminal helpers, and legacy .NET tool entry points |
 | [Shmuelie.Windows](docs/modules.md#shmuelie-windows) | Windows-only installed-apps, Terminal, WPR, and service helpers |
 | [Shmuelie.Dsc](docs/modules.md#shmuelie-dsc) | DSC v3 resources for setup: modules, symlinks, Copilot plugins/marketplaces, uv tools |
 | [Shmuelie.VisualStudio](docs/modules.md#shmuelie-visualstudio) | Visual Studio discovery and developer shell launch helpers |
