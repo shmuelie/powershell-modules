@@ -25,6 +25,12 @@ Import-Module Shmuelie.Utilities
 
 ## Highlights
 
+The four .NET tool commands now have their canonical home in
+[Shmuelie.DotNet](../Shmuelie.DotNet/README.md). Utilities keeps these entry
+points until Utilities 1.0. During the additive #186/#187 migration, the
+existing implementations remain here so intermediate checkouts keep working;
+#187 replaces them with lazy forwarding wrappers before the M2 release.
+
 - `Reset-TerminalModes` recovers a terminal left in a bad state (mouse tracking,
   alternate screen, bracketed paste, kitty keyboard flags) by a crashed TUI.
 - `Invoke-InLocation` runs a script block in a location and always returns, even

@@ -17,6 +17,9 @@ without a full build.
   `Get-SessionTitle`, `New-GlobalConstant`, `New-PathVariable`,
   `Import-ModuleSafe`, `Invoke-InLocation`) and `Format-Duration` boundary/
   rounding cases.
+- `Shmuelie.DotNet.Tests.ps1` - canonical .NET tool parsing, parameter and
+  pipeline contracts, scope selection, typed results, failure reporting,
+  `ShouldProcess`, isolated import, and publishable module layout.
 
 ## Running
 
