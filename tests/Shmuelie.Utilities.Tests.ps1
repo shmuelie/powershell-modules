@@ -372,6 +372,34 @@ Describe 'Utilities .NET tool forwarding parity' {
         }
     }
 
+    It 'preserves early stopping and downstream PipelineVariable with OutBuffer <Buffer>' -ForEach @(
+        @{ Buffer = 0 }
+        @{ Buffer = 1 }
+        @{ Buffer = 2 }
+    ) {
+        $expected = $null
+        $expectedCalls = $null
+        foreach ($moduleName in 'Shmuelie.DotNet', 'Shmuelie.Utilities') {
+            $script:dotNetCalls.Clear()
+            $results = @(1..3 | ForEach-Object {
+                [pscustomobject]@{ PackageId = "tool-$_"; Global = $true; Version = '1.0.0' }
+            } | & "$moduleName\Update-DotNetTool" -Confirm:$false -OutBuffer $Buffer -PipelineVariable currentTool |
+                Select-Object -First 1 |
+                ForEach-Object { "$($_.PackageId)|$($currentTool.PackageId)" })
+            if ($moduleName -eq 'Shmuelie.DotNet') {
+                $expected = $results
+                $expectedCalls = $script:dotNetCalls.ToArray()
+            } else {
+                $results | Should -Be $expected
+                $script:dotNetCalls.ToArray() | Should -Be $expectedCalls
+            }
+            if ($Buffer -eq 0) {
+                $results | Should -Be @('tool-1|tool-1')
+                $script:dotNetCalls.Count | Should -Be 1
+            }
+        }
+    }
+
     It 'processes uninstall inputs incrementally instead of buffering until end' {
         foreach ($moduleName in 'Shmuelie.DotNet', 'Shmuelie.Utilities') {
             $script:dotNetCalls.Clear()
@@ -440,6 +468,55 @@ Describe 'Utilities .NET tool forwarding parity' {
         ($actual | ConvertTo-Json) | Should -BeExactly ($expected | ConvertTo-Json)
         ($actualOutput | ConvertTo-Json) | Should -BeExactly ($expectedOutput | ConvertTo-Json)
         $actualOutput.Count | Should -Be 2
+    }
+
+    It 'keeps <CaptureParameter> pipeline caller-owned for <Command> (append: <Append>)' -ForEach @(
+        foreach ($command in 'Get-DotNetTool', 'Install-DotNetTool', 'Update-DotNetTool', 'Uninstall-DotNetTool') {
+            foreach ($captureParameter in 'OutVariable', 'ErrorVariable', 'WarningVariable', 'InformationVariable') {
+                foreach ($append in $false, $true) {
+                    @{ Command = $command; CaptureParameter = $captureParameter; Append = $append }
+                }
+            }
+        }
+    ) {
+        # Emit at the forwarded command boundary, not through native-output redirection.
+        $captureModule = New-Module -ScriptBlock {
+            function Invoke-CaptureFixture {
+                [CmdletBinding(SupportsShouldProcess)]
+                param([string]$Name)
+                $PSCmdlet.WriteWarning('canonical warning')
+                $PSCmdlet.WriteInformation('canonical information', [string[]]@())
+                $PSCmdlet.WriteError([System.Management.Automation.ErrorRecord]::new(
+                    [System.InvalidOperationException]::new('canonical error'),
+                    'CaptureFixtureError', [System.Management.Automation.ErrorCategory]::InvalidOperation, $Name))
+                [pscustomobject]@{ PackageId = $Name; Version = '1.0.0' }
+            }
+            Export-ModuleMember -Function Invoke-CaptureFixture
+        }
+        $script:captureCommand = $captureModule.ExportedCommands['Invoke-CaptureFixture']
+        Mock -ModuleName Shmuelie.Utilities Resolve-DotNetToolCommand { $script:captureCommand }
+        $parameters = @{
+            Name = 'new-tool'
+            ErrorAction = 'SilentlyContinue'
+            WarningAction = 'SilentlyContinue'
+            InformationAction = 'SilentlyContinue'
+        }
+        if ($Command -eq 'Get-DotNetTool') { $parameters.Name = '*' }
+        else { $parameters.Confirm = $false }
+        $parameters[$CaptureParameter] = if ($Append) { '+pipeline' } else { 'pipeline' }
+
+        $pipeline = @('existing capture')
+        $expectedOutput = @(& $script:captureCommand @parameters)
+        $expectedCapture = @($pipeline | ForEach-Object { "$_" })
+        $pipeline = @('existing capture')
+        $actualOutput = @(& "Shmuelie.Utilities\$Command" @parameters)
+        $actualCapture = @($pipeline | ForEach-Object { "$_" })
+
+        ($actualOutput | ConvertTo-Json) | Should -BeExactly ($expectedOutput | ConvertTo-Json)
+        $actualCapture | Should -Be $expectedCapture
+        if ($Append) { $actualCapture[0] | Should -BeExactly 'existing capture' }
+        else { $actualCapture | Should -Not -Contain 'existing capture' }
+        $actualCapture.Count | Should -BeGreaterThan ([int]$Append)
     }
 
     It 'exposes PipelineVariable values to downstream callers for <Command>' -ForEach @(
@@ -552,6 +629,66 @@ Describe 'Utilities .NET wrapper dependency isolation' {
             if ((Get-Command Get-DotNetTool).ModuleName -ne 'Shmuelie.Utilities') { throw 'Clobbered caller commands.' }
             'Source resolved'
         } | Should -Contain 'Source resolved'
+    }
+
+    It 'forwards all commands after prefixed canonical import: <Mode>' -ForEach @(
+        @{ Mode = 'Source-DotNetFirst' }
+        @{ Mode = 'Source-UtilitiesFirst' }
+        @{ Mode = 'Installed-DotNetFirst' }
+        @{ Mode = 'Installed-UtilitiesFirst' }
+    ) {
+        Invoke-WrapperChild -Mode $Mode -Script {
+            param($root, $artifacts, $mode)
+            $ErrorActionPreference = 'Stop'
+            $WarningPreference = 'Stop'
+            $env:PSModulePath = "$artifacts$([IO.Path]::PathSeparator)$(Join-Path $PSHOME 'Modules')"
+            function global:dotnet { throw 'Must not execute a real external tool.' }
+            $utilitiesPath = 'Shmuelie.Utilities'
+            $dotNetPath = 'Shmuelie.DotNet'
+            if ($mode.StartsWith('Source-')) {
+                $utilitiesPath = Join-Path $root 'modules' 'Shmuelie.Utilities' 'Shmuelie.Utilities.psd1'
+                $dotNetPath = Join-Path $root 'modules' 'Shmuelie.DotNet' 'Shmuelie.DotNet.psd1'
+            }
+            if ($mode.EndsWith('UtilitiesFirst')) { Import-Module $utilitiesPath }
+            $canonical = Import-Module $dotNetPath -Prefix Canon -PassThru
+            if ($mode.EndsWith('DotNetFirst')) { Import-Module $utilitiesPath }
+            & $canonical {
+                $script:calls = [System.Collections.Generic.List[string]]::new()
+                function script:dotnet {
+                    $script:calls.Add($args -join '|')
+                    $global:LASTEXITCODE = 0
+                    if ($args[1] -eq 'list') { 'header'; '------'; 'first-tool  1.0.0  first' }
+                    else { "Updated version '2.0.0'." }
+                }
+            }
+            $commandNames = @('Get-DotNetTool', 'Install-DotNetTool', 'Update-DotNetTool', 'Uninstall-DotNetTool')
+            $before = @{}
+            foreach ($name in $commandNames) {
+                $before[$name] = (Get-Command $name).ScriptBlock
+                $prefixed = $name.Replace('-DotNetTool', '-CanonDotNetTool')
+                $before[$prefixed] = (Get-Command $prefixed).ScriptBlock
+            }
+            foreach ($name in $commandNames) {
+                $parameters = @{ Name = 'new-tool' }
+                if ($name -eq 'Get-DotNetTool') { $parameters.Name = '*' }
+                else { $parameters.Confirm = $false }
+                $prefixed = $name.Replace('-DotNetTool', '-CanonDotNetTool')
+                & $canonical { $script:calls.Clear() }
+                $expected = @(& $prefixed @parameters)
+                $expectedCalls = @(& $canonical { $script:calls.ToArray() })
+                & $canonical { $script:calls.Clear() }
+                $actual = @(& "Shmuelie.Utilities\$name" @parameters)
+                $actualCalls = @(& $canonical { $script:calls.ToArray() })
+                if (($actual | ConvertTo-Json) -cne ($expected | ConvertTo-Json) -or
+                    ($actualCalls -join '|') -cne ($expectedCalls -join '|')) {
+                    throw "Prefixed forwarding parity failed for $name."
+                }
+            }
+            foreach ($name in $before.Keys) {
+                if ((Get-Command $name).ScriptBlock -ne $before[$name]) { throw "Clobbered caller command $name." }
+            }
+            'Prefixed import preserved'
+        } | Should -Contain 'Prefixed import preserved'
     }
 
     It 'uses an explicitly loaded canonical module outside PSModulePath' {

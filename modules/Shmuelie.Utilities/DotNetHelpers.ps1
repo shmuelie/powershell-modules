@@ -15,8 +15,8 @@ function Resolve-DotNetToolCommand {
         }
     }
 
-    # Import only into this helper's scope, leaving caller command precedence intact.
-    $command = $module.ExportedCommands[$Name]
+    # Export keys can include an import prefix; CommandInfo retains the original name.
+    $command = $module.ExportedCommands.Values | Where-Object Name -EQ $Name | Select-Object -First 1
     if (-not $command) {
         throw "Shmuelie.DotNet does not export '$Name'. Reinstall or update Shmuelie.DotNet explicitly, then retry in a new PowerShell session."
     }
@@ -58,9 +58,10 @@ function Get-DotNetTool {
     )
     begin {
         $command = Resolve-DotNetToolCommand -Name 'Get-DotNetTool'
-        # The outer command owns the caller's variable; rebinding it hides it downstream.
-        $null = $PSBoundParameters.Remove('PipelineVariable')
-        if ($PSBoundParameters.ContainsKey('OutBuffer')) { $PSBoundParameters['OutBuffer'] = 1 }
+        # Capture variables belong to the outer command in the caller's scope.
+        foreach ($parameter in 'PipelineVariable', 'OutVariable', 'ErrorVariable', 'WarningVariable', 'InformationVariable') {
+            $null = $PSBoundParameters.Remove($parameter)
+        }
         $pipeline = { & $command @PSBoundParameters }.GetSteppablePipeline($MyInvocation.CommandOrigin)
         $pipeline.Begin($PSCmdlet)
     }
@@ -109,8 +110,9 @@ function Update-DotNetTool {
     )
     begin {
         $command = Resolve-DotNetToolCommand -Name 'Update-DotNetTool'
-        $null = $PSBoundParameters.Remove('PipelineVariable')
-        if ($PSBoundParameters.ContainsKey('OutBuffer')) { $PSBoundParameters['OutBuffer'] = 1 }
+        foreach ($parameter in 'PipelineVariable', 'OutVariable', 'ErrorVariable', 'WarningVariable', 'InformationVariable') {
+            $null = $PSBoundParameters.Remove($parameter)
+        }
         # One canonical pipeline retains per-record binding and confirmation state.
         $pipeline = { & $command @PSBoundParameters }.GetSteppablePipeline($MyInvocation.CommandOrigin)
         $pipeline.Begin($PSCmdlet)
@@ -146,8 +148,9 @@ function Install-DotNetTool {
     )
     begin {
         $command = Resolve-DotNetToolCommand -Name 'Install-DotNetTool'
-        $null = $PSBoundParameters.Remove('PipelineVariable')
-        if ($PSBoundParameters.ContainsKey('OutBuffer')) { $PSBoundParameters['OutBuffer'] = 1 }
+        foreach ($parameter in 'PipelineVariable', 'OutVariable', 'ErrorVariable', 'WarningVariable', 'InformationVariable') {
+            $null = $PSBoundParameters.Remove($parameter)
+        }
         $pipeline = { & $command @PSBoundParameters }.GetSteppablePipeline($MyInvocation.CommandOrigin)
         $pipeline.Begin($PSCmdlet)
     }
@@ -189,8 +192,9 @@ function Uninstall-DotNetTool {
     )
     begin {
         $command = Resolve-DotNetToolCommand -Name 'Uninstall-DotNetTool'
-        $null = $PSBoundParameters.Remove('PipelineVariable')
-        if ($PSBoundParameters.ContainsKey('OutBuffer')) { $PSBoundParameters['OutBuffer'] = 1 }
+        foreach ($parameter in 'PipelineVariable', 'OutVariable', 'ErrorVariable', 'WarningVariable', 'InformationVariable') {
+            $null = $PSBoundParameters.Remove($parameter)
+        }
         $pipeline = { & $command @PSBoundParameters }.GetSteppablePipeline($MyInvocation.CommandOrigin)
         $pipeline.Begin($PSCmdlet)
     }
