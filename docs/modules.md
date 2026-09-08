@@ -22,6 +22,7 @@ are:
 | Shmuelie.Git | 612.0 ms |
 | Shmuelie.Copilot | 536.0 ms |
 | Shmuelie.Node | 344.3 ms |
+| Shmuelie.DotNet | Not yet measured |
 | Shmuelie.VisualStudio | Not yet measured |
 | **Combined** | **1981.0 ms** |
 
@@ -75,6 +76,25 @@ Highlights:
 - `Get-NpmPackage` / `Update-NpmPackage` for global packages.
 - `Update-AdoNpmToken` refreshes a token for an explicit Azure DevOps feed URL.
 
+## Shmuelie.DotNet
+
+Canonical .NET tool management for Windows, Linux, and macOS.
+**Version 0.1.0.**
+[README](https://github.com/shmuelie/powershell-modules/blob/main/modules/Shmuelie.DotNet/README.md)
+
+Highlights:
+
+- `Get-DotNetTool` returns typed tool records with wildcard package filtering.
+- `Install-DotNetTool` and `Uninstall-DotNetTool` manage global tools.
+- `Update-DotNetTool` accepts names or pipeline objects and supports local tools.
+- Import requires no SDK invocation and does not load Utilities.
+
+The four Utilities entry points remain available until Utilities 1.0.
+During the additive #186/#187 migration, Utilities temporarily retains its
+implementations; #187 replaces them with lazy compatibility wrappers before
+the M2 release. Use module-qualified `Shmuelie.DotNet` commands when both
+modules are imported. See the module README for preserved scope behavior.
+
 ## Shmuelie.Utilities
 
 General developer utilities for PowerShell, .NET tools, Python packages, VS
@@ -84,7 +104,8 @@ Code, terminal recovery, and general developer workflows. **Version 0.4.1.**
 Highlights:
 
 - Core helpers: `Test-IsElevated`, `Invoke-InLocation`, `Reset-TerminalModes`.
-- Tool management for `dotnet`, `pip`, `uv`, and VS Code extensions.
+- Tool management for `pip`, `uv`, and VS Code extensions, plus legacy .NET tool
+  entry points; `Shmuelie.DotNet` is the canonical owner of .NET tool management.
 
 ## Shmuelie.Windows
 

@@ -5,7 +5,7 @@ title: Shmuelie PowerShell Modules
 **[Home](index.md) · [Modules](modules.md) · [Installation](installation.md) · [Contributing](contributing.md) · [GitHub](https://github.com/shmuelie/powershell-modules)**
 
 Independently versioned PowerShell modules for developer workflows across Git,
-GitHub Copilot CLI, Node.js, Visual Studio, and general tooling.
+GitHub Copilot CLI, Node.js, .NET, Visual Studio, and general tooling.
 
 Each module ships its own manifest, README, changelog, package artifact,
 semantic version, and release tag. Versions are not kept in lockstep, so you can
@@ -18,7 +18,8 @@ install and upgrade each module on its own.
 | [Shmuelie.Git](modules.md#shmuelie-git) | Git worktrees, layout, status, completion, and prediction | 0.8.1 |
 | [Shmuelie.Copilot](modules.md#shmuelie-copilot) | Copilot CLI sessions, plugins, marketplaces, MCP, and launcher | 0.3.2 |
 | [Shmuelie.Node](modules.md#shmuelie-node) | Node.js, nvm-windows, npm, and ADO npm credentials | 0.1.4 |
-| [Shmuelie.Utilities](modules.md#shmuelie-utilities) | .NET, Python, VS Code, and terminal helpers | 0.4.1 |
+| [Shmuelie.DotNet](modules.md#shmuelie-dotnet) | .NET tool discovery, installation, updates, and removal | 0.1.0 |
+| [Shmuelie.Utilities](modules.md#shmuelie-utilities) | Python, VS Code, terminal helpers, and legacy .NET tool entry points | 0.4.1 |
 | [Shmuelie.Windows](modules.md#shmuelie-windows) | Windows-only installed-apps, Terminal, WPR, and service helpers | 0.1.2 |
 | [Shmuelie.Dsc](modules.md#shmuelie-dsc) | DSC v3 resources for setup: modules, symlinks, Copilot plugins/marketplaces, uv tools | 0.1.0 |
 | [Shmuelie.VisualStudio](modules.md#shmuelie-visualstudio) | Visual Studio discovery and developer shell launch helpers | 0.1.1 |

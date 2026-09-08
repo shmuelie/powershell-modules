@@ -11,23 +11,29 @@ function Resolve-GitRepositoryPath {
         [Alias('RepositoryPath', 'RepoPath')]
         [string]$Path,
 
-        [switch]$AllowBare
+        [switch]$AllowBare,
+
+        [hashtable]$Environment
     )
 
     $candidate = if ($Path) { $Path } else { (Get-Location).ProviderPath }
-    try {
-        $resolved = Resolve-Path -LiteralPath $candidate -ErrorAction Stop | Select-Object -First 1
-        $providerPath = $resolved.ProviderPath
-    } catch {
+    $resolved = Resolve-Path -LiteralPath $candidate -ErrorAction Ignore | Select-Object -First 1
+    if (-not $resolved) {
         Write-Error "Git repository path not found: '$candidate'."
         return
     }
+    $providerPath = $resolved.ProviderPath
 
-    $inside = git -C $providerPath rev-parse --is-inside-work-tree 2>$null
-    if ($LASTEXITCODE -ne 0 -or "$inside".Trim() -ne 'true') {
+    if ($resolved.Provider.Name -ne 'FileSystem' -or -not (Test-Path -LiteralPath $providerPath -PathType Container)) {
+        Write-Error "Git repository path must be a FileSystem directory: '$candidate'."
+        return
+    }
+
+    $inside = Invoke-GitProcess -Arguments @('-C', $providerPath, 'rev-parse', '--is-inside-work-tree') -Environment $Environment
+    if ($inside.ExitCode -ne 0 -or $inside.StandardOutput.Trim() -ne 'true') {
         if ($AllowBare) {
-            $bare = git -C $providerPath rev-parse --is-bare-repository 2>$null
-            if ($LASTEXITCODE -eq 0 -and "$bare".Trim() -eq 'true') {
+            $bare = Invoke-GitProcess -Arguments @('-C', $providerPath, 'rev-parse', '--is-bare-repository') -Environment $Environment
+            if ($bare.ExitCode -eq 0 -and $bare.StandardOutput.Trim() -eq 'true') {
                 return $providerPath
             }
         }
@@ -323,9 +329,10 @@ function Invoke-GitWorktreeAdd {
         [string]$RepositoryPath
     )
 
-    $gitArguments = if ($RepositoryPath) { @('-C', $RepositoryPath) + $Arguments } else { $Arguments }
-    $output = & git @gitArguments 2>&1
-    $exitCode = $LASTEXITCODE
+    $result = Invoke-Git -Path $RepositoryPath -Arguments $Arguments -AllowNonZeroExit
+    if (-not $result) { return $false }
+    $output = $result.Output
+    $exitCode = $result.ExitCode
     if ($exitCode -eq 0) {
         return $true
     }
