@@ -36,6 +36,13 @@ Import-Module Shmuelie.Utilities
   repository override, and can include/exclude module names with wildcards.
   If recorded source provenance cannot be matched to a configured repository,
   the module is skipped rather than silently falling back to PSGallery.
+  Prerelease installations retain their full version from `PSGetModuleInfo.xml`
+  and include prereleases when checking for updates; stable installations query
+  stable releases only. Version comparison respects numeric prerelease identifiers
+  (`beta.10` is newer than `beta.2`) and promotion to a stable release with the same
+  numeric version. The exact selected version is saved to the supplied path.
+  A metadata-less newer version can inherit older repository provenance, but
+  never the older version's prerelease state.
 
 ## Examples
 
