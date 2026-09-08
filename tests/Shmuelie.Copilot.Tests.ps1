@@ -8,7 +8,10 @@ BeforeAll {
     $script:OriginalPath = $env:PATH
 
     function Add-FakeCopilot {
-        param([Parameter(Mandatory)][string]$Path)
+        param(
+            [Parameter(Mandatory)][string]$Path,
+            [int]$ExitCode = 0
+        )
 
         New-Item -ItemType Directory -Path $Path -Force | Out-Null
         $pwsh = (Get-Process -Id $PID).Path -replace '"', '""'
@@ -16,14 +19,14 @@ BeforeAll {
             '@echo off'
             'if defined COPILOT_TEST_LOG echo %*>>"%COPILOT_TEST_LOG%"'
             "if defined COPILOT_TEST_STDOUT `"$pwsh`" -NoLogo -NoProfile -NonInteractive -Command `"[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new(`$false); [Console]::Out.Write(`$env:COPILOT_TEST_STDOUT)`""
-            'exit /b 0'
+            "exit /b $ExitCode"
         )
         $copilot = Join-Path $Path 'copilot'
         Set-Content -Path $copilot -Value @(
             '#!/usr/bin/env sh'
             'if [ -n "$COPILOT_TEST_LOG" ]; then printf "%s\n" "$*" >> "$COPILOT_TEST_LOG"; fi'
             'if [ -n "$COPILOT_TEST_STDOUT" ]; then printf "%s" "$COPILOT_TEST_STDOUT"; fi'
-            'exit 0'
+            "exit $ExitCode"
         )
         if (-not $IsWindows) { & chmod +x $copilot }
         $env:PATH = "$Path$([IO.Path]::PathSeparator)$script:OriginalPath"
@@ -128,6 +131,8 @@ BeforeAll {
 Describe 'Copilot CLI shim argument validation' {
     BeforeEach {
         $env:USERPROFILE = Join-Path $TestDrive 'home'
+        $testHome = $env:USERPROFILE
+        Mock -ModuleName Shmuelie.Copilot -CommandName Get-CopilotHome -MockWith { $testHome }
         New-Item -ItemType Directory -Path $env:USERPROFILE -Force | Out-Null
         $script:CopilotTestLog = Join-Path $TestDrive 'copilot.log'
         Remove-Item $script:CopilotTestLog -Force -ErrorAction SilentlyContinue
@@ -1144,6 +1149,8 @@ Describe 'Resume-CopilotSession' {
 Describe 'Copilot plugin, marketplace, and MCP removal cmdlets' {
     BeforeEach {
         $env:USERPROFILE = Join-Path $TestDrive 'home'
+        $testHome = $env:USERPROFILE
+        Mock -ModuleName Shmuelie.Copilot -CommandName Get-CopilotHome -MockWith { $testHome }
         New-Item -ItemType Directory -Path $env:USERPROFILE -Force | Out-Null
         $script:CopilotTestLog = Join-Path $TestDrive 'copilot.log'
         Remove-Item $script:CopilotTestLog -Force -ErrorAction SilentlyContinue
@@ -1179,6 +1186,183 @@ Describe 'Copilot plugin, marketplace, and MCP removal cmdlets' {
         { Unregister-CopilotMarketplace -Name 'bad&marketplace' -Confirm:$false } | Should -Throw '*Unsafe Name value*'
         { Unregister-CopilotMcpServer -Name 'bad&server' -Confirm:$false } | Should -Throw '*Unsafe Name value*'
         Test-Path $script:CopilotTestLog | Should -BeFalse
+    }
+}
+
+Describe 'Copilot MCP configuration link protection' {
+    BeforeEach {
+        $testHome = Join-Path $TestDrive ("home [mcp]-" + [guid]::NewGuid())
+        $script:McpConfigDirectory = Join-Path $testHome '.copilot'
+        $script:McpConfigPath = Join-Path $script:McpConfigDirectory 'mcp-config.json'
+        $script:McpTargetPath = Join-Path $script:McpConfigDirectory 'tracked.json'
+        New-Item -ItemType Directory -Path $script:McpConfigDirectory -Force | Out-Null
+        $script:McpOriginalContent = '{"mcpServers":{"existing":{"command":"node","args":["server.js"],"autoConnect":false}},"extension":{"keep":true}}'
+        Set-Content -LiteralPath $script:McpTargetPath -Value $script:McpOriginalContent -NoNewline
+        Mock -ModuleName Shmuelie.Copilot -CommandName Get-CopilotHome -MockWith { $testHome }
+        $script:CopilotTestLog = Join-Path $testHome 'copilot.log'
+        $env:COPILOT_TEST_LOG = $script:CopilotTestLog
+        Add-FakeCopilot -Path (Join-Path $TestDrive 'bin')
+    }
+
+    AfterEach {
+        Remove-Item Env:\COPILOT_TEST_LOG -ErrorAction SilentlyContinue
+        Remove-Item Env:\COPILOT_TEST_STDOUT -ErrorAction SilentlyContinue
+    }
+
+    It 'blocks <Operation> for a <LinkKind> link without changing any files' -ForEach @(
+        foreach ($operation in 'register', 'unregister', 'pipeline removal') {
+            foreach ($kind in 'absolute', 'relative', 'chained', 'dangling', 'relative dangling', 'chained dangling', 'cyclic') {
+                @{ Operation = $operation; LinkKind = $kind }
+            }
+        }
+    ) {
+        $target = $script:McpTargetPath
+        $missingPath = Join-Path $script:McpConfigDirectory 'missing.json'
+        $intermediatePath = Join-Path $script:McpConfigDirectory 'intermediate.json'
+        switch ($LinkKind) {
+            'relative' { $target = 'tracked.json' }
+            'chained' {
+                [IO.File]::CreateSymbolicLink($intermediatePath, 'tracked.json') | Out-Null
+                $target = 'intermediate.json'
+            }
+            'dangling' { $target = $missingPath }
+            'relative dangling' { $target = 'missing.json' }
+            'chained dangling' {
+                [IO.File]::CreateSymbolicLink($intermediatePath, 'missing.json') | Out-Null
+                $target = 'intermediate.json'
+            }
+            'cyclic' { $target = 'mcp-config.json' }
+        }
+        [IO.File]::CreateSymbolicLink($script:McpConfigPath, $target) | Out-Null
+
+        $failure = {
+            switch ($Operation) {
+                'register' { Register-CopilotMcpServer -Name 'test-server' -Command 'node' -Confirm:$false }
+                'unregister' { Unregister-CopilotMcpServer -Name 'test-server' -Confirm:$false }
+                'pipeline removal' {
+                    @([pscustomobject]@{ Name = 'first' }, [pscustomobject]@{ Name = 'second' }) |
+                        Unregister-CopilotMcpServer -Confirm:$false
+                }
+            }
+        } | Should -Throw '*symbolic link*Manage the target file directly*' -PassThru
+
+        $failure.Exception.Message | Should -Match ([regex]::Escape($script:McpConfigPath))
+        $failure.Exception.Message | Should -Match ([regex]::Escape($target))
+        [IO.FileInfo]::new($script:McpConfigPath).LinkTarget | Should -BeExactly $target
+        Get-Content -LiteralPath $script:McpTargetPath -Raw | Should -BeExactly $script:McpOriginalContent
+        [IO.File]::Exists($missingPath) | Should -BeFalse
+        if ($LinkKind -like 'chained*') {
+            $expectedTarget = if ($LinkKind -eq 'chained') { 'tracked.json' } else { 'missing.json' }
+            [IO.FileInfo]::new($intermediatePath).LinkTarget | Should -BeExactly $expectedTarget
+        }
+        Test-Path -LiteralPath $script:CopilotTestLog | Should -BeFalse
+    }
+
+    It 'preserves native registration and removal for <ConfigKind> configuration' -ForEach @(
+        @{ ConfigKind = 'regular' }
+        @{ ConfigKind = 'invalid JSON' }
+        @{ ConfigKind = 'missing file' }
+        @{ ConfigKind = 'missing directory' }
+    ) {
+        if ($ConfigKind -in 'regular', 'invalid JSON') {
+            $content = if ($ConfigKind -eq 'regular') { $script:McpOriginalContent } else { 'not JSON' }
+            Set-Content -LiteralPath $script:McpConfigPath -Value $content -NoNewline
+        } elseif ($ConfigKind -eq 'missing directory') {
+            Remove-Item -LiteralPath $script:McpConfigDirectory -Recurse -Force
+        }
+
+        Register-CopilotMcpServer -Name 'stdio-server' -Command 'node' -ArgumentList 'server.js', '--verbose' -Env 'MODE=test' -Confirm:$false
+        Register-CopilotMcpServer -Name 'http-server' -Transport http -Url 'https://example.com/mcp' -Header 'X-Test:enabled' -Confirm:$false
+        Unregister-CopilotMcpServer -Name 'stdio-server' -Confirm:$false
+        @([pscustomobject]@{ Name = 'first' }, [pscustomobject]@{ Name = 'second' }) |
+            Unregister-CopilotMcpServer -Confirm:$false
+
+        @(Get-Content -LiteralPath $script:CopilotTestLog) | Should -Be @(
+            'mcp add --transport stdio --env MODE=test stdio-server -- node server.js --verbose'
+            'mcp add --transport http --header X-Test:enabled http-server https://example.com/mcp'
+            'mcp remove stdio-server'
+            'mcp remove first'
+            'mcp remove second'
+        )
+        if ($ConfigKind -in 'regular', 'invalid JSON') {
+            Get-Content -LiteralPath $script:McpConfigPath -Raw | Should -BeExactly $content
+            [IO.FileInfo]::new($script:McpConfigPath).LinkTarget | Should -BeNullOrEmpty
+        } else {
+            Test-Path -LiteralPath $script:McpConfigPath | Should -BeFalse
+        }
+    }
+
+    It 'honors WhatIf for <ConfigKind> configuration without invoking native mutations' -ForEach @(
+        @{ ConfigKind = 'regular' }
+        @{ ConfigKind = 'symbolic link' }
+        @{ ConfigKind = 'dangling link' }
+    ) {
+        if ($ConfigKind -eq 'regular') {
+            Set-Content -LiteralPath $script:McpConfigPath -Value $script:McpOriginalContent -NoNewline
+        } else {
+            $target = if ($ConfigKind -eq 'symbolic link') { 'tracked.json' } else { 'missing.json' }
+            [IO.File]::CreateSymbolicLink($script:McpConfigPath, $target) | Out-Null
+        }
+
+        Register-CopilotMcpServer -Name 'test-server' -Command 'node' -WhatIf
+        Unregister-CopilotMcpServer -Name 'test-server' -WhatIf
+        @([pscustomobject]@{ Name = 'first' }, [pscustomobject]@{ Name = 'second' }) |
+            Unregister-CopilotMcpServer -WhatIf
+
+        Test-Path -LiteralPath $script:CopilotTestLog | Should -BeFalse
+        Get-Content -LiteralPath $script:McpTargetPath -Raw | Should -BeExactly $script:McpOriginalContent
+        if ($ConfigKind -eq 'regular') {
+            Get-Content -LiteralPath $script:McpConfigPath -Raw | Should -BeExactly $script:McpOriginalContent
+        } else {
+            [IO.FileInfo]::new($script:McpConfigPath).LinkTarget | Should -BeExactly $target
+            [IO.File]::Exists((Join-Path $script:McpConfigDirectory 'missing.json')) | Should -BeFalse
+        }
+    }
+
+    It 'rechecks the configuration before each pipeline removal' {
+        Set-Content -LiteralPath $script:McpConfigPath -Value $script:McpOriginalContent -NoNewline
+
+        {
+            & {
+                [pscustomobject]@{ Name = 'first' }
+                Remove-Item -LiteralPath $script:McpConfigPath
+                [IO.File]::CreateSymbolicLink($script:McpConfigPath, 'tracked.json') | Out-Null
+                [pscustomobject]@{ Name = 'second' }
+            } | Unregister-CopilotMcpServer -Confirm:$false
+        } | Should -Throw '*symbolic link*'
+
+        @(Get-Content -LiteralPath $script:CopilotTestLog) | Should -Be @('mcp remove first')
+        [IO.FileInfo]::new($script:McpConfigPath).LinkTarget | Should -BeExactly 'tracked.json'
+        Get-Content -LiteralPath $script:McpTargetPath -Raw | Should -BeExactly $script:McpOriginalContent
+    }
+
+    It 'surfaces native validation failures for regular configuration' {
+        Set-Content -LiteralPath $script:McpConfigPath -Value $script:McpOriginalContent -NoNewline
+        Add-FakeCopilot -Path (Join-Path $TestDrive 'bin') -ExitCode 1
+
+        { Register-CopilotMcpServer -Name 'no-command' -Confirm:$false -ErrorAction Stop } |
+            Should -Throw '*Failed to add MCP server*'
+        { Unregister-CopilotMcpServer -Name 'unknown' -Confirm:$false -ErrorAction Stop } |
+            Should -Throw '*Failed to remove MCP server*'
+
+        @(Get-Content -LiteralPath $script:CopilotTestLog) | Should -Be @(
+            'mcp add --transport stdio no-command --'
+            'mcp remove unknown'
+        )
+        Get-Content -LiteralPath $script:McpConfigPath -Raw | Should -BeExactly $script:McpOriginalContent
+    }
+
+    It 'does not invoke native mutations when configuration inspection fails' {
+        Mock -ModuleName Shmuelie.Copilot -CommandName Get-Item -MockWith {
+            throw [UnauthorizedAccessException]::new('Cannot inspect MCP configuration.')
+        } -ParameterFilter { $LiteralPath -eq $script:McpConfigPath }
+
+        { Register-CopilotMcpServer -Name 'test-server' -Command 'node' -Confirm:$false } |
+            Should -Throw '*Cannot inspect MCP configuration*'
+        { Unregister-CopilotMcpServer -Name 'test-server' -Confirm:$false } |
+            Should -Throw '*Cannot inspect MCP configuration*'
+
+        Test-Path -LiteralPath $script:CopilotTestLog | Should -BeFalse
     }
 }
 

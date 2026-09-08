@@ -22,7 +22,7 @@ Start-Copilot
 | Session maintenance | `Merge-CopilotSession`, `Compress-CopilotSession`, `Repair-CopilotSessionEvents` |
 | Plugins | `Get-CopilotPlugin`, `Install-CopilotPlugin`, `Update-CopilotPlugin`, `Uninstall-CopilotPlugin` |
 | Marketplaces | `Get-CopilotMarketplace`, `Register-CopilotMarketplace`, `Unregister-CopilotMarketplace`, `Get-CopilotMarketplacePlugin` |
-| MCP servers | `Get-CopilotMcpServer`, `Register-CopilotMcpServer`, `Unregister-CopilotMcpServer` |
+| MCP servers | `Get-CopilotMcpServer`, `Register-CopilotMcpServer`, `Unregister-CopilotMcpServer` (registration/removal protect symlink-managed configuration) |
 
 ## Start-Copilot
 
@@ -62,6 +62,21 @@ Start-Copilot -Model claude-opus-4.7 -ReasoningEffort high
 Start-Copilot -ResumeLatest
 Start-Copilot -NoResume -WhatIf   # preview the command line without launching
 ```
+
+## MCP configuration management
+
+`Register-CopilotMcpServer` and `Unregister-CopilotMcpServer` delegate to the
+native CLI for ordinary `~/.copilot/mcp-config.json` files, preserving native
+arguments and validation. If that file is a symbolic link, both commands fail
+before invoking the native mutation, which would otherwise replace the link.
+This also applies to pipeline removal and to relative, chained, or dangling
+links; neither the link nor its target is modified.
+
+For symlink-managed configuration, edit the target file directly or use the
+tool that manages it. The error identifies the link and its target; relative
+targets are relative to the link's containing directory. `-WhatIf` still
+previews the operation without invoking the native command, and `-Confirm`
+still controls whether an operation proceeds. `Get-CopilotMcpServer` is unchanged.
 
 ## MCP autoConnect policy
 

@@ -1,3 +1,21 @@
+function Assert-CopilotMcpConfigNotSymbolicLink {
+    [CmdletBinding()]
+    param()
+
+    $configDirectory = Join-Path (Get-CopilotHome) '.copilot'
+    $configPath = Join-Path $configDirectory 'mcp-config.json'
+    try {
+        # Inspect the link itself, including dangling links, without resolving its target.
+        $config = Get-Item -LiteralPath $configPath -Force -ErrorAction Stop
+    } catch [System.Management.Automation.ItemNotFoundException] {
+        return
+    }
+
+    if ($config.LinkType -eq 'SymbolicLink') {
+        throw "Cannot modify Copilot MCP configuration '$configPath': it is a symbolic link to '$($config.LinkTarget)'. Manage the target file directly or use the tool that manages the link. Relative targets are based at '$configDirectory'. Native 'copilot mcp add/remove' would replace the link and was not run."
+    }
+}
+
 function Get-CopilotMcpServer {
     <#
     .SYNOPSIS
@@ -53,6 +71,11 @@ function Register-CopilotMcpServer {
         Add an MCP server to the Copilot CLI user configuration.
     .DESCRIPTION
         Wraps 'copilot mcp add' with typed parameters for stdio and HTTP/SSE servers.
+        Refuses to invoke the native command when ~/.copilot/mcp-config.json is a
+        symbolic link, including relative, chained, and dangling links, because
+        the native command would replace the link. Manage the target file directly
+        or use the tool that manages the link. Regular files retain native CLI
+        behavior and validation. WhatIf only previews the operation.
     .PARAMETER Name
         The server name.
     .PARAMETER Transport
@@ -125,6 +148,7 @@ function Register-CopilotMcpServer {
         } else {
             if ($Url) { $addArgs += $Url }
         }
+        Assert-CopilotMcpConfigNotSymbolicLink
         & $copilotExe @addArgs 2>&1
         if ($LASTEXITCODE -ne 0) {
             Write-Error "Failed to add MCP server: $Name"
@@ -138,6 +162,12 @@ function Unregister-CopilotMcpServer {
         Remove an MCP server from the Copilot CLI configuration.
     .DESCRIPTION
         Removes a server by name. Accepts pipeline input from Get-CopilotMcpServer.
+        Refuses to invoke the native command when ~/.copilot/mcp-config.json is a
+        symbolic link, including relative, chained, and dangling links, because
+        the native command would replace the link. Manage the target file directly
+        or use the tool that manages the link. The check applies to each pipeline
+        item. Regular files retain native CLI behavior and validation. WhatIf only
+        previews the operation.
     .PARAMETER InputObject
         A CopilotMcpServer object from Get-CopilotMcpServer.
     .PARAMETER Name
@@ -163,6 +193,7 @@ function Unregister-CopilotMcpServer {
 
         $copilotExe = (Get-Command copilot -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
         if ($PSCmdlet.ShouldProcess($removeName, 'copilot mcp remove')) {
+            Assert-CopilotMcpConfigNotSymbolicLink
             & $copilotExe mcp remove $removeName 2>&1
             if ($LASTEXITCODE -ne 0) {
                 Write-Error "Failed to remove MCP server: $removeName"

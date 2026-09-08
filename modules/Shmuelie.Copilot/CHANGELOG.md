@@ -6,6 +6,14 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+### Fixed
+- `Register-CopilotMcpServer` and `Unregister-CopilotMcpServer` now refuse native
+  mutations of a symbolic-link-managed `~/.copilot/mcp-config.json`, including
+  relative, chained, dangling links, and pipeline removals. The actionable error
+  directs users to manage the target instead of allowing the CLI to replace the
+  link. Regular configurations retain native behavior and validation; `-WhatIf`
+  and `-Confirm` remain supported.
+
 ## [0.3.1] - 2026-08-27
 
 ### Fixed
