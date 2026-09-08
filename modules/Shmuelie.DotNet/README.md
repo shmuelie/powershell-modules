@@ -51,14 +51,15 @@ Use module-qualified names when both modules are imported:
 Shmuelie.DotNet\Get-DotNetTool | Shmuelie.DotNet\Update-DotNetTool
 ```
 
-The migration is staged across separate pull requests:
-[#186](https://github.com/shmuelie/powershell-modules/issues/186) adds the
-canonical module while temporarily retaining the Utilities implementations so
-intermediate main-branch checkouts remain functional.
-[#187](https://github.com/shmuelie/powershell-modules/issues/187) replaces those
-implementations with thin, lazy, module-qualified compatibility wrappers.
-Complete #187 before the M2 release; duplicated tool implementations must not
-ship in that release. Neither module needs to eagerly import the other.
+Utilities forwards to this module without duplicating tool logic. Install
+`Shmuelie.DotNet` explicitly with `Install-PSResource Shmuelie.DotNet` before
+using the Utilities wrappers. They load this dependency only when called and
+do not change the caller's unqualified command resolution. Source checkouts
+use the sibling DotNet manifest; installed Utilities discovers an already loaded
+DotNet module or an installation on `$env:PSModulePath`. Missing dependencies
+produce actionable errors rather than automatic installation. Neither module
+eagerly imports the other. Wrapper help provides deprecation guidance; removal
+is deferred until Utilities 1.0.
 
 ## Requirements
 

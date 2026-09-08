@@ -12,6 +12,5 @@ Versions change only when a release is cut; pending work lives under [Unreleased
   existing parameters, pipeline binding, output types, and `ShouldProcess`.
 - Extract the private location helper so discovery works without loading
   `Shmuelie.Utilities`; importing the module runs no external tools.
-- Retain Utilities implementations temporarily for the additive #186/#187
-  migration. Replace them with compatibility wrappers before the M2 release;
-  removal of Utilities exports remains deferred until Utilities 1.0.
+- Utilities forwards its four compatibility commands to this module lazily;
+  removal of those entry points remains deferred until Utilities 1.0.

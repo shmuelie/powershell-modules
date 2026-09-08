@@ -18,7 +18,7 @@ Import-Module Shmuelie.Utilities
 |---|---|
 | Core | `Test-IsElevated`, `New-GlobalConstant`, `New-PathVariable`, `Get-SessionTitle`, `Invoke-InLocation`, `Import-ModuleSafe`, `Repair-GlobalJson`, `Format-Duration` |
 | Terminal | `Reset-TerminalModes` |
-| .NET tools | `Get-DotNetTool`, `Install-DotNetTool`, `Update-DotNetTool`, `Uninstall-DotNetTool` |
+| .NET tools (compatibility wrappers until 1.0) | `Get-DotNetTool`, `Install-DotNetTool`, `Update-DotNetTool`, `Uninstall-DotNetTool` |
 | Python | `Get-PipPackages`, `Update-PipPackage`, `Get-UvPackages`, `Update-UvPackage` |
 | PowerShell resources | `Update-InstalledPSResource` |
 | VS Code | `Start-VsCode`, `Start-VsCodeChat`, `Get-VsCodeExtension`, `Install-VsCodeExtension`, `Uninstall-VsCodeExtension`, `Update-VsCodeExtension` |
@@ -26,10 +26,28 @@ Import-Module Shmuelie.Utilities
 ## Highlights
 
 The four .NET tool commands now have their canonical home in
-[Shmuelie.DotNet](../Shmuelie.DotNet/README.md). Utilities keeps these entry
-points until Utilities 1.0. During the additive #186/#187 migration, the
-existing implementations remain here so intermediate checkouts keep working;
-#187 replaces them with lazy forwarding wrappers before the M2 release.
+[Shmuelie.DotNet](../Shmuelie.DotNet/README.md). Utilities retains thin forwarding
+wrappers until Utilities 1.0, preserving parameter sets, streaming pipeline input,
+output types, errors, and `-WhatIf`/`-Confirm`. Only the canonical command performs
+confirmation; the wrappers do not prompt again.
+
+Install the dependency explicitly before using these four wrappers:
+
+```powershell
+Install-PSResource Shmuelie.DotNet
+Shmuelie.Utilities\Get-DotNetTool | Shmuelie.Utilities\Update-DotNetTool
+```
+
+Importing Utilities does not load DotNet. On first use, a wrapper uses the sibling
+DotNet source manifest when working from a source checkout; otherwise it uses an
+already loaded DotNet module or discovers it on `$env:PSModulePath`. Dependencies
+are imported in a private scope without replacing the caller's unqualified
+commands. Missing dependencies produce installation guidance, never an automatic
+download or fallback implementation. Other Utilities commands need no DotNet module.
+
+New scripts should use `Shmuelie.DotNet\Get-DotNetTool` and the other
+module-qualified DotNet commands directly. Deprecation guidance is in each
+wrapper's help, not repeated warnings or success-stream output.
 
 - `Reset-TerminalModes` recovers a terminal left in a bad state (mouse tracking,
   alternate screen, bracketed paste, kitty keyboard flags) by a crashed TUI.
@@ -63,6 +81,7 @@ Reset-TerminalModes
 ## Requirements
 
 - PowerShell 7.4 or later.
+- `Shmuelie.DotNet` and a .NET SDK on `PATH` when using the four .NET tool wrappers.
 
 ## Changelog
 

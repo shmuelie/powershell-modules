@@ -246,51 +246,476 @@ Describe 'Get-UvPackages' {
     }
 }
 
-Describe 'Get-DotNetTool' {
+Describe 'Utilities .NET tool forwarding parity' {
+    BeforeAll {
+        $script:canonicalModule = Import-Module (Join-Path $repoRoot 'modules' 'Shmuelie.DotNet' 'Shmuelie.DotNet.psd1') -PassThru
+        $script:originalDotNetExitCode = $global:LASTEXITCODE
+        & $script:canonicalModule { function script:dotnet { } }
+    }
+
+    AfterAll {
+        Remove-Module Shmuelie.DotNet -Force -ErrorAction SilentlyContinue
+        $global:LASTEXITCODE = $script:originalDotNetExitCode
+    }
+
     BeforeEach {
-        function global:dotnet { }
-    }
-
-    AfterEach {
-        Remove-Item Function:\dotnet -ErrorAction SilentlyContinue
-    }
-
-    It 'parses package ids, versions, and commands from tool list output' {
-        Mock -ModuleName Shmuelie.Utilities dotnet {
-            @(
+        $script:dotNetCalls = [System.Collections.Generic.List[string]]::new()
+        Mock -ModuleName Shmuelie.DotNet dotnet {
+            $script:dotNetCalls.Add($args -join '|')
+            $global:LASTEXITCODE = 0
+            if ($args[1] -eq 'list') {
                 'Package Id        Version      Commands'
                 '---------------------------------------'
-                'dotnet-ef         8.0.7        dotnet-ef'
-                'dotnet-outdated   4.6.4        dotnet-outdated'
-            )
+                'first-tool        1.0.0        first'
+                'second-tool       1.0.0        second'
+            } elseif ($args[1] -eq 'update') {
+                "Tool '$($args[2])' was successfully updated from version '1.0.0' to version '2.0.0'."
+            }
         }
-
-        $tools = @(Get-DotNetTool)
-
-        $tools | Should -HaveCount 2
-        $tools[0].PackageId | Should -BeExactly 'dotnet-ef'
-        $tools[0].Version | Should -BeExactly '8.0.7'
-        $tools[0].Commands | Should -BeExactly 'dotnet-ef'
-        $tools[0].Global | Should -BeTrue
-        $tools[1].PackageId | Should -BeExactly 'dotnet-outdated'
-        $tools[1].Version | Should -BeExactly '4.6.4'
     }
 
-    It 'filters tools by package id' {
-        Mock -ModuleName Shmuelie.Utilities dotnet {
-            @(
-                'Package Id        Version      Commands'
-                '---------------------------------------'
-                'dotnet-ef         8.0.7        dotnet-ef'
-                'dotnet-outdated   4.6.4        dotnet-outdated'
-            )
+    It 'matches canonical <Command> <Case> output, types, and invocation arguments' -ForEach @(
+        @{ Command = 'Get-DotNetTool'; Case = 'defaults'; Parameters = @{} }
+        @{ Command = 'Get-DotNetTool'; Case = 'filtered global'; Parameters = @{ Name = 'first-*' } }
+        @{ Command = 'Get-DotNetTool'; Case = 'filtered local'; Parameters = @{ Name = '*-tool'; Local = $true } }
+        @{ Command = 'Install-DotNetTool'; Case = 'global'; Parameters = @{ Name = 'new-tool'; Confirm = $false } }
+        @{ Command = 'Install-DotNetTool'; Case = 'already installed'; Parameters = @{ Name = 'first-tool'; Confirm = $false } }
+        @{ Command = 'Update-DotNetTool'; Case = 'ByName global'; Parameters = @{ Name = 'first-tool'; Confirm = $false } }
+        @{ Command = 'Update-DotNetTool'; Case = 'ByName local'; Parameters = @{ Name = 'first-tool'; Local = $true; Confirm = $false } }
+        @{ Command = 'Update-DotNetTool'; Case = 'ByObject'; Parameters = @{ InputObject = [pscustomobject]@{ PackageId = 'first-tool'; Global = $false; Version = '1.0.0' }; Confirm = $false } }
+        @{ Command = 'Uninstall-DotNetTool'; Case = 'ByName'; Parameters = @{ Name = 'first-tool'; Confirm = $false } }
+        @{ Command = 'Uninstall-DotNetTool'; Case = 'ByObject global-only'; Parameters = @{ InputObject = [pscustomobject]@{ PackageId = 'first-tool'; Global = $false }; Confirm = $false } }
+    ) {
+        $expected = @(& "Shmuelie.DotNet\$Command" @Parameters)
+        $expectedCalls = $script:dotNetCalls.ToArray()
+        $script:dotNetCalls.Clear()
+        $actual = @(& "Shmuelie.Utilities\$Command" @Parameters -WarningAction Stop)
+
+        ($actual | ConvertTo-Json -Depth 5) | Should -BeExactly ($expected | ConvertTo-Json -Depth 5)
+        @($actual | ForEach-Object { $_.PSTypeNames[0] }) | Should -Be @($expected | ForEach-Object { $_.PSTypeNames[0] })
+        $script:dotNetCalls.ToArray() | Should -Be $expectedCalls
+        $expectedCalls.Count | Should -BeGreaterThan 0
+    }
+
+    It 'preserves multiple pipeline objects for <Command>' -ForEach @(
+        @{ Command = 'Update-DotNetTool' }
+        @{ Command = 'Uninstall-DotNetTool' }
+    ) {
+        $tools = @(
+            [pscustomobject]@{ PackageId = 'first-tool'; Global = $true; Version = '1.0.0' }
+            [pscustomobject]@{ PackageId = 'second-tool'; Global = $false; Version = '1.0.0' }
+        )
+        $expected = @($tools | & "Shmuelie.DotNet\$Command" -Confirm:$false)
+        $expectedCalls = $script:dotNetCalls.ToArray()
+        $script:dotNetCalls.Clear()
+        $actual = @($tools | & "Shmuelie.Utilities\$Command" -Confirm:$false)
+        ($actual | ConvertTo-Json) | Should -BeExactly ($expected | ConvertTo-Json)
+        $script:dotNetCalls.ToArray() | Should -Be $expectedCalls
+        $script:dotNetCalls.Count | Should -Be 2
+    }
+
+    It 'forwards WhatIf for <Command> <Case> without invoking native tools' -ForEach @(
+        @{ Command = 'Install-DotNetTool'; Case = 'global'; Parameters = @{ Name = 'new-tool' } }
+        @{ Command = 'Update-DotNetTool'; Case = 'ByName global'; Parameters = @{ Name = 'first-tool' } }
+        @{ Command = 'Update-DotNetTool'; Case = 'ByName local'; Parameters = @{ Name = 'first-tool'; Local = $true } }
+        @{ Command = 'Update-DotNetTool'; Case = 'ByObject'; Parameters = @{ InputObject = [pscustomobject]@{ PackageId = 'first-tool'; Global = $true } } }
+        @{ Command = 'Uninstall-DotNetTool'; Case = 'ByName'; Parameters = @{ Name = 'first-tool' } }
+        @{ Command = 'Uninstall-DotNetTool'; Case = 'ByObject'; Parameters = @{ InputObject = [pscustomobject]@{ PackageId = 'first-tool'; Global = $true } } }
+    ) {
+        @(& "Shmuelie.DotNet\$Command" @Parameters -WhatIf) | Should -HaveCount 0
+        @(& "Shmuelie.Utilities\$Command" @Parameters -WhatIf) | Should -HaveCount 0
+        $script:dotNetCalls.Count | Should -Be 0
+    }
+
+    It 'preserves nonterminating errors and ErrorAction Stop for <Command>' -ForEach @(
+        @{ Command = 'Install-DotNetTool' }
+        @{ Command = 'Uninstall-DotNetTool' }
+    ) {
+        Mock -ModuleName Shmuelie.DotNet dotnet { $global:LASTEXITCODE = 1 }
+        $expectedErrors = @()
+        $actualErrors = @()
+        @(& "Shmuelie.DotNet\$Command" -Name 'new-tool' -Confirm:$false -ErrorAction SilentlyContinue -ErrorVariable expectedErrors) | Should -HaveCount 0
+        @(& "Shmuelie.Utilities\$Command" -Name 'new-tool' -Confirm:$false -ea SilentlyContinue -ev actualErrors) | Should -HaveCount 0
+        $actualErrors.Count | Should -Be 1
+        $actualErrors[0].Exception.Message | Should -BeExactly $expectedErrors[0].Exception.Message
+        $actualErrors[0].FullyQualifiedErrorId | Should -BeExactly $expectedErrors[0].FullyQualifiedErrorId
+        $actualErrors[0].CategoryInfo.Category | Should -Be $expectedErrors[0].CategoryInfo.Category
+        { & "Shmuelie.Utilities\$Command" -Name 'new-tool' -Confirm:$false -ErrorAction Stop } |
+            Should -Throw $expectedErrors[0].Exception.Message
+    }
+
+    It 'propagates terminating failures for <Command> without success-shaped results' -ForEach @(
+        @{ Command = 'Get-DotNetTool' }
+        @{ Command = 'Install-DotNetTool' }
+        @{ Command = 'Update-DotNetTool' }
+        @{ Command = 'Uninstall-DotNetTool' }
+    ) {
+        Mock -ModuleName Shmuelie.DotNet dotnet { throw 'canonical invocation failed' }
+        { & "Shmuelie.DotNet\$Command" -Name 'new-tool' -ErrorAction Stop } | Should -Throw '*canonical invocation failed*'
+        { & "Shmuelie.Utilities\$Command" -Name 'new-tool' -ErrorAction Stop } | Should -Throw '*canonical invocation failed*'
+    }
+
+    It 'streams updates before requesting the next input and stops after the first result' {
+        foreach ($moduleName in 'Shmuelie.DotNet', 'Shmuelie.Utilities') {
+            $script:dotNetCalls.Clear()
+            $seen = [System.Collections.Generic.List[int]]::new()
+            $results = @(& {
+                foreach ($index in 1..3) {
+                    $seen.Add($index)
+                    if ($index -gt 1) { throw 'Read beyond the first input.' }
+                    [pscustomobject]@{ PackageId = "tool-$index"; Global = $true; Version = '1.0.0' }
+                }
+            } | & "$moduleName\Update-DotNetTool" -Confirm:$false | Select-Object -First 1)
+            $results | Should -HaveCount 1
+            $seen.ToArray() | Should -Be @(1)
+            $script:dotNetCalls.Count | Should -Be 1
         }
+    }
 
-        $tools = @(Get-DotNetTool -Name 'dotnet-e*')
+    It 'processes uninstall inputs incrementally instead of buffering until end' {
+        foreach ($moduleName in 'Shmuelie.DotNet', 'Shmuelie.Utilities') {
+            $script:dotNetCalls.Clear()
+            & {
+                foreach ($index in 1..3) {
+                    $script:dotNetCalls.Count | Should -Be ($index - 1)
+                    [pscustomobject]@{ PackageId = "tool-$index"; Global = $true }
+                }
+            } | & "$moduleName\Uninstall-DotNetTool" -Confirm:$false
+            $script:dotNetCalls.Count | Should -Be 3
+        }
+    }
 
-        $tools | Should -HaveCount 1
-        $tools[0].PackageId | Should -BeExactly 'dotnet-ef'
-        $tools[0].Version | Should -BeExactly '8.0.7'
+    It 'stops pipeline <Command> immediately on ErrorAction Stop' -ForEach @(
+        @{ Command = 'Update-DotNetTool' }
+        @{ Command = 'Uninstall-DotNetTool' }
+    ) {
+        Mock -ModuleName Shmuelie.DotNet dotnet {
+            $script:dotNetCalls.Add($args -join '|')
+            throw 'first record failed'
+        }
+        foreach ($moduleName in 'Shmuelie.DotNet', 'Shmuelie.Utilities') {
+            $script:dotNetCalls.Clear()
+            $seen = [System.Collections.Generic.List[int]]::new()
+            {
+                & {
+                    foreach ($index in 1..3) {
+                        $seen.Add($index)
+                        [pscustomobject]@{ PackageId = "tool-$index"; Global = $true }
+                    }
+                } | & "$moduleName\$Command" -Confirm:$false -ErrorAction Stop
+            } | Should -Throw '*first record failed*'
+            $seen.ToArray() | Should -Be @(1)
+            $script:dotNetCalls.Count | Should -Be 1
+        }
+    }
+
+    It 'cleans up discovery location when downstream stops early' {
+        Push-Location $TestDrive
+        try {
+            $result = Shmuelie.Utilities\Get-DotNetTool | Select-Object -First 1
+            $result.PackageId | Should -BeExactly 'first-tool'
+            (Get-Location).Path | Should -Be $TestDrive
+        } finally {
+            Pop-Location
+        }
+    }
+
+    It 'preserves a caller-defined alias and verbose/common output parameters' {
+        Set-Alias -Name Update-LegacyTool -Value 'Shmuelie.Utilities\Update-DotNetTool'
+        $expected = @(Shmuelie.DotNet\Update-DotNetTool -Name 'first-tool' -Confirm:$false -Verbose 4>&1)
+        $actual = @(Update-LegacyTool -Name 'first-tool' -Confirm:$false -vb 4>&1)
+        ($actual | ForEach-Object { "$_" }) | Should -Be ($expected | ForEach-Object { "$_" })
+        $captured = @()
+        $result = Shmuelie.Utilities\Update-DotNetTool -Name 'first-tool' -Confirm:$false -ov captured
+        $captured | Should -HaveCount 1
+        $captured[0] | Should -Be $result
+        (Get-Alias Update-LegacyTool).Definition | Should -BeExactly 'Shmuelie.Utilities\Update-DotNetTool'
+    }
+
+    It 'preserves Get output variables without duplicate objects' {
+        $expectedOutput = @()
+        $actualOutput = @()
+        $expected = @(Shmuelie.DotNet\Get-DotNetTool -OutVariable expectedOutput)
+        $actual = @(Shmuelie.Utilities\Get-DotNetTool -ov actualOutput)
+        ($actual | ConvertTo-Json) | Should -BeExactly ($expected | ConvertTo-Json)
+        ($actualOutput | ConvertTo-Json) | Should -BeExactly ($expectedOutput | ConvertTo-Json)
+        $actualOutput.Count | Should -Be 2
+    }
+
+    It 'exposes PipelineVariable values to downstream callers for <Command>' -ForEach @(
+        @{ Command = 'Get-DotNetTool' }
+        @{ Command = 'Update-DotNetTool' }
+    ) {
+        $parameters = @{ Name = 'first-tool' }
+        if ($Command -eq 'Update-DotNetTool') { $parameters.Confirm = $false }
+        $expected = @(& "Shmuelie.DotNet\$Command" @parameters -PipelineVariable currentTool |
+            ForEach-Object { $currentTool.PackageId })
+        $actual = @(& "Shmuelie.Utilities\$Command" @parameters -pv currentTool |
+            ForEach-Object { $currentTool.PackageId })
+        $expected | Should -Be @('first-tool')
+        $actual | Should -Be $expected
+    }
+
+    It 'keeps installation and removal guidance discoverable in <Command> help' -ForEach @(
+        @{ Command = 'Get-DotNetTool' }
+        @{ Command = 'Install-DotNetTool' }
+        @{ Command = 'Update-DotNetTool' }
+        @{ Command = 'Uninstall-DotNetTool' }
+    ) {
+        $help = Get-Help "Shmuelie.Utilities\$Command" -Full
+        $help.description.Text -join ' ' | Should -Match 'Install-PSResource Shmuelie.DotNet'
+        $help.description.Text -join ' ' | Should -Match 'Utilities 1.0'
+        $help.examples.example | Should -Not -BeNullOrEmpty
+    }
+}
+
+Describe 'Utilities .NET wrapper dependency isolation' {
+    BeforeAll {
+        $script:wrapperArtifacts = Join-Path $TestDrive 'installed-modules'
+        $script:utilitiesArtifact = & (Join-Path $repoRoot 'build' 'Build-Module.ps1') -Module Shmuelie.Utilities -OutputPath $script:wrapperArtifacts
+        $script:dotNetArtifact = & (Join-Path $repoRoot 'build' 'Build-Module.ps1') -Module Shmuelie.DotNet -OutputPath $script:wrapperArtifacts
+
+        function Invoke-WrapperChild {
+            param([scriptblock]$Script, [string]$Mode = '')
+            $result = & pwsh -NoProfile -NonInteractive -Command $Script -args $repoRoot, $script:wrapperArtifacts, $Mode 2>&1
+            if ($LASTEXITCODE -ne 0) {
+                throw "Wrapper isolation failed (exit $LASTEXITCODE):`n$($result -join [Environment]::NewLine)"
+            }
+            $result
+        }
+    }
+
+    It 'loads built installed artifacts lazily for <Mode> without clobbering caller commands' -ForEach @(
+        @{ Mode = 'UtilitiesFirst' }
+        @{ Mode = 'DotNetFirst' }
+        @{ Mode = 'Autoload' }
+        @{ Mode = 'Shadowed' }
+    ) {
+        $result = Invoke-WrapperChild -Mode $Mode -Script {
+            param($root, $artifacts, $mode)
+            $ErrorActionPreference = 'Stop'
+            $WarningPreference = 'Stop'
+            $env:PSModulePath = "$artifacts$([IO.Path]::PathSeparator)$(Join-Path $PSHOME 'Modules')"
+            function global:dotnet { throw 'A real external tool must not run.' }
+            if ($mode -eq 'DotNetFirst') { Import-Module Shmuelie.DotNet }
+            if ($mode -ne 'Autoload') { Import-Module Shmuelie.Utilities }
+            if ($mode -ne 'DotNetFirst' -and (Get-Module Shmuelie.DotNet)) { throw 'Dependency eagerly loaded.' }
+            if ($mode -eq 'Shadowed') {
+                function global:Get-DotNetTool { throw 'Unqualified command used.' }
+                function global:Update-DotNetTool { throw 'Unqualified command used.' }
+            }
+            if ($mode -eq 'Autoload') {
+                Shmuelie.Utilities\Install-DotNetTool example -WhatIf
+                if ((Get-Command Install-DotNetTool).ModuleName -ne 'Shmuelie.Utilities') { throw 'Autoload clobbered caller commands.' }
+            }
+            $before = (Get-Command Get-DotNetTool).ScriptBlock
+            $utilities = Get-Module Shmuelie.Utilities
+            $canonical = & $utilities { Resolve-DotNetToolCommand Get-DotNetTool }
+            if (-not $canonical.Module.Path.StartsWith($artifacts)) { throw 'Did not load installed artifact.' }
+            & $canonical.Module {
+                function script:dotnet {
+                    $global:LASTEXITCODE = 0
+                    if ($args[1] -eq 'list') {
+                        'header'; '------'; 'first-tool  1.0.0  first'; 'second-tool  1.0.0  second'
+                    } else { "Updated version '2.0.0'." }
+                }
+            }
+            $tools = @(Shmuelie.Utilities\Get-DotNetTool)
+            $updates = @($tools | Shmuelie.Utilities\Update-DotNetTool -Confirm:$false)
+            Shmuelie.Utilities\Install-DotNetTool new-tool -Confirm:$false
+            $tools | Shmuelie.Utilities\Uninstall-DotNetTool -Confirm:$false
+            if ($tools.Count -ne 2 -or $updates.Count -ne 2) { throw 'Installed forwarding failed.' }
+            if ((Get-Command Get-DotNetTool).ScriptBlock -ne $before) { throw 'Wrapper changed caller command precedence.' }
+            if ($mode -eq 'UtilitiesFirst') {
+                Import-Module Shmuelie.DotNet
+                if ((Get-Command Get-DotNetTool).ModuleName -ne 'Shmuelie.DotNet') { throw 'Explicit DotNet import failed.' }
+                Shmuelie.Utilities\Get-DotNetTool | Out-Null
+                if ((Get-Command Get-DotNetTool).ModuleName -ne 'Shmuelie.DotNet') { throw 'Wrapper clobbered explicit DotNet import.' }
+            }
+            $PSModuleAutoLoadingPreference = 'None'
+            if (Get-Command Resolve-DotNetToolCommand -ErrorAction SilentlyContinue) { throw 'Private resolver was exported.' }
+            'Isolated'
+        }
+        $result | Should -Contain 'Isolated'
+    }
+
+    It 'resolves sibling source without requiring PSModulePath setup' {
+        Invoke-WrapperChild -Script {
+            param($root)
+            $ErrorActionPreference = 'Stop'
+            $env:PSModulePath = Join-Path $PSHOME 'Modules'
+            Import-Module (Join-Path $root 'modules' 'Shmuelie.Utilities' 'Shmuelie.Utilities.psd1') -WarningAction Stop
+            if (Get-Module Shmuelie.DotNet) { throw 'Dependency eagerly loaded.' }
+            Shmuelie.Utilities\Install-DotNetTool example -WhatIf
+            $command = & (Get-Module Shmuelie.Utilities) { Resolve-DotNetToolCommand Get-DotNetTool }
+            if ($command.Module.Path -ne (Join-Path $root 'modules' 'Shmuelie.DotNet' 'Shmuelie.DotNet.psm1')) { throw 'Wrong source module.' }
+            if ((Get-Command Get-DotNetTool).ModuleName -ne 'Shmuelie.Utilities') { throw 'Clobbered caller commands.' }
+            'Source resolved'
+        } | Should -Contain 'Source resolved'
+    }
+
+    It 'uses an explicitly loaded canonical module outside PSModulePath' {
+        Invoke-WrapperChild -Script {
+            param($root, $artifacts)
+            $ErrorActionPreference = 'Stop'
+            $env:PSModulePath = Join-Path $PSHOME 'Modules'
+            $dotNetManifest = Get-ChildItem (Join-Path $artifacts 'Shmuelie.DotNet') -Recurse -Filter 'Shmuelie.DotNet.psd1'
+            $utilitiesManifest = Get-ChildItem (Join-Path $artifacts 'Shmuelie.Utilities') -Recurse -Filter 'Shmuelie.Utilities.psd1'
+            Import-Module $dotNetManifest.FullName
+            Import-Module $utilitiesManifest.FullName
+            Shmuelie.Utilities\Install-DotNetTool example -WhatIf
+            if ((Get-Command Get-DotNetTool).ModuleName -ne 'Shmuelie.Utilities') { throw 'Clobbered caller commands.' }
+            'Loaded module resolved'
+        } | Should -Contain 'Loaded module resolved'
+    }
+
+    It 'reports a missing dependency actionably without importing or installing anything' {
+        Invoke-WrapperChild -Script {
+            param($root, $artifacts)
+            $ErrorActionPreference = 'Stop'
+            $env:PSModulePath = Join-Path $PSHOME 'Modules'
+            function global:dotnet { throw 'Must not execute dotnet.' }
+            function global:Install-PSResource { throw 'Must not install dependencies.' }
+            function global:Install-Module { throw 'Must not install dependencies.' }
+            $manifest = Get-ChildItem (Join-Path $artifacts 'Shmuelie.Utilities') -Recurse -Filter 'Shmuelie.Utilities.psd1'
+            Import-Module $manifest.FullName -WarningAction Stop
+            if ((Format-Duration ([timespan]::FromSeconds(2))) -ne '2 seconds') { throw 'Unrelated Utilities command failed.' }
+            foreach ($name in 'Get-DotNetTool', 'Install-DotNetTool', 'Update-DotNetTool', 'Uninstall-DotNetTool') {
+                $errorRecord = $null
+                try { & "Shmuelie.Utilities\$name" -Name example } catch { $errorRecord = $_ }
+                if (-not $errorRecord -or $errorRecord.Exception.Message -notmatch 'Install-PSResource Shmuelie.DotNet') { throw 'Missing actionable dependency error.' }
+            }
+            if (Get-Module Shmuelie.DotNet) { throw 'Unexpected dependency loaded.' }
+            'Missing dependency reported'
+        } | Should -Contain 'Missing dependency reported'
+    }
+}
+
+Describe 'Utilities .NET wrapper confirmation parity' {
+    BeforeAll {
+        if (-not ('DotNetWrapperConfirmationHost' -as [type])) {
+            Add-Type -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.Collections.ObjectModel;
+using System.Globalization;
+using System.Management.Automation;
+using System.Management.Automation.Host;
+using System.Security;
+
+public sealed class DotNetWrapperConfirmationHost : PSHost
+{
+    public readonly DotNetWrapperConfirmationUI PromptUI = new DotNetWrapperConfirmationUI();
+    public override Guid InstanceId { get; } = Guid.NewGuid();
+    public override string Name => "DotNetWrapperConfirmationHost";
+    public override Version Version => new Version(1, 0);
+    public override PSHostUserInterface UI => PromptUI;
+    public override CultureInfo CurrentCulture => CultureInfo.InvariantCulture;
+    public override CultureInfo CurrentUICulture => CultureInfo.InvariantCulture;
+    public override void SetShouldExit(int exitCode) { }
+    public override void EnterNestedPrompt() => throw new NotSupportedException();
+    public override void ExitNestedPrompt() => throw new NotSupportedException();
+    public override void NotifyBeginApplication() { }
+    public override void NotifyEndApplication() { }
+}
+
+public sealed class DotNetWrapperConfirmationUI : PSHostUserInterface
+{
+    public int PromptCount;
+    public int Choice;
+    public readonly List<string> Messages = new List<string>();
+    public override PSHostRawUserInterface RawUI => null;
+    public override int PromptForChoice(string caption, string message, Collection<ChoiceDescription> choices, int defaultChoice)
+    {
+        PromptCount++;
+        return Choice;
+    }
+    public override string ReadLine() => throw new NotSupportedException();
+    public override SecureString ReadLineAsSecureString() => throw new NotSupportedException();
+    public override Dictionary<string, PSObject> Prompt(string caption, string message, Collection<FieldDescription> descriptions) => throw new NotSupportedException();
+    public override PSCredential PromptForCredential(string caption, string message, string userName, string targetName) => throw new NotSupportedException();
+    public override PSCredential PromptForCredential(string caption, string message, string userName, string targetName, PSCredentialTypes types, PSCredentialUIOptions options) => throw new NotSupportedException();
+    public override void Write(string value) => Messages.Add(value);
+    public override void Write(ConsoleColor foreground, ConsoleColor background, string value) => Messages.Add(value);
+    public override void WriteLine(string value) => Messages.Add(value);
+    public override void WriteErrorLine(string value) => Messages.Add(value);
+    public override void WriteDebugLine(string value) => Messages.Add(value);
+    public override void WriteVerboseLine(string value) => Messages.Add(value);
+    public override void WriteWarningLine(string value) => Messages.Add(value);
+    public override void WriteProgress(long sourceId, ProgressRecord record) { }
+}
+'@
+        }
+    }
+
+    It 'matches canonical prompts for <Command> with <Mode>' -ForEach @(
+        @{ Command = 'Install-DotNetTool'; Mode = 'Confirm'; Choice = 0; Prompts = 1; Mutations = 1 }
+        @{ Command = 'Update-DotNetTool'; Mode = 'Confirm'; Choice = 0; Prompts = 3; Mutations = 3 }
+        @{ Command = 'Uninstall-DotNetTool'; Mode = 'Confirm'; Choice = 0; Prompts = 3; Mutations = 3 }
+        @{ Command = 'Update-DotNetTool'; Mode = 'Confirm'; Choice = 1; Prompts = 1; Mutations = 3 }
+        @{ Command = 'Uninstall-DotNetTool'; Mode = 'Confirm'; Choice = 1; Prompts = 1; Mutations = 3 }
+        @{ Command = 'Update-DotNetTool'; Mode = 'Confirm'; Choice = 3; Prompts = 1; Mutations = 0 }
+        @{ Command = 'Install-DotNetTool'; Mode = 'ConfirmFalse'; Choice = 0; Prompts = 0; Mutations = 1 }
+        @{ Command = 'Update-DotNetTool'; Mode = 'ConfirmFalse'; Choice = 0; Prompts = 0; Mutations = 3 }
+        @{ Command = 'Uninstall-DotNetTool'; Mode = 'ConfirmFalse'; Choice = 0; Prompts = 0; Mutations = 3 }
+        @{ Command = 'Install-DotNetTool'; Mode = 'WhatIf'; Choice = 0; Prompts = 0; Mutations = 0 }
+        @{ Command = 'Update-DotNetTool'; Mode = 'WhatIf'; Choice = 0; Prompts = 0; Mutations = 0 }
+        @{ Command = 'Uninstall-DotNetTool'; Mode = 'WhatIf'; Choice = 0; Prompts = 0; Mutations = 0 }
+        @{ Command = 'Install-DotNetTool'; Mode = 'AmbientWhatIf'; Choice = 0; Prompts = 0; Mutations = 0 }
+        @{ Command = 'Update-DotNetTool'; Mode = 'AmbientWhatIf'; Choice = 0; Prompts = 0; Mutations = 0 }
+        @{ Command = 'Uninstall-DotNetTool'; Mode = 'AmbientWhatIf'; Choice = 0; Prompts = 0; Mutations = 0 }
+    ) {
+        $expectedMessages = $null
+        foreach ($moduleName in 'Shmuelie.DotNet', 'Shmuelie.Utilities') {
+            $hostStub = [DotNetWrapperConfirmationHost]::new()
+            $hostStub.PromptUI.Choice = $Choice
+            $runspace = [runspacefactory]::CreateRunspace($hostStub)
+            $powershell = [powershell]::Create()
+            try {
+                $runspace.Open()
+                $powershell.Runspace = $runspace
+                $null = $powershell.AddScript({
+                    param($root, $moduleName, $commandName, $mode)
+                    $ErrorActionPreference = 'Stop'
+                    Import-Module (Join-Path $root 'modules' 'Shmuelie.DotNet' 'Shmuelie.DotNet.psd1')
+                    Import-Module (Join-Path $root 'modules' 'Shmuelie.Utilities' 'Shmuelie.Utilities.psd1')
+                    & (Get-Module Shmuelie.DotNet) {
+                        $script:mutations = 0
+                        function script:dotnet {
+                            $global:LASTEXITCODE = 0
+                            if ($args[1] -ne 'list') { $script:mutations++ }
+                        }
+                    }
+                    $parameters = @{}
+                    switch ($mode) {
+                        'Confirm' { $parameters.Confirm = $true }
+                        'ConfirmFalse' { $global:ConfirmPreference = 'Low'; $parameters.Confirm = $false }
+                        'WhatIf' { $parameters.WhatIf = $true }
+                        'AmbientWhatIf' { $global:WhatIfPreference = $true }
+                    }
+                    if ($commandName -eq 'Install-DotNetTool') {
+                        & "$moduleName\$commandName" -Name 'new-tool' @parameters | Out-Null
+                    } else {
+                        1..3 | ForEach-Object { [pscustomobject]@{ PackageId = "tool-$_"; Global = $true } } |
+                            & "$moduleName\$commandName" @parameters | Out-Null
+                    }
+                    & (Get-Module Shmuelie.DotNet) { $script:mutations }
+                }.ToString()).AddArgument($repoRoot).AddArgument($moduleName).AddArgument($Command).AddArgument($Mode)
+                $result = $powershell.Invoke()
+                $powershell.HadErrors | Should -BeFalse -Because ($powershell.Streams.Error -join "`n")
+                $result.Count | Should -Be 1
+                $result[0] | Should -Be $Mutations
+                $hostStub.PromptUI.PromptCount | Should -Be $Prompts
+                if ($moduleName -eq 'Shmuelie.DotNet') {
+                    $expectedMessages = $hostStub.PromptUI.Messages.ToArray()
+                } else {
+                    $hostStub.PromptUI.Messages.ToArray() | Should -Be $expectedMessages
+                }
+            } finally {
+                $powershell.Dispose()
+                $runspace.Dispose()
+            }
+        }
     }
 }
 

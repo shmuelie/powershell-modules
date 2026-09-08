@@ -1,3 +1,28 @@
+function Resolve-DotNetToolCommand {
+    param([string]$Name)
+
+    # Source imports use the sibling checkout; installed modules use normal discovery.
+    $siblingManifest = Join-Path (Split-Path $PSScriptRoot -Parent) 'Shmuelie.DotNet' 'Shmuelie.DotNet.psd1'
+    if (Test-Path -LiteralPath $siblingManifest -PathType Leaf) {
+        $module = Import-Module $siblingManifest -Scope Local -PassThru -ErrorAction Stop -Verbose:$false
+    } else {
+        $module = Get-Module -Name Shmuelie.DotNet | Select-Object -First 1
+        if (-not $module) {
+            if (-not (Get-Module -ListAvailable -Name Shmuelie.DotNet)) {
+                throw "The Utilities .NET tool compatibility commands require Shmuelie.DotNet. Run 'Install-PSResource Shmuelie.DotNet' explicitly, or add its installed module directory to PSModulePath, then retry. Use Shmuelie.DotNet\$Name in new scripts; Utilities wrappers will be removed in Utilities 1.0."
+            }
+            $module = Import-Module Shmuelie.DotNet -Scope Local -PassThru -ErrorAction Stop -Verbose:$false
+        }
+    }
+
+    # Import only into this helper's scope, leaving caller command precedence intact.
+    $command = $module.ExportedCommands[$Name]
+    if (-not $command) {
+        throw "Shmuelie.DotNet does not export '$Name'. Reinstall or update Shmuelie.DotNet explicitly, then retry in a new PowerShell session."
+    }
+    $command
+}
+
 function Get-DotNetTool {
     <#
     .SYNOPSIS
@@ -5,6 +30,10 @@ function Get-DotNetTool {
     .DESCRIPTION
         Parses the output of 'dotnet tool list' into typed DotNetTool objects.
         By default lists globally installed tools. Use -Local for local manifest tools.
+        Compatibility wrapper for Shmuelie.DotNet\Get-DotNetTool, retained until
+        Utilities 1.0. Install the dependency explicitly with
+        'Install-PSResource Shmuelie.DotNet'; use Shmuelie.DotNet in new scripts.
+        The dependency loads only when a .NET tool wrapper is called.
     .PARAMETER Name
         Filter by package ID. Supports wildcards.
     .PARAMETER Local
@@ -27,21 +56,18 @@ function Get-DotNetTool {
 
         [switch]$Local
     )
-    $scope = if ($Local) { '--local' } else { '-g' }
-    Invoke-InLocation -Location ~ -ScriptBlock {
-        dotnet tool list $scope 2>$null | Select-Object -Skip 2 | ForEach-Object {
-            $parts = $_ -split '\s{2,}'
-            if ($parts.Count -ge 3) {
-                $tool = [PSCustomObject]@{
-                    PSTypeName = 'DotNetTool'
-                    PackageId  = $parts[0].Trim()
-                    Version    = $parts[1].Trim()
-                    Commands   = $parts[2].Trim()
-                    Global     = -not $Local
-                }
-                if ($tool.PackageId -like $Name) { $tool }
-            }
-        }
+    begin {
+        $command = Resolve-DotNetToolCommand -Name 'Get-DotNetTool'
+        # The outer command owns the caller's variable; rebinding it hides it downstream.
+        $null = $PSBoundParameters.Remove('PipelineVariable')
+        if ($PSBoundParameters.ContainsKey('OutBuffer')) { $PSBoundParameters['OutBuffer'] = 1 }
+        $pipeline = { & $command @PSBoundParameters }.GetSteppablePipeline($MyInvocation.CommandOrigin)
+        $pipeline.Begin($PSCmdlet)
+    }
+    process { $pipeline.Process($_) }
+    end { $pipeline.End() }
+    clean {
+        if ($null -ne $pipeline) { $pipeline.Clean() }
     }
 }
 
@@ -52,6 +78,10 @@ function Update-DotNetTool {
     .DESCRIPTION
         Wraps 'dotnet tool update' for global or local tools. Accepts pipeline
         input from Get-DotNetTool. Returns typed result objects.
+        Compatibility wrapper for Shmuelie.DotNet\Update-DotNetTool, retained
+        until Utilities 1.0. Install the dependency explicitly with
+        'Install-PSResource Shmuelie.DotNet'; use Shmuelie.DotNet in new scripts.
+        The dependency loads only when a .NET tool wrapper is called.
     .PARAMETER InputObject
         A DotNetTool object from Get-DotNetTool.
     .PARAMETER Name
@@ -77,31 +107,18 @@ function Update-DotNetTool {
         [Parameter(ParameterSetName = 'ByName')]
         [switch]$Local
     )
-    process {
-        $toolName = if ($PSCmdlet.ParameterSetName -eq 'ByName') { $Name } else { $InputObject.PackageId }
-        $isGlobal = if ($PSCmdlet.ParameterSetName -eq 'ByName') { -not $Local } else { $InputObject.Global }
-        $scope = if ($isGlobal) { '-g' } else { '--local' }
-
-        if ($PSCmdlet.ShouldProcess($toolName, 'dotnet tool update')) {
-            Write-Verbose "Updating $toolName"
-            $previousVersion = if ($PSCmdlet.ParameterSetName -eq 'ByObject') { $InputObject.Version } else { $null }
-            $output = dotnet tool update $toolName $scope 2>&1
-            $output | ForEach-Object { Write-Verbose $_ }
-            $outputText = $output -join "`n"
-
-            # Parse the new version from output
-            $newVersion = if ($outputText -match "version '([^']+)'\.\s*$") { $Matches[1] }
-                          elseif ($outputText -match "version '([^']+)' to version '([^']+)'") { $Matches[2] }
-                          else { $null }
-            $updated = $outputText -match 'was successfully updated from version'
-
-            [PSCustomObject]@{
-                PSTypeName = 'DotNetToolUpdateResult'
-                PackageId  = $toolName
-                Version    = $newVersion
-                Updated    = $updated
-            }
-        }
+    begin {
+        $command = Resolve-DotNetToolCommand -Name 'Update-DotNetTool'
+        $null = $PSBoundParameters.Remove('PipelineVariable')
+        if ($PSBoundParameters.ContainsKey('OutBuffer')) { $PSBoundParameters['OutBuffer'] = 1 }
+        # One canonical pipeline retains per-record binding and confirmation state.
+        $pipeline = { & $command @PSBoundParameters }.GetSteppablePipeline($MyInvocation.CommandOrigin)
+        $pipeline.Begin($PSCmdlet)
+    }
+    process { $pipeline.Process($_) }
+    end { $pipeline.End() }
+    clean {
+        if ($null -ne $pipeline) { $pipeline.Clean() }
     }
 }
 
@@ -111,6 +128,10 @@ function Install-DotNetTool {
         Install a .NET global tool.
     .DESCRIPTION
         Wraps 'dotnet tool install -g'. Idempotent — skips if already installed.
+        Compatibility wrapper for Shmuelie.DotNet\Install-DotNetTool, retained
+        until Utilities 1.0. Install the dependency explicitly with
+        'Install-PSResource Shmuelie.DotNet'; use Shmuelie.DotNet in new scripts.
+        The dependency loads only when a .NET tool wrapper is called.
     .PARAMETER Name
         The package ID to install.
     .EXAMPLE
@@ -123,16 +144,17 @@ function Install-DotNetTool {
         [ValidateNotNullOrEmpty()]
         [string]$Name
     )
-    if ($PSCmdlet.ShouldProcess($Name, 'dotnet tool install -g')) {
-        $existing = Get-DotNetTool -Name $Name
-        if ($existing) {
-            Write-Verbose "Tool '$Name' is already installed (v$($existing.Version))."
-            return
-        }
-        dotnet tool install -g $Name 2>&1 | ForEach-Object { Write-Verbose $_ }
-        if ($LASTEXITCODE -ne 0) {
-            Write-Error "Failed to install tool: $Name"
-        }
+    begin {
+        $command = Resolve-DotNetToolCommand -Name 'Install-DotNetTool'
+        $null = $PSBoundParameters.Remove('PipelineVariable')
+        if ($PSBoundParameters.ContainsKey('OutBuffer')) { $PSBoundParameters['OutBuffer'] = 1 }
+        $pipeline = { & $command @PSBoundParameters }.GetSteppablePipeline($MyInvocation.CommandOrigin)
+        $pipeline.Begin($PSCmdlet)
+    }
+    process { $pipeline.Process($_) }
+    end { $pipeline.End() }
+    clean {
+        if ($null -ne $pipeline) { $pipeline.Clean() }
     }
 }
 
@@ -142,6 +164,10 @@ function Uninstall-DotNetTool {
         Uninstall a .NET global tool.
     .DESCRIPTION
         Wraps 'dotnet tool uninstall -g'. Accepts pipeline input from Get-DotNetTool.
+        Compatibility wrapper for Shmuelie.DotNet\Uninstall-DotNetTool, retained
+        until Utilities 1.0. Install the dependency explicitly with
+        'Install-PSResource Shmuelie.DotNet'; use Shmuelie.DotNet in new scripts.
+        The dependency loads only when a .NET tool wrapper is called.
     .PARAMETER InputObject
         A DotNetTool object from Get-DotNetTool.
     .PARAMETER Name
@@ -161,14 +187,16 @@ function Uninstall-DotNetTool {
         [Parameter(ParameterSetName = 'ByName', Position = 0, Mandatory)]
         [string]$Name
     )
-    process {
-        $toolName = if ($PSCmdlet.ParameterSetName -eq 'ByName') { $Name } else { $InputObject.PackageId }
-        if ($PSCmdlet.ShouldProcess($toolName, 'dotnet tool uninstall -g')) {
-            dotnet tool uninstall -g $toolName 2>&1 | ForEach-Object { Write-Verbose $_ }
-            if ($LASTEXITCODE -ne 0) {
-                Write-Error "Failed to uninstall tool: $toolName"
-            }
-        }
+    begin {
+        $command = Resolve-DotNetToolCommand -Name 'Uninstall-DotNetTool'
+        $null = $PSBoundParameters.Remove('PipelineVariable')
+        if ($PSBoundParameters.ContainsKey('OutBuffer')) { $PSBoundParameters['OutBuffer'] = 1 }
+        $pipeline = { & $command @PSBoundParameters }.GetSteppablePipeline($MyInvocation.CommandOrigin)
+        $pipeline.Begin($PSCmdlet)
+    }
+    process { $pipeline.Process($_) }
+    end { $pipeline.End() }
+    clean {
+        if ($null -ne $pipeline) { $pipeline.Clean() }
     }
 }
-

@@ -89,11 +89,14 @@ Highlights:
 - `Update-DotNetTool` accepts names or pipeline objects and supports local tools.
 - Import requires no SDK invocation and does not load Utilities.
 
-The four Utilities entry points remain available until Utilities 1.0.
-During the additive #186/#187 migration, Utilities temporarily retains its
-implementations; #187 replaces them with lazy compatibility wrappers before
-the M2 release. Use module-qualified `Shmuelie.DotNet` commands when both
-modules are imported. See the module README for preserved scope behavior.
+The four Utilities entry points forward lazily to DotNet and remain available
+until Utilities 1.0. Install the dependency explicitly with
+`Install-PSResource Shmuelie.DotNet`; importing Utilities does not load DotNet.
+Wrappers use the sibling DotNet manifest in a source checkout, or a loaded module
+or installation on `$env:PSModulePath` otherwise, without changing caller command
+precedence. Missing dependencies report installation guidance. Use module-qualified
+`Shmuelie.DotNet` commands in new scripts. See the module README for preserved
+scope behavior.
 
 ## Shmuelie.Utilities
 

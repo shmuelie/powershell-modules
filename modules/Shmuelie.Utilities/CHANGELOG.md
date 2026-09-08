@@ -6,6 +6,13 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+### Changed
+- Replace the four .NET tool implementations with lazy forwarding wrappers to
+  `Shmuelie.DotNet`, preserving command contracts, streaming, errors, and
+  `ShouldProcess`. Install `Shmuelie.DotNet` explicitly to use these wrappers;
+  other Utilities commands require no new dependency. Help directs new scripts
+  to the canonical module. Wrapper removal remains deferred until Utilities 1.0.
+
 ## [0.4.1] - 2026-09-08
 
 ### Fixed
