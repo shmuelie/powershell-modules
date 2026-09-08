@@ -28,7 +28,7 @@ function Test-PSResourcePattern {
     return $false
 }
 
-function Get-PSResourceProvenance {
+function Get-PSResourceMetadata {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]
@@ -41,16 +41,107 @@ function Get-PSResourceProvenance {
     }
 
     try {
-        $metadata = Import-Clixml -LiteralPath $metadataPath -ErrorAction Stop
-        [PSCustomObject]@{
-            Repository               = [string]$metadata.Repository
-            RepositorySourceLocation = [string]$metadata.RepositorySourceLocation
-        }
+        Import-Clixml -LiteralPath $metadataPath -ErrorAction Stop
     }
     catch {
         Write-Verbose "Could not read PSResourceGet metadata from '$metadataPath': $_"
         return $null
     }
+}
+
+function ConvertTo-PSResourceVersion {
+    [CmdletBinding()]
+    param(
+        [PSObject]$Resource,
+
+        [string]$FallbackVersion
+    )
+
+    $prerelease = [string]$Resource.Prerelease
+    if (-not $prerelease) { $prerelease = [string]$Resource.AdditionalMetadata.Prerelease }
+    $isPrerelease = $prerelease -or
+        [string]$Resource.IsPrerelease -eq 'true' -or
+        [string]$Resource.AdditionalMetadata.IsPrerelease -eq 'true'
+
+    foreach ($text in @(
+        [string]$Resource.AdditionalMetadata.NormalizedVersion
+        [string]$Resource.NormalizedVersion
+        [string]$Resource.Version
+        $FallbackVersion
+    )) {
+        if (-not $text) { continue }
+
+        # PSResourceInfo splits Version and Prerelease; serialized metadata may
+        # instead carry the complete version in Version or NormalizedVersion.
+        if ($prerelease -and ($text -split '\+', 2)[0] -notmatch '-') {
+            $parts = $text -split '\+', 2
+            $text = "$($parts[0])-$prerelease"
+            if ($parts.Count -gt 1) { $text += "+$($parts[1])" }
+        }
+
+        if ($text -notmatch '^(?<Core>[0-9]+(?:\.[0-9]+){1,3})(?:-(?<Label>[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$') {
+            Write-Verbose "Could not parse PSResource version '$text'."
+            continue
+        }
+        $label = $Matches.Label
+        $core = $null
+        if (-not [version]::TryParse($Matches.Core, [ref]$core)) {
+            Write-Verbose "Could not parse PSResource numeric version '$text'."
+            continue
+        }
+        if ($isPrerelease -and -not $label) {
+            Write-Verbose "PSResource version '$text' is marked prerelease but has no prerelease label."
+            continue
+        }
+
+        [PSCustomObject]@{
+            Version        = $text
+            NumericVersion = [version]::new($core.Major, $core.Minor, [Math]::Max(0, $core.Build), [Math]::Max(0, $core.Revision))
+            Prerelease     = [string]$label
+            IsPrerelease   = [bool]$label
+        }
+        return
+    }
+}
+
+function Compare-PSResourceVersion {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [PSObject]$Left,
+
+        [Parameter(Mandatory)]
+        [PSObject]$Right
+    )
+
+    $comparison = $Left.NumericVersion.CompareTo($Right.NumericVersion)
+    if ($comparison -ne 0) { return $comparison }
+    if (-not $Left.IsPrerelease) {
+        if ($Right.IsPrerelease) { return 1 }
+        return 0
+    }
+    if (-not $Right.IsPrerelease) { return -1 }
+
+    $leftLabels = $Left.Prerelease.Split('.')
+    $rightLabels = $Right.Prerelease.Split('.')
+    for ($index = 0; $index -lt [Math]::Min($leftLabels.Count, $rightLabels.Count); $index++) {
+        $leftLabel = $leftLabels[$index]
+        $rightLabel = $rightLabels[$index]
+        $leftNumeric = $leftLabel -match '^[0-9]+$'
+        $rightNumeric = $rightLabel -match '^[0-9]+$'
+        if ($leftNumeric -and $rightNumeric) {
+            # Numeric identifiers are unbounded in SemVer, not Int32 values.
+            $comparison = ([System.Numerics.BigInteger]::Parse($leftLabel)).CompareTo(
+                [System.Numerics.BigInteger]::Parse($rightLabel))
+        }
+        elseif ($leftNumeric) { return -1 }
+        elseif ($rightNumeric) { return 1 }
+        else {
+            $comparison = [StringComparer]::OrdinalIgnoreCase.Compare($leftLabel, $rightLabel)
+        }
+        if ($comparison -ne 0) { return $comparison }
+    }
+    return $leftLabels.Count.CompareTo($rightLabels.Count)
 }
 
 function Get-InstalledPSResourceInfoInPath {
@@ -78,67 +169,93 @@ function Get-InstalledPSResourceInfoInPath {
         $manifestPath = Join-Path $versionDirectory.FullName "$Name.psd1"
         if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) { continue }
 
-        # Save-PSResource's versioned layout already carries the authoritative
-        # version in the directory name. Prefer it so dynamic manifests (which
-        # Import-PowerShellDataFile cannot evaluate) remain discoverable.
-        $version = $null
-        try {
-            $version = [version]$versionDirectory.Name
-        }
-        catch { }
+        $metadata = Get-PSResourceMetadata -Directory $versionDirectory.FullName
+        # The directory carries only the numeric version for prerelease saves.
+        # Keep it as the fallback so dynamic manifests remain discoverable.
+        $version = ConvertTo-PSResourceVersion -Resource $metadata -FallbackVersion $versionDirectory.Name
 
         if ($null -eq $version) {
             try {
-                $version = [version](Import-PowerShellDataFile -LiteralPath $manifestPath -ErrorAction Stop).ModuleVersion
+                $manifest = Import-PowerShellDataFile -LiteralPath $manifestPath -ErrorAction Stop
+                $version = ConvertTo-PSResourceVersion -Resource ([PSCustomObject]@{
+                    Version      = $manifest.ModuleVersion
+                    Prerelease   = $manifest.PrivateData.PSData.Prerelease
+                    IsPrerelease = ([string]$metadata.IsPrerelease -eq 'true' -or
+                        [string]$metadata.AdditionalMetadata.IsPrerelease -eq 'true')
+                })
             }
             catch {
-                Write-Warning "Could not determine module version from '$versionDirectory' or '$manifestPath'; skipping this version."
-                continue
+                Write-Verbose "Could not read module version from '$manifestPath': $_"
             }
         }
+        if ($null -eq $version) {
+            Write-Warning "Could not determine module version from '$versionDirectory' or '$manifestPath'; skipping this version."
+            continue
+        }
 
-        $provenance = Get-PSResourceProvenance -Directory $versionDirectory.FullName
         $candidates.Add([PSCustomObject]@{
             Name                     = $Name
-            Version                  = $version
-            Repository               = $provenance.Repository
-            RepositorySourceLocation = $provenance.RepositorySourceLocation
+            Version                  = $version.Version
+            NumericVersion           = $version.NumericVersion
+            Prerelease               = $version.Prerelease
+            IsPrerelease             = $version.IsPrerelease
+            Repository               = $metadata.Repository
+            RepositorySourceLocation = $metadata.RepositorySourceLocation
             ManifestPath             = $manifestPath
         })
     }
 
     $directManifest = Join-Path $moduleRoot "$Name.psd1"
     if (Test-Path -LiteralPath $directManifest -PathType Leaf) {
-        try {
-            $version = [version](Import-PowerShellDataFile -LiteralPath $directManifest -ErrorAction Stop).ModuleVersion
-            $provenance = Get-PSResourceProvenance -Directory $moduleRoot
+        $metadata = Get-PSResourceMetadata -Directory $moduleRoot
+        $version = ConvertTo-PSResourceVersion -Resource $metadata
+        if ($null -eq $version) {
+            try {
+                $manifest = Import-PowerShellDataFile -LiteralPath $directManifest -ErrorAction Stop
+                $version = ConvertTo-PSResourceVersion -Resource ([PSCustomObject]@{
+                    Version      = $manifest.ModuleVersion
+                    Prerelease   = $manifest.PrivateData.PSData.Prerelease
+                    IsPrerelease = ([string]$metadata.IsPrerelease -eq 'true' -or
+                        [string]$metadata.AdditionalMetadata.IsPrerelease -eq 'true')
+                })
+            }
+            catch {
+                Write-Verbose "Could not read module version from '$directManifest': $_"
+            }
+        }
+        if ($null -ne $version) {
             $candidates.Add([PSCustomObject]@{
                 Name                     = $Name
-                Version                  = $version
-                Repository               = $provenance.Repository
-                RepositorySourceLocation = $provenance.RepositorySourceLocation
+                Version                  = $version.Version
+                NumericVersion           = $version.NumericVersion
+                Prerelease               = $version.Prerelease
+                IsPrerelease             = $version.IsPrerelease
+                Repository               = $metadata.Repository
+                RepositorySourceLocation = $metadata.RepositorySourceLocation
                 ManifestPath             = $directManifest
             })
         }
-        catch {
-            Write-Verbose "Could not read module version from '$directManifest': $_"
+        else {
+            Write-Warning "Could not determine module version from '$directManifest'; skipping this version."
         }
     }
 
-    $ordered = @($candidates |
-        Sort-Object Version -Descending |
-        Select-Object)
-    if ($ordered.Count -eq 0) { return $null }
-
-    $highest = $ordered[0]
-    if (-not $highest.Repository -and -not $highest.RepositorySourceLocation) {
-        $recorded = $ordered |
-            Where-Object { $_.Repository -or $_.RepositorySourceLocation } |
-            Select-Object -First 1
-        if ($recorded) {
-            $highest.Repository = $recorded.Repository
-            $highest.RepositorySourceLocation = $recorded.RepositorySourceLocation
+    $highest = $null
+    $recorded = $null
+    foreach ($candidate in $candidates) {
+        if ($null -eq $highest -or (Compare-PSResourceVersion $candidate $highest) -gt 0) {
+            $highest = $candidate
         }
+        if ($candidate.Repository -or $candidate.RepositorySourceLocation) {
+            if ($null -eq $recorded -or (Compare-PSResourceVersion $candidate $recorded) -gt 0) {
+                $recorded = $candidate
+            }
+        }
+    }
+    if ($null -eq $highest) { return $null }
+    if (-not $highest.Repository -and -not $highest.RepositorySourceLocation -and $recorded) {
+        $highest.Repository = $recorded.Repository
+        $highest.RepositorySourceLocation = $recorded.RepositorySourceLocation
     }
 
     return $highest
@@ -232,6 +349,14 @@ function Update-InstalledPSResource {
         is used. Modules without provenance fall back to PSGallery. An explicitly
         supplied -Repository overrides recorded provenance for every selected module.
 
+        Prerelease versions are recovered from PSGetModuleInfo.xml, including
+        NormalizedVersion and prerelease metadata. Only modules whose highest
+        installed version is a prerelease include prereleases in repository queries.
+        Prerelease labels are compared semantically (for example, beta.10 is newer
+        than beta.2); a stable release is newer than a prerelease with the same
+        numeric version. Stable installations stay on stable releases. Older
+        versions can supply missing repository provenance, but not prerelease state.
+
         Use -Name and -Exclude wildcard filters to select managed modules and skip
         local/product-owned modules without repository lookup warnings.
 
@@ -255,8 +380,9 @@ function Update-InstalledPSResource {
     .EXAMPLE
         Update-InstalledPSResource -Path (Join-Path $HOME 'PowerShellModules')
 
-        Checks PSGallery for newer versions of every module found under the custom
-        module path and saves updates in place.
+        Checks each module's recorded repository (or PSGallery when absent) for
+        newer versions and saves updates in place, retaining prerelease tracking
+        for modules whose highest installed version is a prerelease.
     .EXAMPLE
         Update-InstalledPSResource -Path $env:PSModulePath.Split([IO.Path]::PathSeparator)[0] -WhatIf
 
@@ -311,9 +437,23 @@ function Update-InstalledPSResource {
 
             $latestRemote = $null
             try {
-                $latestRemote = @(Find-PSResource -Name $resourceName -Repository $selectedRepository -ErrorAction Stop) |
-                    Sort-Object { [version]$_.Version } -Descending |
-                    Select-Object -First 1
+                $findParameters = @{
+                    Name        = $resourceName
+                    Repository  = $selectedRepository
+                    ErrorAction = 'Stop'
+                }
+                if ($resource.IsPrerelease) { $findParameters.Prerelease = $true }
+                foreach ($remote in Find-PSResource @findParameters) {
+                    $remoteVersion = ConvertTo-PSResourceVersion -Resource $remote
+                    if ($null -eq $remoteVersion) {
+                        Write-Warning "Could not determine version of '$resourceName' in repository '$selectedRepository'; skipping this result."
+                        continue
+                    }
+                    if (-not $resource.IsPrerelease -and $remoteVersion.IsPrerelease) { continue }
+                    if ($null -eq $latestRemote -or (Compare-PSResourceVersion $remoteVersion $latestRemote) -gt 0) {
+                        $latestRemote = $remoteVersion
+                    }
+                }
             }
             catch {
                 Write-Warning "Could not look up '$resourceName' in repository '$selectedRepository': $_"
@@ -325,14 +465,14 @@ function Update-InstalledPSResource {
                 continue
             }
 
-            $remoteVersion = [version]$latestRemote.Version.ToString()
-            if ($installedVersion -ge $remoteVersion) {
+            $remoteVersion = $latestRemote.Version
+            if ((Compare-PSResourceVersion $resource $latestRemote) -ge 0) {
                 Write-Verbose "'$resourceName' $installedVersion is already current (latest: $remoteVersion)."
                 continue
             }
 
             if ($PSCmdlet.ShouldProcess($resourceName, "Update from $installedVersion to $remoteVersion from '$selectedRepository' in '$resolvedPath'")) {
-                Save-PSResource -Name $resourceName -Version $remoteVersion.ToString() -Path $resolvedPath `
+                Save-PSResource -Name $resourceName -Version $remoteVersion -Path $resolvedPath `
                     -Repository $selectedRepository -TrustRepository -IncludeXml -AcceptLicense `
                     -SkipDependencyCheck -ErrorAction Stop
             }

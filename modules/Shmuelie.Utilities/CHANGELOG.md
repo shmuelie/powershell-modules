@@ -6,6 +6,14 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+### Fixed
+- `Update-InstalledPSResource` preserves full prerelease versions from saved
+  metadata in versioned and direct module layouts, queries prereleases only for
+  installed prereleases, compares labels semantically (including numeric
+  identifiers and promotion to stable), and saves the exact selected version.
+  Stable installations remain on stable releases; inheriting an older version's
+  repository provenance does not inherit its prerelease state.
+
 ## [0.4.0] - 2026-08-31
 
 ### Added
