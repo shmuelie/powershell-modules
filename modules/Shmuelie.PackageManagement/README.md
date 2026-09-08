@@ -39,6 +39,9 @@ fail before discovery or mutation.
 accepts only empty option tables; each future adapter explicitly declares its
 supported options. Invalid option names or non-hashtable values fail before any
 provider starts. Options for unselected providers are validated but not used.
+Provider and option keys are case-insensitive even in JSON-derived or custom
+hashtables. Case-equivalent duplicate keys are rejected before any provider
+starts, and the caller's maps are not modified.
 Options are data, not commands, module paths, or scripts to execute.
 
 `-WhatIf` performs read-only discovery and returns `Planned` rows for discovered

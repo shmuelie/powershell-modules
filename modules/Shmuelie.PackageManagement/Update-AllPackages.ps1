@@ -29,6 +29,9 @@ function Update-AllPackages {
         explicitly supported by that integration. Unknown providers, option
         names, or non-hashtable values are rejected before any work.
         Options for unselected providers are validated but not executed.
+        Provider and option keys are case-insensitive, including JSON-derived
+        hashtables. Case-equivalent duplicate keys are rejected. The caller's
+        maps are not modified.
     .PARAMETER StopOnFailure
         Stop after the first failing callback, before another target or
         provider starts. Preserve all results produced by that callback.
@@ -76,18 +79,35 @@ function Update-AllPackages {
         [switch]$StopOnFailure
     )
 
-    $catalog = @(Get-PackageProvider)
-    $names = @($catalog.Name)
-    foreach ($name in @($Provider) + @($ExcludeProvider) + @($ProviderOptions.Keys)) {
-        if ($name -notin $names) {
-            throw "Unknown provider '$name'. Valid providers: $($names -join ', ')."
-        }
-    }
+    # JSON-derived and custom hashtables can use case-sensitive comparers.
+    $normalizedProviderOptions = [hashtable]::new([System.StringComparer]::OrdinalIgnoreCase)
     foreach ($name in $ProviderOptions.Keys) {
+        if ($normalizedProviderOptions.ContainsKey($name)) {
+            throw "Duplicate provider key '$name' in ProviderOptions; provider keys are case-insensitive."
+        }
         $options = $ProviderOptions[$name]
         if ($options -isnot [hashtable]) {
             throw "Options for provider '$name' must be a hashtable."
         }
+        $normalizedOptions = [hashtable]::new([System.StringComparer]::OrdinalIgnoreCase)
+        foreach ($option in $options.Keys) {
+            if ($normalizedOptions.ContainsKey($option)) {
+                throw "Duplicate option key '$option' for provider '$name'; option keys are case-insensitive."
+            }
+            $normalizedOptions.Add($option, $options[$option])
+        }
+        $normalizedProviderOptions.Add($name, $normalizedOptions)
+    }
+
+    $catalog = @(Get-PackageProvider)
+    $names = @($catalog.Name)
+    foreach ($name in @($Provider) + @($ExcludeProvider) + @($normalizedProviderOptions.Keys)) {
+        if ($name -notin $names) {
+            throw "Unknown provider '$name'. Valid providers: $($names -join ', ')."
+        }
+    }
+    foreach ($name in $normalizedProviderOptions.Keys) {
+        $options = $normalizedProviderOptions[$name]
         $descriptor = $catalog | Where-Object Name -EQ $name
         foreach ($option in $options.Keys) {
             if ($option -notin $descriptor.OptionNames) {
@@ -99,7 +119,7 @@ function Update-AllPackages {
     foreach ($descriptor in $catalog) {
         $name = $descriptor.Name
         if (($Provider -and $name -notin $Provider) -or $name -in $ExcludeProvider) { continue }
-        $options = if ($ProviderOptions.ContainsKey($name)) { $ProviderOptions[$name].Clone() } else { @{} }
+        $options = if ($normalizedProviderOptions.ContainsKey($name)) { $normalizedProviderOptions[$name].Clone() } else { @{} }
         $availability = @(Invoke-PackageProviderCallback -Callback {
             param($Descriptor, $Options)
             Get-PackageProviderAvailability -Descriptor $Descriptor -Options $Options

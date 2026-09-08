@@ -142,6 +142,103 @@ Describe 'Update-AllPackages orchestration' {
             $result.Status | Should -BeExactly 'Updated'
         }
 
+        It 'normalizes <Label> options without changing caller maps' -ForEach @(
+            @{ Label = 'JSON lowercase provider'; CreateOptions = { '{"npm":{"Channel":"requested-channel"}}' | ConvertFrom-Json -AsHashtable } }
+            @{ Label = 'JSON lowercase option'; CreateOptions = { '{"Npm":{"channel":"requested-channel"}}' | ConvertFrom-Json -AsHashtable } }
+            @{ Label = 'JSON lowercase provider and option'; CreateOptions = { '{"npm":{"channel":"requested-channel"}}' | ConvertFrom-Json -AsHashtable } }
+            @{ Label = 'JSON canonical'; CreateOptions = { '{"Npm":{"Channel":"requested-channel"}}' | ConvertFrom-Json -AsHashtable } }
+            @{ Label = 'ordinary lowercase'; CreateOptions = { @{ npm = @{ channel = 'requested-channel' } } } }
+            @{ Label = 'ordered outer'; CreateOptions = { [ordered]@{ npm = @{ channel = 'requested-channel' } } } }
+            @{ Label = 'case-sensitive lowercase'; CreateOptions = {
+                $inner = [hashtable]::new([System.StringComparer]::Ordinal)
+                $inner.Add('channel', 'requested-channel')
+                $outer = [hashtable]::new([System.StringComparer]::Ordinal)
+                $outer.Add('npm', $inner)
+                $outer
+            } }
+            @{ Label = 'case-sensitive canonical'; CreateOptions = {
+                $inner = [hashtable]::new([System.StringComparer]::Ordinal)
+                $inner.Add('Channel', 'requested-channel')
+                $outer = [hashtable]::new([System.StringComparer]::Ordinal)
+                $outer.Add('Npm', $inner)
+                $outer
+            } }
+        ) {
+            $inputOptions = & $CreateOptions
+            $before = ConvertTo-Json -InputObject $inputOptions -Depth 5 -Compress
+            $originalInner = $inputOptions[@($inputOptions.Keys)[0]]
+            $script:ReadOnlyChannels = [System.Collections.Generic.List[string]]::new()
+            $script:Providers[1].TestAvailable = {
+                param($Options)
+                $script:ReadOnlyChannels.Add($Options.Channel)
+                [pscustomobject]@{ Available = $true; Reason = $null }
+            }
+            $script:Providers[1].GetTargets = {
+                param($Options)
+                $script:ReadOnlyChannels.Add($Options.Channel)
+                New-PackageUpdateTarget -Target Npm.tool -Data Npm
+            }
+
+            $result = Update-AllPackages -Provider Npm -ProviderOptions $inputOptions -Confirm:$false
+
+            $result.Status | Should -BeExactly 'Updated'
+            $script:ReadOnlyChannels | Should -Be @('requested-channel', 'requested-channel')
+            $script:SeenOptions | Should -HaveCount 1
+            $script:SeenOptions[0].Channel | Should -BeExactly 'requested-channel'
+            $script:SeenOptions[0].ContainsKey('CHANNEL') | Should -BeTrue
+            [object]::ReferenceEquals($script:SeenOptions[0], $originalInner) | Should -BeFalse
+            (ConvertTo-Json -InputObject $inputOptions -Depth 5 -Compress) | Should -BeExactly $before
+            [object]::ReferenceEquals($inputOptions[@($inputOptions.Keys)[0]], $originalInner) | Should -BeTrue
+        }
+
+        It 'keeps callback option-map changes separate from the caller input' {
+            $inputOptions = '{"npm":{"channel":"requested-channel"}}' | ConvertFrom-Json -AsHashtable
+            $before = ConvertTo-Json -InputObject $inputOptions -Depth 5 -Compress
+            $script:Providers[1].Update = {
+                param($Target, $Options)
+                $Options.Channel = 'changed-by-callback'
+                $Options.Add('CallbackState', 'changed')
+                New-PackageUpdateResult -Provider Npm -Target $Target.Target -Status Updated
+            }
+
+            (Update-AllPackages -Provider Npm -ProviderOptions $inputOptions -Confirm:$false).Status | Should -BeExactly 'Updated'
+
+            (ConvertTo-Json -InputObject $inputOptions -Depth 5 -Compress) | Should -BeExactly $before
+            $inputOptions.ContainsKey('Npm') | Should -BeFalse
+            $inputOptions.npm.ContainsKey('Channel') | Should -BeFalse
+        }
+
+        It 'rejects <Label> collisions before any provider starts' -ForEach @(
+            @{ Label = 'JSON provider'; Message = '*Duplicate provider key*case-insensitive*'; CreateOptions = {
+                '{"npm":{"Channel":"first"},"Npm":{"Channel":"second"}}' | ConvertFrom-Json -AsHashtable
+            } }
+            @{ Label = 'JSON option'; Message = '*Duplicate option key*case-insensitive*'; CreateOptions = {
+                '{"Npm":{"Channel":"first","channel":"second"}}' | ConvertFrom-Json -AsHashtable
+            } }
+            @{ Label = 'case-sensitive provider'; Message = '*Duplicate provider key*case-insensitive*'; CreateOptions = {
+                $outer = [hashtable]::new([System.StringComparer]::Ordinal)
+                $outer.Add('Npm', @{ Channel = 'first' })
+                $outer.Add('npm', @{ Channel = 'second' })
+                $outer
+            } }
+            @{ Label = 'case-sensitive option'; Message = '*Duplicate option key*case-insensitive*'; CreateOptions = {
+                $inner = [hashtable]::new([System.StringComparer]::Ordinal)
+                $inner.Add('Channel', 'first')
+                $inner.Add('channel', 'second')
+                @{ Npm = $inner }
+            } }
+        ) {
+            $inputOptions = & $CreateOptions
+            $before = ConvertTo-Json -InputObject $inputOptions -Depth 5 -Compress
+            Mock Get-PackageProviderAvailability { throw 'Must reject collisions before provider discovery.' }
+
+            { Update-AllPackages -ProviderOptions $inputOptions -Confirm:$false } | Should -Throw $Message
+
+            Should -Invoke Get-PackageProviderAvailability -Times 0 -Exactly
+            $script:Updates | Should -HaveCount 0
+            (ConvertTo-Json -InputObject $inputOptions -Depth 5 -Compress) | Should -BeExactly $before
+        }
+
         It 'skips unsupported platforms before importing any dependencies' {
             $script:Providers[0].Platforms = @('Windows')
             $script:Providers[0].RequiredModules = @('Fake.PackageProvider')
