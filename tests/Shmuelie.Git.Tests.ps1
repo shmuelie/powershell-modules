@@ -97,6 +97,9 @@ BeforeAll {
 Describe 'Remove-Branch' {
     BeforeAll {
         $branchEnvironment = @{}
+        # Pester 5 shares TestDrive across Describe blocks.
+        $branchFixtureRoot = Join-Path $TestDrive 'remove-branch'
+        $null = New-Item -ItemType Directory -Path $branchFixtureRoot -ErrorAction Stop
         foreach ($key in @(
             'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_SYSTEM', 'GIT_CONFIG_NOSYSTEM',
             'GIT_CONFIG_COUNT', 'GIT_CONFIG_PARAMETERS', 'GIT_DIR', 'GIT_WORK_TREE',
@@ -106,13 +109,13 @@ Describe 'Remove-Branch' {
             $branchEnvironment[$key] = [Environment]::GetEnvironmentVariable($key, 'Process')
             Remove-Item "Env:$key" -ErrorAction Ignore
         }
-        $env:GIT_CONFIG_GLOBAL = Join-Path $TestDrive 'no-global-config'
-        $env:GIT_CONFIG_SYSTEM = Join-Path $TestDrive 'no-system-config'
+        $env:GIT_CONFIG_GLOBAL = Join-Path $branchFixtureRoot 'no-global-config'
+        $env:GIT_CONFIG_SYSTEM = Join-Path $branchFixtureRoot 'no-system-config'
         $env:GIT_CONFIG_NOSYSTEM = '1'
         $env:GIT_CONFIG_COUNT = '0'
-        $seed = New-TestRepo -Path (Join-Path $TestDrive 'seed')
-        $branchOrigin = Join-Path $TestDrive 'origin.git'
-        $branchRepo = Join-Path $TestDrive 'branch repo [literal]'
+        $seed = New-TestRepo -Path (Join-Path $branchFixtureRoot 'seed')
+        $branchOrigin = Join-Path $branchFixtureRoot 'origin.git'
+        $branchRepo = Join-Path $branchFixtureRoot 'branch repo [literal]'
         Invoke-Git @('clone', '--bare', '--quiet', '--', $seed, $branchOrigin)
         Invoke-Git @('clone', '--quiet', '--', $branchOrigin, $branchRepo)
         Set-TestRepoConfig $branchRepo
@@ -185,11 +188,24 @@ public sealed class BranchRemovalConfirmationUI : PSHostUserInterface
     }
 
     AfterAll {
-        foreach ($key in $branchEnvironment.Keys) {
-            if ($null -eq $branchEnvironment[$key]) {
-                Remove-Item "Env:$key" -ErrorAction Ignore
-            } else {
-                [Environment]::SetEnvironmentVariable($key, $branchEnvironment[$key], 'Process')
+        try {
+            if ($branchFixtureRoot) {
+                $relativeRoot = [IO.Path]::GetRelativePath($TestDrive, $branchFixtureRoot)
+                if ($relativeRoot -cne 'remove-branch') {
+                    throw "Refusing to clean a fixture outside its owned TestDrive directory: '$branchFixtureRoot'."
+                }
+                if (Test-Path -LiteralPath $branchFixtureRoot) {
+                    # Pester 5's directory deletion can fail on read-only Git objects.
+                    Remove-Item -LiteralPath $branchFixtureRoot -Recurse -Force -ErrorAction Stop
+                }
+            }
+        } finally {
+            foreach ($key in $branchEnvironment.Keys) {
+                if ($null -eq $branchEnvironment[$key]) {
+                    Remove-Item "Env:$key" -ErrorAction Ignore
+                } else {
+                    [Environment]::SetEnvironmentVariable($key, $branchEnvironment[$key], 'Process')
+                }
             }
         }
     }
@@ -323,7 +339,7 @@ public sealed class BranchRemovalConfirmationUI : PSHostUserInterface
         $targetName = 'main'
         if ($Location -eq 'linked') {
             $targetName = $branchName
-            Invoke-Git @('-C', $branchRepo, 'worktree', 'add', '--quiet', (Join-Path $TestDrive $branchName), $branchName)
+            Invoke-Git @('-C', $branchRepo, 'worktree', 'add', '--quiet', (Join-Path $branchFixtureRoot $branchName), $branchName)
         }
         { Remove-Branch $targetName -Path $branchRepo -Force:$UseForce -Confirm:$false -ErrorAction Stop } |
             Should -Throw -ExpectedMessage '*git failed*'
@@ -382,7 +398,7 @@ public sealed class BranchRemovalConfirmationUI : PSHostUserInterface
     }
 
     It 'selects a named configured remote and respects its push URL rather than its fetch URL' {
-        $pushTarget = Join-Path $TestDrive "$branchName.git"
+        $pushTarget = Join-Path $branchFixtureRoot "$branchName.git"
         Invoke-Git @('clone', '--bare', '--quiet', '--', $branchOrigin, $pushTarget)
         Invoke-Git @('-C', $branchRepo, 'remote', 'add', $branchName, $branchOrigin)
         Invoke-Git @('-C', $branchRepo, 'remote', 'set-url', '--push', $branchName, $pushTarget)
@@ -449,7 +465,7 @@ public sealed class BranchRemovalConfirmationUI : PSHostUserInterface
         } finally {
             Invoke-Git @('-C', $branchOrigin, 'config', '--unset', 'receive.denyDeletes')
         }
-        Invoke-Git @('-C', $branchRepo, 'remote', 'add', "$branchName-offline", (Join-Path $TestDrive 'missing.git'))
+        Invoke-Git @('-C', $branchRepo, 'remote', 'add', "$branchName-offline", (Join-Path $branchFixtureRoot 'missing.git'))
         { Remove-Branch $branchName -Path $branchRepo -Remote -RemoteName "$branchName-offline" -Confirm:$false -ErrorAction Stop } |
             Should -Throw -ExpectedMessage '*git failed*'
         Get-TestBranchNames $branchRepo | Should -Contain "refs/heads/$branchName"
@@ -457,7 +473,7 @@ public sealed class BranchRemovalConfirmationUI : PSHostUserInterface
     }
 
     It 'reports invalid repository paths instead of emitting success' {
-        foreach ($path in @((Join-Path $TestDrive 'missing'), $TestDrive, (Join-Path $branchRepo 'README.md'))) {
+        foreach ($path in @((Join-Path $branchFixtureRoot 'missing'), $branchFixtureRoot, (Join-Path $branchRepo 'README.md'))) {
             { Remove-Branch $branchName -Path $path -Confirm:$false -ErrorAction Stop } | Should -Throw
         }
         Get-TestBranchNames $branchRepo | Should -Contain "refs/heads/$branchName"
