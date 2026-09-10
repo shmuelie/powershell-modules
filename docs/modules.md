@@ -113,7 +113,7 @@ scope behavior.
 ## Shmuelie.Utilities
 
 General developer utilities for PowerShell, .NET tools, Python packages, VS
-Code, terminal recovery, and general developer workflows. **Version 0.5.0.**
+Code, terminal recovery, and general developer workflows. **Version 0.6.0.**
 [README](https://github.com/shmuelie/powershell-modules/blob/main/modules/Shmuelie.Utilities/README.md)
 
 Highlights:
@@ -170,7 +170,7 @@ Highlights:
 
 ## Shmuelie.PackageManagement
 
-Provider-neutral package update orchestration. **Version 0.1.0.**
+Provider-neutral package update orchestration. **Version 0.2.0.**
 [README](https://github.com/shmuelie/powershell-modules/blob/main/modules/Shmuelie.PackageManagement/README.md)
 
 `Update-AllPackages` provides provider selection/exclusion, provider-specific

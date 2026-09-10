@@ -2,7 +2,7 @@
 
 Provider-neutral package update orchestration for PowerShell 7.4+.
 
-**Version:** 0.1.0
+**Version:** 0.2.0
 
 ## Provider availability
 

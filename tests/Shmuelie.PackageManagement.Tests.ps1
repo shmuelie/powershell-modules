@@ -21,7 +21,7 @@ Describe 'PackageManagement foundation surface' {
         @($manifest.ExportedFunctions.Keys) | Should -Be @('Update-AllPackages')
         @($manifest.ExportedAliases.Keys) | Should -HaveCount 0
         @($manifest.RequiredModules) | Should -HaveCount 0
-        $manifest.Version | Should -Be ([version]'0.1.0')
+        $manifest.Version | Should -Be ([version]'0.2.0')
     }
 
     It 'honestly reports unavailable providers in catalog order without importing dependencies' {

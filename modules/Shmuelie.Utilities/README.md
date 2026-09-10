@@ -3,7 +3,7 @@
 General developer utilities for PowerShell, .NET tools, Python packages, VS
 Code, terminal recovery, and general developer workflows.
 
-**Version:** 0.5.0
+**Version:** 0.6.0
 
 ## Install
 
