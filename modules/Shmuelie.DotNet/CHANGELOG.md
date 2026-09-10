@@ -5,6 +5,8 @@ Versions change only when a release is cut; pending work lives under [Unreleased
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-10
+
 ### Added
 
 - `Install-DotNetSdk` installs exact or channel-selected SDKs side by side using

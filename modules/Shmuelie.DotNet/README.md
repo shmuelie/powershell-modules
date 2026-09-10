@@ -3,7 +3,7 @@
 User-local .NET SDK installation and canonical tool management for PowerShell on
 Windows, Linux, and macOS.
 
-**Version:** 0.1.0
+**Version:** 0.2.0
 
 ## Install
 

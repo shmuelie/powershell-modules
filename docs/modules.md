@@ -53,7 +53,7 @@ Highlights:
 ## Shmuelie.Copilot
 
 GitHub Copilot CLI sessions, plugins, marketplaces, MCP servers, and the
-`Start-Copilot` launcher. **Version 0.3.2.**
+`Start-Copilot` launcher. **Version 0.4.0.**
 [README](https://github.com/shmuelie/powershell-modules/blob/main/modules/Shmuelie.Copilot/README.md)
 
 Highlights:
@@ -86,7 +86,7 @@ Highlights:
 
 User-local .NET SDK installation and canonical tool management for Windows,
 Linux, and macOS.
-**Version 0.1.0.**
+**Version 0.2.0.**
 [README](https://github.com/shmuelie/powershell-modules/blob/main/modules/Shmuelie.DotNet/README.md)
 
 Highlights:
@@ -151,7 +151,7 @@ Highlights:
 
 ## Shmuelie.VisualStudio
 
-Visual Studio discovery, MSBuild resolution, and developer shell helpers for PowerShell. **Version 0.1.1.**
+Visual Studio discovery, MSBuild resolution, and developer shell helpers for PowerShell. **Version 0.2.0.**
 [README](https://github.com/shmuelie/powershell-modules/blob/main/modules/Shmuelie.VisualStudio/README.md)
 
 Highlights:

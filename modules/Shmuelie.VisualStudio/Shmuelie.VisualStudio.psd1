@@ -1,6 +1,6 @@
 @{
     RootModule           = 'Shmuelie.VisualStudio.psm1'
-    ModuleVersion        = '0.1.1'
+    ModuleVersion        = '0.2.0'
     GUID                 = 'c6d193ef-cddd-4328-8bdd-06768188f1f3'
     Author               = 'Shmueli Englard'
     CompanyName          = 'Shmuelie'
