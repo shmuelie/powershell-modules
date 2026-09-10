@@ -22,7 +22,7 @@ Install-PSResource Shmuelie.PackageManagement
 | [Shmuelie.Git](docs/modules.md#shmuelie-git) | Git worktrees, layout, status, completion, and prediction |
 | [Shmuelie.Copilot](docs/modules.md#shmuelie-copilot) | Copilot CLI sessions, plugins, marketplaces, MCP, and launcher |
 | [Shmuelie.Node](docs/modules.md#shmuelie-node) | Node.js, nvm-windows, npm, and ADO npm credentials |
-| [Shmuelie.DotNet](docs/modules.md#shmuelie-dotnet) | .NET tool discovery, installation, updates, and removal |
+| [Shmuelie.DotNet](docs/modules.md#shmuelie-dotnet) | User-local .NET SDK installation and tool management |
 | [Shmuelie.Utilities](docs/modules.md#shmuelie-utilities) | Python, VS Code, terminal helpers, and legacy .NET tool entry points |
 | [Shmuelie.Windows](docs/modules.md#shmuelie-windows) | Windows-only installed-apps, Terminal, WPR, and service helpers |
 | [Shmuelie.Dsc](docs/modules.md#shmuelie-dsc) | DSC v3 resources for setup: modules, symlinks, Copilot plugins/marketplaces, uv tools |

@@ -84,12 +84,18 @@ Highlights:
 
 ## Shmuelie.DotNet
 
-Canonical .NET tool management for Windows, Linux, and macOS.
+User-local .NET SDK installation and canonical tool management for Windows,
+Linux, and macOS.
 **Version 0.1.0.**
 [README](https://github.com/shmuelie/powershell-modules/blob/main/modules/Shmuelie.DotNet/README.md)
 
 Highlights:
 
+- `Install-DotNetSdk` installs exact or channel/quality-selected SDKs side by side,
+  skips existing matches, and returns typed results. PATH changes are opt-in:
+  process-only everywhere, or persistent user plus process on Windows.
+- SDK installers use canonical Microsoft URLs, available signature validation,
+  isolated staging cleanup, and separate download/install/PATH confirmations.
 - `Get-DotNetTool` returns typed tool records with wildcard package filtering.
 - `Install-DotNetTool` and `Uninstall-DotNetTool` manage global tools.
 - `Update-DotNetTool` accepts names or pipeline objects and supports local tools.
