@@ -27,9 +27,10 @@ Import a module before use:
 Import-Module Shmuelie.Git
 ```
 
-`Shmuelie.PackageManagement` 0.1.0 is the orchestration foundation only.
-Its provider integrations are not yet implemented and report explicit skipped
-outcomes; installing the module does not install or update provider tools.
+`Shmuelie.PackageManagement` loads provider dependencies only when selected.
+Unavailable or unimplemented integrations report explicit skipped outcomes.
+Installing the module does not install or update provider tools; see its README
+for each adapter's optional dependencies and supported scopes.
 
 ## Update and remove
 

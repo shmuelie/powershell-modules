@@ -8,8 +8,8 @@ function Update-AllPackages {
         produce Skipped results with reasons. Providers are imported only when
         selected; importing this module does not require any provider module.
 
-        This initial foundation includes the orchestration contract, not the
-        provider adapters. Until adapters ship, all providers report Skipped.
+        Catalog membership does not guarantee availability. Consult the module
+        README for implemented adapters, dependencies and supported options.
 
         Each integration discovers targets without mutation. ShouldProcess
         gates each target's update callback. WhatIf runs only discovery and
@@ -52,7 +52,7 @@ function Update-AllPackages {
     .EXAMPLE
         Update-AllPackages -ProviderOptions @{ Npm = @{} } -Confirm:$false
         Supply a provider options map and disable interactive confirmation.
-        The foundation accepts empty options only; adapters define their own.
+        Each adapter declares its supported options in the module README.
     #>
     [CmdletBinding(SupportsShouldProcess)]
     [OutputType('Shmuelie.PackageManagement.UpdateResult')]

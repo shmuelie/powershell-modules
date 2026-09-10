@@ -23,7 +23,7 @@ install and upgrade each module on its own.
 | [Shmuelie.Windows](modules.md#shmuelie-windows) | Windows-only installed-apps, Terminal, WPR, and service helpers | 0.1.2 |
 | [Shmuelie.Dsc](modules.md#shmuelie-dsc) | DSC v3 resources for setup: modules, symlinks, Copilot plugins/marketplaces, uv tools | 0.1.0 |
 | [Shmuelie.VisualStudio](modules.md#shmuelie-visualstudio) | Visual Studio discovery, MSBuild resolution, and developer shell launch helpers | 0.2.0 |
-| [Shmuelie.PackageManagement](modules.md#shmuelie-packagemanagement) | Package update orchestration foundation; provider adapters pending | 0.1.0 |
+| [Shmuelie.PackageManagement](modules.md#shmuelie-packagemanagement) | Package update orchestration with optional provider integrations | 0.1.0 |
 
 ## Quick start
 

@@ -5,6 +5,12 @@ under [Unreleased]; versions change only when a release is cut.
 
 ## [Unreleased]
 
+### Added
+- Optional Uv provider for outdated top-level system Python packages and
+  individually approved installed-tool upgrades, with scope selection,
+  lazy Utilities commands, distinct package/tool targets, observed versions,
+  strict tool-list parsing, and explicit dependency skips and failures.
+
 ## [0.1.0] - 2026-09-08
 
 ### Added

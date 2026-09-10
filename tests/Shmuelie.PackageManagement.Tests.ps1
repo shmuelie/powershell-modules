@@ -24,15 +24,17 @@ Describe 'PackageManagement foundation surface' {
         $manifest.Version | Should -Be ([version]'0.1.0')
     }
 
-    It 'honestly reports every reserved integration as unimplemented' {
-        Mock Get-PackageProviderPlatform -ModuleName Shmuelie.PackageManagement { 'Windows' }
+    It 'reports unavailable catalog integrations without assuming installed dependencies' {
+        Mock Get-PackageProviderAvailability -ModuleName Shmuelie.PackageManagement {
+            [pscustomobject]@{ Available = $false; Reason = 'Dependency unavailable in this test.' }
+        }
         Mock Import-Module -ModuleName Shmuelie.PackageManagement { throw 'Must not import optional modules.' }
         $results = @(Update-AllPackages)
         $results.Provider | Should -Be @('PSResourceGet', 'DotNet', 'Npm', 'Pip', 'Uv', 'VSCode', 'WinGet', 'AppInstaller')
         foreach ($result in $results) {
             $result.PSTypeNames[0] | Should -BeExactly 'Shmuelie.PackageManagement.UpdateResult'
             $result.Status | Should -BeExactly 'Skipped'
-            $result.Reason | Should -Match 'not implemented'
+            $result.Reason | Should -BeExactly 'Dependency unavailable in this test.'
             $result.Error | Should -BeNullOrEmpty
         }
         Should -Invoke Import-Module -ModuleName Shmuelie.PackageManagement -Times 0 -Exactly
@@ -46,6 +48,405 @@ Describe 'PackageManagement foundation surface' {
         $completion = [System.Management.Automation.CommandCompletion]::CompleteInput($inputText, $inputText.Length, $null)
         $expected = & (Get-Module Shmuelie.PackageManagement) { @(Get-PackageProvider).Name }
         @($completion.CompletionMatches.CompletionText | Sort-Object) | Should -Be @($expected | Sort-Object)
+    }
+}
+
+Describe 'Uv package provider' {
+    BeforeAll {
+        $script:HadUtilities = $null -ne (Get-Module Shmuelie.Utilities)
+        if (-not $script:HadUtilities) {
+            Import-Module (Join-Path $repoRoot 'modules' 'Shmuelie.Utilities' 'Shmuelie.Utilities.psd1') -ErrorAction Stop
+        }
+    }
+    AfterAll {
+        if (-not $script:HadUtilities) { Remove-Module Shmuelie.Utilities -Force -ErrorAction Stop }
+    }
+
+    InModuleScope Shmuelie.PackageManagement {
+        BeforeAll {
+            # A scoped fake native command prevents any real uv invocation.
+            function script:uv {
+                $script:NativeCalls.Add(@($args))
+                $global:LASTEXITCODE = $script:UvExitCode
+                if ($script:NativeOverride) { & $script:NativeOverride; return }
+                if ($args[1] -eq 'upgrade') {
+                    $name = $args[-1]
+                    if ($name -eq $script:FailTool) {
+                        $global:LASTEXITCODE = 7
+                        'Tool update failed.'
+                    } else {
+                        $script:ToolVersions[$name] = $script:AfterToolVersion
+                        'Resolved packages'
+                    }
+                } else {
+                    foreach ($name in $script:ToolVersions.Keys) {
+                        "$name v$($script:ToolVersions[$name])"
+                        "- $name"
+                    }
+                }
+            }
+        }
+        AfterAll {
+            Remove-Item Function:uv -ErrorAction Stop
+        }
+
+        BeforeEach {
+            $script:NativeCalls = [System.Collections.Generic.List[object]]::new()
+            $script:UvExitCode = 0
+            $script:NativeOverride = $null
+            $script:FailTool = $null
+            $script:ToolVersions = [ordered]@{ ruff = '1.0' }
+            $script:AfterToolVersion = '2.0'
+            $script:Packages = @([pscustomobject]@{ name = 'requests'; version = '1.0'; latest_version = '9.0' })
+            $script:InstalledPackages = @([pscustomobject]@{ name = 'requests'; version = '2.0' })
+            Mock Get-PackageProviderPlatform { 'Windows' }
+            Mock Get-Module { [pscustomobject]@{ Name = 'Shmuelie.Utilities' } }
+            Mock Import-Module {}
+            Mock Get-Command { [pscustomobject]@{ Name = $Name } }
+            Mock Get-UvProviderPackages {
+                if ($Outdated) { $script:Packages } else { $script:InstalledPackages }
+            }
+            Mock 'Shmuelie.Utilities\Update-UvPackage' {
+                [pscustomobject]@{ PSTypeName = 'UvUpdateResult'; Name = $PackageName; Success = $true }
+            }
+        }
+
+        It 'keeps catalog order and descriptor discovery side-effect-free' {
+            $catalog = @(Get-PackageProvider)
+            $catalog.Name | Should -Be @('PSResourceGet', 'DotNet', 'Npm', 'Pip', 'Uv', 'VSCode', 'WinGet', 'AppInstaller')
+            ($catalog | Where-Object Name -EQ Uv).OptionNames | Should -Be @('Scope', 'TopLevelOnly')
+            Should -Invoke Get-Module -Times 0 -Exactly
+            Should -Invoke Get-Command -Times 0 -Exactly
+            Should -Invoke Import-Module -Times 0 -Exactly
+            $script:NativeCalls | Should -HaveCount 0
+        }
+
+        It 'updates system top-level outdated packages and tools with distinct typed identities' {
+            $results = @(Update-AllPackages -Provider Uv -Confirm:$false)
+            $results.Target | Should -Be @('pip:system:requests', 'tool:ruff')
+            $results.Status | Should -Be @('Updated', 'Updated')
+            $results.Provider | Should -Be @('Uv', 'Uv')
+            $results.PreviousVersion | Should -Be @('1.0', '1.0')
+            $results.ResultingVersion | Should -Be @('2.0', '2.0')
+            foreach ($row in $results) { $row.PSTypeNames[0] | Should -BeExactly 'Shmuelie.PackageManagement.UpdateResult' }
+            Should -Invoke Get-UvProviderPackages -Times 1 -Exactly -ParameterFilter { $Outdated -and $TopLevelOnly }
+            Should -Invoke 'Shmuelie.Utilities\Update-UvPackage' -Times 1 -Exactly -ParameterFilter { $PackageName -eq 'requests' -and $Confirm -eq $false }
+            $script:NativeCalls[0] | Should -Be @('tool', 'list', '--color', 'never', '--no-progress')
+            $script:NativeCalls[1] | Should -Be @('tool', 'upgrade', '--color', 'never', '--no-progress', '--', 'ruff')
+            $script:NativeCalls[2] | Should -Be @('tool', 'list', '--color', 'never', '--no-progress')
+        }
+
+        It 'previews both scopes without executing an update or proposing unobserved tool versions' {
+            $results = @(Update-AllPackages -Provider Uv -WhatIf)
+            $results.Target | Should -Be @('pip:system:requests', 'tool:ruff')
+            $results.Status | Should -Be @('Planned', 'Planned')
+            $results[0].ResultingVersion | Should -BeExactly '9.0'
+            $results[1].ResultingVersion | Should -BeNullOrEmpty
+            Should -Invoke 'Shmuelie.Utilities\Update-UvPackage' -Times 0 -Exactly
+            $script:NativeCalls | Should -HaveCount 1
+        }
+
+        It 'supports package dependency opt-in without discovering tools' {
+            $result = Update-AllPackages -Provider uv -ProviderOptions @{ uv = @{ scope = 'packages'; toplevelonly = $false } } -Confirm:$false
+            $result.Target | Should -BeExactly 'pip:system:requests'
+            Should -Invoke Get-UvProviderPackages -Times 1 -Exactly -ParameterFilter { $Outdated -and -not $TopLevelOnly }
+            $script:NativeCalls | Should -HaveCount 0
+        }
+
+        It 'supports tools without importing the package-command module' {
+            $result = Update-AllPackages -Provider Uv -ProviderOptions @{ Uv = @{ Scope = 'Tools' } } -Confirm:$false
+            $result.Target | Should -BeExactly 'tool:ruff'
+            $result.Status | Should -BeExactly 'Updated'
+            Should -Invoke Import-Module -Times 0 -Exactly
+            Should -Invoke Get-UvProviderPackages -Times 0 -Exactly
+        }
+
+        It 'skips missing <Dependency> dynamically' -ForEach @(
+            @{ Dependency = 'uv' }
+            @{ Dependency = 'module' }
+            @{ Dependency = 'Shmuelie.Utilities\Get-UvPackages' }
+            @{ Dependency = 'Shmuelie.Utilities\Update-UvPackage' }
+        ) {
+            if ($Dependency -eq 'module') { Mock Get-Module { $null } }
+            else {
+                $script:MissingCommand = $Dependency
+                Mock Get-Command { $null } -ParameterFilter { $Name -eq $script:MissingCommand }
+            }
+            $result = Update-AllPackages -Provider Uv -Confirm:$false
+            $result.Status | Should -BeExactly 'Skipped'
+            $result.Reason | Should -Match 'required (module|command)'
+            $script:NativeCalls | Should -HaveCount 0
+            Should -Invoke 'Shmuelie.Utilities\Update-UvPackage' -Times 0 -Exactly
+        }
+
+        It 'preserves dependency import exceptions as failures' {
+            Mock Import-Module { throw 'Import failed.' }
+            $result = Update-AllPackages -Provider Uv -Confirm:$false
+            $result.Status | Should -BeExactly 'Failed'
+            $result.Reason | Should -BeExactly 'Import failed.'
+        }
+
+        It 'reports an empty package and tool set unchanged' {
+            $script:Packages = @()
+            $script:NativeOverride = { 'No tools installed' }
+            $result = Update-AllPackages -Provider Uv -Confirm:$false
+            $result.Target | Should -BeExactly 'Uv'
+            $result.Status | Should -BeExactly 'Unchanged'
+            Should -Invoke 'Shmuelie.Utilities\Update-UvPackage' -Times 0 -Exactly
+        }
+
+        It 'retains successful package results after tool failures and continues between tools' {
+            $script:ToolVersions.Add('black', '1.0')
+            $script:FailTool = 'ruff'
+            $results = @(Update-AllPackages -Provider Uv -Confirm:$false)
+            $results.Target | Should -Be @('pip:system:requests', 'tool:ruff', 'tool:black')
+            $results.Status | Should -Be @('Updated', 'Failed', 'Updated')
+            $results[1].Reason | Should -Match 'exit 7'
+            $results[1].Error | Should -BeOfType ([System.Management.Automation.ErrorRecord])
+        }
+
+        It 'stops between tools without losing the preceding package result' {
+            $script:ToolVersions.Add('black', '1.0')
+            $script:FailTool = 'ruff'
+            $results = @(Update-AllPackages -Provider Uv -StopOnFailure -Confirm:$false)
+            $results.Status | Should -Be @('Updated', 'Failed')
+            @($script:NativeCalls | Where-Object { $_[1] -eq 'upgrade' }) | Should -HaveCount 1
+        }
+
+        It 'stops after package failure before updating any tools' {
+            Mock 'Shmuelie.Utilities\Update-UvPackage' {
+                [pscustomobject]@{ PSTypeName = 'UvUpdateResult'; Name = $PackageName; Success = $false }
+            }
+            $results = @(Update-AllPackages -Provider Uv -StopOnFailure -Confirm:$false)
+            $results | Should -HaveCount 1
+            $results[0].Status | Should -BeExactly 'Failed'
+            @($script:NativeCalls | Where-Object { $_[1] -eq 'upgrade' }) | Should -HaveCount 0
+        }
+
+        It 'rejects invalid or absent package update evidence: <Label>' -ForEach @(
+            @{ Label = 'void'; Output = {} }
+            @{ Label = 'untyped'; Output = { [pscustomobject]@{ Name = 'requests'; Success = $true } } }
+            @{ Label = 'wrong name'; Output = { [pscustomobject]@{ PSTypeName = 'UvUpdateResult'; Name = 'other'; Success = $true } } }
+            @{ Label = 'string success'; Output = { [pscustomobject]@{ PSTypeName = 'UvUpdateResult'; Name = 'requests'; Success = 'true' } } }
+            @{ Label = 'nonterminating error'; Output = { Write-Error 'Update error.' } }
+        ) {
+            Mock 'Shmuelie.Utilities\Update-UvPackage' $Output
+            (Update-AllPackages -Provider Uv -ProviderOptions @{ Uv = @{ Scope = 'Packages' } } -Confirm:$false).Status | Should -BeExactly 'Failed'
+        }
+
+        It 'fails an unknown <Field> version rather than assuming an update' -ForEach @(
+            @{ Field = 'observed' }
+            @{ Field = 'previous' }
+        ) {
+            if ($Field -eq 'observed') { $script:InstalledPackages[0].version = $null }
+            else { $script:Packages[0].version = $null }
+            $result = Update-AllPackages -Provider Uv -ProviderOptions @{ Uv = @{ Scope = 'Packages' } } -Confirm:$false
+            $result.Status | Should -BeExactly 'Failed'
+            $result.ResultingVersion | Should -BeNullOrEmpty
+            $result.Reason | Should -Match 'version is unknown'
+        }
+
+        It 'uses actual native exit status and restores the caller status' {
+            $previous = Get-Variable LASTEXITCODE -Scope Global -ErrorAction Ignore
+            $previousValue = if ($previous) { $previous.Value } else { $null }
+            try {
+                $global:LASTEXITCODE = 37
+                $script:UvExitCode = 9
+                $script:NativeOverride = {
+                    & (Get-Process -Id $PID).Path -NoProfile -NonInteractive -Command 'exit 0'
+                    'ruff v1.0'
+                    '- ruff'
+                }
+                @(Get-UvProviderTools).name | Should -BeExactly 'ruff'
+                $global:LASTEXITCODE | Should -Be 37
+
+                $script:NativeOverride = {
+                    & (Get-Process -Id $PID).Path -NoProfile -NonInteractive -Command 'exit 7'
+                    'Native tool failure.'
+                }
+                { Get-UvProviderTools } | Should -Throw '*exit 7*'
+                $global:LASTEXITCODE | Should -Be 37
+            } finally {
+                if ($previous) { $global:LASTEXITCODE = $previousValue }
+                else { Remove-Variable LASTEXITCODE -Scope Global -ErrorAction Ignore }
+            }
+        }
+
+        It 'reports unchanged installed versions rather than assuming the proposed version won' {
+            $script:InstalledPackages[0].version = '1.0'
+            $script:AfterToolVersion = '1.0'
+            $results = @(Update-AllPackages -Provider Uv -Confirm:$false)
+            $results.Status | Should -Be @('Unchanged', 'Unchanged')
+            $results.ResultingVersion | Should -Be @('1.0', '1.0')
+        }
+
+        It 'fails instead of inventing an observed package after update' {
+            $script:InstalledPackages = @()
+            $result = Update-AllPackages -Provider Uv -ProviderOptions @{ Uv = @{ Scope = 'Packages' } } -Confirm:$false
+            $result.Status | Should -BeExactly 'Failed'
+            $result.Reason | Should -Match 'Cannot observe'
+        }
+
+        It 'fails if a tool disappears after the upgrade rather than trusting exit zero' {
+            $script:AfterToolVersion = $null
+            $result = Update-AllPackages -Provider Uv -ProviderOptions @{ Uv = @{ Scope = 'Tools' } } -Confirm:$false
+            $result.Status | Should -BeExactly 'Failed'
+            $result.ResultingVersion | Should -BeNullOrEmpty
+        }
+
+        It 'retains a package failure and continues to the next target by default' {
+            Mock 'Shmuelie.Utilities\Update-UvPackage' { throw 'Package failed.' }
+            $results = @(Update-AllPackages -Provider Uv -Confirm:$false)
+            $results.Target | Should -Be @('pip:system:requests', 'tool:ruff')
+            $results.Status | Should -Be @('Failed', 'Updated')
+        }
+
+        It 'treats empty tool stdout as no installed tools' {
+            $script:ToolVersions.Clear()
+            $result = Update-AllPackages -Provider Uv -ProviderOptions @{ Uv = @{ Scope = 'Tools' } } -Confirm:$false
+            $result.Target | Should -BeExactly 'Uv'
+            $result.Status | Should -BeExactly 'Unchanged'
+        }
+
+        It 'validates the update target identity before passing any native arguments' {
+            $target = New-PackageUpdateTarget -Target 'tool:other' -Data @{ Kind = 'Tool'; Name = 'ruff' }
+            { Update-UvProviderTarget -Target $target -Confirm:$false } | Should -Throw '*identity*'
+            $script:NativeCalls | Should -HaveCount 0
+        }
+
+        It 'keeps provider failures as result data with ErrorAction Stop' {
+            $script:FailTool = 'ruff'
+            $results = @(Update-AllPackages -Provider Uv -ErrorAction Stop -Confirm:$false)
+            $results.Status | Should -Be @('Updated', 'Failed')
+        }
+
+        It 'fails read-only discovery for invalid native exit code <Code>' -ForEach @(
+            @{ Code = 5 }
+            @{ Code = $null }
+            @{ Code = '0' }
+        ) {
+            $script:UvExitCode = $Code
+            $result = Update-AllPackages -Provider Uv -Confirm:$false
+            $result.Status | Should -BeExactly 'Failed'
+            Should -Invoke 'Shmuelie.Utilities\Update-UvPackage' -Times 0 -Exactly
+        }
+
+        It 'rejects unexpected tool listing <Label> without updating packages' -ForEach @(
+            @{ Label = 'JSON'; Lines = @('[{"name":"ruff","version":"1.0"}]') }
+            @{ Label = 'malformed warning'; Lines = @('warning: Ignoring malformed tool `ruff`') }
+            @{ Label = 'orphan entrypoint'; Lines = @('- ruff') }
+            @{ Label = 'duplicate name'; Lines = @('a_b v1.0', 'a-b v2.0') }
+            @{ Label = 'unsafe name'; Lines = @('ruff&echo v1.0') }
+        ) {
+            $script:NativeOverride = { $Lines }.GetNewClosure()
+            $result = Update-AllPackages -Provider Uv -Confirm:$false
+            $result.Status | Should -BeExactly 'Failed'
+            Should -Invoke 'Shmuelie.Utilities\Update-UvPackage' -Times 0 -Exactly
+        }
+
+        It 'rejects unsafe package identifiers: <Name>' -ForEach @(
+            @{ Name = '--all' }; @{ Name = 'foo&bar' }; @{ Name = 'foo;bar' }
+            @{ Name = 'foo bar' }; @{ Name = 'foo@https://example.org' }; @{ Name = "foo`nbar" }
+        ) {
+            $script:Packages[0].name = $Name
+            (Update-AllPackages -Provider Uv -Confirm:$false).Status | Should -BeExactly 'Failed'
+            Should -Invoke 'Shmuelie.Utilities\Update-UvPackage' -Times 0 -Exactly
+        }
+
+        It 'explicitly fails unsupported option values: <Label>' -ForEach @(
+            @{ Label = 'virtual environment'; Options = @{ Scope = 'VirtualEnvironment' } }
+            @{ Label = 'scope array'; Options = @{ Scope = @('Packages', 'Tools') } }
+            @{ Label = 'null scope'; Options = @{ Scope = $null } }
+            @{ Label = 'string Boolean'; Options = @{ TopLevelOnly = 'false' } }
+            @{ Label = 'integer Boolean'; Options = @{ TopLevelOnly = 1 } }
+            @{ Label = 'tool top-level'; Options = @{ Scope = 'Tools'; TopLevelOnly = $true } }
+        ) {
+            $result = Update-AllPackages -Provider Uv -ProviderOptions @{ Uv = $Options } -Confirm:$false
+            $result.Status | Should -BeExactly 'Failed'
+            $result.Error | Should -BeOfType ([System.Management.Automation.ErrorRecord])
+            $script:NativeCalls | Should -HaveCount 0
+            Should -Invoke Get-UvProviderPackages -Times 0 -Exactly
+        }
+
+        It 'rejects unknown option names before dependency discovery' {
+            { Update-AllPackages -Provider Uv -ProviderOptions @{ Uv = @{ Python = 'custom' } } } | Should -Throw '*Unknown option*'
+            Should -Invoke Get-Command -Times 0 -Exactly
+        }
+
+        It 'preserves nonterminating discovery errors as failures without mutation' {
+            Mock Get-UvProviderPackages { Write-Error 'Discovery failed.' }
+            $result = Update-AllPackages -Provider Uv -Confirm:$false
+            $result.Status | Should -BeExactly 'Failed'
+            Should -Invoke 'Shmuelie.Utilities\Update-UvPackage' -Times 0 -Exactly
+        }
+    }
+}
+
+Describe 'Uv Utilities native discovery boundary' {
+    BeforeAll {
+        $script:HadUtilities = $null -ne (Get-Module Shmuelie.Utilities)
+        if (-not $script:HadUtilities) {
+            Import-Module (Join-Path $repoRoot 'modules' 'Shmuelie.Utilities' 'Shmuelie.Utilities.psd1') -ErrorAction Stop
+        }
+        $script:UtilitiesModule = Get-Module Shmuelie.Utilities
+        $script:OriginalUvFunction = & $script:UtilitiesModule { Get-Item Function:uv -ErrorAction Ignore }
+        & $script:UtilitiesModule {
+            function script:uv {
+                $script:UvTestCalls.Add(@($args))
+                if ($script:UvTestFailCommand -eq $args[1]) {
+                    # Harmless native failure exercises PowerShell's actual error boundary.
+                    & pwsh -NoProfile -Command 'exit 7'
+                    return
+                }
+                if ($args[1] -eq 'list') {
+                    '[{"name":"requests","version":"1.0","latest_version":"2.0"}]'
+                } else {
+                    'Name: requests'
+                    'Required-by:'
+                }
+            }
+        }
+    }
+    BeforeEach {
+        & $script:UtilitiesModule {
+            $script:UvTestCalls = [System.Collections.Generic.List[object]]::new()
+            $script:UvTestFailCommand = $null
+        }
+    }
+    AfterAll {
+        if ($script:OriginalUvFunction) {
+            & $script:UtilitiesModule { param($Original) Set-Item Function:script:uv -Value $Original.ScriptBlock } $script:OriginalUvFunction
+        } else {
+            & $script:UtilitiesModule { Remove-Item Function:uv -ErrorAction Stop }
+        }
+        & $script:UtilitiesModule {
+            Remove-Variable UvTestCalls, UvTestFailCommand -Scope Script -ErrorAction Ignore
+        }
+        if (-not $script:HadUtilities) { Remove-Module Shmuelie.Utilities -Force -ErrorAction Stop }
+    }
+
+    It 'reuses the canonical package listing and its top-level JSON pipeline' {
+        $packages = @(& (Get-Module Shmuelie.PackageManagement) { Get-UvProviderPackages -Outdated -TopLevelOnly })
+        $packages.name | Should -BeExactly 'requests'
+        $calls = & $script:UtilitiesModule { ,$script:UvTestCalls }
+        $calls[0] | Should -Be @('pip', 'list', '--no-progress', '--outdated', '--format', 'json', '--system')
+        $calls[1] | Should -Be @('pip', 'show', 'requests', '--system')
+    }
+
+    It 'propagates a failing native <Subcommand> even when it returns no JSON' -ForEach @(
+        @{ Subcommand = 'list' }
+        @{ Subcommand = 'show' }
+    ) {
+        & $script:UtilitiesModule { param($Name) $script:UvTestFailCommand = $Name } $Subcommand
+        { & (Get-Module Shmuelie.PackageManagement) { Get-UvProviderPackages -Outdated -TopLevelOnly } } |
+            Should -Throw '*exit code*7*'
+    }
+
+    It 'does not change Utilities native error or ErrorAction preferences' {
+        $before = & $script:UtilitiesModule { @($PSNativeCommandUseErrorActionPreference, $ErrorActionPreference) }
+        & (Get-Module Shmuelie.PackageManagement) { Get-UvProviderPackages } | Out-Null
+        $after = & $script:UtilitiesModule { @($PSNativeCommandUseErrorActionPreference, $ErrorActionPreference) }
+        $after | Should -Be $before
     }
 }
 

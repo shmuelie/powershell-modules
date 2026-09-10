@@ -4,14 +4,13 @@ Provider-neutral package update orchestration for PowerShell 7.4+.
 
 **Version:** 0.1.0
 
-## Foundation release
+## Provider availability
 
-This module currently ships **only the orchestration foundation** (#177).
-The reserved providers are `PSResourceGet`, `DotNet`, `Npm`, `Pip`, `Uv`,
-`VSCode`, `WinGet`, and `AppInstaller`. Their adapters are separate follow-up
-work (#178-#185); none is implemented in this version. Even if the corresponding
-tools are installed, the foundation returns explicit `Skipped` results, not
-successful updates. The complete provider set is planned for milestone M6.
+The catalog names, in order, are `PSResourceGet`, `DotNet`, `Npm`, `Pip`, `Uv`,
+`VSCode`, `WinGet`, and `AppInstaller`. Catalog membership does not guarantee
+an installed integration: unavailable dependencies and unimplemented adapters
+produce explicit `Skipped` results with reasons, not successful updates.
+See the provider sections below for supported integrations and options.
 
 No provider modules are required at import time. Windows-only providers are
 gated before dependency discovery on Linux and macOS.
@@ -35,14 +34,63 @@ validation. Exclusion wins, duplicates run once, and execution follows catalog
 order (the provider order above), then target discovery order. Unknown names
 fail before discovery or mutation.
 
-`ProviderOptions` maps each provider name to its own hashtable. The foundation
-accepts only empty option tables; each future adapter explicitly declares its
+`ProviderOptions` maps each provider name to its own hashtable. Each adapter declares its
 supported options. Invalid option names or non-hashtable values fail before any
 provider starts. Options for unselected providers are validated but not used.
 Provider and option keys are case-insensitive even in JSON-derived or custom
 hashtables. Case-equivalent duplicate keys are rejected before any provider
 starts, and the caller's maps are not modified.
 Options are data, not commands, module paths, or scripts to execute.
+
+### Uv
+
+`Uv` covers both **system Python environment packages** and **installed uv
+tools**. Install uv separately. Package operations additionally require
+`Shmuelie.Utilities` (`Install-PSResource Shmuelie.Utilities`); this optional
+module is loaded only when package operations are selected. A tools-only run
+does not require Utilities. Nothing is installed automatically.
+
+| Option | Values / default | Behavior |
+|---|---|---|
+| `Scope` | `All` (default), `Packages`, `Tools` | Select both kinds of target or just one |
+| `TopLevelOnly` | Boolean; `$true` by default | Package filtering; `$false` includes outdated dependencies. Not valid for `Tools` |
+
+```powershell
+Update-AllPackages -Provider Uv -WhatIf
+Update-AllPackages -Provider Uv -ProviderOptions @{ Uv = @{ Scope = 'Tools' } } -Confirm:$false
+Update-AllPackages -Provider Uv -ProviderOptions @{ Uv = @{ Scope = 'Packages'; TopLevelOnly = $false } }
+```
+
+Package discovery reuses `Shmuelie.Utilities\Get-UvPackages -Outdated
+-TopLevelOnly`, and approved updates reuse `Shmuelie.Utilities\Update-UvPackage`
+with inner confirmation disabled. These commands always use uv's `--system`
+selection, **not** the active virtual environment. The adapter does not support
+custom Python interpreters, project environments, extra indexes, arbitrary
+arguments, or an environment-path option. Invalid option values fail explicitly;
+unknown option names terminate before discovery.
+
+Targets are `pip:system:<distribution-name>` for packages and
+`tool:<distribution-name>` for installed tools, including previews and failures.
+Tools are listed using `uv tool list --color never --no-progress`. The official
+CLI currently has **no JSON output format for tool listing**; the adapter
+strictly validates tool headings and entrypoint lines instead of guessing
+through warnings or unknown formats. Pip package discovery already uses JSON.
+
+Every installed tool is an update candidate (not just those with a newer
+index version). Its approved callback runs `uv tool upgrade` for that single
+tool, preserving recorded version constraints and installation settings. There
+is no `uv tool run`, `uvx` cache refresh, self-update, or shell/PATH modification.
+After successful updates, the adapter re-reads the relevant installed listing:
+`ResultingVersion` is observed, never copied from an available/proposed version.
+`Unchanged` means the main distribution's version is unchanged; a tool's
+dependencies or executables may still have been refreshed. Tool previews have
+no proposed version. Native failures and malformed/absent update evidence fail;
+discovery failures prevent all mutations for this provider. A missing previous
+or observed version produces `Failed` rather than assuming the version changed.
+
+Official uv references: [CLI flags](https://docs.astral.sh/uv/reference/cli/#uv-tool-list),
+[tool upgrade semantics](https://docs.astral.sh/uv/concepts/tools/#upgrading-tools),
+and [tool list output implementation](https://github.com/astral-sh/uv/blob/main/crates/uv/src/commands/tool/list.rs).
 
 `-WhatIf` performs read-only discovery and returns `Planned` rows for discovered
 targets, without ever invoking mutating callbacks. `-Confirm` asks once per
