@@ -8,8 +8,9 @@ function Update-AllPackages {
         produce Skipped results with reasons. Providers are imported only when
         selected; importing this module does not require any provider module.
 
-        This initial foundation includes the orchestration contract, not the
-        provider adapters. Until adapters ship, all providers report Skipped.
+        See the module README for current provider availability and options.
+        PSResourceGet updates configured module roots using Shmuelie.Utilities;
+        no configured roots produces Skipped instead of scanning PSModulePath.
 
         Each integration discovers targets without mutation. ShouldProcess
         gates each target's update callback. WhatIf runs only discovery and
@@ -52,7 +53,13 @@ function Update-AllPackages {
     .EXAMPLE
         Update-AllPackages -ProviderOptions @{ Npm = @{} } -Confirm:$false
         Supply a provider options map and disable interactive confirmation.
-        The foundation accepts empty options only; adapters define their own.
+        Adapters define their own supported options; see the module README.
+    .EXAMPLE
+        Update-AllPackages -Provider PSResourceGet -ProviderOptions @{
+            PSResourceGet = @{ Path = (Join-Path $HOME 'PowerShellModules'); Name = 'MyTools.*'; Exclude = '*.Local' }
+        } -WhatIf
+        Preview locally discovered modules without contacting repositories.
+        Proposed versions are unknown until the canonical update runs.
     #>
     [CmdletBinding(SupportsShouldProcess)]
     [OutputType('Shmuelie.PackageManagement.UpdateResult')]

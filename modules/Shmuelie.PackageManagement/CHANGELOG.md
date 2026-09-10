@@ -5,6 +5,13 @@ under [Unreleased]; versions change only when a release is cut.
 
 ## [Unreleased]
 
+### Added
+- PSResourceGet adapter for configured module roots, name/exclusion filters, and
+  optional repository overrides, reusing Utilities' canonical discovery,
+  provenance, prerelease, and update behavior. Read-only previews avoid network
+  lookups; per-module results reflect observed installed versions and preserve
+  warning/error behavior and aggregate confirmation/fail-fast boundaries.
+
 ## [0.1.0] - 2026-09-08
 
 ### Added
