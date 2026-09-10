@@ -59,9 +59,12 @@ function Select-CopilotSession {
 
     .DESCRIPTION
         Lists sessions from Get-CopilotSession -All, optionally filters them by
-        ID, repository, or branch, and resumes the selected session by delegating
-        to Resume-CopilotSession. When filters and -First resolve to exactly one
-        session, the picker is skipped. Otherwise, the command prefers
+        ID, repository, branch, cwd, summary, or age using the same matching logic
+        as Get-CopilotSession. Discovery remains global, unlike Get-CopilotSession's
+        default current-directory scope. All supplied filters must match.
+        Resumes the selected session by delegating to Resume-CopilotSession.
+        When filters and -First resolve to exactly one session, the picker is
+        skipped. Otherwise, the command prefers
         Out-ConsoleGridView, then Out-GridView, then a numbered console prompt.
 
         By default the resume runs from the session's recorded Cwd so sessions
@@ -72,10 +75,31 @@ function Select-CopilotSession {
         Select a session by ID. Wildcards are supported.
 
     .PARAMETER Repository
-        Filter sessions by repository. Wildcards are supported.
+        Filter sessions by repository. Case-insensitive wildcards are supported.
+        Missing or empty Repository does not match even '*'.
 
     .PARAMETER Branch
-        Filter sessions by branch. Wildcards are supported.
+        Filter sessions by branch. Case-insensitive wildcards are supported.
+        Missing or empty Branch does not match even '*'.
+
+    .PARAMETER Cwd
+        Filter recorded working directories using case-insensitive wildcards.
+        Paths are not normalized or resolved. Missing Cwd does not match '*'.
+
+    .PARAMETER Summary
+        Filter displayed Summary using case-insensitive wildcards (name, then
+        legacy summary, then '(no summary)').
+
+    .PARAMETER UpdatedBefore
+        Match UpdatedAt strictly before this DateTimeOffset instant. Use ISO 8601
+        with Z or an explicit offset. Input without an offset uses local time;
+        a date-only input means local midnight. Missing UpdatedAt is excluded.
+
+    .PARAMETER OlderThan
+        Match UpdatedAt strictly more than this positive TimeSpan ago, measured
+        against one UTC clock sample per invocation. Use New-TimeSpan -Days 30;
+        a day means 24 elapsed hours. With UpdatedBefore, both limits must match.
+        Missing UpdatedAt is excluded; there is no timestamp fallback.
 
     .PARAMETER First
         Take the first N matching sessions after sorting by UpdatedAt descending.
@@ -138,6 +162,19 @@ function Select-CopilotSession {
         [ValidateNotNullOrEmpty()]
         [string]$Branch,
 
+        [SupportsWildcards()]
+        [ValidateNotNullOrEmpty()]
+        [string]$Cwd,
+
+        [SupportsWildcards()]
+        [ValidateNotNullOrEmpty()]
+        [string]$Summary,
+
+        [datetimeoffset]$UpdatedBefore,
+
+        [ValidateScript({ $_ -gt [timespan]::Zero }, ErrorMessage = 'OlderThan must be a positive TimeSpan.')]
+        [timespan]$OlderThan,
+
         [ValidateRange(1, [int]::MaxValue)]
         [int]$First,
 
@@ -152,19 +189,13 @@ function Select-CopilotSession {
         [string[]]$RemainingArgs
     )
 
-    $sessions = @(Get-CopilotSession -All | Sort-Object UpdatedAt -Descending)
-
-    if ($Id) {
-        $sessions = @($sessions | Where-Object { $_.Id -like $Id })
+    $filters = @{}
+    foreach ($filter in 'Id', 'Repository', 'Branch', 'Cwd', 'Summary', 'UpdatedBefore', 'OlderThan') {
+        if ($PSBoundParameters.ContainsKey($filter)) {
+            $filters[$filter] = $PSBoundParameters[$filter]
+        }
     }
-
-    if ($Repository) {
-        $sessions = @($sessions | Where-Object { $_.Repository -like $Repository })
-    }
-
-    if ($Branch) {
-        $sessions = @($sessions | Where-Object { $_.Branch -like $Branch })
-    }
+    $sessions = @(Get-CopilotSession -All | Select-CopilotSessionMatch @filters | Sort-Object UpdatedAt -Descending)
 
     if ($First) {
         $sessions = @($sessions | Select-Object -First $First)
