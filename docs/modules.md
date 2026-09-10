@@ -177,9 +177,6 @@ Provider-neutral package update orchestration. **Version 0.1.0.**
 option tables, lazy dependency discovery, per-target `ShouldProcess`, typed
 results, and optional fail-fast behavior.
 
-Npm updates only outdated global packages through the optional `Shmuelie.Node`
-module and observes installed versions afterward; repository dependencies are
-not targeted. Missing dependencies and pending integrations return `Skipped`.
-See the module README for current adapter availability. The complete provider
-set is planned for M6 (#169). Importing the core is portable and does not import
-optional provider modules.
+See the module README for provider availability and supported options.
+Unavailable or unimplemented integrations report `Skipped` with a reason.
+Importing the core is portable and does not import optional provider modules.

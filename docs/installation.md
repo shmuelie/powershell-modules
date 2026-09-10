@@ -27,11 +27,10 @@ Import a module before use:
 Import-Module Shmuelie.Git
 ```
 
-`Shmuelie.PackageManagement` discovers optional provider modules and tools
-lazily. Missing dependencies and pending integrations report explicit skipped
-outcomes; installing the module does not install or update provider tools.
-See the [module README](https://github.com/shmuelie/powershell-modules/blob/main/modules/Shmuelie.PackageManagement/README.md)
-for implemented providers and their dependencies.
+See the [Shmuelie.PackageManagement README](https://github.com/shmuelie/powershell-modules/blob/main/modules/Shmuelie.PackageManagement/README.md)
+for provider availability and optional dependencies. Unavailable integrations
+report explicit skipped outcomes; installing the module does not install or
+update provider tools.
 
 ## Update and remove
 

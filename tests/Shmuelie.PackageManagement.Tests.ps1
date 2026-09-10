@@ -24,18 +24,18 @@ Describe 'PackageManagement foundation surface' {
         $manifest.Version | Should -Be ([version]'0.1.0')
     }
 
-    It 'reports unavailable providers without importing optional modules' {
+    It 'honestly reports unavailable providers in catalog order without importing dependencies' {
         Mock Get-PackageProviderPlatform -ModuleName Shmuelie.PackageManagement { 'Windows' }
-        Mock Import-Module -ModuleName Shmuelie.PackageManagement { throw 'Must not import optional modules.' }
         Mock Get-PackageProviderAvailability -ModuleName Shmuelie.PackageManagement {
-            [pscustomobject]@{ Available = $false; Reason = 'Provider unavailable for this test.' }
+            [pscustomobject]@{ Available = $false; Reason = 'Unavailable in this test environment.' }
         }
+        Mock Import-Module -ModuleName Shmuelie.PackageManagement { throw 'Must not import optional modules.' }
         $results = @(Update-AllPackages)
         $results.Provider | Should -Be @('PSResourceGet', 'DotNet', 'Npm', 'Pip', 'Uv', 'VSCode', 'WinGet', 'AppInstaller')
         foreach ($result in $results) {
             $result.PSTypeNames[0] | Should -BeExactly 'Shmuelie.PackageManagement.UpdateResult'
             $result.Status | Should -BeExactly 'Skipped'
-            $result.Reason | Should -BeExactly 'Provider unavailable for this test.'
+            $result.Reason | Should -BeExactly 'Unavailable in this test environment.'
             $result.Error | Should -BeNullOrEmpty
         }
         Should -Invoke Import-Module -ModuleName Shmuelie.PackageManagement -Times 0 -Exactly
@@ -835,6 +835,333 @@ Describe 'Update-AllPackages Npm adapter' {
             $args.Count -eq 3 -and $args[0] -eq 'outdated' -and $args[1] -eq '--json' -and $args[2] -eq '--global'
         }
         Should -Invoke Shmuelie.Node\Update-NpmPackage -ModuleName Shmuelie.PackageManagement -Times 0 -Exactly
+    }
+}
+
+Describe 'Update-AllPackages Pip provider' {
+    BeforeAll {
+        $script:pipUtilities = Import-Module (Join-Path $repoRoot 'modules' 'Shmuelie.Utilities' 'Shmuelie.Utilities.psd1') -Force -PassThru -ErrorAction Stop
+        $script:pipGetCommand = Get-Command Shmuelie.Utilities\Get-PipPackages -ErrorAction Stop
+        $script:pipUpdateCommand = Get-Command Shmuelie.Utilities\Update-PipPackage -ErrorAction Stop
+        $script:pipHadExitCode = $null -ne (Get-Variable LASTEXITCODE -Scope Global -ErrorAction Ignore)
+        $script:pipOriginalExitCode = $global:LASTEXITCODE
+        & $script:pipUtilities {
+            function script:pip { throw 'Unexpected pip invocation: tests must mock every native operation.' }
+        }
+    }
+
+    AfterAll {
+        if ($script:pipUtilities) {
+            & $script:pipUtilities { Remove-Item Function:script:pip -ErrorAction Ignore }
+            Remove-Module Shmuelie.Utilities -Force -ErrorAction SilentlyContinue
+        }
+        if ($script:pipHadExitCode) { $global:LASTEXITCODE = $script:pipOriginalExitCode }
+        else { Remove-Variable LASTEXITCODE -Scope Global -ErrorAction Ignore }
+    }
+
+    BeforeEach {
+        $global:LASTEXITCODE = 0
+        Mock Get-PackageProviderPlatform -ModuleName Shmuelie.PackageManagement { 'Windows' }
+        Mock Import-Module -ModuleName Shmuelie.PackageManagement {}
+        Mock Get-Module -ModuleName Shmuelie.PackageManagement { [pscustomobject]@{ Name = 'Shmuelie.Utilities' } }
+        Mock Get-Command -ModuleName Shmuelie.PackageManagement { [pscustomobject]@{ Name = $Name } }
+        Mock Shmuelie.Utilities\Get-PipPackages -ModuleName Shmuelie.PackageManagement {
+            $global:LASTEXITCODE = 0
+            if ($PackageState -eq 'Outdated') {
+                [pscustomobject]@{ name = 'requests'; version = '2.31.0'; latest_version = '3.0.0' }
+                if (-not $User) { [pscustomobject]@{ name = 'pytest'; version = '8.0.0'; latest_version = '9.0.0' } }
+                if (-not $TopLevelOnly) { [pscustomobject]@{ name = 'urllib3'; version = '1.0'; latest_version = '2.0' } }
+            } else {
+                [pscustomobject]@{ name = 'requests'; version = '2.32.0' }
+                [pscustomobject]@{ name = 'pytest'; version = '8.0.0' }
+                [pscustomobject]@{ name = 'urllib3'; version = '2.0' }
+            }
+        }
+        Mock Shmuelie.Utilities\Update-PipPackage -ModuleName Shmuelie.PackageManagement {
+            $global:LASTEXITCODE = 0
+            [pscustomobject]@{ PSTypeName = 'PipUpdateResult'; Name = $PackageName; Success = $true }
+        }
+    }
+
+    It 'keeps catalog enumeration and completion side-effect-free' {
+        $catalog = & (Microsoft.PowerShell.Core\Get-Module Shmuelie.PackageManagement) { @(Get-PackageProvider) }
+        $catalog.Name | Should -Be @('PSResourceGet', 'DotNet', 'Npm', 'Pip', 'Uv', 'VSCode', 'WinGet', 'AppInstaller')
+        $pip = $catalog | Where-Object Name -EQ Pip
+        $pip.RequiredModules | Should -Be @('Shmuelie.Utilities')
+        $pip.OptionNames | Should -Be @('User', 'TopLevelOnly')
+        $pip.GetTargets | Should -BeOfType ([scriptblock])
+        $pip.Update | Should -BeOfType ([scriptblock])
+        Should -Invoke Import-Module -ModuleName Shmuelie.PackageManagement -Times 0 -Exactly
+        Should -Invoke Get-Command -ModuleName Shmuelie.PackageManagement -Times 0 -Exactly
+        Should -Invoke Get-Module -ModuleName Shmuelie.PackageManagement -Times 0 -Exactly
+    }
+
+    It 'updates only outdated top-level packages by default and reports observed versions' {
+        $results = @(Update-AllPackages -Provider Pip -Confirm:$false)
+        $results.Provider | Should -Be @('Pip', 'Pip')
+        $results.Target | Should -Be @('requests', 'pytest')
+        $results.Status | Should -Be @('Updated', 'Unchanged')
+        $results.PreviousVersion | Should -Be @('2.31.0', '8.0.0')
+        $results.ResultingVersion | Should -Be @('2.32.0', '8.0.0')
+        $results[0].PSTypeNames[0] | Should -BeExactly 'Shmuelie.PackageManagement.UpdateResult'
+        Should -Invoke Shmuelie.Utilities\Get-PipPackages -ModuleName Shmuelie.PackageManagement -Times 1 -Exactly -ParameterFilter {
+            $PackageState -eq 'Outdated' -and $TopLevelOnly -and -not $User
+        }
+        Should -Invoke Shmuelie.Utilities\Get-PipPackages -ModuleName Shmuelie.PackageManagement -Times 2 -Exactly -ParameterFilter {
+            $PackageState -eq 'Any' -and -not $TopLevelOnly
+        }
+        Should -Invoke Shmuelie.Utilities\Update-PipPackage -ModuleName Shmuelie.PackageManagement -Times 2 -Exactly -ParameterFilter {
+            $Confirm -eq $false -and $ErrorAction -eq 'Stop'
+        }
+    }
+
+    It 'restricts discovery and observation to user packages without inventing an updater User parameter' {
+        $options = @{ pip = @{ user = $true } }
+        $result = Update-AllPackages -Provider Pip -ProviderOptions $options -Confirm:$false
+        $result.Target | Should -BeExactly 'requests'
+        $result.Status | Should -BeExactly 'Updated'
+        $options.pip.Count | Should -Be 1
+        Should -Invoke Shmuelie.Utilities\Get-PipPackages -ModuleName Shmuelie.PackageManagement -Times 2 -Exactly -ParameterFilter { $User }
+        Should -Invoke Shmuelie.Utilities\Update-PipPackage -ModuleName Shmuelie.PackageManagement -Times 1 -Exactly -ParameterFilter { $PackageName -eq 'requests' }
+    }
+
+    It 'allows explicit transitive-package selection' {
+        $results = @(Update-AllPackages -Provider Pip -ProviderOptions @{ Pip = @{ TopLevelOnly = $false } } -WhatIf)
+        $results.Target | Should -Be @('requests', 'pytest', 'urllib3')
+        $results.Status | Should -Be @('Planned', 'Planned', 'Planned')
+    }
+
+    It 'supports Boolean SwitchParameter values' {
+        $results = @(Update-AllPackages -Provider Pip -ProviderOptions @{ Pip = @{
+            User = [switch]$true; TopLevelOnly = [switch]$false
+        } } -WhatIf)
+        $results.Target | Should -Be @('requests', 'urllib3')
+    }
+
+    It 'returns planned targets without updates or observation under WhatIf' {
+        $results = @(Update-AllPackages -Provider Pip -WhatIf)
+        $results.Status | Should -Be @('Planned', 'Planned')
+        $results.ResultingVersion | Should -Be @('3.0.0', '9.0.0')
+        Should -Invoke Shmuelie.Utilities\Update-PipPackage -ModuleName Shmuelie.PackageManagement -Times 0 -Exactly
+        Should -Invoke Shmuelie.Utilities\Get-PipPackages -ModuleName Shmuelie.PackageManagement -Times 1 -Exactly
+    }
+
+    It 'skips when <Missing> is unavailable' -ForEach @(
+        @{ Missing = 'pip' }
+        @{ Missing = 'Shmuelie.Utilities\Get-PipPackages' }
+        @{ Missing = 'Shmuelie.Utilities\Update-PipPackage' }
+    ) {
+        Mock Get-Command -ModuleName Shmuelie.PackageManagement { $null } -ParameterFilter { $Name -eq $Missing }
+        $result = Update-AllPackages -Provider Pip -Confirm:$false
+        $result.Status | Should -BeExactly 'Skipped'
+        $result.Reason | Should -Match ([regex]::Escape($Missing))
+        Should -Invoke Shmuelie.Utilities\Get-PipPackages -ModuleName Shmuelie.PackageManagement -Times 0 -Exactly
+        Should -Invoke Shmuelie.Utilities\Update-PipPackage -ModuleName Shmuelie.PackageManagement -Times 0 -Exactly
+    }
+
+    It 'skips missing optional modules without importing or installing them' {
+        Mock Get-Module -ModuleName Shmuelie.PackageManagement { $null }
+        $result = Update-AllPackages -Provider Pip -Confirm:$false
+        $result.Status | Should -BeExactly 'Skipped'
+        $result.Reason | Should -Match 'Shmuelie.Utilities'
+        Should -Invoke Import-Module -ModuleName Shmuelie.PackageManagement -Times 0 -Exactly
+    }
+
+    It 'does not discover excluded Pip dependencies' {
+        Update-AllPackages -Provider Pip -ExcludeProvider Pip -Confirm:$false | Should -BeNullOrEmpty
+        Should -Invoke Get-Command -ModuleName Shmuelie.PackageManagement -Times 0 -Exactly
+        Should -Invoke Import-Module -ModuleName Shmuelie.PackageManagement -Times 0 -Exactly
+    }
+
+    It 'rejects invalid option value <Label> before reading packages' -ForEach @(
+        @{ Label = 'string false'; Options = @{ User = 'false' } }
+        @{ Label = 'numeric'; Options = @{ TopLevelOnly = 0 } }
+        @{ Label = 'null'; Options = @{ User = $null } }
+        @{ Label = 'script'; Options = @{ TopLevelOnly = { throw 'Never execute options.' } } }
+        @{ Label = 'array'; Options = @{ User = @($true, $false) } }
+    ) {
+        $result = Update-AllPackages -Provider Pip -ProviderOptions @{ Pip = $Options } -WhatIf
+        $result.Status | Should -BeExactly 'Failed'
+        $result.Reason | Should -Match 'Boolean'
+        Should -Invoke Shmuelie.Utilities\Get-PipPackages -ModuleName Shmuelie.PackageManagement -Times 0 -Exactly
+    }
+
+    It 'rejects unsupported <Option> options before provider discovery' -ForEach @(
+        @{ Option = 'Confirm' }; @{ Option = 'PackageState' }; @{ Option = 'Arguments' }; @{ Option = 'PythonPath' }
+    ) {
+        { Update-AllPackages -Provider Pip -ProviderOptions @{ Pip = @{ $Option = 'value' } } -WhatIf } | Should -Throw '*Unknown option*'
+        Should -Invoke Import-Module -ModuleName Shmuelie.PackageManagement -Times 0 -Exactly
+    }
+
+    It 'rejects unsafe distribution name <Name> before any mutation' -ForEach @(
+        @{ Name = '--target' }; @{ Name = 'name&command' }; @{ Name = 'a|b' }; @{ Name = 'a;command' }
+        @{ Name = 'name==1' }; @{ Name = 'name[extra]' }; @{ Name = 'https://example.org/a.whl' }
+        @{ Name = 'two words' }; @{ Name = 'name%PATH%' }; @{ Name = 'name$(command)' }
+        @{ Name = "name`n" }; @{ Name = '../name' }; @{ Name = '' }; @{ Name = $null }
+    ) {
+        Mock Shmuelie.Utilities\Get-PipPackages -ModuleName Shmuelie.PackageManagement {
+            [pscustomobject]@{ name = 'valid'; version = '1'; latest_version = '2' }
+            [pscustomobject]@{ name = $Name; version = '1'; latest_version = '2' }
+        }
+        $result = Update-AllPackages -Provider Pip -Confirm:$false
+        $result.Status | Should -BeExactly 'Failed'
+        $result.Reason | Should -Match 'invalid package name'
+        Should -Invoke Shmuelie.Utilities\Update-PipPackage -ModuleName Shmuelie.PackageManagement -Times 0 -Exactly
+    }
+
+    It 'matches normalized names but preserves the original target identifier' {
+        Mock Shmuelie.Utilities\Get-PipPackages -ModuleName Shmuelie.PackageManagement {
+            if ($PackageState -eq 'Outdated') { [pscustomobject]@{ name = 'Example_Package.Name'; version = '1'; latest_version = '3' } }
+            else { [pscustomobject]@{ name = 'example-package-name'; version = '2' } }
+        }
+        $result = Update-AllPackages -Provider Pip -Confirm:$false
+        $result.Target | Should -BeExactly 'Example_Package.Name'
+        $result.ResultingVersion | Should -BeExactly '2'
+    }
+
+    It 'rejects duplicate normalized discovery names before updates' {
+        Mock Shmuelie.Utilities\Get-PipPackages -ModuleName Shmuelie.PackageManagement {
+            [pscustomobject]@{ name = 'example_package'; version = '1' }
+            [pscustomobject]@{ name = 'example-package'; version = '1' }
+        }
+        (Update-AllPackages -Provider Pip -Confirm:$false).Reason | Should -Match 'duplicate'
+        Should -Invoke Shmuelie.Utilities\Update-PipPackage -ModuleName Shmuelie.PackageManagement -Times 0 -Exactly
+    }
+
+    It 'preserves unknown discovery versions under WhatIf' {
+        Mock Shmuelie.Utilities\Get-PipPackages -ModuleName Shmuelie.PackageManagement { [pscustomobject]@{ name = 'requests' } }
+        $result = Update-AllPackages -Provider Pip -WhatIf
+        $result.Status | Should -BeExactly 'Planned'
+        $result.PreviousVersion | Should -BeNullOrEmpty
+        $result.ResultingVersion | Should -BeNullOrEmpty
+    }
+
+    It 'reports an empty discovery set as unchanged' {
+        Mock Shmuelie.Utilities\Get-PipPackages -ModuleName Shmuelie.PackageManagement {}
+        $result = Update-AllPackages -Provider Pip -Confirm:$false
+        $result.Status | Should -BeExactly 'Unchanged'
+        $result.Target | Should -BeExactly 'Pip'
+        Should -Invoke Shmuelie.Utilities\Update-PipPackage -ModuleName Shmuelie.PackageManagement -Times 0 -Exactly
+    }
+
+    It 'fails discovery on a native nonzero exit even with valid output' {
+        Mock Shmuelie.Utilities\Get-PipPackages -ModuleName Shmuelie.PackageManagement {
+            $global:LASTEXITCODE = 23
+            [pscustomobject]@{ name = 'requests'; version = '1' }
+        }
+        $result = Update-AllPackages -Provider Pip -Confirm:$false
+        $result.Status | Should -BeExactly 'Failed'
+        $result.Reason | Should -Match 'exit code 23'
+        Should -Invoke Shmuelie.Utilities\Update-PipPackage -ModuleName Shmuelie.PackageManagement -Times 0 -Exactly
+    }
+
+    It 'preserves warnings and original errors, with StopOnFailure <Stop>' -ForEach @(
+        @{ Stop = $false; Count = 2 }; @{ Stop = $true; Count = 1 }
+    ) {
+        $script:pipExpectedError = [System.Management.Automation.ErrorRecord]::new(
+            [System.InvalidOperationException]::new('Package update failed.'), 'PipTestFailure',
+            [System.Management.Automation.ErrorCategory]::InvalidOperation, 'requests')
+        Mock Shmuelie.Utilities\Update-PipPackage -ModuleName Shmuelie.PackageManagement {
+            Write-Warning 'Preserved pip warning.'
+            Write-Error -ErrorRecord $script:pipExpectedError
+        } -ParameterFilter { $PackageName -eq 'requests' }
+        $records = @(Update-AllPackages -Provider Pip -StopOnFailure:$Stop -Confirm:$false -ErrorAction Stop 3>&1)
+        $warnings = @($records | Where-Object { $_ -is [System.Management.Automation.WarningRecord] })
+        $results = @($records | Where-Object { $_ -isnot [System.Management.Automation.WarningRecord] })
+        $results | Should -HaveCount $Count
+        $results[0].Status | Should -BeExactly 'Failed'
+        $results[0].Error.FullyQualifiedErrorId | Should -Match 'PipTestFailure'
+        $results[0].Error.Exception.Message | Should -BeExactly 'Package update failed.'
+        $warnings.Message | Should -Contain 'Preserved pip warning.'
+        if (-not $Stop) { $results[1].Status | Should -BeExactly 'Unchanged' }
+        Should -Invoke Shmuelie.Utilities\Update-PipPackage -ModuleName Shmuelie.PackageManagement -Times $Count -Exactly
+    }
+
+    It 'does not fabricate success for <Label>' -ForEach @(
+        @{ Label = 'empty updater output'; Callback = {} }
+        @{ Label = 'untyped updater output'; Callback = { [pscustomobject]@{ Name = 'requests'; Success = $true } } }
+        @{ Label = 'failure result'; Callback = { [pscustomobject]@{ PSTypeName = 'PipUpdateResult'; Name = 'requests'; Success = $false } } }
+        @{ Label = 'wrong target'; Callback = { [pscustomobject]@{ PSTypeName = 'PipUpdateResult'; Name = 'wrong'; Success = $true } } }
+        @{ Label = 'non-Boolean success'; Callback = { [pscustomobject]@{ PSTypeName = 'PipUpdateResult'; Name = 'requests'; Success = 'false' } } }
+        @{ Label = 'native nonzero'; Callback = { $global:LASTEXITCODE = 17; [pscustomobject]@{ PSTypeName = 'PipUpdateResult'; Name = 'requests'; Success = $true } } }
+    ) {
+        Mock Shmuelie.Utilities\Update-PipPackage -ModuleName Shmuelie.PackageManagement { & $Callback }
+        $result = Update-AllPackages -Provider Pip -StopOnFailure -Confirm:$false
+        $result.Status | Should -BeExactly 'Failed'
+        $result.ResultingVersion | Should -BeNullOrEmpty
+        $result.Error | Should -BeOfType ([System.Management.Automation.ErrorRecord])
+        Should -Invoke Shmuelie.Utilities\Get-PipPackages -ModuleName Shmuelie.PackageManagement -Times 1 -Exactly
+    }
+
+    It 'fails rather than presenting the proposal as observed when observation <Label>' -ForEach @(
+        @{ Label = 'returns no package'; Callback = {} }
+        @{ Label = 'returns unknown version'; Callback = { [pscustomobject]@{ name = 'requests' } } }
+        @{ Label = 'fails natively'; Callback = { $global:LASTEXITCODE = 19 } }
+        @{ Label = 'throws'; Callback = { throw 'Observation failed.' } }
+    ) {
+        Mock Shmuelie.Utilities\Get-PipPackages -ModuleName Shmuelie.PackageManagement { & $Callback } -ParameterFilter { $PackageState -eq 'Any' }
+        $result = Update-AllPackages -Provider Pip -StopOnFailure -Confirm:$false
+        $result.Status | Should -BeExactly 'Failed'
+        $result.ResultingVersion | Should -BeNullOrEmpty
+    }
+
+    Context 'Canonical Utilities commands with mocked native pip' {
+        BeforeEach {
+            $script:pipNativeCalls = [System.Collections.Generic.List[string]]::new()
+            Mock Shmuelie.Utilities\Get-PipPackages -ModuleName Shmuelie.PackageManagement {
+                & $script:pipGetCommand -User:$User -TopLevelOnly:$TopLevelOnly -PackageState $PackageState -ErrorAction Stop
+            }
+            Mock Shmuelie.Utilities\Update-PipPackage -ModuleName Shmuelie.PackageManagement {
+                & $script:pipUpdateCommand -PackageName $PackageName -Confirm:$false -ErrorAction Stop -Verbose
+            }
+            Mock pip -ModuleName Shmuelie.Utilities {
+                $script:pipNativeCalls.Add($args -join '|')
+                $global:LASTEXITCODE = 0
+                if ($args[0] -eq 'list') {
+                    if ($args -contains '--outdated') { '[{"name":"requests","version":"1","latest_version":"3"}]' }
+                    else { '[{"name":"requests","version":"2"}]' }
+                } else { 'Successfully installed requests-2' }
+            }
+        }
+
+        It 'uses only supported native flags and never passes the proposed version or a user-install switch' {
+            $result = Update-AllPackages -Provider Pip -ProviderOptions @{ Pip = @{ User = $true } } -Confirm:$false
+            $result.Status | Should -BeExactly 'Updated'
+            $result.ResultingVersion | Should -BeExactly '2'
+            $script:pipNativeCalls | Should -Be @(
+                'list|--format|json|--disable-pip-version-check|--user|--not-required|--outdated'
+                'install|--upgrade|requests'
+                'list|--format|json|--disable-pip-version-check|--user'
+            )
+        }
+
+        It 'retains native failure diagnostics from the public updater verbose stream' {
+            Mock pip -ModuleName Shmuelie.Utilities {
+                $global:LASTEXITCODE = 12
+                'Installer failure diagnostic.'
+            } -ParameterFilter { $args[0] -eq 'install' }
+            $result = Update-AllPackages -Provider Pip -Confirm:$false
+            $result.Status | Should -BeExactly 'Failed'
+            $result.Reason | Should -Match 'exit code 12'
+            $result.Reason | Should -Match 'Installer failure diagnostic'
+            Should -Invoke pip -ModuleName Shmuelie.Utilities -Times 1 -Exactly -ParameterFilter { $args[0] -eq 'list' }
+        }
+
+        It 'preserves redirected native errors rather than reducing them to Boolean failure' {
+            Mock pip -ModuleName Shmuelie.Utilities {
+                Write-Error 'Native package error.' -ErrorId 'NativePipTestError'
+            } -ParameterFilter { $args[0] -eq 'install' }
+            $result = Update-AllPackages -Provider Pip -Confirm:$false
+            $result.Status | Should -BeExactly 'Failed'
+            $result.Error.FullyQualifiedErrorId | Should -Match 'NativePipTestError'
+            $result.Error.Exception.Message | Should -BeExactly 'Native package error.'
+        }
+
+        It 'performs native read-only discovery only under WhatIf' {
+            (Update-AllPackages -Provider Pip -WhatIf).Status | Should -BeExactly 'Planned'
+            $script:pipNativeCalls | Should -HaveCount 1
+            Should -Invoke pip -ModuleName Shmuelie.Utilities -Times 0 -Exactly -ParameterFilter { $args[0] -eq 'install' }
+        }
     }
 }
 
