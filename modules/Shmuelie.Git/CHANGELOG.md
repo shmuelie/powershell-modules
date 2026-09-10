@@ -7,6 +7,12 @@ Versions change only when a release is cut; unreleased work stays under
 ## [Unreleased]
 
 ### Added
+- Added `Restore-GitStash` for native `git stash pop`, defaulting to the newest
+  entry with optional exact `stash@{n}` selection, repository path pipeline input,
+  and `-WhatIf`/`-Confirm`. Native failures are surfaced without fallback or
+  conflict resolution, leaving the stash available after apply failures. Piped
+  stash objects require an explicit selector rather than silently ignoring their
+  object identity and popping the newest entry.
 - Added `Restore-Items` for explicit literal file/directory selections. Defaults
   to restoring only unstaged working-tree changes from the index; `-IncludeIndex`
   restores both index and working tree from HEAD. `-Source` overrides the source,

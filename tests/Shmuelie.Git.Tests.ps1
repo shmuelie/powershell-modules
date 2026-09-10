@@ -94,6 +94,391 @@ BeforeAll {
     }
 }
 
+Describe 'Restore-GitStash' {
+    BeforeAll {
+        $restoreLocation = Get-Location
+        $restoreRoot = Join-Path $TestDrive 'restore-stash'
+        if (Test-Path -LiteralPath $restoreRoot) { throw "Fixture already exists: $restoreRoot" }
+        $null = New-Item -ItemType Directory -Path $restoreRoot -ErrorAction Stop
+        $restoreEnvironment = @{}
+        foreach ($key in @(
+            'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_SYSTEM', 'GIT_CONFIG_NOSYSTEM',
+            'GIT_CONFIG_COUNT', 'GIT_CONFIG_PARAMETERS', 'GIT_DIR', 'GIT_WORK_TREE',
+            'GIT_COMMON_DIR', 'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY',
+            'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_NAMESPACE', 'GIT_CEILING_DIRECTORIES',
+            'GIT_DEFAULT_HASH', 'GIT_DEFAULT_REF_FORMAT', 'GIT_AUTHOR_DATE', 'GIT_COMMITTER_DATE'
+        )) {
+            $restoreEnvironment[$key] = [Environment]::GetEnvironmentVariable($key, 'Process')
+            Remove-Item -LiteralPath "Env:$key" -ErrorAction Ignore
+        }
+        $env:GIT_CONFIG_GLOBAL = Join-Path $restoreRoot 'no-global-config'
+        $env:GIT_CONFIG_SYSTEM = Join-Path $restoreRoot 'no-system-config'
+        $env:GIT_CONFIG_NOSYSTEM = '1'
+        $env:GIT_CONFIG_COUNT = '0'
+
+        function Assert-RestoreTestPath {
+            param([Parameter(Mandatory)][string]$Path)
+            $root = [IO.Path]::GetFullPath((Join-Path $TestDrive 'restore-stash'))
+            $full = [IO.Path]::GetFullPath($Path)
+            if ($root -ne $restoreRoot -or
+                -not $full.StartsWith($root + [IO.Path]::DirectorySeparatorChar, [StringComparison]::Ordinal) -or
+                -not (Test-Path -LiteralPath $full -PathType Container)) {
+                throw "Not an owned restore fixture: $Path"
+            }
+            $item = Get-Item -LiteralPath $full
+            while ($item.FullName -ne $root) {
+                if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Linked fixture: $Path" }
+                $item = $item.Parent
+            }
+            if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Linked fixture root: $root" }
+        }
+
+        function Invoke-RestoreTestGit {
+            param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string[]]$Arguments, [switch]$Initialize)
+            Assert-RestoreTestPath $Path
+            if (-not $Initialize) {
+                # All fixtures own their .git directory; never follow an external worktree gitdir.
+                $gitDir = Get-Item -LiteralPath (Join-Path $Path '.git') -Force -ErrorAction Stop
+                if (-not $gitDir.PSIsContainer -or $gitDir.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+                    throw "Not an owned git directory: $Path"
+                }
+            }
+            Invoke-Git (@('-C', $Path) + $Arguments)
+        }
+
+        function New-RestoreTestRepo {
+            param([string]$Name = 'r')
+            $path = Join-Path $restoreRoot $Name
+            if (Test-Path -LiteralPath $path) { throw "Fixture already exists: $path" }
+            $null = New-Item -ItemType Directory -Path $path -ErrorAction Stop
+            Invoke-RestoreTestGit $path @('-c', 'init.templateDir=', 'init', '-b', 'main', '--quiet') -Initialize
+            Invoke-RestoreTestGit $path @('config', 'core.autocrlf', 'false')
+            Invoke-RestoreTestGit $path @('config', 'user.name', 'Test User')
+            Invoke-RestoreTestGit $path @('config', 'user.email', 'test@example.com')
+            foreach ($name in @('tracked.txt', 'other.txt', 'keep.txt')) {
+                Set-Content -LiteralPath (Join-Path $path $name) -Value 'initial'
+            }
+            Invoke-RestoreTestGit $path @('add', '--', 'tracked.txt', 'other.txt', 'keep.txt')
+            Invoke-RestoreTestGit $path @('commit', '--quiet', '-m', 'initial')
+            $path
+        }
+
+        function Add-RestoreTestStash {
+            param([Parameter(Mandatory)][string]$Path, [string]$Value = 'stashed', [string]$File = 'tracked.txt')
+            Assert-RestoreTestPath $Path
+            Set-Content -LiteralPath (Join-Path $Path $File) -Value $Value
+            Invoke-RestoreTestGit $Path @('stash', 'push', '--quiet', '-m', $Value)
+            Invoke-RestoreTestGit $Path @('rev-parse', 'refs/stash')
+        }
+
+        function Get-RestoreTestState {
+            param([Parameter(Mandatory)][string]$Path)
+            Assert-RestoreTestPath $Path
+            [ordered]@{
+                Head = Invoke-RestoreTestGit $Path @('rev-parse', 'HEAD')
+                Stashes = @(Invoke-RestoreTestGit $Path @('stash', 'list', '--format=%gd %H %gs'))
+                Index = @(Invoke-RestoreTestGit $Path @('ls-files', '--stage'))
+                Files = @(Get-ChildItem -LiteralPath $Path -File | Sort-Object Name | ForEach-Object {
+                    "$($_.Name):$([Convert]::ToBase64String([IO.File]::ReadAllBytes($_.FullName)))"
+                })
+            } | ConvertTo-Json -Depth 5 -Compress
+        }
+
+        function Clear-RestoreTestFixtures {
+            if ($restoreRoot -ne (Join-Path $TestDrive 'restore-stash')) { throw 'Invalid cleanup root.' }
+            Set-Location -LiteralPath $TestDrive -ErrorAction Stop
+            foreach ($item in Get-ChildItem -LiteralPath $restoreRoot -Force -ErrorAction Stop) {
+                if (-not $item.PSIsContainer) { throw "Unexpected fixture file: $($item.FullName)" }
+                Assert-RestoreTestPath $item.FullName
+                # Pester 5.9 shares TestDrive across Describe blocks; remove our read-only Git objects explicitly.
+                Get-ChildItem -LiteralPath $item.FullName -Recurse -Force -File -ErrorAction Stop |
+                    ForEach-Object { $_.IsReadOnly = $false }
+                Remove-Item -LiteralPath $item.FullName -Recurse -Force -ErrorAction Stop
+            }
+        }
+    }
+
+    BeforeEach {
+        Set-Location -LiteralPath $restoreRoot -ErrorAction Stop
+    }
+
+    AfterEach {
+        Clear-RestoreTestFixtures
+    }
+
+    AfterAll {
+        try {
+            Clear-RestoreTestFixtures
+            Remove-Item -LiteralPath $restoreRoot -Force -ErrorAction Stop
+        } finally {
+            foreach ($key in $restoreEnvironment.Keys) {
+                if ($null -eq $restoreEnvironment[$key]) {
+                    Remove-Item -LiteralPath "Env:$key" -ErrorAction Ignore
+                } else {
+                    [Environment]::SetEnvironmentVariable($key, $restoreEnvironment[$key], 'Process')
+                }
+            }
+            Set-Location -LiteralPath $restoreLocation.Path -ErrorAction Stop
+        }
+    }
+
+    It 'exports the command with help, standard path aliases and ShouldProcess' {
+        $command = Get-Command Restore-GitStash -Module Shmuelie.Git
+        $command.Parameters['Path'].Aliases | Should -Contain 'RepositoryPath'
+        $command.Parameters['Path'].Aliases | Should -Contain 'RepoPath'
+        $command.Parameters.Keys | Should -Contain 'WhatIf'
+        $command.Parameters.Keys | Should -Contain 'Confirm'
+        (Get-Help Restore-GitStash).Description.Text | Should -Not -BeNullOrEmpty
+    }
+
+    It 'passes only discrete native pop arguments for <Selector>' -ForEach @(
+        @{ Selector = 'default'; Options = @{}; Expected = 'stash@{0}' }
+        @{ Selector = 'explicit'; Options = @{ Stash = 'stash@{12}' }; Expected = 'stash@{12}' }
+        @{ Selector = 'maximum index'; Options = @{ Stash = 'stash@{2147483647}' }; Expected = 'stash@{2147483647}' }
+    ) {
+        InModuleScope Shmuelie.Git -Parameters @{ Options = $Options; Expected = $Expected } {
+            Mock Resolve-GitRepositoryPath { 'resolved repo & ; [literal]' }
+            Mock Invoke-Git { [pscustomobject]@{ ExitCode = 0 } }
+            Restore-GitStash -Path 'input repo' @Options -Confirm:$false | Should -BeNullOrEmpty
+            Should -Invoke Invoke-Git -Exactly -Times 1 -ParameterFilter {
+                $Path -ceq 'resolved repo & ; [literal]' -and
+                ($Arguments -join '|') -ceq "stash|pop|--|$Expected"
+            }
+        }
+    }
+
+    It 'rejects unsafe, ambiguous or out-of-range selectors: <Label>' -ForEach @(
+        @{ Label = 'null'; Value = $null }, @{ Label = 'empty'; Value = '' },
+        @{ Label = 'option'; Value = '--index' }, @{ Label = 'config'; Value = '-c' },
+        @{ Label = 'number'; Value = '0' }, @{ Label = 'object ID'; Value = ('a' * 40) },
+        @{ Label = 'ref'; Value = 'refs/stash' }, @{ Label = 'revision'; Value = 'stash@{0}^' },
+        @{ Label = 'date'; Value = 'stash@{yesterday}' }, @{ Label = 'wildcard'; Value = 'stash@{*}' },
+        @{ Label = 'leading zero'; Value = 'stash@{01}' }, @{ Label = 'negative'; Value = 'stash@{-1}' },
+        @{ Label = 'case'; Value = 'STASH@{0}' }, @{ Label = 'overflow'; Value = 'stash@{2147483648}' },
+        @{ Label = 'large overflow'; Value = 'stash@{99999999999999999999}' },
+        @{ Label = 'newline'; Value = "stash@{0}`n" }, @{ Label = 'NUL'; Value = "stash@{0}`0" },
+        @{ Label = 'shell'; Value = 'stash@{0};echo injected' }
+    ) {
+        InModuleScope Shmuelie.Git -Parameters @{ Value = $Value } {
+            Mock Resolve-GitRepositoryPath { throw 'Must not discover a repository.' }
+            Mock Invoke-Git { throw 'Must not invoke Git.' }
+            { Restore-GitStash -Stash $Value -Confirm:$false } | Should -Throw
+            Should -Invoke Resolve-GitRepositoryPath -Exactly -Times 0
+            Should -Invoke Invoke-Git -Exactly -Times 0
+        }
+    }
+
+    It 'does not retry native failure with apply or drop or emit a success diagnostic' {
+        InModuleScope Shmuelie.Git {
+            Mock Resolve-GitRepositoryPath { 'fixture' }
+            Mock Invoke-Git { Write-Error 'Native failure.' }
+            Mock Write-Verbose {}
+            Restore-GitStash -Confirm:$false -ErrorAction SilentlyContinue -ErrorVariable failures | Should -BeNullOrEmpty
+            $failures | Should -Not -BeNullOrEmpty
+            Should -Invoke Invoke-Git -Exactly -Times 1
+            Should -Invoke Write-Verbose -Exactly -Times 0
+        }
+    }
+
+    Context 'isolated native working trees' -Skip:(-not (Get-Command git -ErrorAction SilentlyContinue)) {
+        BeforeEach {
+            $restoreRepo = New-RestoreTestRepo -Name 'r &;[x]'
+            Assert-RestoreTestPath $restoreRepo
+        }
+
+        It 'pops the newest stash by default, preserving other stashes and unrelated dirty files' {
+            $older = Add-RestoreTestStash $restoreRepo -Value 'older' -File 'other.txt'
+            $null = Add-RestoreTestStash $restoreRepo
+            Set-Content -LiteralPath (Join-Path $restoreRepo 'keep.txt') -Value 'keep staged'
+            Invoke-RestoreTestGit $restoreRepo @('add', '--', 'keep.txt')
+            Set-Content -LiteralPath (Join-Path $restoreRepo 'keep.txt') -Value 'keep unstaged'
+            Set-Content -LiteralPath (Join-Path $restoreRepo 'untracked.txt') -Value 'keep untracked'
+            Set-Location -LiteralPath $restoreRepo -ErrorAction Stop
+            $global:LASTEXITCODE = 73
+            Restore-GitStash -Confirm:$false | Should -BeNullOrEmpty
+            $global:LASTEXITCODE | Should -Be 73
+            (Get-Location).Path | Should -BeExactly $restoreRepo
+            Get-Content -LiteralPath (Join-Path $restoreRepo 'tracked.txt') | Should -BeExactly 'stashed'
+            Get-Content -LiteralPath (Join-Path $restoreRepo 'other.txt') | Should -BeExactly 'initial'
+            Get-Content -LiteralPath (Join-Path $restoreRepo 'keep.txt') | Should -BeExactly 'keep unstaged'
+            Get-Content -LiteralPath (Join-Path $restoreRepo 'untracked.txt') | Should -BeExactly 'keep untracked'
+            Invoke-RestoreTestGit $restoreRepo @('show', ':keep.txt') | Should -BeExactly 'keep staged'
+            Invoke-RestoreTestGit $restoreRepo @('stash', 'list', '--format=%H') | Should -BeExactly $older
+        }
+
+        It 'pops an exact older entry without applying or dropping the newest entry' {
+            $null = Add-RestoreTestStash $restoreRepo -Value 'older' -File 'other.txt'
+            $newest = Add-RestoreTestStash $restoreRepo
+            Restore-GitStash -Path $restoreRepo -Stash 'stash@{1}' -Confirm:$false | Should -BeNullOrEmpty
+            Get-Content -LiteralPath (Join-Path $restoreRepo 'other.txt') | Should -BeExactly 'older'
+            Get-Content -LiteralPath (Join-Path $restoreRepo 'tracked.txt') | Should -BeExactly 'initial'
+            Invoke-RestoreTestGit $restoreRepo @('stash', 'list', '--format=%H') | Should -BeExactly $newest
+        }
+
+        It 'restores untracked files without reinstating the saved staged state' {
+            Set-Content -LiteralPath (Join-Path $restoreRepo 'tracked.txt') -Value 'saved staged'
+            Invoke-RestoreTestGit $restoreRepo @('add', '--', 'tracked.txt')
+            Set-Content -LiteralPath (Join-Path $restoreRepo 'new.txt') -Value 'saved untracked'
+            Invoke-RestoreTestGit $restoreRepo @('stash', 'push', '--quiet', '--include-untracked')
+            Restore-GitStash -Path $restoreRepo -Confirm:$false
+            Get-Content -LiteralPath (Join-Path $restoreRepo 'tracked.txt') | Should -BeExactly 'saved staged'
+            Get-Content -LiteralPath (Join-Path $restoreRepo 'new.txt') | Should -BeExactly 'saved untracked'
+            Invoke-RestoreTestGit $restoreRepo @('diff', '--cached', '--name-only') | Should -BeNullOrEmpty
+            Invoke-RestoreTestGit $restoreRepo @('stash', 'list') | Should -BeNullOrEmpty
+        }
+
+        It 'targets only the selected repository through <Mode>' -ForEach @(
+            @{ Mode = 'Path' }, @{ Mode = 'RepositoryPath' }, @{ Mode = 'RepoPath' },
+            @{ Mode = 'pipeline string' }, @{ Mode = 'pipeline Path' },
+            @{ Mode = 'pipeline RepositoryPath' }, @{ Mode = 'pipeline RepoPath' },
+            @{ Mode = 'relative literal subdirectory' }
+        ) {
+            $otherRepo = New-RestoreTestRepo -Name 'untouched'
+            $null = Add-RestoreTestStash $otherRepo -Value 'do not restore'
+            $otherState = Get-RestoreTestState $otherRepo
+            $null = Add-RestoreTestStash $restoreRepo
+            Set-Location -LiteralPath $otherRepo -ErrorAction Stop
+            if ($Mode -eq 'pipeline string') {
+                $restoreRepo | Restore-GitStash -Confirm:$false
+            } elseif ($Mode.StartsWith('pipeline ')) {
+                [pscustomobject]@{ $Mode.Substring(9) = $restoreRepo } | Restore-GitStash -Confirm:$false
+            } elseif ($Mode -eq 'relative literal subdirectory') {
+                $null = New-Item -ItemType Directory -Path (Join-Path $restoreRepo 'nested [literal]') -ErrorAction Stop
+                $relative = Join-Path '..' (Split-Path $restoreRepo -Leaf) 'nested [literal]'
+                Restore-GitStash -Path $relative -Confirm:$false
+            } else {
+                $parameters = @{ $Mode = $restoreRepo }
+                Restore-GitStash @parameters -Confirm:$false
+            }
+            (Get-Location).Path | Should -BeExactly $otherRepo
+            Get-Content -LiteralPath (Join-Path $restoreRepo 'tracked.txt') | Should -BeExactly 'stashed'
+            Invoke-RestoreTestGit $restoreRepo @('stash', 'list') | Should -BeNullOrEmpty
+            Get-RestoreTestState $otherRepo | Should -BeExactly $otherState
+        }
+
+        It 'preserves files, index and stash entries with WhatIf' {
+            $null = Add-RestoreTestStash $restoreRepo
+            Set-Content -LiteralPath (Join-Path $restoreRepo 'keep.txt') -Value 'staged'
+            Invoke-RestoreTestGit $restoreRepo @('add', '--', 'keep.txt')
+            Set-Content -LiteralPath (Join-Path $restoreRepo 'keep.txt') -Value 'unstaged'
+            Set-Content -LiteralPath (Join-Path $restoreRepo 'new.txt') -Value 'untracked'
+            $before = Get-RestoreTestState $restoreRepo
+            Restore-GitStash -Path $restoreRepo -WhatIf | Should -BeNullOrEmpty
+            Get-RestoreTestState $restoreRepo | Should -BeExactly $before
+        }
+
+        It 'honors native confirmation answer <Answer>' -ForEach @(
+            @{ Answer = 'n'; Restored = $false }
+            @{ Answer = 'y'; Restored = $true }
+        ) {
+            $null = Add-RestoreTestStash $restoreRepo
+            Set-Content -LiteralPath (Join-Path $restoreRepo 'keep.txt') -Value 'staged'
+            Invoke-RestoreTestGit $restoreRepo @('add', '--', 'keep.txt')
+            Set-Content -LiteralPath (Join-Path $restoreRepo 'keep.txt') -Value 'unstaged'
+            $before = Get-RestoreTestState $restoreRepo
+            $manifest = Join-Path $repoRoot 'modules' 'Shmuelie.Git' 'Shmuelie.Git.psd1'
+            $childScript = @'
+$ErrorActionPreference = 'Stop'
+Set-Location -LiteralPath '__PATH__'
+Import-Module '__MANIFEST__'
+Restore-GitStash -Confirm
+'COMPLETE'
+'@.Replace('__PATH__', $restoreRepo.Replace("'", "''")).Replace('__MANIFEST__', $manifest.Replace("'", "''"))
+            Assert-RestoreTestPath $restoreRepo
+            $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($childScript))
+            $output = $Answer | & (Get-Process -Id $PID).Path -NoLogo -NoProfile -EncodedCommand $encoded -OutputFormat Text 2>&1
+            $LASTEXITCODE | Should -Be 0
+            ($output -join "`n") | Should -Match 'COMPLETE'
+            if ($Restored) {
+                Get-Content -LiteralPath (Join-Path $restoreRepo 'tracked.txt') | Should -BeExactly 'stashed'
+                Invoke-RestoreTestGit $restoreRepo @('stash', 'list') | Should -BeNullOrEmpty
+            } else {
+                Get-RestoreTestState $restoreRepo | Should -BeExactly $before
+            }
+            Get-Content -LiteralPath (Join-Path $restoreRepo 'keep.txt') | Should -BeExactly 'unstaged'
+            Invoke-RestoreTestGit $restoreRepo @('show', ':keep.txt') | Should -BeExactly 'staged'
+        }
+
+        It 'rejects implicit GitStash object selection and permits an explicit reflog selector' {
+            $older = Add-RestoreTestStash $restoreRepo -Value 'older' -File 'other.txt'
+            $newest = Add-RestoreTestStash $restoreRepo
+            $saved = [pscustomobject]@{ PSTypeName = 'GitStash'; ObjectId = $older; RepositoryPath = $restoreRepo; Subject = 'older' }
+            $before = Get-RestoreTestState $restoreRepo
+            $saved | Restore-GitStash -Confirm:$false -ErrorAction SilentlyContinue -ErrorVariable failures | Should -BeNullOrEmpty
+            $failures | Should -HaveCount 1
+            $failures[0].FullyQualifiedErrorId | Should -BeLike 'GitStashSelectorRequired,*'
+            { $saved | Restore-GitStash -Confirm:$false -ErrorAction Stop } | Should -Throw -ErrorId 'GitStashSelectorRequired,*'
+            Get-RestoreTestState $restoreRepo | Should -BeExactly $before
+            $saved | Restore-GitStash -Stash 'stash@{1}' -Confirm:$false
+            Get-Content -LiteralPath (Join-Path $restoreRepo 'other.txt') | Should -BeExactly 'older'
+            Invoke-RestoreTestGit $restoreRepo @('stash', 'list', '--format=%H') | Should -BeExactly $newest
+        }
+
+        It 'surfaces no-stash and missing-entry failures without modifying state: <Mode>' -ForEach @(
+            @{ Mode = 'no stash'; Options = @{} }
+            @{ Mode = 'missing selector'; Options = @{ Stash = 'stash@{10}' } }
+        ) {
+            if ($Mode -eq 'missing selector') { $null = Add-RestoreTestStash $restoreRepo }
+            Set-Content -LiteralPath (Join-Path $restoreRepo 'keep.txt') -Value 'keep dirty'
+            $before = Get-RestoreTestState $restoreRepo
+            Restore-GitStash -Path $restoreRepo @Options -Confirm:$false -ErrorAction SilentlyContinue -ErrorVariable failures |
+                Should -BeNullOrEmpty
+            $failures | Should -HaveCount 1
+            $failures[0].FullyQualifiedErrorId | Should -BeLike 'GitCommandFailed,*'
+            $failures[0].TargetObject.ExitCode | Should -Not -Be 0
+            $failures[0].TargetObject.StandardError | Should -Not -BeNullOrEmpty
+            { Restore-GitStash -Path $restoreRepo @Options -Confirm:$false -ErrorAction Stop } |
+                Should -Throw -ErrorId 'GitCommandFailed,*'
+            Get-RestoreTestState $restoreRepo | Should -BeExactly $before
+        }
+
+        It 'preserves the stash and dirty files when Git refuses to overwrite local changes' {
+            $null = Add-RestoreTestStash $restoreRepo
+            Set-Content -LiteralPath (Join-Path $restoreRepo 'tracked.txt') -Value 'keep dirty'
+            $before = Get-RestoreTestState $restoreRepo
+            Restore-GitStash -Path $restoreRepo -Confirm:$false -ErrorAction SilentlyContinue -ErrorVariable failures | Should -BeNullOrEmpty
+            $failures | Should -HaveCount 1
+            $failures[0].TargetObject.ExitCode | Should -Not -Be 0
+            $failures[0].TargetObject.StandardError | Should -Match 'would be overwritten'
+            Get-RestoreTestState $restoreRepo | Should -BeExactly $before
+        }
+
+        It 'surfaces a real conflict and preserves the stash, conflict markers and unrelated dirty files' {
+            $stashId = Add-RestoreTestStash $restoreRepo
+            Set-Content -LiteralPath (Join-Path $restoreRepo 'tracked.txt') -Value 'competing commit'
+            Invoke-RestoreTestGit $restoreRepo @('add', '--', 'tracked.txt')
+            Invoke-RestoreTestGit $restoreRepo @('commit', '--quiet', '-m', 'competing')
+            Set-Content -LiteralPath (Join-Path $restoreRepo 'keep.txt') -Value 'keep dirty'
+            Restore-GitStash -Path $restoreRepo -Confirm:$false -ErrorAction SilentlyContinue -ErrorVariable failures | Should -BeNullOrEmpty
+            $failures | Should -HaveCount 1
+            $failures[0].FullyQualifiedErrorId | Should -BeLike 'GitCommandFailed,*'
+            $failures[0].TargetObject.ExitCode | Should -Not -Be 0
+            $failures[0].TargetObject.StandardOutput | Should -Match 'CONFLICT'
+            Invoke-RestoreTestGit $restoreRepo @('stash', 'list', '--format=%H') | Should -BeExactly $stashId
+            @(Invoke-RestoreTestGit $restoreRepo @('ls-files', '--unmerged')) | Should -HaveCount 3
+            Get-Content -LiteralPath (Join-Path $restoreRepo 'tracked.txt') -Raw | Should -Match '<<<<<<<'
+            Get-Content -LiteralPath (Join-Path $restoreRepo 'keep.txt') | Should -BeExactly 'keep dirty'
+        }
+
+        It 'rejects invalid paths without falling back to the current repository' {
+            $null = Add-RestoreTestStash $restoreRepo
+            $before = Get-RestoreTestState $restoreRepo
+            Set-Location -LiteralPath $restoreRepo -ErrorAction Stop
+            foreach ($path in @($null, '', ' ', (Join-Path $restoreRoot 'missing'), $restoreRoot, (Join-Path $restoreRepo 'tracked.txt'))) {
+                { Restore-GitStash -Path $path -Confirm:$false -ErrorAction Stop } | Should -Throw
+                Get-RestoreTestState $restoreRepo | Should -BeExactly $before
+            }
+        }
+
+        It 'rejects a bare repository' {
+            $bare = Join-Path $restoreRoot 'bare'
+            $null = New-Item -ItemType Directory -Path $bare -ErrorAction Stop
+            Invoke-RestoreTestGit $bare @('-c', 'init.templateDir=', 'init', '--bare', '--quiet') -Initialize
+            { Restore-GitStash -Path $bare -Confirm:$false -ErrorAction Stop } | Should -Throw
+        }
+    }
+}
+
 Describe 'Restore-Items' {
     BeforeAll {
         $restoreFixtureRoot = Join-Path $TestDrive 'restore-items'
