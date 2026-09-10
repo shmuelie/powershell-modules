@@ -7,6 +7,10 @@ Versions change only when a release is cut; unreleased work stays under
 ## [Unreleased]
 
 ### Added
+- Added `Restore-Items` for explicit literal file/directory selections. Defaults
+  to restoring only unstaged working-tree changes from the index; `-IncludeIndex`
+  restores both index and working tree from HEAD. `-Source` overrides the source,
+  with high-impact `-WhatIf`/`-Confirm` protection and refusal of selected conflicts.
 - Added `Save-GitStash` for `git stash push` with `-KeepIndex`,
   `-IncludeUntracked`, `-All`, literal `-Message` arguments and pipeline repository
   paths. Honors `-WhatIf`/`-Confirm` and returns the stable stash commit ID only

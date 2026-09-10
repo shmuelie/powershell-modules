@@ -94,6 +94,538 @@ BeforeAll {
     }
 }
 
+Describe 'Restore-Items' {
+    BeforeAll {
+        $restoreFixtureRoot = Join-Path $TestDrive 'restore-items'
+        $restoreModuleManifest = Join-Path $repoRoot 'modules/Shmuelie.Git/Shmuelie.Git.psd1'
+
+        function Assert-RestoreFixturePath {
+            param([Parameter(Mandatory)][string]$Path)
+
+            if ([IO.Path]::GetRelativePath($TestDrive, $restoreFixtureRoot) -cne 'restore-items') {
+                throw 'The restore fixture must be the owned restore-items directory under TestDrive.'
+            }
+            $relative = [IO.Path]::GetRelativePath($restoreFixtureRoot, [IO.Path]::GetFullPath($Path))
+            if ([IO.Path]::IsPathRooted($relative) -or $relative -eq '..' -or
+                $relative.StartsWith("..$([IO.Path]::DirectorySeparatorChar)")) {
+                throw "Refusing access outside the owned restore fixture: '$Path'."
+            }
+            # Do not follow a link out of the owned fixture, including on cleanup.
+            $ancestor = [IO.Path]::GetFullPath($Path)
+            while ($ancestor -and $ancestor -ne (Split-Path $restoreFixtureRoot -Parent)) {
+                if (Test-Path -LiteralPath $ancestor) {
+                    $item = Get-Item -LiteralPath $ancestor -Force -ErrorAction Stop
+                    if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+                        throw "Refusing a linked restore fixture path: '$ancestor'."
+                    }
+                }
+                $ancestor = Split-Path $ancestor -Parent
+            }
+        }
+
+        function Invoke-RestoreFixtureGit {
+            param(
+                [Parameter(Mandatory, Position = 0)][string[]]$Arguments,
+                [string]$Path = $restoreRepo,
+                [switch]$Initialize
+            )
+
+            Assert-RestoreFixturePath $Path
+            if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
+                throw "Missing restore fixture directory: '$Path'."
+            }
+            if (-not $Initialize -and -not (Test-Path -LiteralPath (Join-Path $Path '.git') -PathType Container)) {
+                throw "Missing owned restore fixture repository: '$Path'."
+            }
+            $result = & (Get-Module Shmuelie.Git) {
+                param($Tokens)
+                Invoke-GitProcess -Arguments $Tokens
+            } (@('-C', $Path, '--literal-pathspecs') + $Arguments)
+            if ($result.ExitCode -ne 0) {
+                throw "Restore fixture git failed ($($result.ExitCode)): $($result.StandardError)"
+            }
+            $result.StandardOutput.TrimEnd()
+        }
+
+        function Set-RestoreFixtureFile {
+            param([Parameter(Mandatory)][string]$Name, [string]$Content)
+
+            $file = Join-Path $restoreRepo $Name
+            Assert-RestoreFixturePath $file
+            $null = [IO.Directory]::CreateDirectory((Split-Path $file -Parent))
+            [IO.File]::WriteAllText($file, $Content, [Text.UTF8Encoding]::new($false))
+        }
+
+        function Get-RestoreFixtureSnapshot {
+            Assert-RestoreFixturePath $restoreRepo
+            $files = [ordered]@{}
+            foreach ($file in Get-ChildItem -LiteralPath $restoreRepo -File -Force -Recurse |
+                Where-Object { -not $_.FullName.StartsWith((Join-Path $restoreRepo '.git') + [IO.Path]::DirectorySeparatorChar) } |
+                Sort-Object FullName) {
+                Assert-RestoreFixturePath $file.FullName
+                $files[[IO.Path]::GetRelativePath($restoreRepo, $file.FullName)] =
+                    [Convert]::ToBase64String([IO.File]::ReadAllBytes($file.FullName))
+            }
+            [ordered]@{
+                Head = Invoke-RestoreFixtureGit @('rev-parse', 'HEAD')
+                Index = [Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $restoreRepo '.git/index')))
+                Files = $files
+            } | ConvertTo-Json -Depth 5 -Compress
+        }
+
+        if (-not ('RestoreItemsConfirmationHost' -as [type])) {
+            Add-Type -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.Collections.ObjectModel;
+using System.Globalization;
+using System.Management.Automation;
+using System.Management.Automation.Host;
+using System.Security;
+
+public sealed class RestoreItemsConfirmationHost : PSHost
+{
+    public readonly RestoreItemsConfirmationUI PromptUI = new RestoreItemsConfirmationUI();
+    public override Guid InstanceId { get; } = Guid.NewGuid();
+    public override string Name => "RestoreItemsConfirmationHost";
+    public override Version Version => new Version(1, 0);
+    public override PSHostUserInterface UI => PromptUI;
+    public override CultureInfo CurrentCulture => CultureInfo.InvariantCulture;
+    public override CultureInfo CurrentUICulture => CultureInfo.InvariantCulture;
+    public override void SetShouldExit(int exitCode) { }
+    public override void EnterNestedPrompt() => throw new NotSupportedException();
+    public override void ExitNestedPrompt() => throw new NotSupportedException();
+    public override void NotifyBeginApplication() { }
+    public override void NotifyEndApplication() { }
+}
+
+public sealed class RestoreItemsConfirmationUI : PSHostUserInterface
+{
+    public int PromptCount;
+    public override PSHostRawUserInterface RawUI => null;
+    public override int PromptForChoice(string caption, string message, Collection<ChoiceDescription> choices, int defaultChoice)
+    {
+        PromptCount++;
+        for (int i = 0; i < choices.Count; i++)
+            if (choices[i].Label.Replace("&", "") == "No") return i;
+        throw new InvalidOperationException("Expected a No confirmation choice.");
+    }
+    public override string ReadLine() => throw new NotSupportedException();
+    public override SecureString ReadLineAsSecureString() => throw new NotSupportedException();
+    public override Dictionary<string, PSObject> Prompt(string caption, string message, Collection<FieldDescription> descriptions) => throw new NotSupportedException();
+    public override PSCredential PromptForCredential(string caption, string message, string userName, string targetName) => throw new NotSupportedException();
+    public override PSCredential PromptForCredential(string caption, string message, string userName, string targetName, PSCredentialTypes types, PSCredentialUIOptions options) => throw new NotSupportedException();
+    public override void Write(string value) { }
+    public override void Write(ConsoleColor foreground, ConsoleColor background, string value) { }
+    public override void WriteLine(string value) { }
+    public override void WriteErrorLine(string value) { }
+    public override void WriteDebugLine(string value) { }
+    public override void WriteVerboseLine(string value) { }
+    public override void WriteWarningLine(string value) { }
+    public override void WriteProgress(long sourceId, ProgressRecord record) { }
+}
+'@
+        }
+    }
+
+    BeforeEach {
+        $restoreEnvironment = @{}
+        $restoreLocationPushed = $false
+        $restoreRootCreated = $false
+        # Fail before any mutation if location setup fails. Never fall back to
+        # the task worktree when creating a repository or restoring a file.
+        Push-Location -LiteralPath $TestDrive -ErrorAction Stop
+        $restoreLocationPushed = $true
+        Assert-RestoreFixturePath $restoreFixtureRoot
+        $null = New-Item -ItemType Directory -Path $restoreFixtureRoot -ErrorAction Stop
+        $restoreRootCreated = $true
+        foreach ($entry in Get-ChildItem Env: | Where-Object Name -Like 'GIT_*') {
+            $restoreEnvironment[$entry.Name] = $entry.Value
+            [Environment]::SetEnvironmentVariable($entry.Name, $null, 'Process')
+        }
+        $env:GIT_CONFIG_GLOBAL = Join-Path $restoreFixtureRoot 'no-global'
+        $env:GIT_CONFIG_SYSTEM = Join-Path $restoreFixtureRoot 'no-system'
+        $env:GIT_CONFIG_NOSYSTEM = '1'
+        $env:GIT_CONFIG_COUNT = '0'
+        $env:GIT_CEILING_DIRECTORIES = $TestDrive
+        $env:GIT_AUTHOR_DATE = '2025-01-01T00:00:00Z'
+        $env:GIT_COMMITTER_DATE = $env:GIT_AUTHOR_DATE
+        $restoreRepo = Join-Path $restoreFixtureRoot 'repo [literal]'
+        Assert-RestoreFixturePath $restoreRepo
+        $null = New-Item -ItemType Directory -Path $restoreRepo -ErrorAction Stop
+        $null = Invoke-RestoreFixtureGit @('-c', 'init.templateDir=', 'init', '--quiet', '-b', 'main') -Initialize
+        foreach ($config in @(
+            @('user.name', 'Restore Test'), @('user.email', 'test@example.com'),
+            @('commit.gpgsign', 'false'), @('tag.gpgsign', 'false'), @('core.autocrlf', 'false'),
+            @('core.hooksPath', (Join-Path $restoreFixtureRoot 'no-hooks')),
+            @('core.fsmonitor', 'false'), @('core.untrackedCache', 'false'),
+            @('core.ignoreCase', 'false'), @('core.sparseCheckout', 'false')
+        )) {
+            $null = Invoke-RestoreFixtureGit (@('config', '--local') + $config)
+        }
+        $restoreNames = @(
+            'alpha.txt', 'beta.txt', 'space name.txt', '[literal].txt', 'l.txt',
+            '--source=HEAD~1', 'semi; $(echo injected).txt', 'sub/item.txt',
+            "caf$([char]0xe9)-$([char]0x65e5).txt"
+        )
+        foreach ($name in $restoreNames) { Set-RestoreFixtureFile $name 'base' }
+        $null = Invoke-RestoreFixtureGit (@('add', '--') + $restoreNames)
+        $null = Invoke-RestoreFixtureGit @('commit', '--quiet', '-m', 'base')
+        $null = Invoke-RestoreFixtureGit @('tag', 'restore-base')
+        $restoreBaseTree = Invoke-RestoreFixtureGit @('rev-parse', 'HEAD^{tree}')
+        foreach ($name in $restoreNames) { Set-RestoreFixtureFile $name 'head' }
+        $null = Invoke-RestoreFixtureGit (@('add', '--') + $restoreNames)
+        $null = Invoke-RestoreFixtureGit @('commit', '--quiet', '-m', 'head')
+        foreach ($name in $restoreNames) { Set-RestoreFixtureFile $name 'staged' }
+        $null = Invoke-RestoreFixtureGit (@('add', '--') + $restoreNames)
+        foreach ($name in $restoreNames) { Set-RestoreFixtureFile $name 'unstaged' }
+        $restoreIndexTree = Invoke-RestoreFixtureGit @('write-tree')
+        $restoreHead = Invoke-RestoreFixtureGit @('rev-parse', 'HEAD')
+    }
+
+    AfterEach {
+        try {
+            if ($restoreLocationPushed) { Pop-Location -ErrorAction Stop }
+            if ($restoreRootCreated) {
+                Assert-RestoreFixturePath $restoreFixtureRoot
+                foreach ($item in Get-ChildItem -LiteralPath $restoreFixtureRoot -Force -Recurse -ErrorAction Stop) {
+                    Assert-RestoreFixturePath $item.FullName
+                    if (-not $item.PSIsContainer) { $item.IsReadOnly = $false }
+                }
+                Remove-Item -LiteralPath $restoreFixtureRoot -Force -Recurse -ErrorAction Stop
+            }
+        } finally {
+            if ($restoreRootCreated) {
+                foreach ($entry in Get-ChildItem Env: | Where-Object Name -Like 'GIT_*') {
+                    [Environment]::SetEnvironmentVariable($entry.Name, $null, 'Process')
+                }
+                foreach ($key in $restoreEnvironment.Keys) {
+                    [Environment]::SetEnvironmentVariable($key, $restoreEnvironment[$key], 'Process')
+                }
+            }
+        }
+    }
+
+    It 'exports an approved high-impact command with required files, path aliases, help and no Force' {
+        $command = Get-Command Restore-Items -Module Shmuelie.Git
+        (Get-Verb Restore).Verb | Should -BeExactly $command.Verb
+        $binding = $command.ScriptBlock.Attributes |
+            Where-Object { $_ -is [System.Management.Automation.CmdletBindingAttribute] }
+        $binding.SupportsShouldProcess | Should -BeTrue
+        $binding.ConfirmImpact | Should -Be 'High'
+        $command.Parameters.Path.Aliases | Should -Be @('RepositoryPath', 'RepoPath')
+        $command.Parameters.ContainsKey('Force') | Should -BeFalse
+        $parameter = $command.Parameters.Files.Attributes |
+            Where-Object { $_ -is [System.Management.Automation.ParameterAttribute] }
+        $parameter.Mandatory | Should -BeTrue
+        $parameter.Position | Should -Be 0
+        (Import-PowerShellDataFile $restoreModuleManifest).FunctionsToExport | Should -Contain 'Restore-Items'
+        (Get-Help Restore-Items).Description.Text | Should -Match 'index'
+    }
+
+    It 'restores only unstaged content by default, preserving all staged changes and HEAD' {
+        Restore-Items 'alpha.txt' -Path $restoreRepo -Confirm:$false -ErrorAction Stop | Should -BeNullOrEmpty
+        [IO.File]::ReadAllText((Join-Path $restoreRepo 'alpha.txt')) | Should -BeExactly 'staged'
+        [IO.File]::ReadAllText((Join-Path $restoreRepo 'beta.txt')) | Should -BeExactly 'unstaged'
+        Invoke-RestoreFixtureGit @('write-tree') | Should -BeExactly $restoreIndexTree
+        Invoke-RestoreFixtureGit @('rev-parse', 'HEAD') | Should -BeExactly $restoreHead
+    }
+
+    It 'restores both index and working tree from HEAD only with IncludeIndex' {
+        Restore-Items 'alpha.txt' -Path $restoreRepo -IncludeIndex -Confirm:$false -ErrorAction Stop
+        [IO.File]::ReadAllText((Join-Path $restoreRepo 'alpha.txt')) | Should -BeExactly 'head'
+        Invoke-RestoreFixtureGit @('show', ':alpha.txt') | Should -BeExactly 'head'
+        Invoke-RestoreFixtureGit @('show', ':beta.txt') | Should -BeExactly 'staged'
+        [IO.File]::ReadAllText((Join-Path $restoreRepo 'beta.txt')) | Should -BeExactly 'unstaged'
+        Invoke-RestoreFixtureGit @('rev-parse', 'HEAD') | Should -BeExactly $restoreHead
+    }
+
+    It 'uses an explicit <SourceKind> source with IncludeIndex=<Index>' -ForEach @(
+        @{ SourceKind = 'revision'; Index = $false }, @{ SourceKind = 'revision'; Index = $true },
+        @{ SourceKind = 'tag'; Index = $false }, @{ SourceKind = 'tree'; Index = $true }
+    ) {
+        $source = switch ($SourceKind) { revision { 'HEAD~1' } tag { 'restore-base' } tree { $restoreBaseTree } }
+        Restore-Items 'alpha.txt' -Path $restoreRepo -Source $source -IncludeIndex:$Index -Confirm:$false -ErrorAction Stop
+        [IO.File]::ReadAllText((Join-Path $restoreRepo 'alpha.txt')) | Should -BeExactly 'base'
+        Invoke-RestoreFixtureGit @('show', ':alpha.txt') | Should -BeExactly $(if ($Index) { 'base' } else { 'staged' })
+        if (-not $Index) { Invoke-RestoreFixtureGit @('write-tree') | Should -BeExactly $restoreIndexTree }
+        Invoke-RestoreFixtureGit @('rev-parse', 'HEAD') | Should -BeExactly $restoreHead
+    }
+
+    It 'restores multiple literal Unicode, space, bracket, dash and shell-metacharacter filenames' {
+        $selected = @($restoreNames | Where-Object { $_ -notin @('alpha.txt', 'beta.txt', 'l.txt', 'sub/item.txt') })
+        Restore-Items -Files $selected -Path $restoreRepo -Confirm:$false -ErrorAction Stop
+        foreach ($name in $selected) {
+            [IO.File]::ReadAllText((Join-Path $restoreRepo $name)) | Should -BeExactly 'staged'
+        }
+        [IO.File]::ReadAllText((Join-Path $restoreRepo 'l.txt')) | Should -BeExactly 'unstaged'
+        [IO.File]::ReadAllText((Join-Path $restoreRepo 'alpha.txt')) | Should -BeExactly 'unstaged'
+        Invoke-RestoreFixtureGit @('write-tree') | Should -BeExactly $restoreIndexTree
+    }
+
+    It 'restores an actual colon-prefixed filename on supporting platforms' -Skip:($PSVersionTable.Platform -eq 'Win32NT') {
+        Set-RestoreFixtureFile ':literal.txt' 'staged-colon'
+        $null = Invoke-RestoreFixtureGit @('add', '--', ':literal.txt')
+        Set-RestoreFixtureFile ':literal.txt' 'unstaged-colon'
+        Restore-Items ':literal.txt' -Path $restoreRepo -Confirm:$false -ErrorAction Stop
+        [IO.File]::ReadAllText((Join-Path $restoreRepo ':literal.txt')) | Should -BeExactly 'staged-colon'
+        [IO.File]::ReadAllText((Join-Path $restoreRepo 'alpha.txt')) | Should -BeExactly 'unstaged'
+    }
+
+    It 'does not broaden literal operand <Operand> to a pattern or option' -ForEach @(
+        @{ Operand = '*' }, @{ Operand = ':' }, @{ Operand = ':(top)*' },
+        @{ Operand = ':(exclude)alpha.txt' }, @{ Operand = '--staged' },
+        @{ Operand = '--pathspec-from-file=alpha.txt' }
+    ) {
+        $before = Get-RestoreFixtureSnapshot
+        { Restore-Items -Files $Operand -Path $restoreRepo -Confirm:$false -ErrorAction Stop } | Should -Throw
+        Get-RestoreFixtureSnapshot | Should -BeExactly $before
+    }
+
+    It 'passes colon, pathspec-like and option-like strings as individual literal operands to the shared helper' {
+        $before = Get-RestoreFixtureSnapshot
+        InModuleScope Shmuelie.Git -Parameters @{ Fixture = $restoreRepo } {
+            param($Fixture)
+            $names = @('space name.txt', ':literal.txt', 'a:b', ':(top)*', '--staged', '[x].txt')
+            Mock Invoke-Git {
+                param($Path)
+                [PSCustomObject]@{ RepositoryPath = $Path; StandardOutput = ''; ExitCode = 0 }
+            }
+            Restore-Items -Files $names -Path $Fixture -Confirm:$false -ErrorAction Stop
+            Should -Invoke Invoke-Git -Times 1 -Exactly -ParameterFilter {
+                $Arguments[1] -eq 'restore' -and
+                ($Arguments -join "`n") -ceq (@(
+                    '--literal-pathspecs', 'restore', '--worktree', '--no-recurse-submodules', '--'
+                ) + $names -join "`n") -and
+                $Path -ceq $Fixture -and
+                $Environment.GIT_LITERAL_PATHSPECS -eq '1' -and
+                $null -eq $Environment.GIT_GLOB_PATHSPECS -and
+                $null -eq $Environment.GIT_NOGLOB_PATHSPECS -and
+                $null -eq $Environment.GIT_ICASE_PATHSPECS
+            }
+            Should -Invoke Invoke-Git -Times 2 -Exactly
+        }
+        Get-RestoreFixtureSnapshot | Should -BeExactly $before
+    }
+
+    It 'overrides ambient pathspec expansion only in the child Git process' {
+        $env:GIT_GLOB_PATHSPECS = '1'
+        $env:GIT_NOGLOB_PATHSPECS = '1'
+        $env:GIT_ICASE_PATHSPECS = '1'
+        $env:GIT_LITERAL_PATHSPECS = '0'
+        Restore-Items '[literal].txt' -Path $restoreRepo -Confirm:$false -ErrorAction Stop
+        [IO.File]::ReadAllText((Join-Path $restoreRepo '[literal].txt')) | Should -BeExactly 'staged'
+        [IO.File]::ReadAllText((Join-Path $restoreRepo 'l.txt')) | Should -BeExactly 'unstaged'
+        $env:GIT_GLOB_PATHSPECS | Should -BeExactly '1'
+        $env:GIT_NOGLOB_PATHSPECS | Should -BeExactly '1'
+        $env:GIT_ICASE_PATHSPECS | Should -BeExactly '1'
+        $env:GIT_LITERAL_PATHSPECS | Should -BeExactly '0'
+    }
+
+    It 'uses repository aliases and relative, absolute or omitted paths without changing cwd' {
+        $location = (Get-Location).ProviderPath
+        Restore-Items 'alpha.txt' -RepositoryPath ([IO.Path]::GetRelativePath($location, $restoreRepo)) -Confirm:$false -ErrorAction Stop
+        (Get-Location).ProviderPath | Should -BeExactly $location
+        Restore-Items (Join-Path $restoreRepo 'beta.txt') -RepoPath $restoreRepo -Confirm:$false -ErrorAction Stop
+        $subdirectory = Join-Path $restoreRepo 'sub'
+        Assert-RestoreFixturePath $subdirectory
+        Push-Location -LiteralPath $subdirectory -ErrorAction Stop
+        try {
+            Restore-Items 'item.txt' -Confirm:$false -ErrorAction Stop
+            (Get-Location).ProviderPath | Should -BeExactly $subdirectory
+            Restore-Items '../space name.txt' -Path . -Confirm:$false -ErrorAction Stop
+        } finally {
+            Pop-Location
+        }
+        foreach ($name in @('alpha.txt', 'beta.txt', 'sub/item.txt', 'space name.txt')) {
+            [IO.File]::ReadAllText((Join-Path $restoreRepo $name)) | Should -BeExactly 'staged'
+        }
+        (Get-Location).ProviderPath | Should -BeExactly $location
+    }
+
+    It 'limits explicit dot selection to the repository subdirectory' {
+        Restore-Items '.' -Path (Join-Path $restoreRepo 'sub') -Confirm:$false -ErrorAction Stop
+        [IO.File]::ReadAllText((Join-Path $restoreRepo 'sub/item.txt')) | Should -BeExactly 'staged'
+        [IO.File]::ReadAllText((Join-Path $restoreRepo 'alpha.txt')) | Should -BeExactly 'unstaged'
+    }
+
+    It 'restores deleted tracked files, but does not clean untracked files' {
+        $deleted = Join-Path $restoreRepo 'alpha.txt'
+        Assert-RestoreFixturePath $deleted
+        Remove-Item -LiteralPath $deleted -ErrorAction Stop
+        Set-RestoreFixtureFile 'untracked.txt' 'keep'
+        Restore-Items '.' -Path $restoreRepo -Confirm:$false -ErrorAction Stop
+        [IO.File]::ReadAllText($deleted) | Should -BeExactly 'staged'
+        [IO.File]::ReadAllText((Join-Path $restoreRepo 'untracked.txt')) | Should -BeExactly 'keep'
+    }
+
+    It 'removes a selected staged addition absent from HEAD with IncludeIndex' {
+        Set-RestoreFixtureFile 'added.txt' 'new'
+        $null = Invoke-RestoreFixtureGit @('add', '--', 'added.txt')
+        Restore-Items 'added.txt' -Path $restoreRepo -IncludeIndex -Confirm:$false -ErrorAction Stop
+        Test-Path -LiteralPath (Join-Path $restoreRepo 'added.txt') | Should -BeFalse
+        Invoke-RestoreFixtureGit @('ls-files', '--', 'added.txt') | Should -BeNullOrEmpty
+    }
+
+    It 'does not mutate files, HEAD, index bytes or cwd under WhatIf with IncludeIndex=<Index>' -ForEach @(
+        @{ Index = $false }, @{ Index = $true }
+    ) {
+        $before = Get-RestoreFixtureSnapshot
+        $location = (Get-Location).ProviderPath
+        Restore-Items 'alpha.txt', 'space name.txt' -Path $restoreRepo -Source HEAD~1 -IncludeIndex:$Index -WhatIf -ErrorAction Stop
+        Get-RestoreFixtureSnapshot | Should -BeExactly $before
+        (Get-Location).ProviderPath | Should -BeExactly $location
+    }
+
+    It 'leaves the entire fixture unchanged when high-impact confirmation is declined' {
+        Assert-RestoreFixturePath $restoreRepo
+        $before = Get-RestoreFixtureSnapshot
+        $confirmationHost = [RestoreItemsConfirmationHost]::new()
+        $runspace = [runspacefactory]::CreateRunspace($confirmationHost)
+        $pipeline = [powershell]::Create()
+        try {
+            $runspace.Open()
+            $pipeline.Runspace = $runspace
+            $null = $pipeline.AddScript({
+                param($Manifest, $Directory)
+                $ErrorActionPreference = 'Stop'
+                Set-Location -LiteralPath $Directory
+                Import-Module $Manifest -Force
+                Restore-Items 'alpha.txt' -Path $Directory -IncludeIndex -Confirm -ErrorAction Stop
+                (Get-Location).ProviderPath
+            }).AddArgument($restoreModuleManifest).AddArgument($restoreRepo)
+            $output = $pipeline.Invoke()
+            $pipeline.HadErrors | Should -BeFalse -Because ($pipeline.Streams.Error -join '; ')
+            $confirmationHost.PromptUI.PromptCount | Should -Be 1
+            $output | Should -Be @($restoreRepo)
+        } finally {
+            $pipeline.Dispose()
+            $runspace.Dispose()
+        }
+        Get-RestoreFixtureSnapshot | Should -BeExactly $before
+    }
+
+    It 'rejects invalid file arrays without restoring anything' -ForEach @(
+        @{ Values = @() }, @{ Values = @('') }, @{ Values = @('alpha.txt', ' ') },
+        @{ Values = @("alpha.txt`n") }, @{ Values = @("alpha$([char]0).txt") }
+    ) {
+        $before = Get-RestoreFixtureSnapshot
+        { Restore-Items -Files $Values -Path $restoreRepo -Confirm:$false -ErrorAction Stop } | Should -Throw
+        Get-RestoreFixtureSnapshot | Should -BeExactly $before
+    }
+
+    It 'rejects invalid or option-like source <SourceValue> without falling back' -ForEach @(
+        @{ SourceValue = 'does-not-exist'; Index = $false },
+        @{ SourceValue = 'does-not-exist'; Index = $true },
+        @{ SourceValue = 'HEAD:alpha.txt'; Index = $false },
+        @{ SourceValue = '--staged'; Index = $false },
+        @{ SourceValue = "HEAD`n"; Index = $false },
+        @{ SourceValue = ''; Index = $false }
+    ) {
+        $before = Get-RestoreFixtureSnapshot
+        { Restore-Items 'alpha.txt' -Path $restoreRepo -Source $SourceValue -IncludeIndex:$Index -Confirm:$false -ErrorAction Stop } |
+            Should -Throw
+        Get-RestoreFixtureSnapshot | Should -BeExactly $before
+    }
+
+    It 'surfaces native missing-path errors and preserves cwd' {
+        $before = Get-RestoreFixtureSnapshot
+        $location = (Get-Location).ProviderPath
+        $errors = @()
+        Restore-Items 'missing.txt' -Path $restoreRepo -Confirm:$false -ErrorAction SilentlyContinue -ErrorVariable +errors |
+            Should -BeNullOrEmpty
+        $nativeError = $errors | Where-Object FullyQualifiedErrorId -Like 'GitCommandFailed*' | Select-Object -Last 1
+        $nativeError | Should -Not -BeNullOrEmpty
+        $nativeError.TargetObject.ExitCode | Should -Not -Be 0
+        $nativeError.TargetObject.StandardError | Should -Match 'pathspec'
+        $nativeError.TargetObject.RepositoryPath | Should -BeExactly $restoreRepo
+        { Restore-Items 'missing.txt' -Path $restoreRepo -Confirm:$false -ErrorAction Stop } | Should -Throw
+        Get-RestoreFixtureSnapshot | Should -BeExactly $before
+        (Get-Location).ProviderPath | Should -BeExactly $location
+    }
+
+    It 'rejects missing, file, non-repository and bare repository Path values' {
+        $bare = Join-Path $restoreFixtureRoot 'bare'
+        Assert-RestoreFixturePath $bare
+        $null = New-Item -ItemType Directory -Path $bare -ErrorAction Stop
+        $null = Invoke-RestoreFixtureGit @('-c', 'init.templateDir=', 'init', '--bare', '--quiet') -Path $bare -Initialize
+        $before = Get-RestoreFixtureSnapshot
+        foreach ($path in @((Join-Path $restoreFixtureRoot 'missing'), (Join-Path $restoreRepo 'alpha.txt'), $restoreFixtureRoot, $bare)) {
+            Assert-RestoreFixturePath $path
+            { Restore-Items 'alpha.txt' -Path $path -Confirm:$false -ErrorAction Stop } | Should -Throw
+        }
+        Get-RestoreFixtureSnapshot | Should -BeExactly $before
+    }
+
+    It 'refuses a file operand outside the working tree' {
+        $outside = Join-Path $restoreFixtureRoot 'outside.txt'
+        Assert-RestoreFixturePath $outside
+        [IO.File]::WriteAllText($outside, 'keep')
+        $before = Get-RestoreFixtureSnapshot
+        { Restore-Items $outside -Path $restoreRepo -Confirm:$false -ErrorAction Stop } | Should -Throw
+        [IO.File]::ReadAllText($outside) | Should -BeExactly 'keep'
+        Get-RestoreFixtureSnapshot | Should -BeExactly $before
+    }
+
+    It 'surfaces index lock failures rather than repairing them' {
+        $lock = Join-Path $restoreRepo '.git/index.lock'
+        Assert-RestoreFixturePath $lock
+        [IO.File]::WriteAllText($lock, 'owned lock')
+        $before = Get-RestoreFixtureSnapshot
+        { Restore-Items 'alpha.txt' -Path $restoreRepo -IncludeIndex -Confirm:$false -ErrorAction Stop } | Should -Throw '*index.lock*'
+        [IO.File]::ReadAllText($lock) | Should -BeExactly 'owned lock'
+        Get-RestoreFixtureSnapshot | Should -BeExactly $before
+    }
+
+    It 'refuses selected unmerged entries without repairing them in <Mode> mode' -ForEach @(
+        @{ Mode = 'default' }, @{ Mode = 'source' }, @{ Mode = 'index' }
+    ) {
+        $stages = foreach ($stage in 1..3) {
+            $blob = Invoke-RestoreFixtureGit @('rev-parse', 'HEAD:alpha.txt')
+            "100644 $blob $stage`talpha.txt"
+        }
+        # Write LF-delimited index records directly: Windows pipeline CRLF would
+        # put a carriage return in each filename. No merge or branch switch needed.
+        $null = Invoke-RestoreFixtureGit @('update-index', '--force-remove', '--', 'alpha.txt')
+        Assert-RestoreFixturePath $restoreRepo
+        $gitExecutable = Get-Command $(if ($IsWindows) { 'git.exe' } else { 'git' }) -CommandType Application |
+            Select-Object -First 1
+        $start = [Diagnostics.ProcessStartInfo]::new($gitExecutable.Source)
+        $start.WorkingDirectory = $restoreRepo
+        $start.UseShellExecute = $false
+        $start.RedirectStandardInput = $true
+        $start.RedirectStandardError = $true
+        foreach ($token in @('-C', $restoreRepo, 'update-index', '--index-info')) { $start.ArgumentList.Add($token) }
+        $process = [Diagnostics.Process]::Start($start)
+        try {
+            $process.StandardInput.Write(($stages -join "`n") + "`n")
+            $process.StandardInput.Close()
+            $errorText = $process.StandardError.ReadToEnd()
+            $process.WaitForExit()
+            if ($process.ExitCode -ne 0) { throw "Creating owned unmerged index entries failed: $errorText" }
+        } finally {
+            $process.Dispose()
+        }
+        ((Invoke-RestoreFixtureGit @('ls-files', '--unmerged', '--', 'alpha.txt')) -split "`n").Count | Should -Be 3
+        $before = Get-RestoreFixtureSnapshot
+        $options = switch ($Mode) { source { @{ Source = 'HEAD' } } index { @{ IncludeIndex = $true } } default { @{} } }
+        { Restore-Items 'alpha.txt', 'beta.txt' -Path $restoreRepo @options -Confirm:$false -ErrorAction Stop } |
+            Should -Throw '*unmerged*'
+        Get-RestoreFixtureSnapshot | Should -BeExactly $before
+        # An unrelated conflict must not prevent a literal selection elsewhere.
+        Restore-Items 'beta.txt' -Path $restoreRepo -Confirm:$false -ErrorAction Stop
+        [IO.File]::ReadAllText((Join-Path $restoreRepo 'beta.txt')) | Should -BeExactly 'staged'
+        Invoke-RestoreFixtureGit @('ls-files', '--unmerged', '--', 'alpha.txt') | Should -Not -BeNullOrEmpty
+    }
+
+    It 'uses the index without HEAD in an unborn repository' {
+        $null = Invoke-RestoreFixtureGit @('symbolic-ref', 'HEAD', 'refs/heads/unborn')
+        Restore-Items 'alpha.txt' -Path $restoreRepo -Confirm:$false -ErrorAction Stop
+        [IO.File]::ReadAllText((Join-Path $restoreRepo 'alpha.txt')) | Should -BeExactly 'staged'
+        { Restore-Items 'alpha.txt' -Path $restoreRepo -IncludeIndex -Confirm:$false -ErrorAction Stop } | Should -Throw
+    }
+}
+
 Describe 'Save-GitStash' {
     BeforeAll {
         $stashTestRoot = (New-Item -ItemType Directory -Path (
