@@ -71,6 +71,7 @@ Export-ModuleMember -Function @(
     'Get-GitTag',
     'Remove-Branch',
     'Set-Branch',
+    'Restore-Items',
     'Format-GitStatusSegment',
     'Get-Worktrees',
     'Get-Branch',

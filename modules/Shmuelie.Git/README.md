@@ -37,6 +37,7 @@ Import-Module Shmuelie.Git
 | `Get-GitStatusSummary` | Parse `git status` for the current or `-Path` repository into a typed object (branch, ahead/behind, conflicts, stash, operation) |
 | `Get-GitTag` | Inspect local annotated/lightweight tags as typed objects, with case-sensitive exact/wildcard `-Name` filtering and standard repository `-Path` input; never fetches |
 | `Set-Branch` | Switch an existing working tree to a local branch; `-CreateNew` creates at HEAD, `-Track` creates from a remote-tracking branch, and `-Force` explicitly discards local changes; supports `-Path`, `-WhatIf` and `-Confirm` |
+| `Restore-Items` | Restore explicit literal `-Files` from the index (unstaged changes only); `-IncludeIndex` restores index and working tree from HEAD, `-Source` overrides the source; high-impact `-WhatIf`/`-Confirm` protection |
 | `Format-GitStatusSegment` | Render a `GitStatusSummary` as a colored posh-git-style prompt segment (`$PSStyle` string; `-ShowChangeCounts` toggles the change counts) |
 | `Update-WorktreePrediction` | Refresh the bundled predictor for the current directory |
 
@@ -73,6 +74,9 @@ Remove-Branch -Name feature/finished -Remote -RemoteName upstream
 Set-Branch -Branch feature/new -CreateNew -Path ../project
 Set-Branch -Branch origin/feature/topic -Track
 Set-Branch -Branch main -Force -WhatIf
+Restore-Items -Files 'src/main.ps1', 'notes with spaces.txt' -WhatIf
+Restore-Items 'src/main.ps1' -IncludeIndex -Confirm:$false
+Restore-Items -Files 'src' -Source HEAD~1 -Path ../project
 ```
 
 `Remove-Branch` accepts an exact branch name or `refs/heads/<name>`, not wildcard
@@ -137,6 +141,34 @@ creation modes cannot be combined. Neither mode fetches or updates a remote.
 it does not bypass `-WhatIf`, `-Confirm`, or Git's protection for branches checked
 out in another worktree. Git failures are PowerShell errors (use
 `-ErrorAction Stop` to terminate); success produces no pipeline output.
+
+`Restore-Items` requires an explicit file/directory array (`-Files`, or position
+0). Its `-Path` is only the repository directory, defaults to the current
+directory, and has `RepositoryPath`/`RepoPath` aliases. Relative file paths are
+relative to that directory; absolute paths must be inside the working tree.
+The caller's location is unchanged, and bare repositories are not supported.
+
+By default, only the working tree is restored **from the index**, so unstaged
+changes are discarded but staged changes are preserved. `-IncludeIndex`
+explicitly restores **both index and working tree from HEAD**. `-Source`
+overrides either default with an existing local commit, tag, revision expression
+(such as `HEAD~1`), or tree ID; without `-IncludeIndex`, even an explicit source
+leaves the index unchanged. Invalid sources fail rather than falling back to
+HEAD, and missing objects are not fetched.
+
+File arguments are literal: wildcards, brackets and Git pathspec magic are not
+expanded. Quote PowerShell metacharacters and pass each path as an array element.
+A directory includes its tracked descendants recursively; `'.'` explicitly
+selects the entire subtree at `-Path`, not necessarily the repository root.
+Selected tracked paths absent from the source can be deleted, and local content
+at selected paths can be overwritten. Untracked-only paths absent from the source
+are not cleaned, and submodule working trees are not restored.
+Selected unmerged index entries fail even with `-IncludeIndex` or `-Source`;
+resolve conflicts explicitly instead. There is no legacy `-Force` switch.
+`-WhatIf` and declined confirmation perform only read-only validation; use
+`-Confirm:$false` for unattended restores. Success produces no pipeline output.
+Failures are PowerShell errors (`-ErrorAction Stop` terminates); a failed
+multi-path restore can leave partial changes and is not automatically rolled back.
 
 `Update-Worktrees` skips behind worktrees that have an in-progress git
 operation, returning `Status = 'InProgress'` with the existing operation string

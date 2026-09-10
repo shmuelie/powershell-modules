@@ -7,6 +7,10 @@ Versions change only when a release is cut; unreleased work stays under
 ## [Unreleased]
 
 ### Added
+- Added `Restore-Items` for explicit literal file/directory selections. Defaults
+  to restoring only unstaged working-tree changes from the index; `-IncludeIndex`
+  restores both index and working tree from HEAD. `-Source` overrides the source,
+  with high-impact `-WhatIf`/`-Confirm` protection and refusal of selected conflicts.
 - Added `Remove-Branch` for explicitly named local or remote branch deletion,
   with high-impact confirmation, `-WhatIf`, local-only `-Force`, validated refs,
   and explicit configured remote selection (`-RemoteName`, default `origin`).
