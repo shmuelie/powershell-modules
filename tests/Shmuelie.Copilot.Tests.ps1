@@ -843,6 +843,208 @@ Describe 'Get-CopilotSession' {
     }
 }
 
+Describe 'Get-CopilotSession rich filters' {
+    BeforeEach {
+        $ErrorActionPreference = 'Stop'
+        $testHome = Join-Path $TestDrive ([guid]::NewGuid().ToString())
+        $script:FilterSessionRoot = Join-Path $testHome '.copilot' 'session-state'
+        $script:FilterWorkspace = Join-Path $testHome 'workspace'
+        $script:FilterOtherWorkspace = Join-Path $testHome 'other-workspace'
+        New-Item -ItemType Directory -Path $script:FilterSessionRoot, $script:FilterWorkspace, $script:FilterOtherWorkspace -Force -ErrorAction Stop | Out-Null
+        Mock -ModuleName Shmuelie.Copilot -CommandName Get-CopilotHome -MockWith { $testHome }
+        Mock -ModuleName Shmuelie.Copilot -CommandName Get-Date -MockWith { [datetime]::new(2026, 9, 1, 12, 0, 0, [DateTimeKind]::Utc) }
+        Mock -ModuleName Shmuelie.Copilot -CommandName Resume-CopilotSession -MockWith { throw 'Unexpected native resume.' }
+        Mock -ModuleName Shmuelie.Copilot -CommandName Invoke-CopilotSessionPicker -MockWith { throw 'Unexpected picker.' }
+
+        foreach ($row in @(
+            @{ Id = 'old-local'; Cwd = $script:FilterWorkspace; Summary = 'Clean local'; UpdatedAt = '2026-08-01T12:00:00Z' }
+            @{ Id = 'old-remote'; Cwd = $script:FilterOtherWorkspace; Summary = 'Clean remote'; UpdatedAt = '2026-08-01T13:00:00+01:00' }
+            @{ Id = 'recent-local'; Cwd = $script:FilterWorkspace; Summary = 'Investigate new work'; UpdatedAt = '2026-08-31T12:00:00Z' }
+        )) {
+            $path = New-CopilotSessionState -SessionRoot $script:FilterSessionRoot @row
+            Add-Content -LiteralPath (Join-Path $path 'workspace.yaml') -Value @('repository: owner/repo', 'branch: feature/cleanup') -ErrorAction Stop
+        }
+        $missing = Join-Path $script:FilterSessionRoot 'missing-metadata'
+        $empty = Join-Path $script:FilterSessionRoot 'no-workspace-file'
+        New-Item -ItemType Directory -Path $missing, $empty -ErrorAction Stop | Out-Null
+        Set-Content -LiteralPath (Join-Path $missing 'workspace.yaml') -Value @('id: missing-metadata', 'created_at: 2020-01-01T00:00:00Z') -ErrorAction Stop
+    }
+
+    It 'keeps metadata filters local unless All is supplied and composes wildcard filters' {
+        Push-Location -LiteralPath $script:FilterWorkspace
+        try {
+            $local = @(Get-CopilotSession -Repository 'OWNER/*' -Branch 'feature/c?eanup' -Summary 'C[lr]*')
+            $global = @(Get-CopilotSession -All -Repository 'OWNER/*' -Branch 'feature/c?eanup' -Summary 'C[lr]*')
+        } finally {
+            Pop-Location
+        }
+
+        $local.Id | Should -Be 'old-local'
+        @($global.Id | Sort-Object) | Should -Be @('old-local', 'old-remote')
+        $global[0].PSTypeNames | Should -Contain 'CopilotSession'
+    }
+
+    It 'uses explicit Cwd instead of implicit cwd, also when All is supplied' -ForEach @(
+        @{ Global = $false }
+        @{ Global = $true }
+    ) {
+        Push-Location -LiteralPath $script:FilterWorkspace
+        try {
+            $sessions = @(Get-CopilotSession -All:$Global -Cwd '*other-workspace' -Repository 'owner/*')
+        } finally {
+            Pop-Location
+        }
+
+        $sessions.Id | Should -Be 'old-remote'
+    }
+
+    It 'matches literal wildcard characters in Cwd only when escaped' {
+        $recordedCwd = Join-Path $script:FilterWorkspace 'project[1]'
+        New-CopilotSessionState -SessionRoot $script:FilterSessionRoot -Id 'bracket-path' -Cwd $recordedCwd -Summary 'Literal path' | Out-Null
+
+        $sessions = @(Get-CopilotSession -Cwd ([WildcardPattern]::Escape($recordedCwd)))
+
+        $sessions.Id | Should -Be 'bracket-path'
+    }
+
+    It 'excludes missing metadata for an explicitly supplied <Field> wildcard' -ForEach @(
+        @{ Field = 'Repository' }
+        @{ Field = 'Branch' }
+        @{ Field = 'Cwd' }
+    ) {
+        $filters = @{ $Field = '*' }
+
+        $sessions = @(Get-CopilotSession -All @filters)
+
+        $sessions | Should -HaveCount 3
+        $sessions.Id | Should -Not -Contain 'missing-metadata'
+    }
+
+    It 'keeps unknown metadata without filters and matches the displayed unnamed Summary' {
+        $sessions = @(Get-CopilotSession -All)
+        $unnamed = @(Get-CopilotSession -All -Summary '(no summary)')
+
+        $sessions | Should -HaveCount 4
+        $sessions[0].Id | Should -Be 'recent-local'
+        $unnamed.Id | Should -Be 'missing-metadata'
+        $unnamed[0].UpdatedAt | Should -BeNullOrEmpty
+        $unnamed[0].EventCount | Should -Be 0
+    }
+
+    It 'excludes empty strings just like missing metadata' {
+        $workspaceFile = Join-Path $script:FilterSessionRoot 'missing-metadata' 'workspace.yaml'
+        Add-Content -LiteralPath $workspaceFile -Value @("repository: ''", "branch: ''", "cwd: ''", "updated_at: ''") -ErrorAction Stop
+
+        @(Get-CopilotSession -All -Repository '*' -Branch '*' -Cwd '*') | Should -HaveCount 3
+        @(Get-CopilotSession -All -UpdatedBefore '2026-08-02T00:00:00Z').Id | Should -Not -Contain 'missing-metadata'
+    }
+
+    It 'returns no matches without changing any sessions when filters conflict' {
+        $before = @(Get-ChildItem -LiteralPath $script:FilterSessionRoot -Directory).Name
+
+        $sessions = @(Get-CopilotSession -All -Repository 'other/*' -Branch 'feature/*')
+        $sessions | Remove-CopilotSession -Confirm:$false
+
+        $sessions | Should -HaveCount 0
+        @(Get-ChildItem -LiteralPath $script:FilterSessionRoot -Directory).Name | Should -Be $before
+    }
+
+    It 'matches displayed name rather than a superseded legacy summary' {
+        $workspaceFile = Join-Path $script:FilterSessionRoot 'old-local' 'workspace.yaml'
+        $content = (Get-Content -LiteralPath $workspaceFile -Raw) -replace 'summary: Clean local', 'summary: superseded'
+        Set-Content -LiteralPath $workspaceFile -Value $content -ErrorAction Stop
+
+        @(Get-CopilotSession -All -Summary '*superseded*') | Should -HaveCount 0
+        (Get-CopilotSession -All -Summary 'Clean local').Id | Should -Be 'old-local'
+    }
+
+    It 'compares exclusive instants regardless of timestamp offset' -ForEach @(
+        @{ Cutoff = '2026-08-01T12:00:00Z'; Expected = 0 }
+        @{ Cutoff = '2026-08-01T08:00:00-04:00'; Expected = 0 }
+        @{ Cutoff = '2026-08-01T12:00:00.0000001Z'; Expected = 2 }
+    ) {
+        $sessions = @(Get-CopilotSession -All -UpdatedBefore $Cutoff)
+
+        $sessions | Should -HaveCount $Expected
+        $sessions.Id | Should -Not -Contain 'missing-metadata'
+    }
+
+    It 'treats offset-less date-only UpdatedBefore as local midnight' {
+        $localMidnight = [datetimeoffset]::new([datetime]::new(2026, 8, 1))
+        $path = New-CopilotSessionState -SessionRoot $script:FilterSessionRoot -Id 'local-midnight' -Cwd $script:FilterWorkspace -Summary 'Midnight' -UpdatedAt $localMidnight.ToString('o')
+
+        @(Get-CopilotSession -All -Summary 'Midnight' -UpdatedBefore '2026-08-01') | Should -HaveCount 0
+        (Get-CopilotSession -All -Summary 'Midnight' -UpdatedBefore $localMidnight.AddTicks(1)).Id | Should -Be 'local-midnight'
+        Test-Path -LiteralPath $path | Should -BeTrue
+    }
+
+    It 'uses one frozen UTC clock and an exclusive elapsed age boundary' {
+        $sessions = @(Get-CopilotSession -All -OlderThan ([timespan]::FromDays(1)))
+
+        @($sessions.Id | Sort-Object) | Should -Be @('old-local', 'old-remote')
+        Should -Invoke -ModuleName Shmuelie.Copilot -CommandName Get-Date -Times 1 -Exactly -ParameterFilter { $AsUTC }
+    }
+
+    It 'uses the stricter of the two date cutoffs together with every string filter' -ForEach @(
+        @{ Cutoff = '2026-08-01T12:00:00Z'; Expected = 0 }
+        @{ Cutoff = '2026-09-02T12:00:00Z'; Expected = 1 }
+    ) {
+        $sessions = @(Get-CopilotSession -All -Repository 'owner/*' -Branch '*cleanup' -Cwd '*other-workspace' -Summary 'Clean*' -UpdatedBefore $Cutoff -OlderThan ([timespan]::FromDays(1)))
+
+        $sessions | Should -HaveCount $Expected
+    }
+
+    It 'rejects nonpositive OlderThan for Get and Select' -ForEach @(
+        @{ Duration = [timespan]::Zero }
+        @{ Duration = [timespan]::FromDays(-1) }
+    ) {
+        { Get-CopilotSession -All -OlderThan $Duration } | Should -Throw '*positive TimeSpan*'
+        { Select-CopilotSession -OlderThan $Duration } | Should -Throw '*positive TimeSpan*'
+    }
+
+    It 'preserves exact ID lookup and rejects combining ID with filters' {
+        (Get-CopilotSession -Id 'old-remote').Id | Should -Be 'old-remote'
+        @(Get-CopilotSession -Id 'old-*') | Should -HaveCount 0
+        { Get-CopilotSession -Id 'old-local' -Summary '*' } | Should -Throw
+        { Get-CopilotSession -Id 'old-local' -All } | Should -Throw
+        { Get-CopilotSession -Id '../old-local' } | Should -Throw
+    }
+
+    It 'previews filtered cleanup then deletes only matching session IDs' {
+        $sessions = @(Get-CopilotSession -All -Repository 'owner/*' -Cwd '*other-workspace' -Summary 'Clean*' -OlderThan ([timespan]::FromDays(1)))
+        $sessions | Should -HaveCount 1
+        $before = @(Get-ChildItem -LiteralPath $script:FilterSessionRoot -Directory).Name
+
+        $sessions | Remove-CopilotSession -WhatIf
+
+        @(Get-ChildItem -LiteralPath $script:FilterSessionRoot -Directory).Name | Should -Be $before
+        $canary = Join-Path $testHome 'canary'
+        New-Item -ItemType Directory -Path $canary -ErrorAction Stop | Out-Null
+        $sessions[0].Path = $canary
+        $sessions | Remove-CopilotSession -Confirm:$false
+
+        Test-Path -LiteralPath (Join-Path $script:FilterSessionRoot 'old-remote') | Should -BeFalse
+        Test-Path -LiteralPath $canary | Should -BeTrue
+        @(Get-CopilotSession -All).Id | Should -Contain 'missing-metadata'
+        @(Get-CopilotSession -All).Id | Should -Contain 'old-local'
+        @(Get-CopilotSession -All).Id | Should -Contain 'recent-local'
+    }
+
+    It 'shares filtering with Select while retaining global discovery and wildcard IDs' {
+        Mock -ModuleName Shmuelie.Copilot -CommandName Resume-CopilotSession -MockWith {}
+        Push-Location -LiteralPath $script:FilterWorkspace
+        try {
+            Select-CopilotSession -Id 'old-*' -Repository 'OWNER/*' -Branch '*cleanup' -Cwd '*other-workspace' -Summary 'C*' -UpdatedBefore '2026-08-02T00:00:00Z' -OlderThan ([timespan]::FromDays(1)) -StayInDirectory
+        } finally {
+            Pop-Location
+        }
+
+        Should -Invoke -ModuleName Shmuelie.Copilot -CommandName Resume-CopilotSession -Times 1 -Exactly -ParameterFilter { $Id -eq 'old-remote' }
+        Should -Invoke -ModuleName Shmuelie.Copilot -CommandName Invoke-CopilotSessionPicker -Times 0 -Exactly
+        Should -Invoke -ModuleName Shmuelie.Copilot -CommandName Get-Date -Times 1 -Exactly
+    }
+}
+
 Describe 'Get-CopilotSession ID path traversal guard' {
     BeforeEach {
         $testHome = Join-Path $TestDrive 'home'
