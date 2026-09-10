@@ -36,6 +36,7 @@ Import-Module Shmuelie.Git
 | `Remove-Branch` | Delete an exact local branch (`-Force` permits unmerged deletion) or a remote branch with `-Remote -RemoteName origin`; high-impact confirmation and `-WhatIf` protect every deletion |
 | `Get-GitStatusSummary` | Parse `git status` for the current or `-Path` repository into a typed object (branch, ahead/behind, conflicts, stash, operation) |
 | `Get-GitTag` | Inspect local annotated/lightweight tags as typed objects, with case-sensitive exact/wildcard `-Name` filtering and standard repository `-Path` input; never fetches |
+| `Set-Branch` | Switch an existing working tree to a local branch; `-CreateNew` creates at HEAD, `-Track` creates from a remote-tracking branch, and `-Force` explicitly discards local changes; supports `-Path`, `-WhatIf` and `-Confirm` |
 | `Format-GitStatusSegment` | Render a `GitStatusSummary` as a colored posh-git-style prompt segment (`$PSStyle` string; `-ShowChangeCounts` toggles the change counts) |
 | `Update-WorktreePrediction` | Refresh the bundled predictor for the current directory |
 
@@ -69,6 +70,9 @@ Get-Branch -Path ../project -Local
 Get-GitTag -Name 'v1.*', 'stable' -Path ../project
 Remove-Branch -Name feature/finished -Path ../project -WhatIf
 Remove-Branch -Name feature/finished -Remote -RemoteName upstream
+Set-Branch -Branch feature/new -CreateNew -Path ../project
+Set-Branch -Branch origin/feature/topic -Track
+Set-Branch -Branch main -Force -WhatIf
 ```
 
 `Remove-Branch` accepts an exact branch name or `refs/heads/<name>`, not wildcard
@@ -119,6 +123,20 @@ the creator date of a lightweight commit tag is the commit's committer date,
 not the tag's creation time. Git does not record creation times for lightweight
 tags. `RepositoryPath` is the resolved input directory. Bare repositories are
 supported; no tags or no name matches produces no output.
+
+`Set-Branch` requires a literal `-Branch` (`-BranchName` is also accepted).
+`-Path` defaults to the current directory and also accepts `-RepositoryPath`,
+`-RepoPath`, pipeline paths, and objects with those path properties. The caller's
+location is unchanged. Without a creation flag, the branch must already exist
+locally; Git's implicit remote-branch guessing is disabled.
+`-CreateNew` creates at HEAD without an upstream and never resets an existing
+branch, even with `-Force`. `-Track` instead takes a remote-tracking name such as
+`origin/feature/topic`, creates `feature/topic`, and sets its upstream. These two
+creation modes cannot be combined. Neither mode fetches or updates a remote.
+`-Force` can discard staged/unstaged changes and obstructing untracked files;
+it does not bypass `-WhatIf`, `-Confirm`, or Git's protection for branches checked
+out in another worktree. Git failures are PowerShell errors (use
+`-ErrorAction Stop` to terminate); success produces no pipeline output.
 
 `Update-Worktrees` skips behind worktrees that have an in-progress git
 operation, returning `Status = 'InProgress'` with the existing operation string

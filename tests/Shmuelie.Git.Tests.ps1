@@ -496,6 +496,319 @@ public sealed class BranchRemovalConfirmationUI : PSHostUserInterface
     }
 }
 
+Describe 'Set-Branch' {
+    BeforeAll {
+        $switchEnvironment = @{}
+        foreach ($key in @(
+            'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_SYSTEM', 'GIT_CONFIG_NOSYSTEM',
+            'GIT_CONFIG_COUNT', 'GIT_CONFIG_PARAMETERS', 'GIT_DIR', 'GIT_WORK_TREE',
+            'GIT_COMMON_DIR', 'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY',
+            'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_NAMESPACE', 'GIT_CEILING_DIRECTORIES',
+            'GIT_DEFAULT_HASH', 'GIT_DEFAULT_REF_FORMAT', 'GIT_AUTHOR_DATE', 'GIT_COMMITTER_DATE'
+        )) {
+            $switchEnvironment[$key] = [Environment]::GetEnvironmentVariable($key, 'Process')
+            Remove-Item -LiteralPath "Env:$key" -ErrorAction Ignore
+        }
+        $env:GIT_CONFIG_GLOBAL = Join-Path $TestDrive 'no-global-config'
+        $env:GIT_CONFIG_SYSTEM = Join-Path $TestDrive 'no-system-config'
+        $env:GIT_CONFIG_NOSYSTEM = '1'
+        $env:GIT_CONFIG_COUNT = '0'
+        $env:GIT_AUTHOR_DATE = '2024-01-02T03:04:05Z'
+        $env:GIT_COMMITTER_DATE = '2024-01-02T03:04:05Z'
+
+        function Get-SwitchTestState {
+            param([string]$Path)
+            [ordered]@{
+                Branch = Invoke-Git @('-C', $Path, 'symbolic-ref', 'HEAD')
+                Head = Invoke-Git @('-C', $Path, 'rev-parse', 'HEAD')
+                Refs = @(Invoke-Git @('-C', $Path, 'for-each-ref', '--format=%(refname) %(objectname) %(upstream)'))
+                Status = @(Invoke-Git @('-C', $Path, 'status', '--porcelain=v1', '--untracked-files=all'))
+                Index = @(Invoke-Git @('-C', $Path, 'ls-files', '--stage'))
+                Config = Get-Content -LiteralPath (Join-Path $Path '.git' 'config') -Raw
+                Files = @(Get-ChildItem -LiteralPath $Path -File | Sort-Object Name | ForEach-Object {
+                    "$($_.Name):$([Convert]::ToBase64String([IO.File]::ReadAllBytes($_.FullName)))"
+                })
+            } | ConvertTo-Json -Depth 5 -Compress
+        }
+    }
+
+    AfterAll {
+        foreach ($key in $switchEnvironment.Keys) {
+            if ($null -eq $switchEnvironment[$key]) {
+                Remove-Item -LiteralPath "Env:$key" -ErrorAction Ignore
+            } else {
+                [Environment]::SetEnvironmentVariable($key, $switchEnvironment[$key], 'Process')
+            }
+        }
+    }
+
+    It 'exports the command with help, a required branch, and standard path aliases' {
+        $command = Get-Command Set-Branch -Module Shmuelie.Git
+        $command.Parameters['Branch'].Attributes.Mandatory | Should -Contain $true
+        $command.Parameters['Branch'].Aliases | Should -Contain 'BranchName'
+        $command.Parameters['Path'].Aliases | Should -Contain 'RepositoryPath'
+        $command.Parameters['Path'].Aliases | Should -Contain 'RepoPath'
+        $command.Parameters.Keys | Should -Contain 'WhatIf'
+        $command.Parameters.Keys | Should -Contain 'Confirm'
+        (Get-Help Set-Branch).Description.Text | Should -Not -BeNullOrEmpty
+    }
+
+    It 'uses discrete switch arguments for <Label>' -ForEach @(
+        @{ Label = 'existing branch'; Options = @{}; Branch = 'feature/topic'; Expected = @('switch', '--no-guess', '--', 'feature/topic') }
+        @{ Label = 'create'; Options = @{ CreateNew = $true }; Branch = 'feature/topic'; Expected = @('switch', '--no-guess', '--no-track', '--create', 'feature/topic', '--') }
+        @{ Label = 'force'; Options = @{ Force = $true }; Branch = 'feature/topic'; Expected = @('switch', '--no-guess', '--discard-changes', '--', 'feature/topic') }
+        @{ Label = 'force create'; Options = @{ Force = $true; CreateNew = $true }; Branch = 'feature/topic'; Expected = @('switch', '--no-guess', '--no-track', '--create', 'feature/topic', '--discard-changes', '--') }
+        @{ Label = 'track'; Options = @{ Track = $true }; Branch = 'origin/feature/topic'; Expected = @('switch', '--no-guess', '--track=direct', '--', 'origin/feature/topic') }
+        @{ Label = 'force track'; Options = @{ Track = $true; Force = $true }; Branch = 'origin/feature/topic'; Expected = @('switch', '--no-guess', '--track=direct', '--discard-changes', '--', 'origin/feature/topic') }
+        @{ Label = 'literal shell punctuation'; Options = @{}; Branch = 'feature/semicolon;and&literal'; Expected = @('switch', '--no-guess', '--', 'feature/semicolon;and&literal') }
+    ) {
+        InModuleScope Shmuelie.Git -Parameters @{ Options = $Options; Branch = $Branch; Expected = $Expected } {
+            Mock Invoke-Git {
+                [pscustomobject]@{ ExitCode = 0; StandardOutput = ''; RepositoryPath = 'resolved repository' }
+            }
+            Set-Branch -Branch $Branch -Path 'input repository' @Options -Confirm:$false | Should -BeNullOrEmpty
+            Should -Invoke Invoke-Git -Exactly -Times 1 -ParameterFilter {
+                $Path -ceq 'input repository' -and
+                ($Arguments -join '|') -ceq "check-ref-format|--branch|$Branch"
+            }
+            Should -Invoke Invoke-Git -Exactly -Times 1 -ParameterFilter {
+                $Path -ceq 'resolved repository' -and
+                ($Arguments -join '|') -ceq ($Expected -join '|')
+            }
+            $remoteChecks = if ($Options.Track) { 1 } else { 0 }
+            Should -Invoke Invoke-Git -Exactly -Times $remoteChecks -ParameterFilter {
+                ($Arguments -join '|') -ceq "show-ref|--verify|--quiet|--|refs/remotes/$Branch"
+            }
+        }
+    }
+
+    It 'rejects an unsafe or nonliteral branch before invoking Git: <Branch>' -ForEach @(
+        @{ Branch = '--discard-changes' }, @{ Branch = '-c' }, @{ Branch = '-' },
+        @{ Branch = '@{-1}' }, @{ Branch = '@' }, @{ Branch = 'refs/heads/main' },
+        @{ Branch = 'refs/remotes/origin/main' }, @{ Branch = ' ' },
+        @{ Branch = "bad`nbranch" }, @{ Branch = "bad`0branch" }
+    ) {
+        InModuleScope Shmuelie.Git -Parameters @{ Branch = $Branch } {
+            Mock Invoke-Git { throw 'Git must not be invoked.' }
+            { Set-Branch -Branch $Branch -Force -Confirm:$false } | Should -Throw
+            Should -Invoke Invoke-Git -Exactly -Times 0
+        }
+    }
+
+    It 'rejects conflicting creation modes before invoking Git' {
+        InModuleScope Shmuelie.Git {
+            Mock Invoke-Git { throw 'Git must not be invoked.' }
+            { Set-Branch -Branch topic -CreateNew -Track -Force -Confirm:$false } | Should -Throw
+            Should -Invoke Invoke-Git -Exactly -Times 0
+        }
+    }
+
+    It 'stops after a failed validation and reports no success' {
+        InModuleScope Shmuelie.Git {
+            Mock Invoke-Git { Write-Error 'Invalid branch.' }
+            Mock Write-Verbose {}
+            Set-Branch topic -ErrorAction SilentlyContinue -ErrorVariable failures | Should -BeNullOrEmpty
+            $failures | Should -Not -BeNullOrEmpty
+            Should -Invoke Invoke-Git -Exactly -Times 1
+            Should -Invoke Write-Verbose -Exactly -Times 0
+        }
+    }
+
+    Context 'real git working trees' {
+        BeforeEach {
+            $switchRepo = New-TestRepo -Path (Join-Path $TestDrive "switch repo & ; (space) $([guid]::NewGuid().ToString('N'))")
+            $mainCommit = Invoke-Git @('-C', $switchRepo, 'rev-parse', 'HEAD')
+            Invoke-Git @('-C', $switchRepo, 'switch', '--quiet', '--create', 'target')
+            Set-Content -LiteralPath (Join-Path $switchRepo 'README.md') -Value 'target version'
+            Invoke-Git @('-C', $switchRepo, 'add', 'README.md')
+            Invoke-TestCommit -Path $switchRepo -Message 'target commit'
+            $targetCommit = Invoke-Git @('-C', $switchRepo, 'rev-parse', 'HEAD')
+            Invoke-Git @('-C', $switchRepo, 'switch', '--quiet', 'main')
+        }
+
+        It 'switches an existing branch and preserves non-conflicting local changes and location' {
+            Set-Content -LiteralPath (Join-Path $switchRepo 'keep.txt') -Value 'keep staged'
+            Invoke-Git @('-C', $switchRepo, 'add', 'keep.txt')
+            Set-Content -LiteralPath (Join-Path $switchRepo 'keep.txt') -Value 'keep unstaged'
+            $location = Get-Location
+            Set-Branch -Branch target -Path $switchRepo -Confirm:$false | Should -BeNullOrEmpty
+            Invoke-Git @('-C', $switchRepo, 'symbolic-ref', 'HEAD') | Should -BeExactly 'refs/heads/target'
+            Invoke-Git @('-C', $switchRepo, 'rev-parse', 'HEAD') | Should -BeExactly $targetCommit
+            Invoke-Git @('-C', $switchRepo, 'show', ':keep.txt') | Should -BeExactly 'keep staged'
+            Get-Content -LiteralPath (Join-Path $switchRepo 'keep.txt') | Should -BeExactly 'keep unstaged'
+            (Get-Location).Path | Should -BeExactly $location.Path
+        }
+
+        It 'creates at HEAD without inheriting tracking even when configured to do so' {
+            Invoke-Git @('-C', $switchRepo, 'config', 'branch.autoSetupMerge', 'always')
+            Set-Branch -Branch 'feature/new' -CreateNew -Path $switchRepo -Confirm:$false
+            Invoke-Git @('-C', $switchRepo, 'symbolic-ref', 'HEAD') | Should -BeExactly 'refs/heads/feature/new'
+            Invoke-Git @('-C', $switchRepo, 'rev-parse', 'HEAD') | Should -BeExactly $mainCommit
+            Invoke-Git @('-C', $switchRepo, 'for-each-ref', '--format=%(upstream)', 'refs/heads/feature/new') |
+                Should -BeNullOrEmpty
+        }
+
+        It 'creates a tracked branch from its remote commit rather than current HEAD' {
+            Invoke-Git @('-C', $switchRepo, 'config', 'remote.origin.url', (Join-Path $TestDrive 'offline-origin.git'))
+            Invoke-Git @('-C', $switchRepo, 'config', 'remote.origin.fetch', '+refs/heads/*:refs/remotes/origin/*')
+            Invoke-Git @('-C', $switchRepo, 'update-ref', 'refs/remotes/origin/feature/topic', $targetCommit)
+            $location = Get-Location
+            Set-Branch -Branch 'origin/feature/topic' -Track -Path $switchRepo -Confirm:$false
+            Invoke-Git @('-C', $switchRepo, 'symbolic-ref', 'HEAD') | Should -BeExactly 'refs/heads/feature/topic'
+            Invoke-Git @('-C', $switchRepo, 'rev-parse', 'HEAD') | Should -BeExactly $targetCommit
+            Invoke-Git @('-C', $switchRepo, 'config', 'branch.feature/topic.remote') | Should -BeExactly 'origin'
+            Invoke-Git @('-C', $switchRepo, 'config', 'branch.feature/topic.merge') | Should -BeExactly 'refs/heads/feature/topic'
+            Invoke-Git @('-C', $switchRepo, 'for-each-ref', '--format=%(upstream)', 'refs/heads/feature/topic') |
+                Should -BeExactly 'refs/remotes/origin/feature/topic'
+            (Get-Location).Path | Should -BeExactly $location.Path
+        }
+
+        It 'supports cwd, a relative literal subdirectory, path aliases, and pipeline paths' {
+            $subdir = New-Item -ItemType Directory -Path (Join-Path $switchRepo 'nested [literal]')
+            Push-Location -LiteralPath $subdir.FullName
+            try {
+                Set-Branch -BranchName target -Confirm:$false
+                (Get-Location).Path | Should -BeExactly $subdir.FullName
+                Invoke-Git @('-C', $switchRepo, 'symbolic-ref', 'HEAD') | Should -BeExactly 'refs/heads/target'
+                Set-Branch main -Path (Join-Path '..' 'nested [literal]') -Confirm:$false
+                foreach ($alias in @('RepositoryPath', 'RepoPath')) {
+                    $parameters = @{ $alias = $switchRepo }
+                    Set-Branch target @parameters -Confirm:$false
+                    Invoke-Git @('-C', $switchRepo, 'symbolic-ref', 'HEAD') | Should -BeExactly 'refs/heads/target'
+                    Set-Branch main @parameters -Confirm:$false
+                }
+                foreach ($inputPath in @(
+                    $switchRepo, [pscustomobject]@{ Path = $switchRepo },
+                    [pscustomobject]@{ RepositoryPath = $switchRepo }, [pscustomobject]@{ RepoPath = $switchRepo }
+                )) {
+                    $inputPath | Set-Branch target -Confirm:$false
+                    Invoke-Git @('-C', $switchRepo, 'symbolic-ref', 'HEAD') | Should -BeExactly 'refs/heads/target'
+                    Set-Branch main -Confirm:$false
+                }
+            } finally {
+                Pop-Location
+            }
+        }
+
+        It 'treats shell metacharacters as literal branch text' {
+            $branch = 'feature/semicolon;and&literal'
+            Set-Branch $branch -CreateNew -Path $switchRepo -Confirm:$false
+            Set-Branch main -Path $switchRepo -Confirm:$false
+            Set-Branch $branch -Path $switchRepo -Confirm:$false
+            Invoke-Git @('-C', $switchRepo, 'symbolic-ref', 'HEAD') | Should -BeExactly "refs/heads/$branch"
+        }
+
+        It 'preserves HEAD, refs, tracking, index and dirty files under WhatIf for <Label>' -ForEach @(
+            @{ Label = 'switch'; Options = @{}; Branch = 'target' }
+            @{ Label = 'force switch'; Options = @{ Force = $true }; Branch = 'target' }
+            @{ Label = 'force create'; Options = @{ Force = $true; CreateNew = $true }; Branch = 'new' }
+            @{ Label = 'force track'; Options = @{ Force = $true; Track = $true }; Branch = 'origin/feature/new' }
+        ) {
+            Invoke-Git @('-C', $switchRepo, 'config', 'remote.origin.url', (Join-Path $TestDrive 'offline-origin.git'))
+            Invoke-Git @('-C', $switchRepo, 'config', 'remote.origin.fetch', '+refs/heads/*:refs/remotes/origin/*')
+            Invoke-Git @('-C', $switchRepo, 'update-ref', 'refs/remotes/origin/feature/new', $targetCommit)
+            Set-Content -LiteralPath (Join-Path $switchRepo 'README.md') -Value 'staged'
+            Invoke-Git @('-C', $switchRepo, 'add', 'README.md')
+            Set-Content -LiteralPath (Join-Path $switchRepo 'README.md') -Value 'unstaged'
+            Set-Content -LiteralPath (Join-Path $switchRepo 'untracked.txt') -Value 'keep'
+            $before = Get-SwitchTestState $switchRepo
+            Set-Branch $Branch @Options -Path $switchRepo -WhatIf | Should -BeNullOrEmpty
+            Get-SwitchTestState $switchRepo | Should -BeExactly $before
+        }
+
+        It 'reports a blocked dirty switch, preserves state, then discards changes only with Force' {
+            Set-Content -LiteralPath (Join-Path $switchRepo 'README.md') -Value 'staged'
+            Invoke-Git @('-C', $switchRepo, 'add', 'README.md')
+            Set-Content -LiteralPath (Join-Path $switchRepo 'README.md') -Value 'unstaged'
+            $before = Get-SwitchTestState $switchRepo
+            Set-Branch target -Path $switchRepo -Confirm:$false -ErrorAction SilentlyContinue -ErrorVariable failures |
+                Should -BeNullOrEmpty
+            $failures | Should -HaveCount 1
+            $failures[0].FullyQualifiedErrorId | Should -BeLike 'GitCommandFailed,*'
+            $failures[0].TargetObject.ExitCode | Should -Not -Be 0
+            $failures[0].TargetObject.StandardError | Should -Match 'would be overwritten'
+            Get-SwitchTestState $switchRepo | Should -BeExactly $before
+            { Set-Branch target -Path $switchRepo -Confirm:$false -ErrorAction Stop } |
+                Should -Throw -ErrorId 'GitCommandFailed,*'
+            Get-SwitchTestState $switchRepo | Should -BeExactly $before
+            Set-Branch target -Force -Path $switchRepo -Confirm:$false
+            Invoke-Git @('-C', $switchRepo, 'symbolic-ref', 'HEAD') | Should -BeExactly 'refs/heads/target'
+            Invoke-Git @('-C', $switchRepo, 'rev-parse', 'HEAD') | Should -BeExactly $targetCommit
+            Invoke-Git @('-C', $switchRepo, 'status', '--porcelain=v1') | Should -BeNullOrEmpty
+            Get-Content -LiteralPath (Join-Path $switchRepo 'README.md') | Should -BeExactly 'target version'
+        }
+
+        It 'does not reset an existing branch or discard changes when CreateNew fails with Force' {
+            Set-Content -LiteralPath (Join-Path $switchRepo 'README.md') -Value 'keep changes'
+            $before = Get-SwitchTestState $switchRepo
+            { Set-Branch target -CreateNew -Force -Path $switchRepo -Confirm:$false -ErrorAction Stop } |
+                Should -Throw -ExpectedMessage '*already exists*'
+            Get-SwitchTestState $switchRepo | Should -BeExactly $before
+        }
+
+        It 'does not reset an existing local branch when Track fails with Force' {
+            Invoke-Git @('-C', $switchRepo, 'config', 'remote.origin.url', (Join-Path $TestDrive 'offline-origin.git'))
+            Invoke-Git @('-C', $switchRepo, 'config', 'remote.origin.fetch', '+refs/heads/*:refs/remotes/origin/*')
+            Invoke-Git @('-C', $switchRepo, 'update-ref', 'refs/remotes/origin/target', $mainCommit)
+            Set-Content -LiteralPath (Join-Path $switchRepo 'README.md') -Value 'keep changes'
+            $before = Get-SwitchTestState $switchRepo
+            { Set-Branch origin/target -Track -Force -Path $switchRepo -Confirm:$false -ErrorAction Stop } |
+                Should -Throw -ExpectedMessage '*already exists*'
+            Get-SwitchTestState $switchRepo | Should -BeExactly $before
+        }
+
+        It 'preserves dirty state for missing, invalid, revision and local-only tracking targets' {
+            Set-Content -LiteralPath (Join-Path $switchRepo 'README.md') -Value 'keep changes'
+            $before = Get-SwitchTestState $switchRepo
+            foreach ($branch in @('missing', 'bad..name', 'target~0', 'HEAD')) {
+                { Set-Branch $branch -Force -Path $switchRepo -Confirm:$false -ErrorAction Stop } | Should -Throw
+                Get-SwitchTestState $switchRepo | Should -BeExactly $before
+            }
+            foreach ($branch in @('target', 'origin/missing')) {
+                { Set-Branch $branch -Track -Force -Path $switchRepo -Confirm:$false -ErrorAction Stop } | Should -Throw
+                Get-SwitchTestState $switchRepo | Should -BeExactly $before
+            }
+        }
+
+        It 'does not implicitly create a local branch for a matching remote branch' {
+            Invoke-Git @('-C', $switchRepo, 'config', 'remote.origin.url', (Join-Path $TestDrive 'offline-origin.git'))
+            Invoke-Git @('-C', $switchRepo, 'config', 'remote.origin.fetch', '+refs/heads/*:refs/remotes/origin/*')
+            Invoke-Git @('-C', $switchRepo, 'update-ref', 'refs/remotes/origin/remote-only', $targetCommit)
+            $before = Get-SwitchTestState $switchRepo
+            { Set-Branch remote-only -Path $switchRepo -Confirm:$false -ErrorAction Stop } | Should -Throw
+            Get-SwitchTestState $switchRepo | Should -BeExactly $before
+        }
+
+        It 'leaves both working trees untouched when the target is checked out elsewhere, even with Force' {
+            $linkedPath = Join-Path $TestDrive 'other checkout'
+            Invoke-Git @('-C', $switchRepo, 'worktree', 'add', '--quiet', '--', $linkedPath, 'target')
+            Set-Content -LiteralPath (Join-Path $switchRepo 'README.md') -Value 'keep local'
+            Set-Content -LiteralPath (Join-Path $linkedPath 'README.md') -Value 'keep linked'
+            $before = Get-SwitchTestState $switchRepo
+            { Set-Branch target -Force -Path $switchRepo -Confirm:$false -ErrorAction Stop } |
+                Should -Throw -ExpectedMessage '*already used by worktree*'
+            Get-SwitchTestState $switchRepo | Should -BeExactly $before
+            Invoke-Git @('-C', $linkedPath, 'symbolic-ref', 'HEAD') | Should -BeExactly 'refs/heads/target'
+            Invoke-Git @('-C', $linkedPath, 'rev-parse', 'HEAD') | Should -BeExactly $targetCommit
+            Get-Content -LiteralPath (Join-Path $linkedPath 'README.md') | Should -BeExactly 'keep linked'
+        }
+
+        It 'reports invalid repository paths without affecting the current repository' {
+            $before = Get-SwitchTestState $switchRepo
+            Push-Location -LiteralPath $switchRepo
+            try {
+                foreach ($path in @((Join-Path $TestDrive 'missing'), $TestDrive, (Join-Path $switchRepo 'README.md'), 'Env:')) {
+                    { Set-Branch target -Force -Path $path -Confirm:$false -ErrorAction Stop } | Should -Throw
+                }
+                Get-SwitchTestState $switchRepo | Should -BeExactly $before
+                (Get-Location).Path | Should -BeExactly $switchRepo
+            } finally {
+                Pop-Location
+            }
+        }
+    }
+}
+
 Describe 'Get-Branch machine-readable contract' {
     It 'exports the command with typed output and repository pipeline metadata' {
         $command = Get-Command Get-Branch -Module Shmuelie.Git
