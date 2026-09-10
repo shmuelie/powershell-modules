@@ -1917,6 +1917,8 @@ Describe 'Uv package provider' {
 
     InModuleScope Shmuelie.PackageManagement {
         BeforeAll {
+            $sourceModules = Split-Path (Get-Module Shmuelie.PackageManagement).ModuleBase -Parent
+            Import-Module (Join-Path $sourceModules 'Shmuelie.Utilities' 'Shmuelie.Utilities.psd1') -ErrorAction Stop
             # A scoped fake native command prevents any real uv invocation.
             function script:uv {
                 $script:NativeCalls.Add(@($args))
