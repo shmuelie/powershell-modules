@@ -36,6 +36,7 @@ Import-Module Shmuelie.Git
 | `Get-GitStatusSummary` | Parse `git status` for the current or `-Path` repository into a typed object (branch, ahead/behind, conflicts, stash, operation) |
 | `Get-GitTag` | Inspect local annotated/lightweight tags as typed objects, with case-sensitive exact/wildcard `-Name` filtering and standard repository `-Path` input; never fetches |
 | `Set-Branch` | Switch an existing working tree to a local branch; `-CreateNew` creates at HEAD, `-Track` creates from a remote-tracking branch, and `-Force` explicitly discards local changes; supports `-Path`, `-WhatIf` and `-Confirm` |
+| `Restore-GitStash` | Pop the newest stash or an exact `-Stash 'stash@{n}'` entry with native conflict preservation; supports repository `-Path`, `-WhatIf` and `-Confirm` |
 | `Format-GitStatusSegment` | Render a `GitStatusSummary` as a colored posh-git-style prompt segment (`$PSStyle` string; `-ShowChangeCounts` toggles the change counts) |
 | `Update-WorktreePrediction` | Refresh the bundled predictor for the current directory |
 
@@ -70,6 +71,8 @@ Get-GitTag -Name 'v1.*', 'stable' -Path ../project
 Set-Branch -Branch feature/new -CreateNew -Path ../project
 Set-Branch -Branch origin/feature/topic -Track
 Set-Branch -Branch main -Force -WhatIf
+Restore-GitStash -Path ../project -WhatIf
+Restore-GitStash -Path ../project -Stash 'stash@{1}'
 ```
 
 `Get-Branch` accepts a literal `-Path` (aliases `-RepositoryPath` / `-RepoPath`),
@@ -117,6 +120,28 @@ creation modes cannot be combined. Neither mode fetches or updates a remote.
 it does not bypass `-WhatIf`, `-Confirm`, or Git's protection for branches checked
 out in another worktree. Git failures are PowerShell errors (use
 `-ErrorAction Stop` to terminate); success produces no pipeline output.
+
+`Restore-GitStash` runs native `git stash pop`, applying `stash@{0}` by default
+and removing the selected entry on success. `-Stash` accepts only an exact
+`stash@{n}` selector with a canonical nonnegative 32-bit index, not bare numbers,
+commit object IDs, revision expressions or wildcards. `-Path` defaults to the
+current directory, accepts the `-RepositoryPath` / `-RepoPath` aliases, pipeline paths, or objects with those
+path properties, and never changes location. Explicit empty paths are rejected.
+Pipeline input routes repositories only: an `ObjectId` property does **not**
+select a stash. Objects carrying `ObjectId` (including `Save-GitStash` results)
+require an explicit `-Stash` selector; otherwise the command reports an error
+without popping anything. It does not translate object IDs into reflog positions.
+
+Git retains the stash if applying it fails or conflicts. Conflicts can leave
+partially restored files and an unmerged index; the command surfaces the native
+failure and does not resolve conflicts, force overwrites, or retry with separate
+apply/drop commands. It uses default pop behavior (no `--index` to reinstate
+staging). Success produces no pipeline output; errors retain Git's exit code,
+stdout and stderr in `TargetObject`, and `-ErrorAction Stop` terminates.
+`-WhatIf` or declining `-Confirm` prevents the entire pop, including stash removal.
+Selectors are mutable positions evaluated by Git, not pinned identities.
+Coordinate stash writers, including other worktrees, while confirming/running a
+pop: this wrapper does not add concurrency protection to native Git semantics.
 
 `Update-Worktrees` skips behind worktrees that have an in-progress git
 operation, returning `Status = 'InProgress'` with the existing operation string
