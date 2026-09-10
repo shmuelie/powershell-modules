@@ -177,8 +177,6 @@ Provider-neutral package update orchestration. **Version 0.1.0.**
 option tables, lazy dependency discovery, per-target `ShouldProcess`, typed
 results, and optional fail-fast behavior.
 
-The catalog includes PSResourceGet, DotNet, Npm, Pip, Uv, VSCode, WinGet, and
-AppInstaller. Catalog names do not imply installed integrations: unavailable
-dependencies and unimplemented adapters report `Skipped` with a reason.
-See the module README for supported adapters and options. Importing the core
-is portable and does not import optional provider modules.
+See the module README for provider availability and supported options.
+Unavailable or unimplemented integrations report `Skipped` with a reason.
+Importing the core is portable and does not import optional provider modules.

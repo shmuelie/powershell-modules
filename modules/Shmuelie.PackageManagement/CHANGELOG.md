@@ -10,6 +10,24 @@ under [Unreleased]; versions change only when a release is cut.
   individually approved installed-tool upgrades, with scope selection,
   lazy Utilities commands, distinct package/tool targets, observed versions,
   strict tool-list parsing, and explicit dependency skips and failures.
+- PSResourceGet adapter for configured module roots, name/exclusion filters, and
+  optional repository overrides, reusing Utilities' canonical discovery,
+  provenance, prerelease, and update behavior. Read-only previews avoid network
+  lookups; per-module results reflect observed installed versions and preserve
+  warning/error behavior and aggregate confirmation/fail-fast boundaries.
+- DotNet global-tool provider using the canonical Shmuelie.DotNet commands,
+  lazy module/SDK discovery, optional wildcard Name filtering, per-tool previews
+  and confirmation, observed version outcomes, and native failure reporting.
+  Local manifests and SDK installation are not part of this integration.
+- Npm provider for outdated global packages, using the optional Shmuelie.Node
+  module, preserving scoped names, rejecting unsafe package identifiers, and
+  reporting observed installed versions with per-package failure handling.
+- Pip adapter using optional `Shmuelie.Utilities` commands, with outdated
+  top-level discovery by default and Boolean `User`/`TopLevelOnly` options.
+  Updates honor per-package confirmation, validate distribution names, preserve
+  failures, and observe installed versions before reporting update outcomes.
+  `User` filters discovery and observation; it does not override the updater's
+  installation destination.
 
 ## [0.1.0] - 2026-09-08
 

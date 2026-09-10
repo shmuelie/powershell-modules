@@ -8,8 +8,10 @@ function Update-AllPackages {
         produce Skipped results with reasons. Providers are imported only when
         selected; importing this module does not require any provider module.
 
-        Catalog membership does not guarantee availability. Consult the module
-        README for implemented adapters, dependencies and supported options.
+        See the module README for provider availability and supported options.
+        Unimplemented or unavailable integrations report Skipped.
+        PSResourceGet updates configured module roots using Shmuelie.Utilities;
+        no configured roots produces Skipped instead of scanning PSModulePath.
 
         Each integration discovers targets without mutation. ShouldProcess
         gates each target's update callback. WhatIf runs only discovery and
@@ -32,6 +34,9 @@ function Update-AllPackages {
         Provider and option keys are case-insensitive, including JSON-derived
         hashtables. Case-equivalent duplicate keys are rejected. The caller's
         maps are not modified.
+        Pip accepts Boolean User (default false) and TopLevelOnly (default
+        true). User filters discovery and observation, not the installation
+        destination; the existing updater has no user-install option.
     .PARAMETER StopOnFailure
         Stop after the first failing callback, before another target or
         provider starts. Preserve all results produced by that callback.
@@ -50,9 +55,17 @@ function Update-AllPackages {
         Update-AllPackages -Provider Npm, DotNet -ExcludeProvider Npm -StopOnFailure
         Select only DotNet and stop if its integration fails.
     .EXAMPLE
-        Update-AllPackages -ProviderOptions @{ Npm = @{} } -Confirm:$false
-        Supply a provider options map and disable interactive confirmation.
-        Each adapter declares its supported options in the module README.
+        Update-AllPackages -Provider PSResourceGet -ProviderOptions @{
+            PSResourceGet = @{ Path = (Join-Path $HOME 'PowerShellModules'); Name = 'MyTools.*'; Exclude = '*.Local' }
+        } -WhatIf
+        Preview locally discovered modules without contacting repositories.
+        Proposed versions are unknown until the canonical update runs.
+    .EXAMPLE
+        Update-AllPackages -Provider Npm -WhatIf
+        Preview outdated global npm packages without touching local dependencies.
+    .EXAMPLE
+        Update-AllPackages -Provider Pip -ProviderOptions @{ Pip = @{ User = $true } } -WhatIf
+        Preview outdated top-level user-installed pip packages.
     #>
     [CmdletBinding(SupportsShouldProcess)]
     [OutputType('Shmuelie.PackageManagement.UpdateResult')]
