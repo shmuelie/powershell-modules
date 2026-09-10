@@ -33,7 +33,7 @@ no longer eagerly imports PSReadLine before registering the predictor.
 ## Shmuelie.Git
 
 Git repository, worktree, status, completion, and PSReadLine prediction helpers.
-**Version 0.8.2.**
+**Version 0.9.0.**
 [README](https://github.com/shmuelie/powershell-modules/blob/main/modules/Shmuelie.Git/README.md)
 
 Highlights:
@@ -42,6 +42,12 @@ Highlights:
 - Worktree lifecycle: `New-Worktree`, `Add-Worktree`, `Set-Worktree`,
   `Remove-Worktree`, `Update-Worktrees`.
 - `Get-GitStatusSummary` returns a typed status object.
+- `Get-Branch` and `Get-GitTag` inspect local refs as typed objects without fetching.
+- `Set-Branch` and `Remove-Branch` make branch changes explicit and support confirmation.
+- `Save-GitStash` and `Restore-GitStash` save and restore changes using native Git semantics.
+- `Restore-Items` preserves staged changes unless `-IncludeIndex` is specified.
+- `Set-Config` writes literal local, global or system settings with confirmation.
+- `Update-Worktrees -ChangedOnly` limits output to actionable worktree results.
 - A bundled `WorktreePredictor.dll` suggests branch names for worktree commands.
 
 ## Shmuelie.Copilot

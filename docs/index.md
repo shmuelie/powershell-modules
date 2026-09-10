@@ -15,7 +15,7 @@ install and upgrade each module on its own.
 
 | Module | Description | Version |
 |---|---|---|
-| [Shmuelie.Git](modules.md#shmuelie-git) | Git worktrees, layout, status, completion, and prediction | 0.8.2 |
+| [Shmuelie.Git](modules.md#shmuelie-git) | Git worktrees, layout, status, completion, and prediction | 0.9.0 |
 | [Shmuelie.Copilot](modules.md#shmuelie-copilot) | Copilot CLI sessions, plugins, marketplaces, MCP, and launcher | 0.3.2 |
 | [Shmuelie.Node](modules.md#shmuelie-node) | Node.js, nvm-windows, npm, and ADO npm credentials | 0.1.4 |
 | [Shmuelie.DotNet](modules.md#shmuelie-dotnet) | .NET tool discovery, installation, updates, and removal | 0.1.0 |
