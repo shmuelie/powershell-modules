@@ -7,6 +7,9 @@ Versions change only when a release is cut; unreleased work stays under
 ## [Unreleased]
 
 ### Added
+- Added `Remove-Branch` for explicitly named local or remote branch deletion,
+  with high-impact confirmation, `-WhatIf`, local-only `-Force`, validated refs,
+  and explicit configured remote selection (`-RemoteName`, default `origin`).
 - Added `Get-GitTag` for typed, read-only local tag discovery with exact/wildcard
   name filters, repository path input, annotated/lightweight metadata, full tag
   annotations, offset-preserving dates, and correctly peeled commit/blob/tree

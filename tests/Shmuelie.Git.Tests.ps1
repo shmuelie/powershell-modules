@@ -94,6 +94,392 @@ BeforeAll {
     }
 }
 
+Describe 'Remove-Branch' {
+    BeforeAll {
+        $branchEnvironment = @{}
+        foreach ($key in @(
+            'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_SYSTEM', 'GIT_CONFIG_NOSYSTEM',
+            'GIT_CONFIG_COUNT', 'GIT_CONFIG_PARAMETERS', 'GIT_DIR', 'GIT_WORK_TREE',
+            'GIT_COMMON_DIR', 'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY',
+            'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_NAMESPACE'
+        )) {
+            $branchEnvironment[$key] = [Environment]::GetEnvironmentVariable($key, 'Process')
+            Remove-Item "Env:$key" -ErrorAction Ignore
+        }
+        $env:GIT_CONFIG_GLOBAL = Join-Path $TestDrive 'no-global-config'
+        $env:GIT_CONFIG_SYSTEM = Join-Path $TestDrive 'no-system-config'
+        $env:GIT_CONFIG_NOSYSTEM = '1'
+        $env:GIT_CONFIG_COUNT = '0'
+        $seed = New-TestRepo -Path (Join-Path $TestDrive 'seed')
+        $branchOrigin = Join-Path $TestDrive 'origin.git'
+        $branchRepo = Join-Path $TestDrive 'branch repo [literal]'
+        Invoke-Git @('clone', '--bare', '--quiet', '--', $seed, $branchOrigin)
+        Invoke-Git @('clone', '--quiet', '--', $branchOrigin, $branchRepo)
+        Set-TestRepoConfig $branchRepo
+        $initialCommit = Invoke-Git @('-C', $branchRepo, 'rev-parse', 'HEAD')
+
+        function Get-TestBranchNames {
+            param([string]$Path)
+            Invoke-Git @('-C', $Path, 'for-each-ref', '--format=%(refname)', 'refs/heads/')
+        }
+
+        if (-not ('BranchRemovalConfirmationHost' -as [type])) {
+            Add-Type -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.Collections.ObjectModel;
+using System.Globalization;
+using System.Management.Automation;
+using System.Management.Automation.Host;
+using System.Security;
+
+public sealed class BranchRemovalConfirmationHost : PSHost
+{
+    public readonly BranchRemovalConfirmationUI PromptUI = new BranchRemovalConfirmationUI();
+    public override Guid InstanceId { get; } = Guid.NewGuid();
+    public override string Name => "BranchRemovalConfirmationHost";
+    public override Version Version => new Version(1, 0);
+    public override PSHostUserInterface UI => PromptUI;
+    public override CultureInfo CurrentCulture => CultureInfo.InvariantCulture;
+    public override CultureInfo CurrentUICulture => CultureInfo.InvariantCulture;
+    public override void SetShouldExit(int exitCode) { }
+    public override void EnterNestedPrompt() => throw new NotSupportedException();
+    public override void ExitNestedPrompt() => throw new NotSupportedException();
+    public override void NotifyBeginApplication() { }
+    public override void NotifyEndApplication() { }
+}
+
+public sealed class BranchRemovalConfirmationUI : PSHostUserInterface
+{
+    public int PromptCount;
+    public readonly List<string> Messages = new List<string>();
+    public override PSHostRawUserInterface RawUI => null;
+    public override int PromptForChoice(string caption, string message, Collection<ChoiceDescription> choices, int defaultChoice)
+    {
+        PromptCount++;
+        Messages.Add(message);
+        return 2; // No: refuse each high-impact operation.
+    }
+    public override string ReadLine() => throw new NotSupportedException();
+    public override SecureString ReadLineAsSecureString() => throw new NotSupportedException();
+    public override Dictionary<string, PSObject> Prompt(string caption, string message, Collection<FieldDescription> descriptions) => throw new NotSupportedException();
+    public override PSCredential PromptForCredential(string caption, string message, string userName, string targetName) => throw new NotSupportedException();
+    public override PSCredential PromptForCredential(string caption, string message, string userName, string targetName, PSCredentialTypes types, PSCredentialUIOptions options) => throw new NotSupportedException();
+    public override void Write(string value) => Messages.Add(value);
+    public override void Write(ConsoleColor foreground, ConsoleColor background, string value) => Messages.Add(value);
+    public override void WriteLine(string value) => Messages.Add(value);
+    public override void WriteErrorLine(string value) => Messages.Add(value);
+    public override void WriteDebugLine(string value) => Messages.Add(value);
+    public override void WriteVerboseLine(string value) => Messages.Add(value);
+    public override void WriteWarningLine(string value) => Messages.Add(value);
+    public override void WriteProgress(long sourceId, ProgressRecord record) { }
+}
+'@
+        }
+    }
+
+    BeforeEach {
+        $branchName = 'remove-' + [guid]::NewGuid().ToString('N')
+        Invoke-Git @('-C', $branchRepo, 'branch', $branchName, $initialCommit)
+        Invoke-Git @('-C', $branchRepo, 'push', '--quiet', '--', 'origin', "refs/heads/$branchName")
+    }
+
+    AfterAll {
+        foreach ($key in $branchEnvironment.Keys) {
+            if ($null -eq $branchEnvironment[$key]) {
+                Remove-Item "Env:$key" -ErrorAction Ignore
+            } else {
+                [Environment]::SetEnvironmentVariable($key, $branchEnvironment[$key], 'Process')
+            }
+        }
+    }
+
+    It 'exports an approved high-impact command with standard path aliases and help' {
+        $command = Get-Command Remove-Branch -Module Shmuelie.Git
+        (Get-Verb Remove).Verb | Should -BeExactly $command.Verb
+        $binding = $command.ScriptBlock.Attributes |
+            Where-Object { $_ -is [System.Management.Automation.CmdletBindingAttribute] }
+        $binding.SupportsShouldProcess | Should -BeTrue
+        $binding.ConfirmImpact | Should -Be 'High'
+        $command.Parameters.Path.Aliases | Should -Be @('RepositoryPath', 'RepoPath')
+        $command.Parameters.Name.Aliases | Should -Be @('BranchName', 'Branch')
+        (Get-Module Shmuelie.Git).ExportedAliases.Count | Should -Be 0
+        (Get-Help Remove-Branch).Description.Text | Should -Not -BeNullOrEmpty
+    }
+
+    It 'deletes only the merged local branch with <InputKind> input' -ForEach @(
+        @{ InputKind = 'name' }, @{ InputKind = 'reference' }, @{ InputKind = 'pipeline' },
+        @{ InputKind = 'properties' }, @{ InputKind = 'aliases' }
+    ) {
+        $result = switch ($InputKind) {
+            name { Remove-Branch $branchName -Path $branchRepo -Confirm:$false -ErrorAction Stop }
+            reference { Remove-Branch "refs/heads/$branchName" -Path $branchRepo -Confirm:$false -ErrorAction Stop }
+            pipeline { $branchName | Remove-Branch -Path $branchRepo -Confirm:$false -ErrorAction Stop }
+            properties {
+                [PSCustomObject]@{ Name = $branchName; Path = $branchRepo } |
+                    Remove-Branch -Confirm:$false -ErrorAction Stop
+            }
+            aliases {
+                [PSCustomObject]@{ BranchName = $branchName; RepositoryPath = $branchRepo } |
+                    Remove-Branch -Confirm:$false -ErrorAction Stop
+            }
+        }
+        $result | Should -BeNullOrEmpty
+        Get-TestBranchNames $branchRepo | Should -Not -Contain "refs/heads/$branchName"
+        Get-TestBranchNames $branchRepo | Should -Contain 'refs/heads/main'
+        Get-TestBranchNames $branchOrigin | Should -Contain "refs/heads/$branchName"
+    }
+
+    It 'uses literal, relative, current and bare repository paths without changing location' {
+        $location = (Get-Location).ProviderPath
+        $subdirectory = New-Item -ItemType Directory -Path (Join-Path $branchRepo $branchName)
+        Push-Location -LiteralPath $subdirectory.FullName
+        try {
+            Remove-Branch $branchName -RepoPath .. -Confirm:$false -ErrorAction Stop
+            Invoke-Git @('-C', $branchRepo, 'branch', $branchName, $initialCommit)
+            Remove-Branch $branchName -Confirm:$false -ErrorAction Stop
+            (Get-Location).ProviderPath | Should -BeExactly $subdirectory.FullName
+        } finally {
+            Pop-Location
+        }
+        (Get-Location).ProviderPath | Should -BeExactly $location
+        Remove-Branch $branchName -Path $branchOrigin -Confirm:$false -ErrorAction Stop
+        Get-TestBranchNames $branchOrigin | Should -Not -Contain "refs/heads/$branchName"
+    }
+
+    It 'leaves both repositories untouched for <Mode> WhatIf' -ForEach @(
+        @{ Mode = 'local'; Options = @{} }
+        @{ Mode = 'forced local'; Options = @{ Force = $true } }
+        @{ Mode = 'remote'; Options = @{ Remote = $true } }
+    ) {
+        $beforeLocal = Invoke-Git @('-C', $branchRepo, 'show-ref')
+        $beforeRemote = Invoke-Git @('-C', $branchOrigin, 'show-ref')
+        Remove-Branch $branchName -Path $branchRepo @Options -WhatIf -ErrorAction Stop |
+            Should -BeNullOrEmpty
+        Invoke-Git @('-C', $branchRepo, 'show-ref') | Should -Be $beforeLocal
+        Invoke-Git @('-C', $branchOrigin, 'show-ref') | Should -Be $beforeRemote
+    }
+
+    It 'honors declined <Mode> confirmation including the implicit High prompt' -ForEach @(
+        @{ Mode = 'local'; Options = @{} }
+        @{ Mode = 'forced local'; Options = @{ Force = $true } }
+        @{ Mode = 'remote'; Options = @{ Remote = $true } }
+        @{ Mode = 'explicit'; Options = @{ Confirm = $true } }
+    ) {
+        $hostStub = [BranchRemovalConfirmationHost]::new()
+        $runspace = [runspacefactory]::CreateRunspace($hostStub)
+        $powershell = [powershell]::Create()
+        try {
+            $runspace.Open()
+            $powershell.Runspace = $runspace
+            $null = $powershell.AddScript({
+                param($moduleRoot, $path, $name, $options)
+                $ErrorActionPreference = 'Stop'
+                $ConfirmPreference = 'High'
+                Import-Module (Join-Path $moduleRoot 'modules' 'Shmuelie.Git' 'Shmuelie.Git.psd1')
+                try {
+                    Remove-Branch -Name $name -Path $path @options
+                } finally {
+                    Remove-Module Shmuelie.Git
+                }
+            }.ToString()).AddArgument($repoRoot).AddArgument($branchRepo).AddArgument($branchName).AddArgument($Options)
+            @($powershell.Invoke()) | Should -HaveCount 0
+            $powershell.HadErrors | Should -BeFalse -Because ($powershell.Streams.Error -join "`n")
+            $hostStub.PromptUI.PromptCount | Should -Be 1
+            ($hostStub.PromptUI.Messages -join "`n") | Should -BeLike "*refs/heads/$branchName*"
+            if ($Options.Remote) {
+                ($hostStub.PromptUI.Messages -join "`n") | Should -BeLike "*remote 'origin'*"
+            }
+        } finally {
+            $powershell.Dispose()
+            $runspace.Dispose()
+        }
+        Get-TestBranchNames $branchRepo | Should -Contain "refs/heads/$branchName"
+        Get-TestBranchNames $branchOrigin | Should -Contain "refs/heads/$branchName"
+    }
+
+    It 'refuses unmerged local deletion and requires explicit Force' {
+        Invoke-Git @('-C', $branchRepo, 'switch', '--quiet', $branchName)
+        try {
+            Invoke-Git @('-C', $branchRepo, 'commit', '--allow-empty', '--quiet', '-m', 'unmerged work')
+        } finally {
+            Invoke-Git @('-C', $branchRepo, 'switch', '--quiet', 'main')
+        }
+        Remove-Branch $branchName -Path $branchRepo -Confirm:$false -ErrorAction SilentlyContinue -ErrorVariable failures |
+            Should -BeNullOrEmpty
+        $failures | Should -HaveCount 1
+        $failures[0].FullyQualifiedErrorId | Should -BeLike 'GitCommandFailed*'
+        $failures[0].TargetObject.ExitCode | Should -Not -Be 0
+        $failures[0].TargetObject.StandardError | Should -Match 'not fully merged'
+        Get-TestBranchNames $branchRepo | Should -Contain "refs/heads/$branchName"
+        Remove-Branch $branchName -Path $branchRepo -Force -Confirm:$false -ErrorAction Stop
+        Get-TestBranchNames $branchRepo | Should -Not -Contain "refs/heads/$branchName"
+    }
+
+    It 'refuses deletion of a branch in the <Location> worktree with Force=<UseForce>' -ForEach @(
+        @{ Location = 'current'; UseForce = $false }, @{ Location = 'current'; UseForce = $true }
+        @{ Location = 'linked'; UseForce = $false }, @{ Location = 'linked'; UseForce = $true }
+    ) {
+        $targetName = 'main'
+        if ($Location -eq 'linked') {
+            $targetName = $branchName
+            Invoke-Git @('-C', $branchRepo, 'worktree', 'add', '--quiet', (Join-Path $TestDrive $branchName), $branchName)
+        }
+        { Remove-Branch $targetName -Path $branchRepo -Force:$UseForce -Confirm:$false -ErrorAction Stop } |
+            Should -Throw -ExpectedMessage '*git failed*'
+        Get-TestBranchNames $branchRepo | Should -Contain "refs/heads/$targetName"
+    }
+
+    It 'rejects invalid or option-like branch <InvalidName> before any deletion' -ForEach @(
+        @{ InvalidName = '--all' }, @{ InvalidName = '-D' }, @{ InvalidName = 'refs/heads/-D' }
+        @{ InvalidName = 'refs/heads/' }, @{ InvalidName = 'refs/tags/main' }
+        @{ InvalidName = 'refs/remotes/origin/main' }, @{ InvalidName = 'HEAD' }
+        @{ InvalidName = 'refs/heads/HEAD' }, @{ InvalidName = '@{-1}' }
+        @{ InvalidName = 'main~1' }, @{ InvalidName = 'main:other' }, @{ InvalidName = 'feature/*' }
+        @{ InvalidName = 'main..other' }, @{ InvalidName = 'white space' }, @{ InvalidName = "line`nbreak" }
+        @{ InvalidName = "nul`0name" }
+    ) {
+        $beforeLocal = Invoke-Git @('-C', $branchRepo, 'show-ref')
+        $beforeRemote = Invoke-Git @('-C', $branchOrigin, 'show-ref')
+        foreach ($options in @(@{}, @{ Remote = $true })) {
+            { Remove-Branch $InvalidName -Path $branchRepo @options -Confirm:$false -ErrorAction Stop } |
+                Should -Throw
+        }
+        Invoke-Git @('-C', $branchRepo, 'show-ref') | Should -Be $beforeLocal
+        Invoke-Git @('-C', $branchOrigin, 'show-ref') | Should -Be $beforeRemote
+    }
+
+    It 'preserves literal metacharacters and Unicode in valid branch names' {
+        $literalName = 'feature/a&b;echo${literal}' + "'-" + [char]0xe9
+        Invoke-Git @('-C', $branchRepo, 'branch', $literalName)
+        Invoke-Git @('-C', $branchRepo, 'push', '--quiet', '--', 'origin', "refs/heads/$literalName")
+        Remove-Branch $literalName -Path $branchRepo -Remote -Confirm:$false -ErrorAction Stop
+        Get-TestBranchNames $branchRepo | Should -Contain "refs/heads/$literalName"
+        Get-TestBranchNames $branchOrigin | Should -Not -Contain "refs/heads/$literalName"
+        Remove-Branch $literalName -Path $branchRepo -Confirm:$false -ErrorAction Stop
+        Get-TestBranchNames $branchRepo | Should -Not -Contain "refs/heads/$literalName"
+    }
+
+    It 'deletes only the explicit remote branch even with same-named tags and push defaults' {
+        Invoke-Git @('-C', $branchRepo, 'tag', $branchName)
+        Invoke-Git @('-C', $branchRepo, 'push', '--quiet', '--', 'origin', "refs/tags/$branchName")
+        Invoke-Git @('-C', $branchRepo, 'tag', '-a', "$branchName-local-tag", '-m', 'local only')
+        Invoke-Git @('-C', $branchRepo, 'config', 'remote.origin.mirror', 'true')
+        Invoke-Git @('-C', $branchRepo, 'config', 'push.followTags', 'true')
+        Invoke-Git @('-C', $branchRepo, 'config', 'remote.origin.push', 'refs/heads/*:refs/heads/*')
+        $beforeRemote = @(Invoke-Git @('-C', $branchOrigin, 'show-ref'))
+        try {
+            Remove-Branch "refs/heads/$branchName" -Path $branchRepo -Remote -Confirm:$false -ErrorAction Stop |
+                Should -BeNullOrEmpty
+        } finally {
+            Invoke-Git @('-C', $branchRepo, 'config', '--unset', 'remote.origin.mirror')
+            Invoke-Git @('-C', $branchRepo, 'config', '--unset', 'push.followTags')
+            Invoke-Git @('-C', $branchRepo, 'config', '--unset', 'remote.origin.push')
+        }
+        $expected = @($beforeRemote | Where-Object { -not $_.EndsWith(" refs/heads/$branchName") })
+        Invoke-Git @('-C', $branchOrigin, 'show-ref') | Should -Be $expected
+        Get-TestBranchNames $branchRepo | Should -Contain "refs/heads/$branchName"
+    }
+
+    It 'selects a named configured remote and respects its push URL rather than its fetch URL' {
+        $pushTarget = Join-Path $TestDrive "$branchName.git"
+        Invoke-Git @('clone', '--bare', '--quiet', '--', $branchOrigin, $pushTarget)
+        Invoke-Git @('-C', $branchRepo, 'remote', 'add', $branchName, $branchOrigin)
+        Invoke-Git @('-C', $branchRepo, 'remote', 'set-url', '--push', $branchName, $pushTarget)
+        Remove-Branch $branchName -Path $branchRepo -Remote -RemoteName $branchName -Confirm:$false -ErrorAction Stop
+        Get-TestBranchNames $pushTarget | Should -Not -Contain "refs/heads/$branchName"
+        Get-TestBranchNames $branchOrigin | Should -Contain "refs/heads/$branchName"
+        Get-TestBranchNames $branchRepo | Should -Contain "refs/heads/$branchName"
+    }
+
+    It 'does not infer a remote from an upstream or strip a remote prefix' {
+        $prefixedName = "origin/$branchName"
+        Invoke-Git @('-C', $branchRepo, 'branch', '--set-upstream-to', "origin/$branchName", $branchName)
+        Invoke-Git @('-C', $branchRepo, 'branch', $prefixedName)
+        Invoke-Git @('-C', $branchRepo, 'push', '--quiet', '--', 'origin', "refs/heads/$prefixedName")
+        Remove-Branch $prefixedName -Path $branchRepo -Remote -Confirm:$false -ErrorAction Stop
+        Get-TestBranchNames $branchOrigin | Should -Not -Contain "refs/heads/$prefixedName"
+        Get-TestBranchNames $branchOrigin | Should -Contain "refs/heads/$branchName"
+        Remove-Branch $branchName -Path $branchRepo -Confirm:$false -ErrorAction Stop
+        Get-TestBranchNames $branchOrigin | Should -Contain "refs/heads/$branchName"
+    }
+
+    It 'rejects unknown, option-like and URL/path remote arguments' -ForEach @(
+        @{ InvalidRemote = 'missing' }, @{ InvalidRemote = '--all' }, @{ InvalidRemote = 'ORIGIN' },
+        @{ InvalidRemote = 'https://example.invalid/repo.git' }
+    ) {
+        { Remove-Branch $branchName -Path $branchRepo -Remote -RemoteName $InvalidRemote -Confirm:$false -ErrorAction Stop } |
+            Should -Throw -ExpectedMessage '*Configured remote*was not found*'
+        { Remove-Branch $branchName -Path $branchRepo -Remote -RemoteName $branchOrigin -Confirm:$false -ErrorAction Stop } |
+            Should -Throw -ExpectedMessage '*Configured remote*was not found*'
+        Get-TestBranchNames $branchOrigin | Should -Contain "refs/heads/$branchName"
+    }
+
+    It 'rejects Force with remote deletion and an explicitly disabled Remote switch' {
+        { Remove-Branch $branchName -Path $branchRepo -Remote -Force -Confirm:$false -ErrorAction Stop } |
+            Should -Throw
+        { Remove-Branch $branchName -Path $branchRepo -Remote:$false -RemoteName origin -Confirm:$false -ErrorAction Stop } |
+            Should -Throw -ExpectedMessage '*requires -Remote*'
+        Get-TestBranchNames $branchRepo | Should -Contain "refs/heads/$branchName"
+        Get-TestBranchNames $branchOrigin | Should -Contain "refs/heads/$branchName"
+    }
+
+    It 'reports a nonexistent local branch with a structured native error and no output' {
+        Remove-Branch "$branchName-missing" -Path $branchRepo -Confirm:$false -ErrorAction SilentlyContinue -ErrorVariable failures |
+            Should -BeNullOrEmpty
+        $failures | Should -HaveCount 1
+        $failures[0].FullyQualifiedErrorId | Should -BeLike 'GitCommandFailed*'
+        $failures[0].TargetObject.RepositoryPath | Should -BeExactly $branchRepo
+        $failures[0].TargetObject.ExitCode | Should -Not -Be 0
+        $failures[0].TargetObject.StandardError | Should -Not -BeNullOrEmpty
+    }
+
+    It 'leaves refs unchanged when Git accepts deletion of an already absent remote branch' {
+        $beforeRemote = Invoke-Git @('-C', $branchOrigin, 'show-ref')
+        Remove-Branch "$branchName-missing" -Path $branchRepo -Remote -Confirm:$false -ErrorAction Stop |
+            Should -BeNullOrEmpty
+        Invoke-Git @('-C', $branchOrigin, 'show-ref') | Should -Be $beforeRemote
+    }
+
+    It 'propagates remote rejection and unavailable-remote errors without local deletion' {
+        Invoke-Git @('-C', $branchOrigin, 'config', 'receive.denyDeletes', 'true')
+        try {
+            { Remove-Branch $branchName -Path $branchRepo -Remote -Confirm:$false -ErrorAction Stop } |
+                Should -Throw -ExpectedMessage '*git failed*'
+        } finally {
+            Invoke-Git @('-C', $branchOrigin, 'config', '--unset', 'receive.denyDeletes')
+        }
+        Invoke-Git @('-C', $branchRepo, 'remote', 'add', "$branchName-offline", (Join-Path $TestDrive 'missing.git'))
+        { Remove-Branch $branchName -Path $branchRepo -Remote -RemoteName "$branchName-offline" -Confirm:$false -ErrorAction Stop } |
+            Should -Throw -ExpectedMessage '*git failed*'
+        Get-TestBranchNames $branchRepo | Should -Contain "refs/heads/$branchName"
+        Get-TestBranchNames $branchOrigin | Should -Contain "refs/heads/$branchName"
+    }
+
+    It 'reports invalid repository paths instead of emitting success' {
+        foreach ($path in @((Join-Path $TestDrive 'missing'), $TestDrive, (Join-Path $branchRepo 'README.md'))) {
+            { Remove-Branch $branchName -Path $path -Confirm:$false -ErrorAction Stop } | Should -Throw
+        }
+        Get-TestBranchNames $branchRepo | Should -Contain "refs/heads/$branchName"
+    }
+
+    It 'never invokes push or branch deletion under WhatIf' {
+        InModuleScope Shmuelie.Git -Parameters @{ Repo = $branchRepo; Name = $branchName } {
+            param($Repo, $Name)
+            Mock Invoke-Git {
+                [PSCustomObject]@{ RepositoryPath = $Repo; StandardOutput = "origin`n" }
+            }
+            Remove-Branch $Name -Path $Repo -WhatIf
+            Remove-Branch $Name -Path $Repo -Force -WhatIf
+            Remove-Branch $Name -Path $Repo -Remote -WhatIf
+            Should -Invoke Invoke-Git -Times 0 -ParameterFilter { $Arguments -contains 'push' -or $Arguments -contains 'branch' }
+            Should -Invoke Invoke-Git -Times 3 -ParameterFilter {
+                $Arguments[0] -eq 'check-ref-format' -and $Arguments[1] -ceq "refs/heads/$Name"
+            }
+        }
+    }
+}
+
 Describe 'Get-GitTag' {
     BeforeAll {
         $tagEnvironment = @{}
