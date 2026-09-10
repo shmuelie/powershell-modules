@@ -28,9 +28,9 @@ Import-Module Shmuelie.Git
 ```
 
 See the [Shmuelie.PackageManagement README](https://github.com/shmuelie/powershell-modules/blob/main/modules/Shmuelie.PackageManagement/README.md)
-for current provider availability and optional dependencies. Unavailable
-integrations report explicit skipped outcomes; installing the module does not
-install or update provider tools.
+for provider availability and optional dependencies. Unavailable integrations
+report explicit skipped outcomes; installing the module does not install or
+update provider tools.
 
 ## Update and remove
 

@@ -4,6 +4,26 @@ function Get-PackageProvider {
 
     # Only checked-in integrations belong in this catalog, never user-supplied code.
     foreach ($name in 'PSResourceGet', 'DotNet', 'Npm', 'Pip', 'Uv', 'VSCode', 'WinGet', 'AppInstaller') {
+        if ($name -eq 'PSResourceGet') {
+            Get-PSResourceGetPackageProvider
+            continue
+        }
+        if ($name -eq 'DotNet') {
+            Get-DotNetPackageProvider
+            continue
+        }
+        if ($name -eq 'Npm') {
+            Get-NpmPackageProvider
+            continue
+        }
+        if ($name -eq 'Pip') {
+            Get-PipPackageProvider
+            continue
+        }
+        if ($name -eq 'Uv') {
+            Get-UvPackageProvider
+            continue
+        }
         if ($name -eq 'VSCode') {
             Get-VSCodePackageProvider
             continue
