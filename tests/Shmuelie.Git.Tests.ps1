@@ -1544,15 +1544,19 @@ Describe 'Update-AllWorktrees' -Skip:(-not (Get-Command git -ErrorAction Silentl
         }
     }
 
-    It 'retains a repository-level failure when no worktree result was produced' {
-        InModuleScope Shmuelie.Git {
+    It 'retains a repository-level failure when worktree results are <Name>' -ForEach @(
+        @{ Name = 'empty'; WorktreeResults = @() }
+        @{ Name = 'null'; WorktreeResults = $null }
+    ) {
+        InModuleScope Shmuelie.Git -Parameters @{ WorktreeResults = $WorktreeResults } {
+            param($WorktreeResults)
             $repositoryResult = [PSCustomObject]@{
                 PSTypeName      = 'AllWorktreesUpdateResult'
                 Organization    = 'example'
                 Repository      = 'repo'
                 Path            = 'repo-path'
                 Status          = 'Failed'
-                WorktreeResults = @()
+                WorktreeResults = $WorktreeResults
                 Error           = 'worker failed before update'
             }
 
@@ -1700,6 +1704,243 @@ Describe 'Update-AllWorktrees' -Skip:(-not (Get-Command git -ErrorAction Silentl
         $results | Should -HaveCount 1
         $results[0].Status | Should -Be 'Completed'
         $results[0].Error | Should -BeNullOrEmpty
+    }
+}
+
+Describe 'Changed worktree result selection' {
+    It 'keeps the selector private' {
+        (Get-Module Shmuelie.Git).ExportedFunctions.Keys | Should -Not -Contain 'Select-ChangedWorktreeResult'
+    }
+
+    It 'selects <Status> only when actionable, preserving the original object' -ForEach @(
+        @{ Status = 'Updated'; ExpectedCount = 1 }
+        @{ Status = 'Removed'; ExpectedCount = 1 }
+        @{ Status = 'Failed'; ExpectedCount = 1 }
+        @{ Status = 'StashFailed'; ExpectedCount = 1 }
+        @{ Status = 'Current'; ExpectedCount = 0 }
+        @{ Status = 'NoUpstream'; ExpectedCount = 0 }
+        @{ Status = 'Skipped'; ExpectedCount = 0 }
+        @{ Status = 'InProgress'; ExpectedCount = 0 }
+        @{ Status = 'Unknown'; ExpectedCount = 0 }
+        @{ Status = 'WhatIf'; ExpectedCount = 0 }
+    ) {
+        InModuleScope Shmuelie.Git -Parameters @{ Status = $Status; ExpectedCount = $ExpectedCount } {
+            param($Status, $ExpectedCount)
+            $original = [PSCustomObject]@{
+                PSTypeName = 'WorktreeUpdateResult'
+                Branch = 'branch'
+                Path = 'worktree-path'
+                Status = $Status
+                BehindBy = 2
+                Stashed = $true
+                Operation = $null
+                PopFailed = $true
+            }
+
+            $results = @($original | Select-ChangedWorktreeResult)
+
+            $results | Should -HaveCount $ExpectedCount
+            if ($ExpectedCount) {
+                [object]::ReferenceEquals($original, $results[0]) | Should -BeTrue
+                $results[0].PSTypeNames[0] | Should -Be 'WorktreeUpdateResult'
+                $results[0].PopFailed | Should -BeTrue
+            }
+        }
+    }
+}
+
+Describe 'Update-Worktrees ChangedOnly' -Skip:(-not (Get-Command git -ErrorAction SilentlyContinue)) {
+    BeforeAll {
+        function New-UpdateFixture {
+            param([string]$Name, [switch]$Current)
+
+            $root = Join-Path $TestDrive $Name
+            $seed = New-TestRepo -Path (Join-Path $root 'seed')
+            $origin = Join-Path $root 'origin.git'
+            Invoke-Git @('init', '--bare', '-b', 'main', '--quiet', $origin)
+            Invoke-Git @('-C', $seed, 'remote', 'add', 'origin', $origin)
+            Invoke-Git @('-C', $seed, 'push', '-u', 'origin', 'main', '--quiet')
+            $clone = Join-Path $root 'clone'
+            Invoke-Git @('clone', '--quiet', $origin, $clone)
+            Set-TestRepoConfig $clone
+
+            if (-not $Current) {
+                Set-Content -LiteralPath (Join-Path $seed 'README.md') -Value 'updated'
+                Invoke-Git @('-C', $seed, 'add', 'README.md')
+                Invoke-TestCommit -Path $seed -Message 'upstream update'
+                Invoke-Git @('-C', $seed, 'push', 'origin', 'main', '--quiet')
+            }
+
+            [PSCustomObject]@{ Root = $root; Seed = $seed; Origin = $origin; Clone = $clone }
+        }
+    }
+
+    It 'filters output but performs the same update with ChangedOnly <Mode>' -ForEach @(
+        @{ Mode = 'omitted'; Options = @{}; ExpectedCount = 5 }
+        @{ Mode = 'false'; Options = @{ ChangedOnly = $false }; ExpectedCount = 5 }
+        @{ Mode = 'true'; Options = @{ ChangedOnly = $true }; ExpectedCount = 2 }
+    ) {
+        $fixture = New-UpdateFixture -Name "mixed-$Mode"
+        $clone = $fixture.Clone
+        foreach ($branch in 'current', 'skipped', 'no-upstream', 'removed') {
+            $worktree = Join-Path $fixture.Root $branch
+            Invoke-Git @('-C', $clone, 'worktree', 'add', '--quiet', '-b', $branch, $worktree, 'HEAD')
+            if ($branch -ne 'no-upstream') {
+                Invoke-Git @('-C', $clone, 'update-ref', "refs/remotes/origin/$branch", 'HEAD')
+                Invoke-Git @('-C', $clone, 'branch', "--set-upstream-to=origin/$branch", $branch)
+            }
+            if ($branch -eq 'skipped') {
+                Invoke-Git @('-C', $worktree, 'commit', '--allow-empty', '-m', 'local commit', '--quiet')
+            }
+        }
+        Invoke-Git @('-C', $clone, 'update-ref', '-d', 'refs/remotes/origin/removed')
+        Invoke-Git @('-C', $clone, 'fetch', '--quiet', 'origin', 'main')
+        # Keep the synthetic current/skipped tracking refs; real fetch pruning
+        # is covered by the separate offline integration scenarios below.
+        Mock -ModuleName Shmuelie.Git Sync-GitRemote { @() }
+
+        $results = @(Update-Worktrees -Path $clone @Options -NoGitHubAccountResolve -Confirm:$false)
+
+        $results | Should -HaveCount $ExpectedCount
+        foreach ($result in $results) {
+            $result.PSTypeNames[0] | Should -Be 'WorktreeUpdateResult'
+            $result.Path | Should -Not -BeNullOrEmpty
+        }
+        ($results | Where-Object Branch -eq 'main').Status | Should -Be 'Updated'
+        ($results | Where-Object Branch -eq 'main').BehindBy | Should -Be 1
+        ($results | Where-Object Branch -eq 'removed').Status | Should -Be 'Removed'
+        if ($Mode -ne 'true') {
+            ($results | Where-Object Branch -eq 'current').Status | Should -Be 'Current'
+            ($results | Where-Object Branch -eq 'skipped').Status | Should -Be 'Skipped'
+            ($results | Where-Object Branch -eq 'no-upstream').Status | Should -Be 'NoUpstream'
+        }
+        (Get-Content -LiteralPath (Join-Path $clone 'README.md') -Raw).Trim() | Should -BeExactly 'updated'
+        Invoke-Git @('-C', $clone, 'rev-parse', 'HEAD') | Should -Be (Invoke-Git @('-C', $fixture.Seed, 'rev-parse', 'HEAD'))
+        Should -Invoke -ModuleName Shmuelie.Git Sync-GitRemote -Times 1 -ParameterFilter { $Path -eq $clone }
+    }
+
+    It 'preserves <Status> results and diagnostics for <Scenario>' -ForEach @(
+        @{ Scenario = 'merge failure'; Status = 'Failed'; Dirty = $false; LockIndex = $true; Warning = 'Fast-forward failed'; PopFailed = $false }
+        @{ Scenario = 'stash failure'; Status = 'StashFailed'; Dirty = $true; LockIndex = $true; Warning = 'git stash push failed'; PopFailed = $false }
+        @{ Scenario = 'stash pop conflict'; Status = 'Updated'; Dirty = $true; LockIndex = $false; Warning = 'git stash pop failed'; PopFailed = $true }
+    ) {
+        $fixture = New-UpdateFixture -Name ($Scenario -replace ' ', '-')
+        $clone = $fixture.Clone
+        if ($Dirty) {
+            Set-Content -LiteralPath (Join-Path $clone 'README.md') -Value 'local edits'
+        }
+        $indexLock = Join-Path (Get-TestGitDir -Path $clone) 'index.lock'
+        if ($LockIndex) { New-Item -ItemType File -Path $indexLock | Out-Null }
+        $headBefore = Invoke-Git @('-C', $clone, 'rev-parse', 'HEAD')
+        try {
+            $results = @(Update-Worktrees -Path $clone -ChangedOnly -NoGitHubAccountResolve -Confirm:$false -WarningVariable diagnostics)
+
+            $results | Should -HaveCount 1
+            $results[0].Status | Should -Be $Status
+            $results[0].PSTypeNames[0] | Should -Be 'WorktreeUpdateResult'
+            $results[0].BehindBy | Should -Be 1
+            $results[0].PopFailed | Should -Be $PopFailed
+            $results[0].Stashed | Should -Be $PopFailed
+            ($diagnostics -join "`n") | Should -Match $Warning
+            if ($LockIndex) {
+                Invoke-Git @('-C', $clone, 'rev-parse', 'HEAD') | Should -Be $headBefore
+                @(Invoke-Git @('-C', $clone, 'stash', 'list')) | Should -HaveCount 0
+                if ($Dirty) {
+                    (Get-Content -LiteralPath (Join-Path $clone 'README.md') -Raw).Trim() | Should -BeExactly 'local edits'
+                }
+            } else {
+                @(Invoke-Git @('-C', $clone, 'stash', 'list')) | Should -HaveCount 1
+            }
+        } finally {
+            if ($LockIndex) { Remove-Item -LiteralPath $indexLock }
+        }
+    }
+
+    It 'processes each pipeline repository independently with <InputKind> paths and keeps errors without rows' -ForEach @(
+        @{ InputKind = 'string' }
+        @{ InputKind = 'property-bound' }
+    ) {
+        $current = New-UpdateFixture -Name "pipeline-current-$InputKind" -Current
+        $behind = New-UpdateFixture -Name "pipeline-behind-$InputKind"
+        $paths = @($current.Clone, (Join-Path $TestDrive 'missing-repository'), $behind.Clone)
+        $inputPaths = if ($InputKind -eq 'string') { $paths } else {
+            $paths | ForEach-Object { [PSCustomObject]@{ RepositoryPath = $_ } }
+        }
+        $locationBefore = (Get-Location).Path
+
+        $results = @($inputPaths | Update-Worktrees -ChangedOnly -NoGitHubAccountResolve -Confirm:$false -ErrorAction SilentlyContinue -ErrorVariable failures)
+
+        $results | Should -HaveCount 1
+        $results[0].Status | Should -Be 'Updated'
+        $results[0].Path | Should -BeExactly (ConvertTo-NativeTestPath $behind.Clone)
+        $failures | Should -Not -BeNullOrEmpty
+        ($failures -join "`n") | Should -Match 'missing-repository'
+        (Get-Location).Path | Should -BeExactly $locationBefore
+        (Get-Content -LiteralPath (Join-Path $current.Clone 'README.md') -Raw).Trim() | Should -BeExactly 'initial'
+        (Get-Content -LiteralPath (Join-Path $behind.Clone 'README.md') -Raw).Trim() | Should -BeExactly 'updated'
+    }
+
+    It 'does not turn a fetch error without a worktree result into successful output' {
+        $repo = New-TestRepo -Path (Join-Path $TestDrive 'fetch-failure')
+        Invoke-Git @('-C', $repo, 'remote', 'add', 'origin', (Join-Path $TestDrive 'missing-origin.git'))
+
+        $results = @(Update-Worktrees -Path $repo -ChangedOnly -NoGitHubAccountResolve -ErrorAction SilentlyContinue -ErrorVariable failures)
+
+        $results | Should -HaveCount 0
+        $failures | Should -Not -BeNullOrEmpty
+        ($failures -join "`n") | Should -Match 'git fetch'
+    }
+
+    It 'filters only after CheckRemote reclassifies a local-only branch' {
+        $fixture = New-UpdateFixture -Name 'check-remote' -Current
+        $worktree = Join-Path $fixture.Root 'local-only'
+        Invoke-Git @('-C', $fixture.Clone, 'worktree', 'add', '--quiet', '-b', 'local-only', $worktree)
+
+        $results = @(Update-Worktrees -Path $fixture.Clone -ChangedOnly -CheckRemote -NoGitHubAccountResolve -Confirm:$false)
+
+        $results | Should -HaveCount 1
+        $results[0].Branch | Should -Be 'local-only'
+        $results[0].Status | Should -Be 'Removed'
+        Test-Path -LiteralPath $worktree | Should -BeTrue
+    }
+
+    It 'keeps WhatIf previews visible without fetching, merging, or stashing' {
+        $fixture = New-UpdateFixture -Name 'preview'
+        $clone = $fixture.Clone
+        Invoke-Git @('-C', $clone, 'fetch', '--quiet', 'origin', 'main')
+        $trackingBefore = Invoke-Git @('-C', $clone, 'rev-parse', 'origin/main')
+        $headBefore = Invoke-Git @('-C', $clone, 'rev-parse', 'HEAD')
+        Set-Content -LiteralPath (Join-Path $fixture.Seed 'README.md') -Value 'latest'
+        Invoke-Git @('-C', $fixture.Seed, 'add', 'README.md')
+        Invoke-TestCommit -Path $fixture.Seed -Message 'another upstream update'
+        Invoke-Git @('-C', $fixture.Seed, 'push', 'origin', 'main', '--quiet')
+        $localFile = Join-Path $clone 'local.txt'
+        Set-Content -LiteralPath $localFile -Value 'keep local changes'
+        $transcript = Join-Path $TestDrive 'changed-only-preview.txt'
+
+        Start-Transcript -Path $transcript -Force | Out-Null
+        try {
+            $results = @(Update-Worktrees -Path $clone -ChangedOnly -WhatIf -NoGitHubAccountResolve -Confirm:$false)
+        } finally {
+            Stop-Transcript | Out-Null
+        }
+
+        $results | Should -HaveCount 0
+        $preview = Get-Content -LiteralPath $transcript -Raw
+        $preview | Should -Match 'What if:.*git fetch'
+        $preview | Should -Match 'What if:.*Fast-forward merge from upstream'
+        Invoke-Git @('-C', $clone, 'rev-parse', 'origin/main') | Should -BeExactly $trackingBefore
+        Invoke-Git @('-C', $clone, 'rev-parse', 'HEAD') | Should -BeExactly $headBefore
+        @(Invoke-Git @('-C', $clone, 'stash', 'list')) | Should -HaveCount 0
+        (Get-Content -LiteralPath $localFile -Raw).Trim() | Should -BeExactly 'keep local changes'
+
+        $applied = @(Update-Worktrees -Path $clone -ChangedOnly -NoGitHubAccountResolve -Confirm:$false)
+        $applied | Should -HaveCount 1
+        $applied[0].Status | Should -Be 'Updated'
+        $applied[0].Stashed | Should -BeTrue
+        $applied[0].PopFailed | Should -BeFalse
+        (Get-Content -LiteralPath (Join-Path $clone 'README.md') -Raw).Trim() | Should -BeExactly 'latest'
+        (Get-Content -LiteralPath $localFile -Raw).Trim() | Should -BeExactly 'keep local changes'
     }
 }
 
@@ -2112,16 +2353,19 @@ public static class GitShim
         $result[0].Stashed | Should -BeFalse
     }
 
-    It 'leaves NoUpstream worktrees unclassified and warns when -CheckRemote cannot reach the remote' -Skip:(-not (Get-Command git -ErrorAction SilentlyContinue)) {
-        $clone = Join-Path $TestDrive 'checkremote-unreachable-clone'
+    It 'leaves NoUpstream worktrees unclassified and warns when -CheckRemote cannot reach the remote (ChangedOnly=<ChangedOnly>)' -ForEach @(
+        @{ ChangedOnly = $false }
+        @{ ChangedOnly = $true }
+    ) -Skip:(-not (Get-Command git -ErrorAction SilentlyContinue)) {
+        $clone = Join-Path $TestDrive "checkremote-unreachable-$ChangedOnly-clone"
         New-TestRepo -Path $clone | Out-Null
         # Origin points at a path that is not a git repository, so the
         # -CheckRemote ls-remote call fails rather than returning an empty set.
-        $missing = Join-Path $TestDrive 'checkremote-unreachable-missing'
+        $missing = Join-Path $TestDrive "checkremote-unreachable-$ChangedOnly-missing"
         $missingUrl = 'file:///' + (($missing -replace '\\', '/'))
         Invoke-Git @('-C', $clone, 'remote', 'add', 'origin', $missingUrl)
         Invoke-Git @('-C', $clone, 'branch', 'local-only')
-        $worktree = Join-Path $TestDrive 'checkremote-unreachable-worktree'
+        $worktree = Join-Path $TestDrive "checkremote-unreachable-$ChangedOnly-worktree"
         Invoke-Git @('-C', $clone, 'worktree', 'add', '--quiet', $worktree, 'local-only')
         Set-TestRepoConfig $worktree
 
@@ -2129,15 +2373,19 @@ public static class GitShim
 
         Push-Location $clone
         try {
-            $results = Update-Worktrees -CheckRemote -NoGitHubAccountResolve -WarningVariable checkWarnings
+            $results = @(Update-Worktrees -CheckRemote -ChangedOnly:$ChangedOnly -NoGitHubAccountResolve -WarningVariable checkWarnings)
         } finally {
             Pop-Location
         }
 
         $result = @($results | Where-Object Branch -eq 'local-only')
-        $result | Should -HaveCount 1
-        # The unreachable remote must NOT cause a false 'Removed' classification.
-        $result[0].Status | Should -Be 'NoUpstream'
+        if ($ChangedOnly) {
+            @($results) | Should -HaveCount 0
+        } else {
+            $result | Should -HaveCount 1
+            # The unreachable remote must NOT cause a false 'Removed' classification.
+            $result[0].Status | Should -Be 'NoUpstream'
+        }
         ($checkWarnings | ForEach-Object { "$_" }) -join "`n" | Should -Match 'ls-remote failed'
     }
 

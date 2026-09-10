@@ -7,6 +7,10 @@ Versions change only when a release is cut; unreleased work stays under
 ## [Unreleased]
 
 ### Added
+- `Update-Worktrees -ChangedOnly` returns only `Updated`, `Removed`, `Failed`,
+  and `StashFailed` worktree results, matching `Update-AllWorktrees`. Default
+  output and update behavior are unchanged; WhatIf previews, warnings, and
+  errors remain visible.
 - Added `Get-GitTag` for typed, read-only local tag discovery with exact/wildcard
   name filters, repository path input, annotated/lightweight metadata, full tag
   annotations, offset-preserving dates, and correctly peeled commit/blob/tree
