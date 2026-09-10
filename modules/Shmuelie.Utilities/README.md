@@ -21,7 +21,7 @@ Import-Module Shmuelie.Utilities
 | .NET tools (compatibility wrappers until 1.0) | `Get-DotNetTool`, `Install-DotNetTool`, `Update-DotNetTool`, `Uninstall-DotNetTool` |
 | Python | `Get-PipPackages`, `Update-PipPackage`, `Get-UvPackages`, `Update-UvPackage` |
 | PowerShell resources | `Update-InstalledPSResource` |
-| VS Code | `Start-VsCode`, `Start-VsCodeChat`, `Get-VsCodeExtension`, `Install-VsCodeExtension`, `Uninstall-VsCodeExtension`, `Update-VsCodeExtension` |
+| VS Code | `Start-VsCode`, `Start-VsCodeChat`, `Get-VsCodeExtension`, `Install-VsCodeExtension`, `Uninstall-VsCodeExtension`, `Update-VsCodeExtension` (bulk update, optional `-Profile`) |
 
 ## Highlights
 
@@ -76,6 +76,7 @@ Get-DotNetTool | Update-DotNetTool
 Update-InstalledPSResource -Path (Join-Path $HOME 'PowerShellModules')
 Update-InstalledPSResource -Path (($env:PSModulePath -split [IO.Path]::PathSeparator)[0]) -Name 'Shmuelie.*' -Exclude '*.Local'
 Reset-TerminalModes
+Update-VsCodeExtension -Profile 'Backend' -WhatIf
 ```
 
 ## Requirements

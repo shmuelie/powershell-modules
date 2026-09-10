@@ -8,8 +8,8 @@ function Update-AllPackages {
         produce Skipped results with reasons. Providers are imported only when
         selected; importing this module does not require any provider module.
 
-        This initial foundation includes the orchestration contract, not the
-        provider adapters. Until adapters ship, all providers report Skipped.
+        See the module README for the current implemented provider set and
+        each integration's dependencies, options, and result granularity.
 
         Each integration discovers targets without mutation. ShouldProcess
         gates each target's update callback. WhatIf runs only discovery and
@@ -52,7 +52,10 @@ function Update-AllPackages {
     .EXAMPLE
         Update-AllPackages -ProviderOptions @{ Npm = @{} } -Confirm:$false
         Supply a provider options map and disable interactive confirmation.
-        The foundation accepts empty options only; adapters define their own.
+        Each adapter defines its supported options; see the module README.
+    .EXAMPLE
+        Update-AllPackages -Provider VSCode -ProviderOptions @{ VSCode = @{ Profiles = @('Backend') } } -WhatIf
+        Preview bulk extension updates for the default and Backend profiles.
     #>
     [CmdletBinding(SupportsShouldProcess)]
     [OutputType('Shmuelie.PackageManagement.UpdateResult')]

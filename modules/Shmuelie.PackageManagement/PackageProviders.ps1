@@ -4,6 +4,10 @@ function Get-PackageProvider {
 
     # Only checked-in integrations belong in this catalog, never user-supplied code.
     foreach ($name in 'PSResourceGet', 'DotNet', 'Npm', 'Pip', 'Uv', 'VSCode', 'WinGet', 'AppInstaller') {
+        if ($name -eq 'VSCode') {
+            Get-VSCodePackageProvider
+            continue
+        }
         [pscustomobject]@{
             Name             = $name
             Platforms        = if ($name -in 'WinGet', 'AppInstaller') { @('Windows') } else { @('Windows', 'Linux', 'MacOS') }

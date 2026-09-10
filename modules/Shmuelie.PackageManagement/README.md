@@ -4,14 +4,12 @@ Provider-neutral package update orchestration for PowerShell 7.4+.
 
 **Version:** 0.1.0
 
-## Foundation release
+## Provider availability
 
-This module currently ships **only the orchestration foundation** (#177).
-The reserved providers are `PSResourceGet`, `DotNet`, `Npm`, `Pip`, `Uv`,
-`VSCode`, `WinGet`, and `AppInstaller`. Their adapters are separate follow-up
-work (#178-#185); none is implemented in this version. Even if the corresponding
-tools are installed, the foundation returns explicit `Skipped` results, not
-successful updates. The complete provider set is planned for milestone M6.
+The catalog is ordered as `PSResourceGet`, `DotNet`, `Npm`, `Pip`, `Uv`,
+`VSCode`, `WinGet`, and `AppInstaller`. The `VSCode` adapter is implemented;
+the other names remain reserved for separate adapter work. Unimplemented or
+unavailable providers return explicit `Skipped` results, not successful updates.
 
 No provider modules are required at import time. Windows-only providers are
 gated before dependency discovery on Linux and macOS.
@@ -20,7 +18,7 @@ gated before dependency discovery on Linux and macOS.
 
 | Command | Description |
 |---|---|
-| `Update-AllPackages` | Discover selected providers, preview or confirm each package update, and return typed outcomes |
+| `Update-AllPackages` | Discover selected providers, preview or confirm each package or bulk-profile update, and return typed outcomes |
 
 ```powershell
 Update-AllPackages -WhatIf
@@ -35,9 +33,9 @@ validation. Exclusion wins, duplicates run once, and execution follows catalog
 order (the provider order above), then target discovery order. Unknown names
 fail before discovery or mutation.
 
-`ProviderOptions` maps each provider name to its own hashtable. The foundation
-accepts only empty option tables; each future adapter explicitly declares its
-supported options. Invalid option names or non-hashtable values fail before any
+`ProviderOptions` maps each provider name to its own hashtable. Each adapter
+explicitly declares its supported options; reserved providers accept only empty
+option tables. Invalid option names or non-hashtable values fail before any
 provider starts. Options for unselected providers are validated but not used.
 Provider and option keys are case-insensitive even in JSON-derived or custom
 hashtables. Case-equivalent duplicate keys are rejected before any provider
@@ -56,6 +54,46 @@ outcomes already produced by that callback. Skips do not trigger fail-fast.
 Provider failures are result data even with `-ErrorAction Stop`; invalid
 arguments remain terminating errors. Read-only discovery errors prevent any
 updates for that provider. No results are invented for unstarted providers.
+
+## VS Code extension updates
+
+Install `Shmuelie.Utilities` and make the Visual Studio Code `code` CLI available
+on `PATH`. Discovery requires a native application, not a PowerShell function or
+alias called `code`. The adapter lazily uses the module-qualified
+`Get-VsCodeExtension` and `Update-VsCodeExtension` commands. Missing dependencies
+skip; import errors and CLI failures fail. Nothing is installed automatically.
+
+```powershell
+Update-AllPackages -Provider VSCode -WhatIf
+Update-AllPackages -Provider VSCode -ProviderOptions @{
+    VSCode = @{ Profiles = @('Backend', 'Work Space') }
+} -Confirm:$false
+```
+
+`Profiles` is the only supported VSCode option: a profile name or an array of
+names. The default profile is always included first, with no `--profile`
+argument. Configured named profiles follow in order; exact duplicate names run
+once. Names are case-sensitive and passed unchanged. An empty array selects just
+the default profile. Names must be nonempty strings without control characters,
+cmd.exe metacharacters, or a leading hyphen. All names are validated before any
+CLI call. There is no automatic enumeration or creation of profiles; specify
+existing profiles. Named profiles require a Utilities version supporting
+`Update-VsCodeExtension -Profile`; older versions skip with upgrade guidance.
+
+The CLI updates extensions in bulk, so each target is
+`extensions (default profile)` or `extensions (profile: <name>)`. Confirmation
+is once per bulk profile, and `-WhatIf` only lists its extensions. Successful
+CLI completion returns **one `Updated` row for that bulk operation**, not one
+per extension and not a claim that any particular extension changed.
+Nonzero exit codes or missing native completion evidence return `Failed`.
+`-StopOnFailure` prevents starting the next profile after failure.
+
+There is no single profile version: `PreviousVersion` and `ResultingVersion`
+remain null. Successful rows carry `PreviousExtensions` and `ResultingExtensions`
+arrays containing only observed `FullId` and `Version` values (unknown versions
+are null). These inventories do not assert per-extension update outcomes.
+Inventory failures are visible failures, including failure to observe the state
+after a bulk command completed; they are not converted into empty inventories.
 
 ## Output
 

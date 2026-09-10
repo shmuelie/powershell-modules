@@ -177,8 +177,7 @@ Provider-neutral package update orchestration. **Version 0.1.0.**
 option tables, lazy dependency discovery, per-target `ShouldProcess`, typed
 results, and optional fail-fast behavior.
 
-This is the M2 foundation only. PSResourceGet, DotNet, Npm, Pip, Uv, VSCode,
-WinGet, and AppInstaller are reserved names with **no adapters implemented in
-this version**; each reports `Skipped` with a reason. The complete provider
-set is planned for M6, through separate adapter issues. Importing the core is
-portable and does not import optional provider modules.
+See the module README for the current implemented provider set, dependencies,
+options, and result granularity. Unimplemented or unavailable providers report
+`Skipped` with a reason. Importing the core is portable and does not import
+optional provider modules.
