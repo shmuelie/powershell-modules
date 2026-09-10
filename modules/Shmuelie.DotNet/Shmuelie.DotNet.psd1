@@ -1,6 +1,6 @@
 @{
     RootModule        = 'Shmuelie.DotNet.psm1'
-    ModuleVersion     = '0.1.0'
+    ModuleVersion     = '0.2.0'
     GUID              = '9b4f9e06-2d53-4973-88a9-f7c16305e42b'
     Author            = 'Shmueli Englard'
     CompanyName       = 'Shmuelie'

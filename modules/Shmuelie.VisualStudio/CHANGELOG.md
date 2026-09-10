@@ -6,6 +6,8 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-10
+
 ### Added
 - `Resolve-MSBuild` resolves the newest compatible Visual Studio MSBuild.exe,
   including standalone Build Tools, with optional year/version and executable

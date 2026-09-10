@@ -6,6 +6,8 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-10
+
 ### Added
 - `Start-Copilot`, `Get-CopilotLaunchPlan`, and `Select-CopilotSession` accept
   `-SessionSelector` callbacks over typed session candidates without a UI
