@@ -11,6 +11,16 @@ Versions change only when a release is cut; unreleased work stays under
   or create a local branch with a remote upstream using `-Track`. Supports
   repository paths, `-WhatIf`/`-Confirm`, and explicit `-Force` to discard local
   changes without resetting existing branches or bypassing worktree protection.
+- `Get-Branch` lists local and cached remote-tracking refs as typed `GitBranch`
+  objects using machine-readable git output, with current-branch state,
+  upstream/ahead/behind information and symbolic targets. Supports repository
+  path pipeline input and local/remote filtering without fetching or changing
+  the current directory. Implicit partial-clone object fetches are disabled
+  in child git processes.
+- `Update-Worktrees -ChangedOnly` returns only `Updated`, `Removed`, `Failed`,
+  and `StashFailed` worktree results, matching `Update-AllWorktrees`. Default
+  output and update behavior are unchanged; WhatIf previews, warnings, and
+  errors remain visible.
 - Added `Get-GitTag` for typed, read-only local tag discovery with exact/wildcard
   name filters, repository path input, annotated/lightweight metadata, full tag
   annotations, offset-preserving dates, and correctly peeled commit/blob/tree
