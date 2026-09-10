@@ -29,7 +29,7 @@ Import-Module Shmuelie.Git
 | `Remove-StaleWorktree` | Prune stale worktree administrative entries for deleted worktree directories |
 | `Repair-Worktree` | Repair worktree links after a repository or worktree move |
 | `Lock-Worktree` / `Unlock-Worktree` | Lock or unlock a worktree by branch name |
-| `Update-Worktrees` | Fast-forward every worktree for the current or `-Path` repository from upstream (forwards the `Sync-GitRemote` GitHub-account options to the fetch) |
+| `Update-Worktrees` | Fast-forward every worktree for the current or `-Path` repository from upstream (`-ChangedOnly` emits only actionable results; forwards the `Sync-GitRemote` GitHub-account options to the fetch) |
 | `Update-AllWorktrees` | Discover repositories under `$env:SOURCE_REPOS` or a supplied `-Path` root and update each repository in parallel (`-ChangedOnly` emits compact actionable worktree rows) |
 | `Find-StaleBranch` | Find local branches in the current or `-Path` repository whose upstream branch is gone (`-IncludeNeverPushed` also includes local-only branches) |
 | `Get-GitStatusSummary` | Parse `git status` for the current or `-Path` repository into a typed object (branch, ahead/behind, conflicts, stash, operation) |
@@ -57,7 +57,7 @@ New-Repository https://github.com/owner/repo
 New-Worktree -WorkName my-feature -SetLocation
 Add-Worktree -BranchName feature/my-feature -WorktreePath ../custom-feature
 Move-Worktree -BranchName feature/my-feature -DestinationPath ../moved-feature
-Update-Worktrees | Where-Object Status -ne Current
+Update-Worktrees -ChangedOnly
 Update-AllWorktrees -Organization shmuelie,microsoft -Exclude 'archive/*'
 Update-AllWorktrees -Organization shmuelie -ChangedOnly
 Find-StaleBranch | Remove-Worktree
@@ -68,6 +68,15 @@ Get-GitStatusSummary
 operation, returning `Status = 'InProgress'` with the existing operation string
 (for example `MERGING` or `REBASE-i 1/3`) instead of stashing or fast-forwarding
 them.
+
+`Update-Worktrees -ChangedOnly` returns only `WorktreeUpdateResult` objects with
+status `Updated`, `Removed`, `Failed`, or `StashFailed`, matching the actionable
+statuses used by `Update-AllWorktrees -ChangedOnly`. It filters output only:
+fetching, update eligibility, and worktree actions are unchanged. Without the
+switch (or with `-ChangedOnly:$false`), every result is returned as before.
+Warnings and errors remain visible even when there is no result object.
+`-WhatIf` still displays the standard fetch and fast-forward previews without
+performing either operation or reporting a preview as a completed update.
 
 ## Requirements
 

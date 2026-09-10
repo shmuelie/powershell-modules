@@ -1,3 +1,22 @@
+function Select-ChangedWorktreeResult {
+    <#
+    .SYNOPSIS
+        Select actionable worktree update results without changing their shape.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory, ValueFromPipeline)]
+        [AllowNull()]
+        [PSObject]$InputObject
+    )
+
+    process {
+        if ($null -ne $InputObject -and $InputObject.Status -in @('Updated', 'Removed', 'Failed', 'StashFailed')) {
+            $InputObject
+        }
+    }
+}
+
 function Update-Worktrees {
     <#
     .SYNOPSIS
@@ -10,6 +29,10 @@ function Update-Worktrees {
     Uses a bulk 'git for-each-ref' call to get ahead/behind counts for all
     branches in one pass, then checks only worktrees that need merging for
     local changes or in-progress git operations.
+
+    Use -ChangedOnly to emit only updated, removed, or failed worktree results.
+    This filters output only; it does not change which worktrees are processed.
+    WhatIf previews and warning/error messages remain visible.
     .PARAMETER Path
     Directory inside the git working tree to update. Defaults to the current location.
     .PARAMETER CheckRemote
@@ -25,6 +48,10 @@ function Update-Worktrees {
     .PARAMETER NoGitHubAccountResolve
     Forwarded to Sync-GitRemote. Disable GitHub account awareness during the
     fetch; behave exactly as plain 'git fetch'.
+    .PARAMETER ChangedOnly
+    Emit only WorktreeUpdateResult objects with Status Updated, Removed, Failed,
+    or StashFailed. Omit this switch to return every result. WhatIf still shows
+    the standard fetch and fast-forward previews without reporting updates.
     .EXAMPLE
     Update-Worktrees
     Fetches and fast-forwards all worktrees, returning status objects.
@@ -37,6 +64,12 @@ function Update-Worktrees {
     .EXAMPLE
     Update-Worktrees -CheckRemote
     Also checks the remote for NoUpstream branches to detect stale branches.
+    .EXAMPLE
+    Update-Worktrees -ChangedOnly
+    Returns only updated, removed, or failed worktrees.
+    .EXAMPLE
+    Update-Worktrees -ChangedOnly -WhatIf
+    Previews fetching and fast-forwarding without performing either operation.
     #>
     [OutputType('WorktreeUpdateResult')]
     [CmdletBinding(SupportsShouldProcess)]
@@ -51,7 +84,9 @@ function Update-Worktrees {
 
         [scriptblock]$GitHubAccountResolver,
 
-        [switch]$NoGitHubAccountResolve
+        [switch]$NoGitHubAccountResolve,
+
+        [switch]$ChangedOnly
     )
     process {
         $repoPath = Resolve-GitRepositoryPath -Path $Path
@@ -338,7 +373,11 @@ function Update-Worktrees {
 
         Write-Progress -Activity 'Updating Worktrees' -Id 0 -Completed
 
-        $results
+        if ($ChangedOnly) {
+            $results | Select-ChangedWorktreeResult
+        } else {
+            $results
+        }
         }
         finally {
             $PSStyle.Progress.View = $previousView

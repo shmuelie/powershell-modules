@@ -6,6 +6,12 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+### Added
+- `Update-Worktrees -ChangedOnly` returns only `Updated`, `Removed`, `Failed`,
+  and `StashFailed` worktree results, matching `Update-AllWorktrees`. Default
+  output and update behavior are unchanged; WhatIf previews, warnings, and
+  errors remain visible.
+
 ## [0.8.2] - 2026-09-08
 
 ### Fixed
