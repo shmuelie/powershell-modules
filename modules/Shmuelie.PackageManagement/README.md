@@ -7,7 +7,7 @@ Provider-neutral package update orchestration for PowerShell 7.4+.
 ## Provider availability
 
 The ordered catalog contains `PSResourceGet`, `DotNet`, `Npm`, `Pip`, `Uv`,
-`VSCode`, `WinGet`, and `AppInstaller`. The **DotNet**, **Npm**, and **Pip** adapters are implemented;
+`VSCode`, `WinGet`, and `AppInstaller`. **PSResourceGet**, **DotNet**, **Npm**, and **Pip** are implemented;
 the other adapters remain separate follow-up work and report explicit
 `Skipped` results, not successful updates.
 
@@ -40,7 +40,7 @@ provider starts. Options for unselected providers are validated but not used.
 Provider and option keys are case-insensitive even in JSON-derived or custom
 hashtables. Case-equivalent duplicate keys are rejected before any provider
 starts, and the caller's maps are not modified.
-Options are data, not commands, module paths, or scripts to execute.
+Options are data, not commands, import paths, or scripts to execute.
 
 `-WhatIf` performs read-only discovery and returns `Planned` rows for discovered
 targets, without ever invoking mutating callbacks. `-Confirm` asks once per
@@ -54,6 +54,62 @@ outcomes already produced by that callback. Skips do not trigger fail-fast.
 Provider failures are result data even with `-ErrorAction Stop`; invalid
 arguments remain terminating errors. Read-only discovery errors prevent any
 updates for that provider. No results are invented for unstarted providers.
+
+## PSResourceGet
+
+Requires `Microsoft.PowerShell.PSResourceGet` and `Shmuelie.Utilities`, imported
+lazily only when selected. Missing modules or required commands produce
+`Skipped` with an actionable dependency reason; nothing is automatically
+installed. The adapter reuses Utilities' private read-only discovery and semantic
+version helpers and its public `Update-InstalledPSResource` command. Utilities
+must provide those helpers; no provenance or prerelease rules are copied here.
+
+| Option | Value |
+|---|---|
+| `Path` | One module-root string or an array of roots previously supplied to `Save-PSResource`. No default root or `PSModulePath` scan. |
+| `Name` | Optional string or string array of wildcard module-name filters; comma-separated patterns retain canonical behavior. |
+| `Exclude` | Optional string or string array of wildcard exclusions, applied before repository lookup. |
+| `Repository` | Optional nonempty repository-name string; only explicit values override recorded provenance. |
+
+```powershell
+Update-AllPackages -Provider PSResourceGet -ProviderOptions @{
+    PSResourceGet = @{
+        Path = @((Join-Path $HOME 'PowerShellModules'), (Join-Path $HOME 'OtherModules'))
+        Name = 'MyTools.*'
+        Exclude = '*.Local'
+    }
+} -WhatIf
+```
+
+Roots must be filesystem directories. Missing roots warn and skip; no configured
+existing roots produces a provider-level `Skipped` result. Equivalent resolved
+paths run once, in supplied order. Empty roots or filters matching nothing return
+the core provider-level `Unchanged` result. Invalid option values produce
+provider-level `Failed` results during read-only availability/discovery.
+
+Each target is the full module directory path, so identical module names under
+different roots remain distinct. Discovery reads installed layouts only, using
+canonical wildcard filtering, highest-version selection, and prerelease parsing.
+`-WhatIf` lists selected installed modules (including current modules) as
+`Planned`, with unknown/null proposed versions, without repository queries or
+invoking `Update-InstalledPSResource`. Module names containing commas fail
+discovery because the canonical selector cannot address them individually.
+
+After aggregate approval, the canonical update runs once per module with inner
+confirmation disabled. It owns repository provenance, source-URI resolution,
+fallback behavior for unrecorded provenance, prerelease selection, and saving.
+`Repository` is not passed unless configured. Warnings retain their warning
+stream; thrown/nonterminating errors become `Failed` results and participate in
+`-StopOnFailure` between modules.
+
+Results are based on the installed version observed after the canonical command:
+`Updated` requires a newer observed version. With no newer version, a canonical
+warning produces `Skipped` with that warning as its reason; otherwise the result
+is `Unchanged` with an explicit limitation: the void canonical command cannot
+distinguish already-current modules from silent skips such as a module absent
+from its repository. `Unchanged` is not a claim that a repository lookup succeeded.
+Missing post-update observations produce `Failed` with a null resulting version;
+no proposed version or void output is treated as evidence of a successful update.
 
 ## DotNet global tools
 

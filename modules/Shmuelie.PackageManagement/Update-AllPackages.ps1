@@ -10,6 +10,8 @@ function Update-AllPackages {
 
         See the module README for provider availability and supported options.
         Unimplemented or unavailable integrations report Skipped.
+        PSResourceGet updates configured module roots using Shmuelie.Utilities;
+        no configured roots produces Skipped instead of scanning PSModulePath.
 
         Each integration discovers targets without mutation. ShouldProcess
         gates each target's update callback. WhatIf runs only discovery and
@@ -52,6 +54,12 @@ function Update-AllPackages {
     .EXAMPLE
         Update-AllPackages -Provider Npm, DotNet -ExcludeProvider Npm -StopOnFailure
         Select only DotNet and stop if its integration fails.
+    .EXAMPLE
+        Update-AllPackages -Provider PSResourceGet -ProviderOptions @{
+            PSResourceGet = @{ Path = (Join-Path $HOME 'PowerShellModules'); Name = 'MyTools.*'; Exclude = '*.Local' }
+        } -WhatIf
+        Preview locally discovered modules without contacting repositories.
+        Proposed versions are unknown until the canonical update runs.
     .EXAMPLE
         Update-AllPackages -Provider Npm -WhatIf
         Preview outdated global npm packages without touching local dependencies.

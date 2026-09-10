@@ -52,6 +52,350 @@ Describe 'PackageManagement foundation surface' {
     }
 }
 
+Describe 'PSResourceGet package provider' {
+    BeforeAll {
+        $utilitiesManifest = Join-Path $repoRoot 'modules' 'Shmuelie.Utilities' 'Shmuelie.Utilities.psd1'
+        Import-Module $utilitiesManifest -Force
+        $script:CanonicalPSResourceCommand = Get-Command 'Shmuelie.Utilities\Update-InstalledPSResource' -ListImported
+        # Test-only dependency: a missed mock fails closed, never reaches a feed.
+        $script:PSResourceStub = New-Module -Name Microsoft.PowerShell.PSResourceGet -ScriptBlock {
+            function Find-PSResource {
+                [CmdletBinding()]
+                param($Name, $Repository, [switch]$Prerelease)
+                throw 'Unmocked Find-PSResource.'
+            }
+            function Save-PSResource {
+                [CmdletBinding(SupportsShouldProcess)]
+                param($Name, $Version, $Path, $Repository, [switch]$TrustRepository,
+                    [switch]$IncludeXml, [switch]$AcceptLicense, [switch]$SkipDependencyCheck)
+                throw 'Unmocked Save-PSResource.'
+            }
+            function Get-PSResourceRepository {
+                [CmdletBinding()]
+                param()
+                throw 'Unmocked Get-PSResourceRepository.'
+            }
+            Export-ModuleMember -Function Find-PSResource, Save-PSResource, Get-PSResourceRepository
+        }
+        Import-Module $script:PSResourceStub -Global -Force
+
+        function New-PSResourceProviderTestLayout {
+            param($Root, $Name, $Version = '1.0.0', $Repository = 'FeedA', $Prerelease = '', $RepositorySourceLocation = '')
+            if (-not $TestDrive -or -not (Test-Path -LiteralPath $TestDrive -PathType Container)) {
+                throw 'Pester TestDrive must exist before creating module fixtures.'
+            }
+            $fullRoot = [IO.Path]::GetFullPath($Root)
+            $testPrefix = [IO.Path]::TrimEndingDirectorySeparator([IO.Path]::GetFullPath($TestDrive)) + [IO.Path]::DirectorySeparatorChar
+            if (-not $fullRoot.StartsWith($testPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+                throw 'Fixture root must be inside TestDrive.'
+            }
+            $directory = Join-Path $Root $Name $Version
+            New-Item -ItemType Directory -Path $directory -Force -ErrorAction Stop | Out-Null
+            New-ModuleManifest -Path (Join-Path $directory "$Name.psd1") -ModuleVersion $Version -ErrorAction Stop
+            [pscustomobject]@{
+                Version = $Version
+                Prerelease = $Prerelease
+                Repository = $Repository
+                RepositorySourceLocation = $RepositorySourceLocation
+            } | Export-Clixml -LiteralPath (Join-Path $directory 'PSGetModuleInfo.xml') -ErrorAction Stop
+        }
+    }
+
+    AfterAll {
+        if ($script:PSResourceStub) {
+            Remove-Module -ModuleInfo $script:PSResourceStub -Force -ErrorAction Stop
+        }
+        Remove-Module Shmuelie.Utilities -Force -ErrorAction Stop
+    }
+
+    BeforeEach {
+        if (-not $TestDrive -or -not (Test-Path -LiteralPath $TestDrive -PathType Container)) {
+            throw 'Pester TestDrive must exist before provider setup.'
+        }
+        $script:ResourceRoot = Join-Path $TestDrive ([guid]::NewGuid().ToString())
+        New-Item -ItemType Directory -Path $script:ResourceRoot -Force -ErrorAction Stop | Out-Null
+        Mock Import-Module -ModuleName Shmuelie.PackageManagement {}
+        # Keep metadata tied to the actual dependency when individual tests mock
+        # the public command at its module-qualified call site.
+        Mock Get-Command -ModuleName Shmuelie.PackageManagement { $script:CanonicalPSResourceCommand } -ParameterFilter {
+            $Name -eq 'Shmuelie.Utilities\Update-InstalledPSResource'
+        }
+        Mock Find-PSResource -ModuleName Shmuelie.Utilities { [pscustomobject]@{ Version = '2.0.0' } }
+        Mock Save-PSResource -ModuleName Shmuelie.Utilities {
+            New-PSResourceProviderTestLayout -Root $Path -Name $Name -Version (($Version -split '-', 2)[0]) `
+                -Prerelease (($Version -split '-', 2)[1]) -Repository $Repository
+        }
+        Mock Get-PSResourceRepository -ModuleName Shmuelie.Utilities { throw 'Unexpected repository resolution.' }
+    }
+
+    It 'keeps descriptor discovery side-effect-free and declares only its own options' {
+        Mock Get-Command -ModuleName Shmuelie.PackageManagement { throw 'Catalog must not probe dependencies.' }
+        $descriptor = & (Get-Module Shmuelie.PackageManagement) { Get-PSResourceGetPackageProvider }
+        $descriptor.OptionNames | Should -Be @('Path', 'Name', 'Exclude', 'Repository')
+        $descriptor.RequiredModules | Should -Be @('Microsoft.PowerShell.PSResourceGet', 'Shmuelie.Utilities')
+        Should -Invoke Import-Module -ModuleName Shmuelie.PackageManagement -Times 0 -Exactly
+    }
+
+    It 'skips missing <Dependency> without discovery or mutation' -ForEach @(
+        @{ Dependency = 'Microsoft.PowerShell.PSResourceGet' }
+        @{ Dependency = 'Shmuelie.Utilities' }
+    ) {
+        Mock Get-Module -ModuleName Shmuelie.PackageManagement { $null } -ParameterFilter { $Name -eq $Dependency }
+        $result = Update-AllPackages -Provider PSResourceGet -ProviderOptions @{ PSResourceGet = @{ Path = $script:ResourceRoot } }
+        $result.Status | Should -BeExactly Skipped
+        $result.Reason | Should -BeLike "*$Dependency*"
+        Should -Invoke Find-PSResource -ModuleName Shmuelie.Utilities -Times 0 -Exactly
+        Should -Invoke Save-PSResource -ModuleName Shmuelie.Utilities -Times 0 -Exactly
+    }
+
+    It 'skips when the canonical public update command is missing' {
+        Mock Get-Command -ModuleName Shmuelie.PackageManagement { $null } -ParameterFilter {
+            $Name -eq 'Shmuelie.Utilities\Update-InstalledPSResource'
+        }
+        $result = Update-AllPackages -Provider PSResourceGet -ProviderOptions @{ PSResourceGet = @{ Path = $script:ResourceRoot } }
+        $result.Status | Should -BeExactly Skipped
+        $result.Reason | Should -Match 'Update-InstalledPSResource'
+    }
+
+    It 'skips <Label> roots with actionable configuration guidance' -ForEach @(
+        @{ Label = 'unconfigured'; Options = @{} }
+        @{ Label = 'empty'; Options = @{ Path = @() } }
+    ) {
+        $result = Update-AllPackages -Provider PSResourceGet -ProviderOptions @{ PSResourceGet = $Options }
+        $result.Status | Should -BeExactly Skipped
+        $result.Reason | Should -Match 'ProviderOptions.PSResourceGet.Path'
+        Should -Invoke Save-PSResource -ModuleName Shmuelie.Utilities -Times 0 -Exactly
+    }
+
+    It 'skips nonexistent roots without creating them' {
+        $missing = Join-Path $TestDrive 'missing'
+        $result = Update-AllPackages -Provider PSResourceGet -ProviderOptions @{ PSResourceGet = @{ Path = $missing } } `
+            -WarningAction SilentlyContinue -WarningVariable warnings
+        $result.Status | Should -BeExactly Skipped
+        $warnings | Should -Not -BeNullOrEmpty
+        Test-Path -LiteralPath $missing | Should -BeFalse
+    }
+
+    It 'rejects invalid <Key> option values before any lookup' -ForEach @(
+        @{ Key = 'Path'; Value = 1 }
+        @{ Key = 'Path'; Value = @('valid', 1) }
+        @{ Key = 'Path'; Value = $null }
+        @{ Key = 'Name'; Value = { throw 'Must not execute.' } }
+        @{ Key = 'Name'; Value = ' ' }
+        @{ Key = 'Exclude'; Value = @{ Bad = 'value' } }
+        @{ Key = 'Repository'; Value = @('FeedA', 'FeedB') }
+        @{ Key = 'Repository'; Value = '' }
+    ) {
+        $options = @{ Path = $script:ResourceRoot }
+        $options[$Key] = $Value
+        $result = Update-AllPackages -Provider PSResourceGet -ProviderOptions @{ PSResourceGet = $options } -WhatIf
+        $result.Status | Should -BeExactly Failed
+        $result.Error | Should -BeOfType ([System.Management.Automation.ErrorRecord])
+        Should -Invoke Find-PSResource -ModuleName Shmuelie.Utilities -Times 0 -Exactly
+        Should -Invoke Save-PSResource -ModuleName Shmuelie.Utilities -Times 0 -Exactly
+    }
+
+    It 'returns the core no-target outcome for an empty root' {
+        $result = Update-AllPackages -Provider PSResourceGet -ProviderOptions @{ PSResourceGet = @{ Path = $script:ResourceRoot } }
+        $result.Status | Should -BeExactly Unchanged
+        $result.Target | Should -BeExactly PSResourceGet
+        $result.ResultingVersion | Should -BeNullOrEmpty
+        Should -Invoke Find-PSResource -ModuleName Shmuelie.Utilities -Times 0 -Exactly
+    }
+
+    It 'preserves mixed repository provenance and observes actual saved versions' {
+        New-PSResourceProviderTestLayout -Root $script:ResourceRoot -Name ModuleA -Repository FeedA
+        New-PSResourceProviderTestLayout -Root $script:ResourceRoot -Name ModuleB -Repository FeedB
+        $results = @(Update-AllPackages -Provider PSResourceGet -ProviderOptions @{ PSResourceGet = @{ Path = $script:ResourceRoot } } -Confirm:$false)
+        $results | Should -HaveCount 2
+        $results.Status | Should -Be @('Updated', 'Updated')
+        $results.PreviousVersion | Should -Be @('1.0.0', '1.0.0')
+        $results.ResultingVersion | Should -Be @('2.0.0', '2.0.0')
+        $results[0].PSTypeNames[0] | Should -BeExactly 'Shmuelie.PackageManagement.UpdateResult'
+        Should -Invoke Save-PSResource -ModuleName Shmuelie.Utilities -Times 1 -Exactly -ParameterFilter {
+            $Name -eq 'ModuleA' -and $Repository -eq 'FeedA' -and $TrustRepository -and $IncludeXml -and $AcceptLicense -and $SkipDependencyCheck
+        }
+        Should -Invoke Save-PSResource -ModuleName Shmuelie.Utilities -Times 1 -Exactly -ParameterFilter {
+            $Name -eq 'ModuleB' -and $Repository -eq 'FeedB'
+        }
+    }
+
+    It 'honors an explicit repository override without changing caller options' {
+        New-PSResourceProviderTestLayout -Root $script:ResourceRoot -Name ModuleA -Repository FeedA
+        $options = @{ psresourceget = @{ path = $script:ResourceRoot; repository = 'OverrideFeed' } }
+        $before = $options | ConvertTo-Json -Depth 4 -Compress
+        $result = Update-AllPackages -Provider PSResourceGet -ProviderOptions $options -Confirm:$false
+        $result.Status | Should -BeExactly Updated
+        ($options | ConvertTo-Json -Depth 4 -Compress) | Should -BeExactly $before
+        Should -Invoke Save-PSResource -ModuleName Shmuelie.Utilities -Times 1 -Exactly -ParameterFilter { $Repository -eq 'OverrideFeed' }
+    }
+
+    It 'preserves source-URI repository resolution' {
+        New-PSResourceProviderTestLayout -Root $script:ResourceRoot -Name ModuleA -Repository '' -RepositorySourceLocation 'https://packages.example.test/feed/'
+        Mock Get-PSResourceRepository -ModuleName Shmuelie.Utilities { [pscustomobject]@{ Name = 'SourceFeed'; Uri = 'https://packages.example.test/feed' } }
+        (Update-AllPackages -Provider PSResourceGet -ProviderOptions @{ PSResourceGet = @{ Path = $script:ResourceRoot } } -Confirm:$false).Status | Should -Be Updated
+        Should -Invoke Save-PSResource -ModuleName Shmuelie.Utilities -Times 1 -Exactly -ParameterFilter { $Repository -eq 'SourceFeed' }
+    }
+
+    It 'preserves prerelease tracking and semantic comparison through canonical helpers' {
+        New-PSResourceProviderTestLayout -Root $script:ResourceRoot -Name Preview -Version '2.0.0' -Prerelease 'beta.2'
+        New-PSResourceProviderTestLayout -Root $script:ResourceRoot -Name Stable -Version '2.0.0'
+        Mock Find-PSResource -ModuleName Shmuelie.Utilities {
+            [pscustomobject]@{ Version = '2.0.0'; Prerelease = 'beta.10' }
+            [pscustomobject]@{ Version = '1.0.0' }
+        }
+        $results = @(Update-AllPackages -Provider PSResourceGet -ProviderOptions @{ PSResourceGet = @{ Path = $script:ResourceRoot } } -Confirm:$false)
+        $results.Status | Should -Be @('Updated', 'Unchanged')
+        $results[0].PreviousVersion | Should -BeExactly '2.0.0-beta.2'
+        $results[0].ResultingVersion | Should -BeExactly '2.0.0-beta.10'
+        Should -Invoke Find-PSResource -ModuleName Shmuelie.Utilities -Times 1 -Exactly -ParameterFilter { $Name -eq 'Preview' -and $Prerelease }
+        Should -Invoke Find-PSResource -ModuleName Shmuelie.Utilities -Times 1 -Exactly -ParameterFilter { $Name -eq 'Stable' -and -not $Prerelease }
+    }
+
+    It 'reuses comma-separated wildcard filters before repository lookup' {
+        foreach ($name in 'Managed.One', 'Managed.Two', 'Managed.Local', 'Other') {
+            New-PSResourceProviderTestLayout -Root $script:ResourceRoot -Name $name
+        }
+        $results = @(Update-AllPackages -Provider PSResourceGet -ProviderOptions @{ PSResourceGet = @{
+            Path = $script:ResourceRoot; Name = 'Managed.*,Nothing'; Exclude = '*.Two,*.Local'
+        } } -Confirm:$false)
+        $results | Should -HaveCount 1
+        $results[0].Target | Should -BeExactly (Join-Path $script:ResourceRoot 'Managed.One')
+        Should -Invoke Find-PSResource -ModuleName Shmuelie.Utilities -Times 1 -Exactly
+    }
+
+    It 'keeps roots distinct but deduplicates equivalent configured paths' {
+        $second = Join-Path $TestDrive 'second'
+        New-PSResourceProviderTestLayout -Root $script:ResourceRoot -Name ModuleA
+        New-PSResourceProviderTestLayout -Root $second -Name ModuleA
+        $results = @(Update-AllPackages -Provider PSResourceGet -ProviderOptions @{ PSResourceGet = @{
+            Path = @($script:ResourceRoot, (Join-Path $script:ResourceRoot '.'), $second)
+        } } -Confirm:$false)
+        $results.Target | Should -Be @((Join-Path $script:ResourceRoot 'ModuleA'), (Join-Path $second 'ModuleA'))
+        Should -Invoke Save-PSResource -ModuleName Shmuelie.Utilities -Times 2 -Exactly
+    }
+
+    It 'does not infer Updated from a void update with no observed change' {
+        New-PSResourceProviderTestLayout -Root $script:ResourceRoot -Name ModuleA
+        Mock Save-PSResource -ModuleName Shmuelie.Utilities {}
+        $result = Update-AllPackages -Provider PSResourceGet -ProviderOptions @{ PSResourceGet = @{ Path = $script:ResourceRoot } } -Confirm:$false
+        $result.Status | Should -BeExactly Unchanged
+        $result.ResultingVersion | Should -BeExactly '1.0.0'
+        $result.Reason | Should -Match 'No newer installed version was observed'
+    }
+
+    It 'returns observed Unchanged for an already-current module' {
+        New-PSResourceProviderTestLayout -Root $script:ResourceRoot -Name ModuleA -Version '2.0.0'
+        $result = Update-AllPackages -Provider PSResourceGet -ProviderOptions @{ PSResourceGet = @{ Path = $script:ResourceRoot } } -Confirm:$false
+        $result.Status | Should -BeExactly Unchanged
+        $result.ResultingVersion | Should -BeExactly '2.0.0'
+        Should -Invoke Save-PSResource -ModuleName Shmuelie.Utilities -Times 0 -Exactly
+    }
+
+    It 'preserves canonical lookup warnings and reports the module as skipped' {
+        New-PSResourceProviderTestLayout -Root $script:ResourceRoot -Name ModuleA
+        Mock Find-PSResource -ModuleName Shmuelie.Utilities { throw 'Repository offline.' }
+        $result = Update-AllPackages -Provider PSResourceGet -ProviderOptions @{ PSResourceGet = @{ Path = $script:ResourceRoot } } `
+            -Confirm:$false -WarningAction SilentlyContinue -WarningVariable warnings
+        $result.Status | Should -BeExactly Skipped
+        $result.Reason | Should -Match 'Repository offline'
+        $warnings | Should -Not -BeNullOrEmpty
+        $result.Error | Should -BeNullOrEmpty
+        Should -Invoke Save-PSResource -ModuleName Shmuelie.Utilities -Times 0 -Exactly
+    }
+
+    It 'returns Failed with an unknown resulting version when post-update discovery disappears' {
+        New-PSResourceProviderTestLayout -Root $script:ResourceRoot -Name ModuleA
+        Mock Get-PSResourceGetPackageResource -ModuleName Shmuelie.PackageManagement {}
+        Mock Get-PSResourceGetPackageResource -ModuleName Shmuelie.PackageManagement {
+            [pscustomobject]@{ Name = 'ModuleA'; Version = '1.0.0' }
+        } -ParameterFilter { $PesterBoundParameters.ContainsKey('Exclude') }
+        $result = Update-AllPackages -Provider PSResourceGet -ProviderOptions @{ PSResourceGet = @{ Path = $script:ResourceRoot } } -Confirm:$false
+        $result.Status | Should -BeExactly Failed
+        $result.ResultingVersion | Should -BeNullOrEmpty
+        $result.Reason | Should -Match 'outcome is unknown'
+    }
+
+    It 'stops between individual modules only when fail-fast is requested: <Stop>' -ForEach @(
+        @{ Stop = $true; Expected = @('Failed'); Calls = 1 }
+        @{ Stop = $false; Expected = @('Failed', 'Updated'); Calls = 2 }
+    ) {
+        New-PSResourceProviderTestLayout -Root $script:ResourceRoot -Name AFailure
+        New-PSResourceProviderTestLayout -Root $script:ResourceRoot -Name BSuccess
+        Mock Save-PSResource -ModuleName Shmuelie.Utilities { throw 'Save failed.' } -ParameterFilter { $Name -eq 'AFailure' }
+        $results = @(Update-AllPackages -Provider PSResourceGet -ProviderOptions @{ PSResourceGet = @{ Path = $script:ResourceRoot } } `
+            -Confirm:$false -StopOnFailure:$Stop -ErrorAction Stop)
+        $results.Status | Should -Be $Expected
+        $results[0].Error.Exception.Message | Should -Match 'Save failed'
+        $results[0].ResultingVersion | Should -BeNullOrEmpty
+        Should -Invoke Save-PSResource -ModuleName Shmuelie.Utilities -Times $Calls -Exactly
+    }
+
+    It 'retains a nonterminating canonical error as Failed rather than emitting Unchanged' {
+        New-PSResourceProviderTestLayout -Root $script:ResourceRoot -Name ModuleA
+        Mock 'Shmuelie.Utilities\Update-InstalledPSResource' -ModuleName Shmuelie.PackageManagement { Write-Error 'Canonical update failed.' }
+        $result = Update-AllPackages -Provider PSResourceGet -ProviderOptions @{ PSResourceGet = @{ Path = $script:ResourceRoot } } -Confirm:$false
+        $result.Status | Should -BeExactly Failed
+        $result.Reason | Should -Match 'Canonical update failed'
+    }
+
+    It 'suppresses inner confirmation after aggregate approval' {
+        New-PSResourceProviderTestLayout -Root $script:ResourceRoot -Name ModuleA
+        Mock 'Shmuelie.Utilities\Update-InstalledPSResource' -ModuleName Shmuelie.PackageManagement {}
+        Update-AllPackages -Provider PSResourceGet -ProviderOptions @{ PSResourceGet = @{ Path = $script:ResourceRoot } } -Confirm:$false | Out-Null
+        Should -Invoke 'Shmuelie.Utilities\Update-InstalledPSResource' -ModuleName Shmuelie.PackageManagement -Times 1 -Exactly -ParameterFilter {
+            $PesterBoundParameters.ContainsKey('Confirm') -and -not $Confirm
+        }
+    }
+
+    It 'does not treat a warning-only skipped module as a fail-fast failure' {
+        New-PSResourceProviderTestLayout -Root $script:ResourceRoot -Name AWarning
+        New-PSResourceProviderTestLayout -Root $script:ResourceRoot -Name BSuccess
+        Mock Find-PSResource -ModuleName Shmuelie.Utilities { throw 'Feed unavailable.' } -ParameterFilter { $Name -eq 'AWarning' }
+        $results = @(Update-AllPackages -Provider PSResourceGet -ProviderOptions @{ PSResourceGet = @{ Path = $script:ResourceRoot } } `
+            -StopOnFailure -Confirm:$false -WarningAction SilentlyContinue)
+        $results.Status | Should -Be @('Skipped', 'Updated')
+        Should -Invoke Save-PSResource -ModuleName Shmuelie.Utilities -Times 1 -Exactly -ParameterFilter { $Name -eq 'BSuccess' }
+    }
+
+    It 'returns honest Unchanged when the canonical lookup finds no module' {
+        New-PSResourceProviderTestLayout -Root $script:ResourceRoot -Name ModuleA
+        Mock Find-PSResource -ModuleName Shmuelie.Utilities {}
+        $result = Update-AllPackages -Provider PSResourceGet -ProviderOptions @{ PSResourceGet = @{ Path = $script:ResourceRoot } } -Confirm:$false
+        $result.Status | Should -BeExactly Unchanged
+        $result.Reason | Should -Match 'silent skips'
+        $result.ResultingVersion | Should -BeExactly '1.0.0'
+        Should -Invoke Save-PSResource -ModuleName Shmuelie.Utilities -Times 0 -Exactly
+    }
+
+    It 'fails rather than calling a lower observed version unchanged' {
+        New-PSResourceProviderTestLayout -Root $script:ResourceRoot -Name ModuleA
+        Mock Get-PSResourceGetPackageResource -ModuleName Shmuelie.PackageManagement {
+            [pscustomobject]@{ Name = 'ModuleA'; Version = '0.5.0'; NumericVersion = [version]'0.5.0'; IsPrerelease = $false }
+        }
+        Mock Get-PSResourceGetPackageResource -ModuleName Shmuelie.PackageManagement {
+            [pscustomobject]@{ Name = 'ModuleA'; Version = '1.0.0'; NumericVersion = [version]'1.0.0'; IsPrerelease = $false }
+        } -ParameterFilter { $PesterBoundParameters.ContainsKey('Exclude') }
+        $result = Update-AllPackages -Provider PSResourceGet -ProviderOptions @{ PSResourceGet = @{ Path = $script:ResourceRoot } } -Confirm:$false
+        $result.Status | Should -BeExactly Failed
+        $result.Reason | Should -Match 'decreased'
+    }
+
+    It 'performs only local read-only discovery under WhatIf with unknown proposed versions' {
+        New-PSResourceProviderTestLayout -Root $script:ResourceRoot -Name ModuleA
+        Mock 'Shmuelie.Utilities\Update-InstalledPSResource' -ModuleName Shmuelie.PackageManagement { throw 'WhatIf must not call the mutator.' }
+        $results = @(Update-AllPackages -Provider PSResourceGet -ProviderOptions @{ PSResourceGet = @{ Path = $script:ResourceRoot } } -WhatIf)
+        $results | Should -HaveCount 1
+        $results[0].Status | Should -BeExactly Planned
+        $results[0].PreviousVersion | Should -BeExactly '1.0.0'
+        $results[0].ResultingVersion | Should -BeNullOrEmpty
+        Should -Invoke 'Shmuelie.Utilities\Update-InstalledPSResource' -ModuleName Shmuelie.PackageManagement -Times 0 -Exactly
+        Should -Invoke Find-PSResource -ModuleName Shmuelie.Utilities -Times 0 -Exactly
+        Should -Invoke Save-PSResource -ModuleName Shmuelie.Utilities -Times 0 -Exactly
+        Should -Invoke Get-PSResourceRepository -ModuleName Shmuelie.Utilities -Times 0 -Exactly
+    }
+}
+
 Describe 'DotNet package provider' {
     InModuleScope Shmuelie.PackageManagement {
         BeforeAll {
