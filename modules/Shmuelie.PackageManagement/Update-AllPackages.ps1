@@ -55,6 +55,9 @@ function Update-AllPackages {
         Update-AllPackages -Provider Npm, DotNet -ExcludeProvider Npm -StopOnFailure
         Select only DotNet and stop if its integration fails.
     .EXAMPLE
+        Update-AllPackages -Provider VSCode -ProviderOptions @{ VSCode = @{ Profiles = @('Backend') } } -WhatIf
+        Preview bulk extension updates for the default and Backend profiles.
+    .EXAMPLE
         Update-AllPackages -Provider PSResourceGet -ProviderOptions @{
             PSResourceGet = @{ Path = (Join-Path $HOME 'PowerShellModules'); Name = 'MyTools.*'; Exclude = '*.Local' }
         } -WhatIf

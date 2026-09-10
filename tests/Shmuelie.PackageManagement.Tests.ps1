@@ -2305,6 +2305,292 @@ Describe 'Uv Utilities native discovery boundary' {
     }
 }
 
+Describe 'VSCode package provider' {
+            BeforeAll {
+                $script:VSCodeOriginalUtilities = @(Get-Module Shmuelie.Utilities)
+                Import-Module (Join-Path $repoRoot 'modules' 'Shmuelie.Utilities' 'Shmuelie.Utilities.psd1') -Force -ErrorAction Stop
+                & (Get-Module Shmuelie.Utilities) {
+                    function script:Invoke-VSCodeTestNative {
+                        param([Parameter(ValueFromRemainingArguments)][string[]]$ArgumentList)
+                        throw 'The VSCode native boundary must be mocked.'
+                    }
+                }
+            }
+
+            AfterAll {
+                & (Get-Module Shmuelie.Utilities) {
+                    Remove-Item Function:Invoke-VSCodeTestNative -ErrorAction Stop
+                }
+                Remove-Module Shmuelie.Utilities -Force -ErrorAction Stop
+                foreach ($module in $script:VSCodeOriginalUtilities) {
+                    Import-Module $module.Path -ErrorAction Stop
+                }
+            }
+
+            InModuleScope Shmuelie.PackageManagement {
+                BeforeEach {
+                    $script:VSCodeOriginalExitCode = Get-Variable LASTEXITCODE -Scope Global -ErrorAction Ignore
+                    $script:VSCodeOriginalExitCodeValue = if ($script:VSCodeOriginalExitCode) { $script:VSCodeOriginalExitCode.Value } else { $null }
+                    $script:VSCodeCalls = [System.Collections.Generic.List[object]]::new()
+                    $script:VSCodeFailureProfile = $null
+                    $script:VSCodeFailureOperation = 'Update'
+                    $script:VSCodeExitCode = 0
+                    $script:VSCodeNoExitCode = $false
+                    $script:VSCodeInventoryMode = 'Normal'
+                    Mock Import-Module { } -ParameterFilter { $Name -eq 'Shmuelie.Utilities' }
+                    Mock Get-Command { [pscustomobject]@{ Source = 'Invoke-VSCodeTestNative' } } -ParameterFilter { $Name -eq 'code' }
+                    Mock Get-Command -ModuleName Shmuelie.Utilities { [pscustomobject]@{ Source = 'Invoke-VSCodeTestNative' } } -ParameterFilter { $Name -eq 'code' }
+                    Mock Invoke-VSCodeTestNative -ModuleName Shmuelie.Utilities {
+                        param($ArgumentList)
+                        $operation = if ($ArgumentList[0] -eq '--update-extensions') { 'Update' } else { 'Get' }
+                        $profileIndex = [array]::IndexOf($ArgumentList, '--profile')
+                        $profile = if ($profileIndex -ge 0) { $ArgumentList[$profileIndex + 1] } else { '' }
+                        $script:VSCodeCalls.Add([pscustomobject]@{ Operation = $operation; Profile = $profile; Arguments = $ArgumentList })
+                        if (-not $script:VSCodeNoExitCode) {
+                            $global:LASTEXITCODE = if ($operation -eq $script:VSCodeFailureOperation -and
+                                ($null -eq $script:VSCodeFailureProfile -or $profile -eq $script:VSCodeFailureProfile)) {
+                                $script:VSCodeExitCode
+                            } else { 0 }
+                        }
+                        if ($operation -eq 'Get' -and $script:VSCodeInventoryMode -ne 'Empty') {
+                            $updated = @($script:VSCodeCalls | Where-Object { $_.Operation -eq 'Update' -and $_.Profile -eq $profile }).Count -gt 0
+                            if ($updated) { 'publisher.one@2.0.0' } else { 'publisher.one@1.0.0' }
+                            'publisher.two@3.0.0'
+                        } elseif ($operation -eq 'Update') {
+                            'Bulk command output.'
+                        }
+                    }
+                }
+
+                AfterEach {
+                    if ($script:VSCodeOriginalExitCode) {
+                        $global:LASTEXITCODE = $script:VSCodeOriginalExitCodeValue
+                    } else {
+                        Remove-Variable LASTEXITCODE -Scope Global -ErrorAction Ignore
+                    }
+                }
+
+                It 'keeps catalog lookup ordered and side-effect-free' {
+                    Mock Get-Module { throw 'Must not probe modules.' }
+                    $catalog = @(Get-PackageProvider)
+                    $catalog.Name | Should -Be @('PSResourceGet', 'DotNet', 'Npm', 'Pip', 'Uv', 'VSCode', 'WinGet', 'AppInstaller')
+                    $descriptor = $catalog | Where-Object Name -EQ VSCode
+                    $descriptor.OptionNames | Should -Be @('Profiles')
+                    $descriptor.RequiredModules | Should -Be @('Shmuelie.Utilities')
+                    $descriptor.GetTargets | Should -BeOfType ([scriptblock])
+                    Should -Invoke Get-Command -Times 0 -Exactly -ParameterFilter { $Name -eq 'code' }
+                    Should -Invoke Import-Module -Times 0 -Exactly
+                }
+
+                It 'returns one honest bulk row for the default profile and preserves observed inventories' {
+                    $global:LASTEXITCODE = 37
+                    $results = @(Update-AllPackages -Provider VSCode -Confirm:$false)
+                    if ($results[0].Error) { throw $results[0].Error }
+                    $results | Should -HaveCount 1
+                    $results[0].Provider | Should -BeExactly VSCode
+                    $results[0].Target | Should -BeExactly 'extensions (default profile)'
+                    $results[0].Status | Should -BeExactly Updated
+                    $results[0].Reason | Should -Match 'Bulk.*individual extension outcomes are not reported'
+                    $results[0].PreviousVersion | Should -BeNullOrEmpty
+                    $results[0].ResultingVersion | Should -BeNullOrEmpty
+                    $results[0].PreviousExtensions.Version | Should -Be @('1.0.0', '3.0.0')
+                    $results[0].ResultingExtensions.Version | Should -Be @('2.0.0', '3.0.0')
+                    $global:LASTEXITCODE | Should -Be 37
+                    $calls = $script:VSCodeCalls
+                    $calls.Operation | Should -Be @('Get', 'Update', 'Get')
+                    $calls[1].Arguments | Should -Be @('--update-extensions')
+                }
+
+                It 'updates default then explicit profiles once each in configured order without changing options' {
+                    $options = @{ vscode = @{ profiles = @('Work Space', 'Backend', 'Work Space') } }
+                    $before = $options | ConvertTo-Json -Depth 5 -Compress
+                    $results = @(Update-AllPackages -Provider VSCode -ProviderOptions $options -Confirm:$false)
+                    $results.Target | Should -Be @('extensions (default profile)', 'extensions (profile: Work Space)', 'extensions (profile: Backend)')
+                    $results.Status | Should -Be @('Updated', 'Updated', 'Updated')
+                    $calls = @($script:VSCodeCalls | Where-Object Operation -EQ Update)
+                    $calls.Profile | Should -Be @('', 'Work Space', 'Backend')
+                    $calls[1].Arguments | Should -Be @('--update-extensions', '--profile', 'Work Space')
+                    ($options | ConvertTo-Json -Depth 5 -Compress) | Should -BeExactly $before
+                }
+
+                It 'accepts <Label> profile configuration' -ForEach @(
+                    @{ Label = 'a single string'; Profiles = 'Backend'; Count = 2 }
+                    @{ Label = 'an empty array'; Profiles = @(); Count = 1 }
+                ) {
+                    @(Update-AllPackages -Provider VSCode -ProviderOptions @{ VSCode = @{ Profiles = $Profiles } } -WhatIf) | Should -HaveCount $Count
+                }
+
+                It 'skips a missing CLI without invoking provider commands' {
+                    Mock Get-Command { } -ParameterFilter { $Name -eq 'code' }
+                    $result = Update-AllPackages -Provider VSCode -StopOnFailure -Confirm:$false
+                    $result.Status | Should -BeExactly Skipped
+                    $result.Reason | Should -Match "'code'.*PATH"
+                    Should -Invoke Invoke-VSCodeTestNative -ModuleName Shmuelie.Utilities -Times 0 -Exactly
+                }
+
+                It 'skips a missing optional module without importing or running commands' {
+                    Mock Get-Module { } -ParameterFilter { $Name -eq 'Shmuelie.Utilities' }
+                    $result = Update-AllPackages -Provider VSCode -Confirm:$false
+                    $result.Status | Should -BeExactly Skipped
+                    $result.Reason | Should -Match "required module 'Shmuelie.Utilities'"
+                    Should -Invoke Import-Module -Times 0 -Exactly
+                    Should -Invoke Invoke-VSCodeTestNative -ModuleName Shmuelie.Utilities -Times 0 -Exactly
+                }
+
+                It 'skips a missing canonical <Command> command' -ForEach @(
+                    @{ Command = 'Shmuelie.Utilities\Get-VsCodeExtension' }
+                    @{ Command = 'Shmuelie.Utilities\Update-VsCodeExtension' }
+                ) {
+                    $script:VSCodeMissingCommand = $Command
+                    Mock Get-Command { } -ParameterFilter { $Name -eq $script:VSCodeMissingCommand }
+                    $result = Update-AllPackages -Provider VSCode -Confirm:$false
+                    $result.Status | Should -BeExactly Skipped
+                    $result.Reason | Should -Match ([regex]::Escape($Command))
+                }
+
+                It 'skips explicit profiles when the installed Utilities lacks profile support' {
+                    Mock Get-Command { [pscustomobject]@{ Parameters = @{} } } -ParameterFilter { $Name -eq 'Shmuelie.Utilities\Update-VsCodeExtension' }
+                    $result = Update-AllPackages -Provider VSCode -ProviderOptions @{ VSCode = @{ Profiles = 'Backend' } } -Confirm:$false
+                    $result.Status | Should -BeExactly Skipped
+                    $result.Reason | Should -Match 'Update Shmuelie.Utilities'
+                    Should -Invoke Invoke-VSCodeTestNative -ModuleName Shmuelie.Utilities -Times 0 -Exactly
+                }
+
+                It 'discovers all profiles under WhatIf without invoking updates' {
+                    $results = @(Update-AllPackages -Provider VSCode -ProviderOptions @{ VSCode = @{ Profiles = 'Backend' } } -WhatIf)
+                    $results.Status | Should -Be @('Planned', 'Planned')
+                    foreach ($result in $results) { $result.PreviousVersion | Should -BeNullOrEmpty }
+                    $calls = $script:VSCodeCalls
+                    $calls.Operation | Should -Be @('Get', 'Get')
+                }
+
+                It 'passes canonical-only confirmation after core approval' {
+                    Mock 'Shmuelie.Utilities\Update-VsCodeExtension' { $global:LASTEXITCODE = 0 }
+                    (Update-AllPackages -Provider VSCode -Confirm:$false).Status | Should -BeExactly Updated
+                    Should -Invoke 'Shmuelie.Utilities\Update-VsCodeExtension' -Times 1 -Exactly -ParameterFilter { $Confirm -eq $false }
+                }
+
+                It 'keeps unknown aggregate versions null even with an empty inventory' {
+                    $script:VSCodeInventoryMode = 'Empty'
+                    $result = Update-AllPackages -Provider VSCode -Confirm:$false
+                    $result.Status | Should -BeExactly Updated
+                    $result.PreviousExtensions | Should -HaveCount 0
+                    $result.ResultingExtensions | Should -HaveCount 0
+                    $result.PreviousVersion | Should -BeNullOrEmpty
+                    $result.ResultingVersion | Should -BeNullOrEmpty
+                }
+
+                It 'does not fabricate missing extension versions' {
+                    Mock 'Shmuelie.Utilities\Get-VsCodeExtension' {
+                        $global:LASTEXITCODE = 0
+                        [pscustomobject]@{ FullId = 'publisher.unknown'; Version = $null }
+                    }
+                    $result = Update-AllPackages -Provider VSCode -Confirm:$false
+                    $result.PreviousExtensions[0].Version | Should -BeNullOrEmpty
+                    $result.ResultingExtensions[0].Version | Should -BeNullOrEmpty
+                }
+
+                It 'fails missing native discovery evidence instead of assuming an empty update set' {
+                    $script:VSCodeNoExitCode = $true
+                    $global:LASTEXITCODE = 0
+                    $result = Update-AllPackages -Provider VSCode -WhatIf
+                    $result.Status | Should -BeExactly Failed
+                    $result.Reason | Should -Match 'outcome is unknown'
+                    $script:VSCodeCalls.Operation | Should -Be @('Get')
+                }
+
+                It 'surfaces observation failure after bulk completion and stops before the next update' {
+                    Mock 'Shmuelie.Utilities\Get-VsCodeExtension' {
+                        $global:LASTEXITCODE = 0
+                        if (@($script:VSCodeCalls | Where-Object Operation -EQ Update).Count) {
+                            throw 'Cannot observe updated extensions.'
+                        }
+                        [pscustomobject]@{ FullId = 'publisher.one'; Version = '1.0.0' }
+                    }
+                    $results = @(Update-AllPackages -Provider VSCode -ProviderOptions @{ VSCode = @{ Profiles = 'Backend' } } -StopOnFailure -Confirm:$false)
+                    $results | Should -HaveCount 1
+                    $results[0].Status | Should -BeExactly Failed
+                    $results[0].Target | Should -BeExactly 'extensions (default profile)'
+                    $results[0].Error.Exception.Message | Should -Match 'Cannot observe updated extensions'
+                    $script:VSCodeCalls.Operation | Should -Be @('Update')
+                }
+
+                It 'fails discovery on nonzero exit before any profile updates' {
+                    $script:VSCodeExitCode = 9
+                    $script:VSCodeFailureOperation = 'Get'
+                    $script:VSCodeFailureProfile = 'Backend'
+                    $result = Update-AllPackages -Provider VSCode -ProviderOptions @{ VSCode = @{ Profiles = 'Backend' } } -Confirm:$false
+                    $result.Status | Should -BeExactly Failed
+                    $result.Reason | Should -Match 'native exit code 9'
+                    $calls = $script:VSCodeCalls
+                    $calls.Operation | Should -Be @('Get', 'Get')
+                }
+
+                It 'reports bulk failure and honors StopOnFailure=<Stop> between profiles' -ForEach @(
+                    @{ Stop = $false; ExpectedStatus = @('Failed', 'Updated'); Updates = 2 }
+                    @{ Stop = $true; ExpectedStatus = @('Failed'); Updates = 1 }
+                ) {
+                    $script:VSCodeExitCode = 17
+                    $script:VSCodeFailureProfile = ''
+                    $results = @(Update-AllPackages -Provider VSCode -ProviderOptions @{ VSCode = @{ Profiles = 'Backend' } } -StopOnFailure:$Stop -Confirm:$false -ErrorAction Stop)
+                    $results.Status | Should -Be $ExpectedStatus
+                    $results[0].Reason | Should -Match 'native exit code 17'
+                    $results[0].Error | Should -BeOfType ([System.Management.Automation.ErrorRecord])
+                    $calls = @($script:VSCodeCalls | Where-Object Operation -EQ Update)
+                    $calls | Should -HaveCount $Updates
+                }
+
+                It 'fails an empty canonical update without fresh native evidence' {
+                    Mock 'Shmuelie.Utilities\Update-VsCodeExtension' { }
+                    $global:LASTEXITCODE = 0
+                    $result = Update-AllPackages -Provider VSCode -Confirm:$false
+                    $result.Status | Should -BeExactly Failed
+                    $result.Reason | Should -Match 'outcome is unknown'
+                }
+
+                It 'preserves a canonical command error rather than emitting success' {
+                    Mock 'Shmuelie.Utilities\Update-VsCodeExtension' { Write-Error 'Update denied.' }
+                    $result = Update-AllPackages -Provider VSCode -Confirm:$false
+                    $result.Status | Should -BeExactly Failed
+                    $result.Error.Exception.Message | Should -Match 'Update denied'
+                }
+
+                It 'validates unsafe or invalid profiles before any CLI discovery: <Label>' -ForEach @(
+                    @{ Label = 'null'; Profiles = $null }
+                    @{ Label = 'number'; Profiles = 2 }
+                    @{ Label = 'non-string member'; Profiles = @('Backend', 2) }
+                    @{ Label = 'empty member'; Profiles = @('Backend', '') }
+                    @{ Label = 'whitespace'; Profiles = ' ' }
+                    @{ Label = 'ampersand'; Profiles = 'Work&echo-bad' }
+                    @{ Label = 'pipe'; Profiles = 'Work|echo-bad' }
+                    @{ Label = 'redirect'; Profiles = 'Work>bad' }
+                    @{ Label = 'input redirect'; Profiles = 'Work<bad' }
+                    @{ Label = 'caret'; Profiles = 'Work^bad' }
+                    @{ Label = 'backtick'; Profiles = 'Work`bad' }
+                    @{ Label = 'expansion'; Profiles = '%PATH%' }
+                    @{ Label = 'delayed expansion'; Profiles = '!PATH!' }
+                    @{ Label = 'quotes'; Profiles = 'Work"bad' }
+                    @{ Label = 'parenthesis'; Profiles = 'Work(bad)' }
+                    @{ Label = 'newline'; Profiles = "Work`nbad" }
+                    @{ Label = 'option'; Profiles = '--install-extension' }
+                ) {
+                    $result = Update-AllPackages -Provider VSCode -ProviderOptions @{ VSCode = @{ Profiles = $Profiles } } -WhatIf
+                    $result.Status | Should -BeExactly Failed
+                    Should -Invoke Invoke-VSCodeTestNative -ModuleName Shmuelie.Utilities -Times 0 -Exactly
+                }
+
+                It 'preserves direct canonical WhatIf for explicit profiles' {
+                    Shmuelie.Utilities\Update-VsCodeExtension -Profile 'Backend' -WhatIf
+                    Should -Invoke Invoke-VSCodeTestNative -ModuleName Shmuelie.Utilities -Times 0 -Exactly
+                }
+
+                It 'rejects unsafe profile arguments in the canonical helper too' {
+                    { Shmuelie.Utilities\Update-VsCodeExtension -Profile 'Work&echo-bad' -Confirm:$false } | Should -Throw '*Unsafe Profile*'
+                    Should -Invoke Invoke-VSCodeTestNative -ModuleName Shmuelie.Utilities -Times 0 -Exactly
+                }
+            }
+        }
+
 Describe 'Update-AllPackages native confirmation' {
     It '<Answer> returns <Status> and invokes update <Count> times' -ForEach @(
         @{ Answer = 'n'; Status = 'Skipped'; Count = 0 }

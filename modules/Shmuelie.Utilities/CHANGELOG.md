@@ -6,6 +6,10 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+### Added
+- `Update-VsCodeExtension -Profile` updates extensions in a named profile while
+  preserving bulk CLI behavior, argument safety, and `ShouldProcess`.
+
 ## [0.5.0] - 2026-09-08
 
 ### Changed

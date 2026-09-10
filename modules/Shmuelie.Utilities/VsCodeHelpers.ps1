@@ -455,14 +455,32 @@ function Update-VsCodeExtension {
     .DESCRIPTION
         Wraps 'code --update-extensions'. VS Code's CLI only supports bulk update,
         not per-extension update.
+    .PARAMETER Profile
+        Update extensions in a specific VS Code profile. Omit to use the default
+        profile. Profile names must not contain cmd.exe metacharacters.
     .EXAMPLE
         Update-VsCodeExtension
         Updates all installed extensions.
+    .EXAMPLE
+        Update-VsCodeExtension -Profile 'Backend'
+        Updates all extensions in the Backend profile.
     #>
     [CmdletBinding(SupportsShouldProcess)]
-    param()
+    param(
+        [ValidateNotNullOrEmpty()]
+        [string]$Profile
+    )
+    if ($PSBoundParameters.ContainsKey('Profile')) {
+        Assert-VsCodeShimArgument -Value $Profile -ParameterName 'Profile'
+        if ([string]::IsNullOrWhiteSpace($Profile) -or $Profile.StartsWith('-') -or $Profile -match '[\x00-\x1f\x7f]') {
+            throw [System.ArgumentException]::new('Unsafe Profile value. Use a nonempty profile name without leading hyphens or control characters.', 'Profile')
+        }
+    }
     $codeExe = (Get-Command code -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
-    if ($PSCmdlet.ShouldProcess('all extensions', 'code --update-extensions')) {
-        & $codeExe '--update-extensions' 2>&1 | ForEach-Object { Write-Verbose $_ }
+    $target = if ($Profile) { "all extensions in profile '$Profile'" } else { 'all extensions' }
+    if ($PSCmdlet.ShouldProcess($target, 'code --update-extensions')) {
+        $updateArgs = @('--update-extensions')
+        if ($Profile) { $updateArgs += '--profile', $Profile }
+        & $codeExe @updateArgs 2>&1 | ForEach-Object { Write-Verbose $_ }
     }
 }

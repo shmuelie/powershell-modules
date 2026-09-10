@@ -6,6 +6,9 @@ under [Unreleased]; versions change only when a release is cut.
 ## [Unreleased]
 
 ### Added
+- VSCode provider using the optional Utilities extension helpers and native CLI:
+  default and configured named profiles, per-profile bulk results and observed
+  extension inventories, read-only previews, and explicit native failures.
 - Optional Uv provider for outdated top-level system Python packages and
   individually approved installed-tool upgrades, with scope selection,
   lazy Utilities commands, distinct package/tool targets, observed versions,
