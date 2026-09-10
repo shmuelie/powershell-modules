@@ -19,6 +19,7 @@ Import-Module Shmuelie.Git
 | `Repair-RepositoryLayout` | Conform existing clones and worktrees to that layout |
 | `Sync-GitRemote` | Fetch all remotes for the current or `-Path` repository with pruning, returning typed results; picks the right `gh` account per host (github.com/GHE) when several are signed in |
 | `Get-Worktrees` | List worktrees for the current or `-Path` repository |
+| `Get-Branch` | List local and cached remote-tracking refs as `GitBranch` objects, with current branch, commit, upstream, ahead/behind counts and symbolic target (`-Local` / `-Remote` filter the results; never fetches) |
 | `Get-CurrentWorktree` / `Get-RootWorktree` | Resolve the worktree for the current directory/`-Path` or the repository root |
 | `Get-WorktreePath` | Compute the path a branch's worktree would use for the current or `-Path` repository |
 | `New-Worktree` | Create a branch from the current or `-Path` repository and check it out to a worktree, optionally at destination `-WorktreePath` |
@@ -63,8 +64,27 @@ Update-AllWorktrees -Organization shmuelie,microsoft -Exclude 'archive/*'
 Update-AllWorktrees -Organization shmuelie -ChangedOnly
 Find-StaleBranch | Remove-Worktree
 Get-GitStatusSummary
+Get-Branch -Path ../project -Local
 Get-GitTag -Name 'v1.*', 'stable' -Path ../project
 ```
+
+`Get-Branch` accepts a literal `-Path` (aliases `-RepositoryPath` / `-RepoPath`),
+pipeline paths, or objects with any of those properties. It also accepts bare
+repositories and never changes location. By default it includes both local and
+remote-tracking branches; `-Local -Remote` explicitly selects both.
+
+Each `GitBranch` has `Branch`, `RefName`, `Current`, `Commit`, `Upstream`,
+`AheadBy`, `BehindBy`, `UpstreamGone`, `SymbolicTarget`, `IsRemote`, `Subject`
+and `RepositoryPath`. `Branch` omits `refs/heads/` or `refs/remotes/`, while
+`RefName`, `Upstream` and `SymbolicTarget` use full ref names to avoid ambiguity.
+`RepositoryPath` is the resolved input directory, including when it is a
+subdirectory or linked worktree. Absent upstreams and symbolic targets are null.
+Counts are 64-bit integers relative to locally available upstream history, or
+null when no upstream exists; `UpstreamGone` identifies a configured but missing
+upstream. A detached HEAD marks no branch current, and an unborn branch has no
+ref to list. Remote symbolic refs such as `origin/HEAD` are included.
+Implicit partial-clone fetches are disabled in child git processes; unavailable
+promised objects surface as git errors rather than initiating network access.
 
 `Get-GitTag` returns `GitTag` objects with `Name`, `Reference`, `ObjectId`,
 `ObjectType`, `IsAnnotated`, `TargetObjectId`, `TargetObjectType`, `TargetCommit`,
