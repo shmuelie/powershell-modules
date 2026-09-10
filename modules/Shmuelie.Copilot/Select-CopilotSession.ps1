@@ -4,6 +4,7 @@ function Invoke-CopilotSessionPicker {
         [object[]]$Sessions
     )
 
+    Assert-CopilotSessionPickerInteractive
     $choices = @($Sessions | ForEach-Object {
         [PSCustomObject]@{
             Id         = $_.Id
@@ -43,7 +44,7 @@ function Invoke-CopilotSessionPicker {
 
     do {
         Write-Host "Select session [1-$($choices.Count)/Q]: " -NoNewline -ForegroundColor Yellow
-        $selection = Read-Host
+        $selection = Read-Host -ErrorAction Stop
         if ($selection -in @('Q', 'q')) { return $null }
         $number = $selection -as [int]
     } while ($null -eq $number -or $number -lt 1 -or $number -gt $choices.Count)
@@ -84,6 +85,20 @@ function Select-CopilotSession {
         Resume the chosen session from the current directory instead of changing
         to the session's recorded Cwd.
 
+    .PARAMETER SessionSelector
+        Optional scriptblock replacing the picker when multiple sessions match.
+        Receives one object[] of CopilotSession candidates with Id, Name, Summary,
+        Branch, UpdatedAt, and Cwd. Return one candidate or $null/no output to
+        cancel without launching. Only a candidate's exact Id is accepted;
+        returned metadata changes are ignored. Multiple objects, other output,
+        errors, and noncandidate results terminate without launching or opening
+        a fallback picker. Use Write-Host or Write-Verbose for diagnostics.
+        A single match still skips selection. No matches retain the existing
+        error, and -WhatIf never invokes a selector. Custom selectors work without
+        an interactive console and are responsible for their own UI requirements.
+        The default picker requires interactive input; unavailable input or host
+        prompt errors terminate instead of choosing a session automatically.
+
     .PARAMETER Prompt
         Optional prompt to execute in autopilot mode within the resumed session.
 
@@ -101,6 +116,13 @@ function Select-CopilotSession {
     .EXAMPLE
         Select-CopilotSession -Id 'abc-*' -WhatIf
         # Shows which matching session would be resumed without launching Copilot.
+
+    .EXAMPLE
+        Select-CopilotSession -SessionSelector {
+            param([object[]]$Sessions)
+            $Sessions | Sort-Object UpdatedAt -Descending | Select-Object -First 1
+        }
+        # A portable selector; returning $null instead cancels the resume.
     #>
     [CmdletBinding(SupportsShouldProcess)]
     param(
@@ -120,6 +142,9 @@ function Select-CopilotSession {
         [int]$First,
 
         [switch]$StayInDirectory,
+
+        [ValidateNotNull()]
+        [scriptblock]$SessionSelector,
 
         [string]$Prompt,
 
@@ -158,7 +183,11 @@ function Select-CopilotSession {
             return
         }
 
-        Invoke-CopilotSessionPicker -Sessions $sessions
+        if ($SessionSelector) {
+            Invoke-CopilotSessionSelector -Sessions $sessions -SessionSelector $SessionSelector
+        } else {
+            Invoke-CopilotSessionPicker -Sessions $sessions
+        }
     }
 
     if ($null -eq $session) {

@@ -6,6 +6,17 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+### Added
+- `Start-Copilot`, `Get-CopilotLaunchPlan`, and `Select-CopilotSession` accept
+  `-SessionSelector` callbacks over typed session candidates without a UI
+  dependency. Selection preserves existing resume heuristics and launch flags;
+  null/new-session/cancellation behavior and invalid-result errors are explicit.
+
+### Changed
+- Built-in session pickers report unavailable interactive input or host prompt
+  errors instead of retrying indefinitely. The existing numeric launcher picker
+  and grid-first `Select-CopilotSession` picker remain the defaults.
+
 ## [0.3.2] - 2026-09-08
 
 ### Fixed
