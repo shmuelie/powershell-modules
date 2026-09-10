@@ -13,6 +13,17 @@ Versions change only when a release is cut; unreleased work stays under
   conflict resolution, leaving the stash available after apply failures. Piped
   stash objects require an explicit selector rather than silently ignoring their
   object identity and popping the newest entry.
+- Added `Save-GitStash` for `git stash push` with `-KeepIndex`,
+  `-IncludeUntracked`, `-All`, literal `-Message` arguments and pipeline repository
+  paths. Honors `-WhatIf`/`-Confirm` and returns the stable stash commit ID only
+  when a successful push changes `refs/stash`; no legacy command or alias is exported.
+- `Set-Config` sets a literal local, global or system git configuration value
+  through the shared native runner, preserving empty strings, quotes and leading
+  dashes. Supports repository path input, `-WhatIf` and `-Confirm`, reports git
+  errors, and permits global/system configuration outside a repository.
+- Added `Remove-Branch` for explicitly named local or remote branch deletion,
+  with high-impact confirmation, `-WhatIf`, local-only `-Force`, validated refs,
+  and explicit configured remote selection (`-RemoteName`, default `origin`).
 - Added `Set-Branch` to switch local branches, create at HEAD with `-CreateNew`,
   or create a local branch with a remote upstream using `-Track`. Supports
   repository paths, `-WhatIf`/`-Confirm`, and explicit `-Force` to discard local

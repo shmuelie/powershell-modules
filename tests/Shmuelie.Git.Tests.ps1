@@ -48,7 +48,7 @@ BeforeAll {
             [Parameter(Mandatory)][string]$Path,
             [switch]$NoCommit
         )
-        New-Item -ItemType Directory -Path $Path -Force | Out-Null
+        New-Item -ItemType Directory -Path $Path -Force -ErrorAction Stop | Out-Null
         Invoke-Git @('-C', $Path, '-c', 'init.templateDir=', 'init', '-b', 'main', '--quiet')
         Set-TestRepoConfig $Path
         if (-not $NoCommit) {
@@ -475,6 +475,1234 @@ Restore-GitStash -Confirm
             $null = New-Item -ItemType Directory -Path $bare -ErrorAction Stop
             Invoke-RestoreTestGit $bare @('-c', 'init.templateDir=', 'init', '--bare', '--quiet') -Initialize
             { Restore-GitStash -Path $bare -Confirm:$false -ErrorAction Stop } | Should -Throw
+        }
+    }
+}
+
+Describe 'Save-GitStash' {
+    BeforeAll {
+        $stashTestRoot = (New-Item -ItemType Directory -Path (
+            Join-Path $TestDrive "stash-$([guid]::NewGuid().ToString('N').Substring(0, 8))"
+        ) -ErrorAction Stop).FullName
+        $stashEnvironment = @{}
+        foreach ($key in @(
+            'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_SYSTEM', 'GIT_CONFIG_NOSYSTEM',
+            'GIT_CONFIG_COUNT', 'GIT_CONFIG_PARAMETERS', 'GIT_DIR', 'GIT_WORK_TREE',
+            'GIT_COMMON_DIR', 'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY',
+            'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_AUTHOR_DATE', 'GIT_COMMITTER_DATE',
+            'GIT_CEILING_DIRECTORIES'
+        )) {
+            $stashEnvironment[$key] = [Environment]::GetEnvironmentVariable($key, 'Process')
+            Remove-Item "Env:$key" -ErrorAction Ignore
+        }
+        $env:GIT_CONFIG_GLOBAL = Join-Path $stashTestRoot 'no-global-config'
+        $env:GIT_CONFIG_SYSTEM = Join-Path $stashTestRoot 'no-system-config'
+        $env:GIT_CONFIG_NOSYSTEM = '1'
+        $env:GIT_CONFIG_COUNT = '0'
+        $env:GIT_CEILING_DIRECTORIES = $TestDrive
+
+        if (-not ('GitStashConfirmationHost' -as [type])) {
+            Add-Type -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.Collections.ObjectModel;
+using System.Globalization;
+using System.Management.Automation;
+using System.Management.Automation.Host;
+using System.Security;
+
+public sealed class GitStashConfirmationHost : PSHost
+{
+    public readonly GitStashConfirmationUI PromptUI = new GitStashConfirmationUI();
+    public override Guid InstanceId { get; } = Guid.NewGuid();
+    public override string Name => "GitStashConfirmationHost";
+    public override Version Version => new Version(1, 0);
+    public override PSHostUserInterface UI => PromptUI;
+    public override CultureInfo CurrentCulture => CultureInfo.InvariantCulture;
+    public override CultureInfo CurrentUICulture => CultureInfo.InvariantCulture;
+    public override void SetShouldExit(int exitCode) { }
+    public override void EnterNestedPrompt() => throw new NotSupportedException();
+    public override void ExitNestedPrompt() => throw new NotSupportedException();
+    public override void NotifyBeginApplication() { }
+    public override void NotifyEndApplication() { }
+}
+
+public sealed class GitStashConfirmationUI : PSHostUserInterface
+{
+    public int PromptCount;
+    public string TargetMessage;
+    public override PSHostRawUserInterface RawUI => null;
+    public override int PromptForChoice(string caption, string message, Collection<ChoiceDescription> choices, int defaultChoice)
+    {
+        PromptCount++;
+        TargetMessage = message;
+        for (int i = 0; i < choices.Count; i++)
+            if (choices[i].Label == "&No") return i;
+        throw new InvalidOperationException("Expected a No confirmation choice.");
+    }
+    public override string ReadLine() => throw new NotSupportedException();
+    public override SecureString ReadLineAsSecureString() => throw new NotSupportedException();
+    public override Dictionary<string, PSObject> Prompt(string caption, string message, Collection<FieldDescription> descriptions) => throw new NotSupportedException();
+    public override PSCredential PromptForCredential(string caption, string message, string userName, string targetName) => throw new NotSupportedException();
+    public override PSCredential PromptForCredential(string caption, string message, string userName, string targetName, PSCredentialTypes types, PSCredentialUIOptions options) => throw new NotSupportedException();
+    public override void Write(string value) { }
+    public override void Write(ConsoleColor foreground, ConsoleColor background, string value) { }
+    public override void WriteLine(string value) { }
+    public override void WriteErrorLine(string value) { }
+    public override void WriteDebugLine(string value) { }
+    public override void WriteVerboseLine(string value) { }
+    public override void WriteWarningLine(string value) { }
+    public override void WriteProgress(long sourceId, ProgressRecord record) { }
+}
+'@
+        }
+    }
+
+    BeforeEach {
+        $stashLocationPushed = $false
+        Push-Location -LiteralPath $stashTestRoot -ErrorAction Stop
+        $stashLocationPushed = $true
+        (Get-Location).ProviderPath | Should -BeExactly $stashTestRoot
+        $stashRepo = New-TestRepo -Path (Join-Path $stashTestRoot "repo $([guid]::NewGuid().ToString('N').Substring(0, 8))")
+        Set-Content -LiteralPath (Join-Path $stashRepo '.gitignore') -Value 'ignored.txt'
+        Invoke-Git @('-C', $stashRepo, 'add', '.gitignore')
+        Invoke-TestCommit -Path $stashRepo -Message 'ignore fixture'
+        Set-Content -LiteralPath (Join-Path $stashRepo 'README.md') -Value 'staged'
+        Invoke-Git @('-C', $stashRepo, 'add', 'README.md')
+        Set-Content -LiteralPath (Join-Path $stashRepo 'README.md') -Value 'unstaged'
+        Set-Content -LiteralPath (Join-Path $stashRepo 'loose.txt') -Value 'untracked'
+        Set-Content -LiteralPath (Join-Path $stashRepo 'ignored.txt') -Value 'ignored'
+    }
+
+    AfterEach {
+        if ($stashLocationPushed) { Pop-Location }
+    }
+
+    AfterAll {
+        foreach ($key in $stashEnvironment.Keys) {
+            if ($null -eq $stashEnvironment[$key]) {
+                Remove-Item "Env:$key" -ErrorAction Ignore
+            } else {
+                [Environment]::SetEnvironmentVariable($key, $stashEnvironment[$key], 'Process')
+            }
+        }
+        if ($stashTestRoot -and (Test-Path -LiteralPath $stashTestRoot)) {
+            (Split-Path $stashTestRoot -Parent) | Should -BeExactly $TestDrive
+            # Pester 5 shares TestDrive across Describes and its wildcard cleanup
+            # can leave literal bracket paths and read-only git objects behind.
+            Get-ChildItem -LiteralPath $stashTestRoot -Recurse -Force -File -ErrorAction Stop |
+                ForEach-Object { $_.IsReadOnly = $false }
+            Remove-Item -LiteralPath $stashTestRoot -Recurse -Force -ErrorAction Stop
+        }
+    }
+
+    It 'exports the approved command and documents its output and standard pipeline metadata' {
+        $module = Get-Module Shmuelie.Git
+        $command = Get-Command Save-GitStash -Module Shmuelie.Git
+        $module.ExportedFunctions.Keys | Should -Contain 'Save-GitStash'
+        $module.ExportedFunctions.Keys | Should -Not -Contain 'Backup-Changes'
+        $module.ExportedAliases.Count | Should -Be 0
+        $command.OutputType.Name | Should -Contain 'GitStash'
+        $command.Parameters.Keys | Should -Contain 'WhatIf'
+        $command.Parameters.Keys | Should -Contain 'Confirm'
+        $command.Parameters.Path.Aliases | Should -Be @('RepositoryPath', 'RepoPath')
+        $attribute = $command.Parameters.Path.Attributes |
+            Where-Object { $_ -is [System.Management.Automation.ParameterAttribute] }
+        $attribute.ValueFromPipeline | Should -BeTrue
+        $attribute.ValueFromPipelineByPropertyName | Should -BeTrue
+        (Get-Help Save-GitStash).Description.Text | Should -Not -BeNullOrEmpty
+    }
+
+    It 'saves <Mode> changes with KeepIndex=<Keep>, retaining every uncaptured file' -ForEach @(
+        @{ Mode = 'tracked'; Keep = $false; Flags = @{}; Extra = @() }
+        @{ Mode = 'tracked'; Keep = $true; Flags = @{ KeepIndex = $true }; Extra = @() }
+        @{ Mode = 'untracked'; Keep = $false; Flags = @{ IncludeUntracked = $true }; Extra = @('loose.txt') }
+        @{ Mode = 'untracked'; Keep = $true; Flags = @{ IncludeUntracked = $true; KeepIndex = $true }; Extra = @('loose.txt') }
+        @{ Mode = 'all'; Keep = $false; Flags = @{ All = $true }; Extra = @('ignored.txt', 'loose.txt') }
+        @{ Mode = 'all'; Keep = $true; Flags = @{ All = $true; KeepIndex = $true }; Extra = @('ignored.txt', 'loose.txt') }
+    ) {
+        $head = Invoke-Git @('-C', $stashRepo, 'rev-parse', 'HEAD')
+        $results = @(Save-GitStash -Path $stashRepo @Flags -Confirm:$false -ErrorAction Stop)
+        $results | Should -HaveCount 1
+        $stash = $results[0]
+        $stash.PSTypeNames[0] | Should -BeExactly 'GitStash'
+        @($stash.PSObject.Properties.Name) | Should -Be @('ObjectId', 'RepositoryPath', 'Subject')
+        $stash.RepositoryPath | Should -BeExactly $stashRepo
+        $stash.ObjectId | Should -Match '^(?:[0-9a-f]{40}|[0-9a-f]{64})$'
+        $stash.ObjectId | Should -BeExactly (Invoke-Git @('-C', $stashRepo, 'rev-parse', 'refs/stash'))
+        $stash.Subject | Should -BeExactly (Invoke-Git @('-C', $stashRepo, 'show', '-s', '--format=%s', $stash.ObjectId))
+        Invoke-Git @('-C', $stashRepo, 'show', "$($stash.ObjectId):README.md") | Should -BeExactly 'unstaged'
+        Invoke-Git @('-C', $stashRepo, 'show', "$($stash.ObjectId)^2:README.md") | Should -BeExactly 'staged'
+        Invoke-Git @('-C', $stashRepo, 'rev-parse', "$($stash.ObjectId)^1") | Should -BeExactly $head
+        Invoke-Git @('-C', $stashRepo, 'rev-parse', 'HEAD') | Should -BeExactly $head
+        Invoke-Git @('-C', $stashRepo, 'rev-list', '--count', '--walk-reflogs', 'refs/stash') | Should -Be '1'
+
+        $expected = if ($Keep) { 'staged' } else { 'initial' }
+        (Get-Content -LiteralPath (Join-Path $stashRepo 'README.md') -Raw).Trim() | Should -BeExactly $expected
+        Invoke-Git @('-C', $stashRepo, 'show', ':README.md') | Should -BeExactly $expected
+        @(Invoke-Git @('-C', $stashRepo, 'diff', '--name-only')) | Should -HaveCount 0
+        $stagedPaths = @(Invoke-Git @('-C', $stashRepo, 'diff', '--cached', '--name-only'))
+        if ($Keep) { $stagedPaths | Should -Be @('README.md') }
+        else { $stagedPaths | Should -HaveCount 0 }
+        foreach ($file in @('loose.txt', 'ignored.txt')) {
+            $filePath = Join-Path $stashRepo $file
+            if ($file -in $Extra) {
+                Test-Path -LiteralPath $filePath | Should -BeFalse
+                $value = if ($file -eq 'loose.txt') { 'untracked' } else { 'ignored' }
+                Invoke-Git @('-C', $stashRepo, 'show', "$($stash.ObjectId)^3:$file") | Should -BeExactly $value
+            } else {
+                $value = if ($file -eq 'loose.txt') { 'untracked' } else { 'ignored' }
+                (Get-Content -LiteralPath $filePath -Raw).Trim() | Should -BeExactly $value
+            }
+        }
+        $parents = (Invoke-Git @('-C', $stashRepo, 'rev-list', '--parents', '-n', '1', $stash.ObjectId)) -split ' '
+        $parents.Count | Should -Be $(if ($Extra.Count) { 4 } else { 3 })
+    }
+
+    It 'keeps a stable commit identity when later saves move the stack' {
+        $first = Save-GitStash -Path $stashRepo -Message first -Confirm:$false
+        Set-Content -LiteralPath (Join-Path $stashRepo 'README.md') -Value 'second change'
+        $second = Save-GitStash -Path $stashRepo -Message second -Confirm:$false
+        $first.ObjectId | Should -Not -Be $second.ObjectId
+        Invoke-Git @('-C', $stashRepo, 'rev-parse', 'stash@{1}') | Should -BeExactly $first.ObjectId
+        Invoke-Git @('-C', $stashRepo, 'show', "$($first.ObjectId):README.md") | Should -BeExactly 'unstaged'
+        Invoke-Git @('-C', $stashRepo, 'show', "$($second.ObjectId):README.md") | Should -BeExactly 'second change'
+    }
+
+    It 'passes the <Case> message literally rather than evaluating text or options' -ForEach @(
+        @{ Case = 'quoted and executable-looking'; Text = 'a "quote" and ''single'' & | ; $(throw "executed") <> ` %PATH% ! ^' }
+        @{ Case = 'option-looking'; Text = '--all --keep-index' }
+        @{ Case = 'padded'; Text = '  keep  spaces  ' }
+        @{ Case = 'multiline Unicode'; Text = "first $([char]0xe9)`n`nsecond`tline" }
+        @{ Case = 'trailing backslashes'; Text = 'path ends\\' }
+    ) {
+        $stash = Save-GitStash -Path $stashRepo -Message $Text -Confirm:$false -ErrorAction Stop
+        $stored = InModuleScope Shmuelie.Git -Parameters @{ Repo = $stashRepo; Oid = $stash.ObjectId } {
+            param($Repo, $Oid)
+            (Invoke-Git -Path $Repo -Arguments @('cat-file', 'commit', $Oid)).StandardOutput
+        }
+        ($stored -split "`n`n", 2)[1] | Should -BeExactly "On main: $Text"
+        Test-Path -LiteralPath (Join-Path $stashRepo 'loose.txt') | Should -BeTrue
+        Test-Path -LiteralPath (Join-Path $stashRepo 'ignored.txt') | Should -BeTrue
+        Invoke-Git @('-C', $stashRepo, 'show', ':README.md') | Should -BeExactly 'initial'
+    }
+
+    It 'uses the default git message for <Case>' -ForEach @(
+        @{ Case = 'null'; Text = $null }
+        @{ Case = 'empty text'; Text = '' }
+        @{ Case = 'whitespace'; Text = " `t`r`n " }
+    ) {
+        $stash = Save-GitStash -Path $stashRepo -Message $Text -Confirm:$false -ErrorAction Stop
+        $stash.Subject | Should -Match '^WIP on main: [0-9a-f]+ ignore fixture$'
+    }
+
+    It 'returns nothing when only uncaptured files remain and there is no existing stash' {
+        Invoke-Git @('-C', $stashRepo, 'restore', '--staged', '--worktree', '--', '.')
+        @(Save-GitStash -Path $stashRepo -Confirm:$false -ErrorAction Stop) | Should -HaveCount 0
+        @(Invoke-Git @('-C', $stashRepo, 'for-each-ref', '--format=%(objectname)', 'refs/stash')) | Should -HaveCount 0
+        Test-Path -LiteralPath (Join-Path $stashRepo 'loose.txt') | Should -BeTrue
+        Test-Path -LiteralPath (Join-Path $stashRepo 'ignored.txt') | Should -BeTrue
+    }
+
+    It 'never returns an old stash as if a no-op had created it' {
+        $stash = Save-GitStash -Path $stashRepo -All -Confirm:$false
+        @(Save-GitStash -Path $stashRepo -All -Confirm:$false -ErrorAction Stop) | Should -HaveCount 0
+        Invoke-Git @('-C', $stashRepo, 'rev-parse', 'refs/stash') | Should -BeExactly $stash.ObjectId
+        Invoke-Git @('-C', $stashRepo, 'rev-list', '--count', '--walk-reflogs', 'refs/stash') | Should -Be '1'
+    }
+
+    It 'can save only <Mode> files when tracked changes are absent' -ForEach @(
+        @{ Mode = 'untracked'; Flags = @{ IncludeUntracked = $true }; Files = @('loose.txt') }
+        @{ Mode = 'ignored'; Flags = @{ All = $true }; Files = @('ignored.txt') }
+    ) {
+        Invoke-Git @('-C', $stashRepo, 'restore', '--staged', '--worktree', '--', '.')
+        if ($Mode -eq 'ignored') { Remove-Item -LiteralPath (Join-Path $stashRepo 'loose.txt') }
+        $stash = Save-GitStash -Path $stashRepo @Flags -Confirm:$false -ErrorAction Stop
+        $stash.ObjectId | Should -Not -BeNullOrEmpty
+        Invoke-Git @('-C', $stashRepo, 'ls-tree', '-r', '--name-only', "$($stash.ObjectId)^3") | Should -Be $Files
+    }
+
+    It 'rejects conflicting inclusion switches and NUL messages before running git' {
+        InModuleScope Shmuelie.Git -Parameters @{ Repo = $stashRepo } {
+            param($Repo)
+            Mock Invoke-Git { throw 'Git must not run for invalid options.' }
+            { Save-GitStash -Path $Repo -All -IncludeUntracked -Confirm:$false } |
+                Should -Throw -ErrorId 'GitStashOptionsConflict,Save-GitStash' -ExpectedMessage '*either -All or -IncludeUntracked*'
+            { Save-GitStash -Path $Repo -Message "invalid`0message" -Confirm:$false } |
+                Should -Throw -ExpectedMessage '*NUL*'
+            Should -Invoke Invoke-Git -Times 0
+        }
+    }
+
+    It 'treats explicitly false switches as disabled' {
+        $stash = Save-GitStash -Path $stashRepo -All:$false -IncludeUntracked:$false -KeepIndex:$false -Confirm:$false
+        $stash.ObjectId | Should -Not -BeNullOrEmpty
+        Test-Path -LiteralPath (Join-Path $stashRepo 'loose.txt') | Should -BeTrue
+        Test-Path -LiteralPath (Join-Path $stashRepo 'ignored.txt') | Should -BeTrue
+        Invoke-Git @('-C', $stashRepo, 'show', ':README.md') | Should -BeExactly 'initial'
+    }
+
+    It 'does not change any stash, file or index when <Mode>' -ForEach @(
+        @{ Mode = 'WhatIf is set' }
+        @{ Mode = 'confirmation is declined' }
+    ) {
+        $beforeStatus = Invoke-Git @('-C', $stashRepo, 'status', '--porcelain=v1', '--ignored')
+        $indexPath = Join-Path (Get-TestGitDir $stashRepo) 'index'
+        $beforeIndex = (Get-FileHash -LiteralPath $indexPath).Hash
+        $beforeLocation = (Get-Location).ProviderPath
+        if ($Mode -eq 'WhatIf is set') {
+            @(Save-GitStash -Path $stashRepo -All -WhatIf -Confirm:$false -ErrorAction Stop) | Should -HaveCount 0
+        } else {
+            $hostStub = [GitStashConfirmationHost]::new()
+            $runspace = [runspacefactory]::CreateRunspace($hostStub)
+            $powershell = [powershell]::Create()
+            try {
+                $runspace.Open()
+                $powershell.Runspace = $runspace
+                $null = $powershell.AddScript({
+                    param($root, $path)
+                    $ErrorActionPreference = 'Stop'
+                    Import-Module (Join-Path $root 'modules' 'Shmuelie.Git' 'Shmuelie.Git.psd1')
+                    try { Save-GitStash -Path $path -All -Confirm }
+                    finally { Remove-Module Shmuelie.Git }
+                }.ToString()).AddArgument($repoRoot).AddArgument($stashRepo)
+                @($powershell.Invoke()) | Should -HaveCount 0
+                $powershell.HadErrors | Should -BeFalse -Because ($powershell.Streams.Error -join "`n")
+                $hostStub.PromptUI.PromptCount | Should -Be 1
+                $hostStub.PromptUI.TargetMessage | Should -BeLike "*$stashRepo*"
+                $hostStub.PromptUI.TargetMessage | Should -BeLike '*tracked, untracked and ignored*'
+            } finally {
+                $powershell.Dispose()
+                $runspace.Dispose()
+            }
+        }
+        (Get-FileHash -LiteralPath $indexPath).Hash | Should -BeExactly $beforeIndex
+        (Get-Location).ProviderPath | Should -BeExactly $beforeLocation
+        @(Invoke-Git @('-C', $stashRepo, 'for-each-ref', '--format=%(objectname)', 'refs/stash')) | Should -HaveCount 0
+        Invoke-Git @('-C', $stashRepo, 'status', '--porcelain=v1', '--ignored') | Should -Be $beforeStatus
+        (Get-Content -LiteralPath (Join-Path $stashRepo 'README.md') -Raw).Trim() | Should -BeExactly 'unstaged'
+        (Get-Content -LiteralPath (Join-Path $stashRepo 'loose.txt') -Raw).Trim() | Should -BeExactly 'untracked'
+        (Get-Content -LiteralPath (Join-Path $stashRepo 'ignored.txt') -Raw).Trim() | Should -BeExactly 'ignored'
+    }
+
+    It 'targets pipeline <Property> without changing the caller location or LASTEXITCODE' -ForEach @(
+        @{ Property = 'string' }
+        @{ Property = 'Path' }
+        @{ Property = 'RepositoryPath' }
+        @{ Property = 'RepoPath' }
+    ) {
+        $inputPath = if ($Property -eq 'string') { $stashRepo }
+            else { [PSCustomObject]@{ $Property = $stashRepo } }
+        Push-Location -LiteralPath $stashTestRoot -ErrorAction Stop
+        try {
+            $LASTEXITCODE = 37
+            $stash = $inputPath | Save-GitStash -Confirm:$false -ErrorAction Stop
+            $LASTEXITCODE | Should -Be 37
+            $stash.RepositoryPath | Should -BeExactly $stashRepo
+            (Get-Location).ProviderPath | Should -BeExactly $stashTestRoot
+        } finally {
+            Pop-Location
+        }
+    }
+
+    It 'resolves relative literal aliases and defaults to a subdirectory while stashing the entire tree' -ForEach @(
+        @{ Mode = 'RepositoryPath' }
+        @{ Mode = 'RepoPath' }
+        @{ Mode = 'current directory' }
+    ) {
+        $renamed = Join-Path $stashTestRoot "literal [stash] & ($Mode)"
+        Rename-Item -LiteralPath $stashRepo -NewName (Split-Path $renamed -Leaf) -ErrorAction Stop
+        $stashRepo = $renamed
+        $subdirectory = New-Item -ItemType Directory -Path (Join-Path $stashRepo 'subdirectory') -ErrorAction Stop
+        $location = if ($Mode -eq 'current directory') { $subdirectory.FullName } else { $stashTestRoot }
+        Push-Location -LiteralPath $location -ErrorAction Stop
+        try {
+            $parameters = @{ Confirm = $false; ErrorAction = 'Stop' }
+            if ($Mode -ne 'current directory') {
+                $parameters[$Mode] = Join-Path (Split-Path $stashRepo -Leaf) 'subdirectory'
+            }
+            $stash = Save-GitStash @parameters
+            $stash.RepositoryPath | Should -BeExactly $subdirectory.FullName
+            (Get-Location).ProviderPath | Should -BeExactly $location
+            Invoke-Git @('-C', $stashRepo, 'show', "$($stash.ObjectId):README.md") | Should -BeExactly 'unstaged'
+            Invoke-Git @('-C', $stashRepo, 'show', ':README.md') | Should -BeExactly 'initial'
+        } finally {
+            Pop-Location
+        }
+    }
+
+    It 'continues pipeline processing after a no-op repository' {
+        $clean = New-TestRepo -Path (Join-Path $stashTestRoot 'clean stash repo')
+        $results = @($clean, $stashRepo | Save-GitStash -Confirm:$false -ErrorAction Stop)
+        $results | Should -HaveCount 1
+        $results[0].RepositoryPath | Should -BeExactly $stashRepo
+    }
+
+    It 'supports linked worktrees without stashing changes from another worktree' {
+        $linked = Join-Path $stashTestRoot 'linked stash worktree'
+        Invoke-Git @('-C', $stashRepo, 'worktree', 'add', '--detach', '--quiet', $linked)
+        Set-Content -LiteralPath (Join-Path $linked 'README.md') -Value 'linked changes'
+        $stash = Save-GitStash -Path $linked -Confirm:$false -ErrorAction Stop
+        $stash.RepositoryPath | Should -BeExactly $linked
+        Invoke-Git @('-C', $linked, 'show', "$($stash.ObjectId):README.md") | Should -BeExactly 'linked changes'
+        (Get-Content -LiteralPath (Join-Path $linked 'README.md') -Raw).Trim() | Should -BeExactly 'initial'
+        (Get-Content -LiteralPath (Join-Path $stashRepo 'README.md') -Raw).Trim() | Should -BeExactly 'unstaged'
+        Invoke-Git @('-C', $stashRepo, 'show', ':README.md') | Should -BeExactly 'staged'
+    }
+
+    It 'leaves nested repository work untouched with <Mode>' -ForEach @(
+        @{ Mode = 'IncludeUntracked'; Flags = @{ IncludeUntracked = $true } }
+        @{ Mode = 'All'; Flags = @{ All = $true } }
+    ) {
+        $nested = New-TestRepo -Path (Join-Path $stashRepo 'nested repo')
+        Set-Content -LiteralPath (Join-Path $nested 'README.md') -Value 'nested work'
+        $stash = Save-GitStash -Path $stashRepo @Flags -Confirm:$false -ErrorAction Stop
+        $stash.ObjectId | Should -Not -BeNullOrEmpty
+        (Get-Content -LiteralPath (Join-Path $nested 'README.md') -Raw).Trim() | Should -BeExactly 'nested work'
+        @(Invoke-Git @('-C', $nested, 'for-each-ref', '--format=%(objectname)', 'refs/stash')) | Should -HaveCount 0
+        @(Invoke-Git @('-C', $stashRepo, 'ls-tree', '-r', '--name-only', "$($stash.ObjectId)^3")) |
+            Should -Not -Contain 'nested repo/README.md'
+    }
+
+    It 'reports native lock failures without emitting success or altering the working tree' {
+        $beforeLocation = (Get-Location).ProviderPath
+        $indexPath = Join-Path (Get-TestGitDir $stashRepo) 'index'
+        $beforeIndex = (Get-FileHash -LiteralPath $indexPath).Hash
+        Set-Content -LiteralPath "$indexPath.lock" -Value 'held by test'
+        @(Save-GitStash -Path $stashRepo -All -Confirm:$false -ErrorAction SilentlyContinue -ErrorVariable failures) |
+            Should -HaveCount 0
+        $failures | Should -HaveCount 1
+        $failures[0].FullyQualifiedErrorId | Should -Match '^GitCommandFailed'
+        $failures[0].TargetObject.ExitCode | Should -Not -Be 0
+        $failures[0].TargetObject.RepositoryPath | Should -BeExactly $stashRepo
+        { Save-GitStash -Path $stashRepo -Confirm:$false -ErrorAction Stop } | Should -Throw -ExpectedMessage '*git failed*'
+        (Get-FileHash -LiteralPath $indexPath).Hash | Should -BeExactly $beforeIndex
+        (Get-Location).ProviderPath | Should -BeExactly $beforeLocation
+        (Get-Content -LiteralPath (Join-Path $stashRepo 'README.md') -Raw).Trim() | Should -BeExactly 'unstaged'
+        Test-Path -LiteralPath (Join-Path $stashRepo 'loose.txt') | Should -BeTrue
+        Test-Path -LiteralPath (Join-Path $stashRepo 'ignored.txt') | Should -BeTrue
+        @(Invoke-Git @('-C', $stashRepo, 'for-each-ref', '--format=%(objectname)', 'refs/stash')) | Should -HaveCount 0
+    }
+
+    It 'rejects missing paths, nonrepositories, files, bare repositories and unborn histories' {
+        { Save-GitStash -Path (Join-Path $stashTestRoot 'missing') -Confirm:$false -ErrorAction Stop } |
+            Should -Throw -ExpectedMessage '*repository path not found*'
+        { Save-GitStash -Path $stashTestRoot -Confirm:$false -ErrorAction Stop } |
+            Should -Throw -ExpectedMessage '*not inside a git working tree*'
+        { Save-GitStash -Path (Join-Path $stashRepo 'README.md') -Confirm:$false -ErrorAction Stop } |
+            Should -Throw -ExpectedMessage '*must be a FileSystem directory*'
+        $bare = Join-Path $stashTestRoot 'bare stash.git'
+        Invoke-Git @('init', '--bare', '--quiet', $bare)
+        { Save-GitStash -Path $bare -Confirm:$false -ErrorAction Stop } |
+            Should -Throw -ExpectedMessage '*not inside a git working tree*'
+        $unborn = New-TestRepo -Path (Join-Path $stashTestRoot 'unborn stash') -NoCommit
+        { Save-GitStash -Path $unborn -Confirm:$false -ErrorAction Stop } |
+            Should -Throw -ExpectedMessage '*git failed*'
+    }
+
+    It 'surfaces reference-read failures <When> without returning a stash' -ForEach @(
+        @{ When = 'before push'; FailAt = 1; Pushes = 0 }
+        @{ When = 'after push'; FailAt = 2; Pushes = 1 }
+    ) {
+        InModuleScope Shmuelie.Git -Parameters @{ Repo = $stashRepo; FailAt = $FailAt; Pushes = $Pushes } {
+            param($Repo, $FailAt, $Pushes)
+            $script:stashRefReads = 0
+            Mock Resolve-GitRepositoryPath { $Repo }
+            Mock Invoke-GitProcess {
+                if ($Arguments -contains 'for-each-ref') {
+                    $script:stashRefReads++
+                    if ($script:stashRefReads -eq $FailAt) {
+                        return [PSCustomObject]@{ ExitCode = 128; StandardOutput = ''; StandardError = 'ref read failed'; Output = @() }
+                    }
+                }
+                [PSCustomObject]@{ ExitCode = 0; StandardOutput = ''; StandardError = ''; Output = @() }
+            }
+            @(Save-GitStash -Path $Repo -Confirm:$false -ErrorAction SilentlyContinue -ErrorVariable failures) |
+                Should -HaveCount 0
+            $failures | Should -HaveCount 1
+            $failures[0].FullyQualifiedErrorId | Should -Match '^GitCommandFailed'
+            $failures[0].Exception.Message | Should -BeLike '*ref read failed*'
+            Should -Invoke Invoke-GitProcess -Times $Pushes -ParameterFilter { $Arguments -contains 'push' }
+        }
+    }
+}
+
+Describe 'Set-Config' {
+    BeforeAll {
+        function Read-TestConfig {
+            param([string]$Path, [string]$Location = 'local', [string]$Property = 'example.value')
+            InModuleScope Shmuelie.Git -Parameters @{ Path = $Path; Location = $Location; Property = $Property } {
+                param($Path, $Location, $Property)
+                $result = Invoke-GitProcess -Arguments @('-C', $Path, 'config', "--$Location", '--null', '--get-all', '--', $Property)
+                if ($result.ExitCode -ne 0) { throw $result.StandardError }
+                $result.StandardOutput
+            }
+        }
+
+        if (-not ('SetConfigConfirmationHost' -as [type])) {
+            Add-Type -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.Collections.ObjectModel;
+using System.Globalization;
+using System.Management.Automation;
+using System.Management.Automation.Host;
+using System.Security;
+
+public sealed class SetConfigConfirmationHost : PSHost
+{
+    public readonly SetConfigConfirmationUI PromptUI = new SetConfigConfirmationUI();
+    public override Guid InstanceId { get; } = Guid.NewGuid();
+    public override string Name => "SetConfigConfirmationHost";
+    public override Version Version => new Version(1, 0);
+    public override PSHostUserInterface UI => PromptUI;
+    public override CultureInfo CurrentCulture => CultureInfo.InvariantCulture;
+    public override CultureInfo CurrentUICulture => CultureInfo.InvariantCulture;
+    public override void SetShouldExit(int exitCode) { }
+    public override void EnterNestedPrompt() => throw new NotSupportedException();
+    public override void ExitNestedPrompt() => throw new NotSupportedException();
+    public override void NotifyBeginApplication() { }
+    public override void NotifyEndApplication() { }
+}
+
+public sealed class SetConfigConfirmationUI : PSHostUserInterface
+{
+    public int Choice;
+    public int PromptCount;
+    public override PSHostRawUserInterface RawUI => null;
+    public override int PromptForChoice(string caption, string message, Collection<ChoiceDescription> choices, int defaultChoice)
+    {
+        PromptCount++;
+        return Choice;
+    }
+    public override string ReadLine() => throw new NotSupportedException();
+    public override SecureString ReadLineAsSecureString() => throw new NotSupportedException();
+    public override Dictionary<string, PSObject> Prompt(string caption, string message, Collection<FieldDescription> descriptions) => throw new NotSupportedException();
+    public override PSCredential PromptForCredential(string caption, string message, string userName, string targetName) => throw new NotSupportedException();
+    public override PSCredential PromptForCredential(string caption, string message, string userName, string targetName, PSCredentialTypes types, PSCredentialUIOptions options) => throw new NotSupportedException();
+    public override void Write(string value) { }
+    public override void Write(ConsoleColor foreground, ConsoleColor background, string value) { }
+    public override void WriteLine(string value) { }
+    public override void WriteErrorLine(string value) { }
+    public override void WriteDebugLine(string value) { }
+    public override void WriteVerboseLine(string value) { }
+    public override void WriteWarningLine(string value) { }
+    public override void WriteProgress(long sourceId, ProgressRecord record) { }
+}
+'@
+        }
+    }
+
+    BeforeEach {
+        $ErrorActionPreference = 'Stop'
+        Push-Location -LiteralPath $TestDrive -ErrorAction Stop
+        $configEnvironment = @{}
+        foreach ($entry in Get-ChildItem Env: | Where-Object Name -Like 'GIT_*') {
+            $configEnvironment[$entry.Name] = $entry.Value
+            [Environment]::SetEnvironmentVariable($entry.Name, $null, 'Process')
+        }
+        foreach ($environmentKey in 'HOME', 'USERPROFILE', 'XDG_CONFIG_HOME') {
+            $configEnvironment[$environmentKey] = [Environment]::GetEnvironmentVariable($environmentKey, 'Process')
+        }
+        $configSandbox = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
+        $configHome = New-Item -ItemType Directory -Path (Join-Path $configSandbox 'home')
+        $env:HOME = $configHome.FullName
+        $env:USERPROFILE = $configHome.FullName
+        $env:XDG_CONFIG_HOME = $configHome.FullName
+        $env:GIT_CONFIG_GLOBAL = Join-Path $configHome.FullName 'global.gitconfig'
+        $env:GIT_CONFIG_SYSTEM = Join-Path $configHome.FullName 'system.gitconfig'
+        $env:GIT_CONFIG_COUNT = '0'
+        foreach ($file in $env:GIT_CONFIG_GLOBAL, $env:GIT_CONFIG_SYSTEM) {
+            Set-Content -LiteralPath $file -Value "[sentinel]`n`tvalue = original"
+        }
+        $configRepo = New-TestRepo -Path (Join-Path $configSandbox "repo [literal] & 'quoted'") -NoCommit
+        $configFiles = @{
+            local = Join-Path $configRepo '.git' 'config'
+            global = $env:GIT_CONFIG_GLOBAL
+            system = $env:GIT_CONFIG_SYSTEM
+        }
+        $configBefore = @{}
+        foreach ($configLocation in $configFiles.Keys) {
+            $configBefore[$configLocation] = [IO.File]::ReadAllText($configFiles[$configLocation])
+        }
+    }
+
+    AfterEach {
+        foreach ($entry in Get-ChildItem Env: | Where-Object Name -Like 'GIT_*') {
+            [Environment]::SetEnvironmentVariable($entry.Name, $null, 'Process')
+        }
+        foreach ($environmentKey in $configEnvironment.Keys) {
+            [Environment]::SetEnvironmentVariable($environmentKey, $configEnvironment[$environmentKey], 'Process')
+        }
+        Pop-Location
+    }
+
+    It 'exports ShouldProcess, void output, literal value and path metadata with help' {
+        $command = Get-Command Set-Config -Module Shmuelie.Git
+        $command.Parameters.Keys | Should -Contain 'WhatIf'
+        $command.Parameters.Keys | Should -Contain 'Confirm'
+        $command.OutputType.Name | Should -Contain 'System.Void'
+        $command.Parameters.Path.Aliases | Should -Be @('RepositoryPath', 'RepoPath', 'Repository')
+        $pathMetadata = $command.Parameters.Path.Attributes |
+            Where-Object { $_ -is [System.Management.Automation.ParameterAttribute] }
+        $pathMetadata.ValueFromPipeline | Should -Contain $true
+        $pathMetadata.ValueFromPipelineByPropertyName | Should -Contain $true
+        $command.Parameters.Value.Attributes.TypeId.Name | Should -Contain 'AllowEmptyStringAttribute'
+        ($command.Parameters.Location.Attributes |
+            Where-Object { $_ -is [System.Management.Automation.ValidateSetAttribute] }).ValidValues |
+            Should -Be @('local', 'global', 'system')
+        (Get-Help Set-Config).Synopsis | Should -BeLike '*git configuration value*'
+    }
+
+    It 'sets and replaces a <Scope> value without changing other scopes or keys' -ForEach @(
+        @{ Scope = 'local' }; @{ Scope = 'global' }; @{ Scope = 'system' }
+    ) {
+        @(Set-Config example.value first -Path $configRepo -Location $Scope -Confirm:$false) | Should -HaveCount 0
+        Set-Config example.value second -Path $configRepo -Location $Scope.ToUpperInvariant() -Confirm:$false
+        Read-TestConfig -Path $configRepo -Location $Scope | Should -BeExactly "second`0"
+        foreach ($other in $configFiles.Keys | Where-Object { $_ -ne $Scope }) {
+            [IO.File]::ReadAllText($configFiles[$other]) | Should -BeExactly $configBefore[$other]
+        }
+        $preserved = if ($Scope -eq 'local') { 'user.name' } else { 'sentinel.value' }
+        $expected = if ($Scope -eq 'local') { "Test User`0" } else { "original`0" }
+        Read-TestConfig -Path $configRepo -Location $Scope -Property $preserved | Should -BeExactly $expected
+    }
+
+    It 'round-trips the literal <Label> value and subsection key' -ForEach @(
+        @{ Label = 'empty'; Value = '' }
+        @{ Label = 'whitespace'; Value = '  leading and trailing  ' }
+        @{ Label = 'quotes'; Value = 'both "double" and ''single'' quotes \' }
+        @{ Label = 'shell characters'; Value = '$(throw "evaluated"); & | < > %PATH% ! ` [*] # ;' }
+        @{ Label = 'leading dashes'; Value = '--unset-all' }
+        @{ Label = 'separator'; Value = '--' }
+        @{ Label = 'newlines and Unicode'; Value = "line`t1`nline2 $([char]0x96ea)`n" }
+    ) {
+        $key = 'example. subsection "quoted"; $literal & | % ! .value'
+        Set-Config -Property $key -Value $Value -Path $configRepo -Confirm:$false
+        Read-TestConfig -Path $configRepo -Property $key | Should -BeExactly "$Value`0"
+    }
+
+    It 'defaults to local and the current directory without changing location or LASTEXITCODE' {
+        $subdirectory = New-Item -ItemType Directory -Path (Join-Path $configRepo 'nested')
+        Push-Location -LiteralPath $subdirectory.FullName
+        try {
+            $global:LASTEXITCODE = 73
+            Set-Config example.value current -Confirm:$false
+            $LASTEXITCODE | Should -Be 73
+            (Get-Location).ProviderPath | Should -BeExactly $subdirectory.FullName
+            Read-TestConfig -Path $configRepo | Should -BeExactly "current`0"
+        } finally { Pop-Location }
+    }
+
+    It 'accepts relative literal paths and the <Alias> alias' -ForEach @(
+        @{ Alias = 'Path' }; @{ Alias = 'RepositoryPath' }; @{ Alias = 'RepoPath' }; @{ Alias = 'Repository' }
+    ) {
+        Push-Location -LiteralPath $configSandbox
+        try {
+            $options = @{ $Alias = (Split-Path $configRepo -Leaf) }
+            Set-Config example.value relative @options -Confirm:$false
+            (Get-Location).ProviderPath | Should -BeExactly $configSandbox
+            Read-TestConfig -Path $configRepo | Should -BeExactly "relative`0"
+        } finally { Pop-Location }
+    }
+
+    It 'accepts a bare repository for local configuration' {
+        $bare = Join-Path $configSandbox 'bare.git'
+        Invoke-Git @('-c', 'init.templateDir=', 'init', '--bare', '--quiet', $bare)
+        Set-Config example.value bare -Path $bare -Confirm:$false
+        Read-TestConfig -Path $bare | Should -BeExactly "bare`0"
+    }
+
+    It 'runs <Scope> configuration outside any repository, with or without an explicit path' -ForEach @(
+        @{ Scope = 'global' }; @{ Scope = 'system' }
+    ) {
+        Push-Location -LiteralPath $configHome.FullName
+        try {
+            Set-Config example.value implicit -Location $Scope -Confirm:$false
+            Read-TestConfig -Path $configHome.FullName -Location $Scope | Should -BeExactly "implicit`0"
+            Set-Config example.value explicit -Location $Scope -Path $configHome.FullName -Confirm:$false
+            Read-TestConfig -Path $configHome.FullName -Location $Scope | Should -BeExactly "explicit`0"
+        } finally { Pop-Location }
+    }
+
+    It 'requires a repository for local configuration and keeps the shared runner default strict' {
+        { Set-Config example.value unused -Path $configHome.FullName -ErrorAction Stop } |
+            Should -Throw '*not inside a git working tree*'
+        InModuleScope Shmuelie.Git -Parameters @{ Directory = $configHome.FullName } {
+            param($Directory)
+            { Invoke-Git -Path $Directory -Arguments @('config', '--global', '--get', 'sentinel.value') -ErrorAction Stop } |
+                Should -Throw '*not inside a git working tree*'
+        }
+    }
+
+    It 'rejects invalid paths for <Scope> without falling back to the current directory' -ForEach @(
+        @{ Scope = 'local' }; @{ Scope = 'global' }; @{ Scope = 'system' }
+    ) {
+        { Set-Config example.value unused -Location $Scope -Path (Join-Path $configSandbox 'missing') -ErrorAction Stop } |
+            Should -Throw '*path not found*'
+        { Set-Config example.value unused -Location $Scope -Path $configFiles.local -ErrorAction Stop } |
+            Should -Throw '*must be a FileSystem directory*'
+        { Set-Config example.value unused -Location $Scope -Path 'Env:' -ErrorAction Stop } |
+            Should -Throw '*must be a FileSystem directory*'
+        { Set-Config example.value unused -Location $Scope -Path '' -ErrorAction Stop } | Should -Throw
+        foreach ($configLocation in $configFiles.Keys) {
+            [IO.File]::ReadAllText($configFiles[$configLocation]) | Should -BeExactly $configBefore[$configLocation]
+        }
+    }
+
+    It 'rejects an invalid location, empty key or NUL before invoking git' {
+        InModuleScope Shmuelie.Git {
+            Mock Invoke-Git {}
+            Mock Resolve-GitRepositoryPath {}
+            { Set-Config example.value unused -Location worktree } | Should -Throw
+            { Set-Config -Property '' -Value unused } | Should -Throw
+            { Set-Config -Property "example.`0value" -Value unused } | Should -Throw '*NUL*'
+            { Set-Config -Property example.value -Value "invalid`0value" } | Should -Throw '*NUL*'
+            Should -Invoke Invoke-Git -Times 0 -Exactly
+            Should -Invoke Resolve-GitRepositoryPath -Times 0 -Exactly
+        }
+    }
+
+    It 'reports invalid key <Key> through git rather than interpreting it as an option' -ForEach @(
+        @{ Key = 'notakey' }; @{ Key = '--global' }
+        @{ Key = 'example.invalid_key' }; @{ Key = 'example.' }
+    ) {
+        Set-Config -Property $Key -Value unused -Path $configRepo -ErrorAction SilentlyContinue -ErrorVariable failures |
+            Should -BeNullOrEmpty
+        $failures | Should -HaveCount 1
+        $failures[0].FullyQualifiedErrorId | Should -Match '^GitCommandFailed'
+        $failures[0].TargetObject.ExitCode | Should -Not -Be 0
+        $failures[0].TargetObject.StandardError | Should -Not -BeNullOrEmpty
+        [IO.File]::ReadAllText($configFiles.local) | Should -BeExactly $configBefore.local
+    }
+
+    It 'preserves a leading-dash section name when git permits it' {
+        Set-Config -Property '-example.value' -Value '--literal' -Path $configRepo -Confirm:$false
+        Read-TestConfig -Path $configRepo -Property '-example.value' | Should -BeExactly "--literal`0"
+    }
+
+    It 'does not overwrite multiple existing values or conceal the native failure' {
+        Invoke-Git @('-C', $configRepo, 'config', '--local', '--add', 'example.value', 'first')
+        Invoke-Git @('-C', $configRepo, 'config', '--local', '--add', 'example.value', 'second')
+        { Set-Config example.value replacement -Path $configRepo -ErrorAction Stop } |
+            Should -Throw '*git failed*'
+        Read-TestConfig -Path $configRepo | Should -BeExactly "first`0second`0"
+    }
+
+    It 'reports a <Scope> write failure through the shared helper without success output' -ForEach @(
+        @{ Scope = 'local' }; @{ Scope = 'global' }; @{ Scope = 'system' }
+    ) {
+        Set-Content -LiteralPath "$($configFiles[$Scope]).lock" -Value 'locked'
+        Set-Config example.value unused -Path $configRepo -Location $Scope -ErrorAction SilentlyContinue -ErrorVariable failures |
+            Should -BeNullOrEmpty
+        $failures | Should -HaveCount 1
+        $failures[0].FullyQualifiedErrorId | Should -Match '^GitCommandFailed'
+        $failures[0].Exception.Message | Should -Match 'lock'
+        $failures[0].TargetObject.StandardError | Should -Not -BeNullOrEmpty
+        { Set-Config example.value unused -Path $configRepo -Location $Scope -ErrorAction Stop } |
+            Should -Throw '*lock*'
+        [IO.File]::ReadAllText($configFiles[$Scope]) | Should -BeExactly $configBefore[$Scope]
+    }
+
+    It 'passes exactly two operands after the separator to the private shared runner' {
+        InModuleScope Shmuelie.Git -Parameters @{ Repo = $configRepo } {
+            param($Repo)
+            Mock Invoke-Git {}
+            Set-Config -Property 'example.literal "key".value' -Value '--literal "value"' -Path $Repo -Confirm:$false
+            Should -Invoke Invoke-Git -Times 1 -Exactly -ParameterFilter {
+                $Arguments.Count -eq 5 -and $Arguments[0] -ceq 'config' -and $Arguments[1] -ceq '--local' -and
+                $Arguments[2] -ceq '--' -and $Arguments[3] -ceq 'example.literal "key".value' -and
+                $Arguments[4] -ceq '--literal "value"' -and $Path -ceq $Repo -and -not $AllowNonRepository
+            }
+        }
+    }
+
+    It 'preserves arbitrary native exit codes and stderr in the shared error record' {
+        InModuleScope Shmuelie.Git -Parameters @{ Repo = $configRepo } {
+            param($Repo)
+            Mock Resolve-GitRepositoryPath { $Repo }
+            Mock Invoke-GitProcess {
+                [PSCustomObject]@{ ExitCode = 42; StandardOutput = ''; StandardError = 'deliberate native failure'; Output = @() }
+            }
+            Set-Config example.value unused -Path $Repo -ErrorAction SilentlyContinue -ErrorVariable failures |
+                Should -BeNullOrEmpty
+            $failures | Should -HaveCount 1
+            $failures[0].FullyQualifiedErrorId | Should -Match '^GitCommandFailed'
+            $failures[0].TargetObject.ExitCode | Should -Be 42
+            $failures[0].TargetObject.StandardError | Should -BeExactly 'deliberate native failure'
+            $failures[0].TargetObject.RepositoryPath | Should -BeExactly $Repo
+            Should -Invoke Invoke-GitProcess -Times 1 -Exactly
+        }
+    }
+
+    It 'WhatIf does not create an absent <Scope> configuration file' -ForEach @(
+        @{ Scope = 'global' }; @{ Scope = 'system' }
+    ) {
+        Remove-Item -LiteralPath $configFiles[$Scope]
+        Set-Config example.value unused -Location $Scope -Path $configHome.FullName -WhatIf
+        Test-Path -LiteralPath $configFiles[$Scope] | Should -BeFalse
+        Set-Config example.value created -Location $Scope -Path $configHome.FullName -Confirm:$false
+        Read-TestConfig -Path $configHome.FullName -Location $Scope | Should -BeExactly "created`0"
+    }
+
+    It 'WhatIf leaves <Scope> configuration unchanged and never invokes the writer' -ForEach @(
+        @{ Scope = 'local' }; @{ Scope = 'global' }; @{ Scope = 'system' }
+    ) {
+        InModuleScope Shmuelie.Git -Parameters @{ Repo = $configRepo; Scope = $Scope } {
+            param($Repo, $Scope)
+            Mock Invoke-Git {}
+            @(Set-Config example.value unused -Path $Repo -Location $Scope -WhatIf) | Should -HaveCount 0
+            Should -Invoke Invoke-Git -Times 0 -Exactly
+        }
+        Set-Config example.value unused -Path $configRepo -Location $Scope -WhatIf
+        foreach ($configLocation in $configFiles.Keys) {
+            [IO.File]::ReadAllText($configFiles[$configLocation]) | Should -BeExactly $configBefore[$configLocation]
+        }
+    }
+
+    It 'prompts independently for each piped path in <Scope> scope and honors <Mode>' -ForEach @(
+        foreach ($scope in 'local', 'global', 'system') {
+            @{ Scope = $scope; Mode = 'confirm yes'; Choice = 0; ExpectedPrompts = 2; Writes = $true; Options = @{ Confirm = $true } }
+            @{ Scope = $scope; Mode = 'confirm no'; Choice = 2; ExpectedPrompts = 2; Writes = $false; Options = @{ Confirm = $true } }
+            @{ Scope = $scope; Mode = 'confirm false'; Choice = 2; ExpectedPrompts = 0; Writes = $true; Options = @{ Confirm = $false } }
+            @{ Scope = $scope; Mode = 'ambient WhatIf'; Choice = 0; ExpectedPrompts = 0; Writes = $false; Options = @{} }
+        }
+    ) {
+        $hostStub = [SetConfigConfirmationHost]::new()
+        $hostStub.PromptUI.Choice = $Choice
+        $runspace = [runspacefactory]::CreateRunspace($hostStub)
+        $powershell = [powershell]::Create()
+        try {
+            $runspace.Open()
+            $powershell.Runspace = $runspace
+            $null = $powershell.AddScript({
+                param($root, $path, $scope, $mode, $options)
+                $ErrorActionPreference = 'Stop'
+                Import-Module (Join-Path $root 'modules' 'Shmuelie.Git' 'Shmuelie.Git.psd1')
+                if ($mode -eq 'ambient WhatIf') { $WhatIfPreference = $true }
+                $ConfirmPreference = 'Low'
+                @($path, [PSCustomObject]@{ RepositoryPath = $path }) |
+                    Set-Config -Property example.value -Value approved -Location $scope @options
+            }.ToString()).AddArgument($repoRoot).AddArgument($configRepo).AddArgument($Scope).AddArgument($Mode).AddArgument($Options)
+            @($powershell.Invoke()) | Should -HaveCount 0
+            $powershell.HadErrors | Should -BeFalse -Because ($powershell.Streams.Error -join "`n")
+            $hostStub.PromptUI.PromptCount | Should -Be $ExpectedPrompts
+            if ($Writes) {
+                Read-TestConfig -Path $configRepo -Location $Scope | Should -BeExactly "approved`0"
+            } else {
+                [IO.File]::ReadAllText($configFiles[$Scope]) | Should -BeExactly $configBefore[$Scope]
+            }
+        } finally {
+            $powershell.Dispose()
+            $runspace.Dispose()
+        }
+    }
+
+    It 'preserves newline and backslash characters in Unix paths' -Skip:$IsWindows {
+        $path = New-TestRepo -Path (Join-Path $configSandbox "config`nrepo\literal") -NoCommit
+        Set-Config example.value literal -Path $path -Confirm:$false
+        Read-TestConfig -Path $path | Should -BeExactly "literal`0"
+    }
+}
+
+Describe 'Remove-Branch' {
+    BeforeAll {
+        $branchEnvironment = @{}
+        # Pester 5 shares TestDrive across Describe blocks.
+        $branchFixtureRoot = Join-Path $TestDrive 'remove-branch'
+        $null = New-Item -ItemType Directory -Path $branchFixtureRoot -ErrorAction Stop
+        foreach ($key in @(
+            'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_SYSTEM', 'GIT_CONFIG_NOSYSTEM',
+            'GIT_CONFIG_COUNT', 'GIT_CONFIG_PARAMETERS', 'GIT_DIR', 'GIT_WORK_TREE',
+            'GIT_COMMON_DIR', 'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY',
+            'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_NAMESPACE'
+        )) {
+            $branchEnvironment[$key] = [Environment]::GetEnvironmentVariable($key, 'Process')
+            Remove-Item "Env:$key" -ErrorAction Ignore
+        }
+        $env:GIT_CONFIG_GLOBAL = Join-Path $branchFixtureRoot 'no-global-config'
+        $env:GIT_CONFIG_SYSTEM = Join-Path $branchFixtureRoot 'no-system-config'
+        $env:GIT_CONFIG_NOSYSTEM = '1'
+        $env:GIT_CONFIG_COUNT = '0'
+        $seed = New-TestRepo -Path (Join-Path $branchFixtureRoot 'seed')
+        $branchOrigin = Join-Path $branchFixtureRoot 'origin.git'
+        $branchRepo = Join-Path $branchFixtureRoot 'branch repo [literal]'
+        Invoke-Git @('clone', '--bare', '--quiet', '--', $seed, $branchOrigin)
+        Invoke-Git @('clone', '--quiet', '--', $branchOrigin, $branchRepo)
+        Set-TestRepoConfig $branchRepo
+        $initialCommit = Invoke-Git @('-C', $branchRepo, 'rev-parse', 'HEAD')
+
+        function Get-TestBranchNames {
+            param([string]$Path)
+            Invoke-Git @('-C', $Path, 'for-each-ref', '--format=%(refname)', 'refs/heads/')
+        }
+
+        if (-not ('BranchRemovalConfirmationHost' -as [type])) {
+            Add-Type -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.Collections.ObjectModel;
+using System.Globalization;
+using System.Management.Automation;
+using System.Management.Automation.Host;
+using System.Security;
+
+public sealed class BranchRemovalConfirmationHost : PSHost
+{
+    public readonly BranchRemovalConfirmationUI PromptUI = new BranchRemovalConfirmationUI();
+    public override Guid InstanceId { get; } = Guid.NewGuid();
+    public override string Name => "BranchRemovalConfirmationHost";
+    public override Version Version => new Version(1, 0);
+    public override PSHostUserInterface UI => PromptUI;
+    public override CultureInfo CurrentCulture => CultureInfo.InvariantCulture;
+    public override CultureInfo CurrentUICulture => CultureInfo.InvariantCulture;
+    public override void SetShouldExit(int exitCode) { }
+    public override void EnterNestedPrompt() => throw new NotSupportedException();
+    public override void ExitNestedPrompt() => throw new NotSupportedException();
+    public override void NotifyBeginApplication() { }
+    public override void NotifyEndApplication() { }
+}
+
+public sealed class BranchRemovalConfirmationUI : PSHostUserInterface
+{
+    public int PromptCount;
+    public readonly List<string> Messages = new List<string>();
+    public override PSHostRawUserInterface RawUI => null;
+    public override int PromptForChoice(string caption, string message, Collection<ChoiceDescription> choices, int defaultChoice)
+    {
+        PromptCount++;
+        Messages.Add(message);
+        return 2; // No: refuse each high-impact operation.
+    }
+    public override string ReadLine() => throw new NotSupportedException();
+    public override SecureString ReadLineAsSecureString() => throw new NotSupportedException();
+    public override Dictionary<string, PSObject> Prompt(string caption, string message, Collection<FieldDescription> descriptions) => throw new NotSupportedException();
+    public override PSCredential PromptForCredential(string caption, string message, string userName, string targetName) => throw new NotSupportedException();
+    public override PSCredential PromptForCredential(string caption, string message, string userName, string targetName, PSCredentialTypes types, PSCredentialUIOptions options) => throw new NotSupportedException();
+    public override void Write(string value) => Messages.Add(value);
+    public override void Write(ConsoleColor foreground, ConsoleColor background, string value) => Messages.Add(value);
+    public override void WriteLine(string value) => Messages.Add(value);
+    public override void WriteErrorLine(string value) => Messages.Add(value);
+    public override void WriteDebugLine(string value) => Messages.Add(value);
+    public override void WriteVerboseLine(string value) => Messages.Add(value);
+    public override void WriteWarningLine(string value) => Messages.Add(value);
+    public override void WriteProgress(long sourceId, ProgressRecord record) { }
+}
+'@
+        }
+    }
+
+    BeforeEach {
+        $branchName = 'remove-' + [guid]::NewGuid().ToString('N')
+        Invoke-Git @('-C', $branchRepo, 'branch', $branchName, $initialCommit)
+        Invoke-Git @('-C', $branchRepo, 'push', '--quiet', '--', 'origin', "refs/heads/$branchName")
+    }
+
+    AfterAll {
+        try {
+            if ($branchFixtureRoot) {
+                $relativeRoot = [IO.Path]::GetRelativePath($TestDrive, $branchFixtureRoot)
+                if ($relativeRoot -cne 'remove-branch') {
+                    throw "Refusing to clean a fixture outside its owned TestDrive directory: '$branchFixtureRoot'."
+                }
+                if (Test-Path -LiteralPath $branchFixtureRoot) {
+                    # Pester 5's directory deletion can fail on read-only Git objects.
+                    Remove-Item -LiteralPath $branchFixtureRoot -Recurse -Force -ErrorAction Stop
+                }
+            }
+        } finally {
+            foreach ($key in $branchEnvironment.Keys) {
+                if ($null -eq $branchEnvironment[$key]) {
+                    Remove-Item "Env:$key" -ErrorAction Ignore
+                } else {
+                    [Environment]::SetEnvironmentVariable($key, $branchEnvironment[$key], 'Process')
+                }
+            }
+        }
+    }
+
+    It 'exports an approved high-impact command with standard path aliases and help' {
+        $command = Get-Command Remove-Branch -Module Shmuelie.Git
+        (Get-Verb Remove).Verb | Should -BeExactly $command.Verb
+        $binding = $command.ScriptBlock.Attributes |
+            Where-Object { $_ -is [System.Management.Automation.CmdletBindingAttribute] }
+        $binding.SupportsShouldProcess | Should -BeTrue
+        $binding.ConfirmImpact | Should -Be 'High'
+        $command.Parameters.Path.Aliases | Should -Be @('RepositoryPath', 'RepoPath')
+        $command.Parameters.Name.Aliases | Should -Be @('BranchName', 'Branch')
+        (Get-Module Shmuelie.Git).ExportedAliases.Count | Should -Be 0
+        (Get-Help Remove-Branch).Description.Text | Should -Not -BeNullOrEmpty
+    }
+
+    It 'deletes only the merged local branch with <InputKind> input' -ForEach @(
+        @{ InputKind = 'name' }, @{ InputKind = 'reference' }, @{ InputKind = 'pipeline' },
+        @{ InputKind = 'properties' }, @{ InputKind = 'aliases' }
+    ) {
+        $result = switch ($InputKind) {
+            name { Remove-Branch $branchName -Path $branchRepo -Confirm:$false -ErrorAction Stop }
+            reference { Remove-Branch "refs/heads/$branchName" -Path $branchRepo -Confirm:$false -ErrorAction Stop }
+            pipeline { $branchName | Remove-Branch -Path $branchRepo -Confirm:$false -ErrorAction Stop }
+            properties {
+                [PSCustomObject]@{ Name = $branchName; Path = $branchRepo } |
+                    Remove-Branch -Confirm:$false -ErrorAction Stop
+            }
+            aliases {
+                [PSCustomObject]@{ BranchName = $branchName; RepositoryPath = $branchRepo } |
+                    Remove-Branch -Confirm:$false -ErrorAction Stop
+            }
+        }
+        $result | Should -BeNullOrEmpty
+        Get-TestBranchNames $branchRepo | Should -Not -Contain "refs/heads/$branchName"
+        Get-TestBranchNames $branchRepo | Should -Contain 'refs/heads/main'
+        Get-TestBranchNames $branchOrigin | Should -Contain "refs/heads/$branchName"
+    }
+
+    It 'uses literal, relative, current and bare repository paths without changing location' {
+        $location = (Get-Location).ProviderPath
+        $subdirectory = New-Item -ItemType Directory -Path (Join-Path $branchRepo $branchName)
+        Push-Location -LiteralPath $subdirectory.FullName
+        try {
+            Remove-Branch $branchName -RepoPath .. -Confirm:$false -ErrorAction Stop
+            Invoke-Git @('-C', $branchRepo, 'branch', $branchName, $initialCommit)
+            Remove-Branch $branchName -Confirm:$false -ErrorAction Stop
+            (Get-Location).ProviderPath | Should -BeExactly $subdirectory.FullName
+        } finally {
+            Pop-Location
+        }
+        (Get-Location).ProviderPath | Should -BeExactly $location
+        Remove-Branch $branchName -Path $branchOrigin -Confirm:$false -ErrorAction Stop
+        Get-TestBranchNames $branchOrigin | Should -Not -Contain "refs/heads/$branchName"
+    }
+
+    It 'leaves both repositories untouched for <Mode> WhatIf' -ForEach @(
+        @{ Mode = 'local'; Options = @{} }
+        @{ Mode = 'forced local'; Options = @{ Force = $true } }
+        @{ Mode = 'remote'; Options = @{ Remote = $true } }
+    ) {
+        $beforeLocal = Invoke-Git @('-C', $branchRepo, 'show-ref')
+        $beforeRemote = Invoke-Git @('-C', $branchOrigin, 'show-ref')
+        Remove-Branch $branchName -Path $branchRepo @Options -WhatIf -ErrorAction Stop |
+            Should -BeNullOrEmpty
+        Invoke-Git @('-C', $branchRepo, 'show-ref') | Should -Be $beforeLocal
+        Invoke-Git @('-C', $branchOrigin, 'show-ref') | Should -Be $beforeRemote
+    }
+
+    It 'honors declined <Mode> confirmation including the implicit High prompt' -ForEach @(
+        @{ Mode = 'local'; Options = @{} }
+        @{ Mode = 'forced local'; Options = @{ Force = $true } }
+        @{ Mode = 'remote'; Options = @{ Remote = $true } }
+        @{ Mode = 'explicit'; Options = @{ Confirm = $true } }
+    ) {
+        $hostStub = [BranchRemovalConfirmationHost]::new()
+        $runspace = [runspacefactory]::CreateRunspace($hostStub)
+        $powershell = [powershell]::Create()
+        try {
+            $runspace.Open()
+            $powershell.Runspace = $runspace
+            $null = $powershell.AddScript({
+                param($moduleRoot, $path, $name, $options)
+                $ErrorActionPreference = 'Stop'
+                $ConfirmPreference = 'High'
+                Import-Module (Join-Path $moduleRoot 'modules' 'Shmuelie.Git' 'Shmuelie.Git.psd1')
+                try {
+                    Remove-Branch -Name $name -Path $path @options
+                } finally {
+                    Remove-Module Shmuelie.Git
+                }
+            }.ToString()).AddArgument($repoRoot).AddArgument($branchRepo).AddArgument($branchName).AddArgument($Options)
+            @($powershell.Invoke()) | Should -HaveCount 0
+            $powershell.HadErrors | Should -BeFalse -Because ($powershell.Streams.Error -join "`n")
+            $hostStub.PromptUI.PromptCount | Should -Be 1
+            ($hostStub.PromptUI.Messages -join "`n") | Should -BeLike "*refs/heads/$branchName*"
+            if ($Options.Remote) {
+                ($hostStub.PromptUI.Messages -join "`n") | Should -BeLike "*remote 'origin'*"
+            }
+        } finally {
+            $powershell.Dispose()
+            $runspace.Dispose()
+        }
+        Get-TestBranchNames $branchRepo | Should -Contain "refs/heads/$branchName"
+        Get-TestBranchNames $branchOrigin | Should -Contain "refs/heads/$branchName"
+    }
+
+    It 'refuses unmerged local deletion and requires explicit Force' {
+        Invoke-Git @('-C', $branchRepo, 'switch', '--quiet', $branchName)
+        try {
+            Invoke-Git @('-C', $branchRepo, 'commit', '--allow-empty', '--quiet', '-m', 'unmerged work')
+        } finally {
+            Invoke-Git @('-C', $branchRepo, 'switch', '--quiet', 'main')
+        }
+        Remove-Branch $branchName -Path $branchRepo -Confirm:$false -ErrorAction SilentlyContinue -ErrorVariable failures |
+            Should -BeNullOrEmpty
+        $failures | Should -HaveCount 1
+        $failures[0].FullyQualifiedErrorId | Should -BeLike 'GitCommandFailed*'
+        $failures[0].TargetObject.ExitCode | Should -Not -Be 0
+        $failures[0].TargetObject.StandardError | Should -Match 'not fully merged'
+        Get-TestBranchNames $branchRepo | Should -Contain "refs/heads/$branchName"
+        Remove-Branch $branchName -Path $branchRepo -Force -Confirm:$false -ErrorAction Stop
+        Get-TestBranchNames $branchRepo | Should -Not -Contain "refs/heads/$branchName"
+    }
+
+    It 'refuses deletion of a branch in the <Location> worktree with Force=<UseForce>' -ForEach @(
+        @{ Location = 'current'; UseForce = $false }, @{ Location = 'current'; UseForce = $true }
+        @{ Location = 'linked'; UseForce = $false }, @{ Location = 'linked'; UseForce = $true }
+    ) {
+        $targetName = 'main'
+        if ($Location -eq 'linked') {
+            $targetName = $branchName
+            Invoke-Git @('-C', $branchRepo, 'worktree', 'add', '--quiet', (Join-Path $branchFixtureRoot $branchName), $branchName)
+        }
+        { Remove-Branch $targetName -Path $branchRepo -Force:$UseForce -Confirm:$false -ErrorAction Stop } |
+            Should -Throw -ExpectedMessage '*git failed*'
+        Get-TestBranchNames $branchRepo | Should -Contain "refs/heads/$targetName"
+    }
+
+    It 'rejects invalid or option-like branch <InvalidName> before any deletion' -ForEach @(
+        @{ InvalidName = '--all' }, @{ InvalidName = '-D' }, @{ InvalidName = 'refs/heads/-D' }
+        @{ InvalidName = 'refs/heads/' }, @{ InvalidName = 'refs/tags/main' }
+        @{ InvalidName = 'refs/remotes/origin/main' }, @{ InvalidName = 'HEAD' }
+        @{ InvalidName = 'refs/heads/HEAD' }, @{ InvalidName = '@{-1}' }
+        @{ InvalidName = 'main~1' }, @{ InvalidName = 'main:other' }, @{ InvalidName = 'feature/*' }
+        @{ InvalidName = 'main..other' }, @{ InvalidName = 'white space' }, @{ InvalidName = "line`nbreak" }
+        @{ InvalidName = "nul`0name" }
+    ) {
+        $beforeLocal = Invoke-Git @('-C', $branchRepo, 'show-ref')
+        $beforeRemote = Invoke-Git @('-C', $branchOrigin, 'show-ref')
+        foreach ($options in @(@{}, @{ Remote = $true })) {
+            { Remove-Branch $InvalidName -Path $branchRepo @options -Confirm:$false -ErrorAction Stop } |
+                Should -Throw
+        }
+        Invoke-Git @('-C', $branchRepo, 'show-ref') | Should -Be $beforeLocal
+        Invoke-Git @('-C', $branchOrigin, 'show-ref') | Should -Be $beforeRemote
+    }
+
+    It 'preserves literal metacharacters and Unicode in valid branch names' {
+        $literalName = 'feature/a&b;echo${literal}' + "'-" + [char]0xe9
+        Invoke-Git @('-C', $branchRepo, 'branch', $literalName)
+        Invoke-Git @('-C', $branchRepo, 'push', '--quiet', '--', 'origin', "refs/heads/$literalName")
+        Remove-Branch $literalName -Path $branchRepo -Remote -Confirm:$false -ErrorAction Stop
+        Get-TestBranchNames $branchRepo | Should -Contain "refs/heads/$literalName"
+        Get-TestBranchNames $branchOrigin | Should -Not -Contain "refs/heads/$literalName"
+        Remove-Branch $literalName -Path $branchRepo -Confirm:$false -ErrorAction Stop
+        Get-TestBranchNames $branchRepo | Should -Not -Contain "refs/heads/$literalName"
+    }
+
+    It 'deletes only the explicit remote branch even with same-named tags and push defaults' {
+        Invoke-Git @('-C', $branchRepo, 'tag', $branchName)
+        Invoke-Git @('-C', $branchRepo, 'push', '--quiet', '--', 'origin', "refs/tags/$branchName")
+        Invoke-Git @('-C', $branchRepo, 'tag', '-a', "$branchName-local-tag", '-m', 'local only')
+        Invoke-Git @('-C', $branchRepo, 'config', 'remote.origin.mirror', 'true')
+        Invoke-Git @('-C', $branchRepo, 'config', 'push.followTags', 'true')
+        Invoke-Git @('-C', $branchRepo, 'config', 'remote.origin.push', 'refs/heads/*:refs/heads/*')
+        $beforeRemote = @(Invoke-Git @('-C', $branchOrigin, 'show-ref'))
+        try {
+            Remove-Branch "refs/heads/$branchName" -Path $branchRepo -Remote -Confirm:$false -ErrorAction Stop |
+                Should -BeNullOrEmpty
+        } finally {
+            Invoke-Git @('-C', $branchRepo, 'config', '--unset', 'remote.origin.mirror')
+            Invoke-Git @('-C', $branchRepo, 'config', '--unset', 'push.followTags')
+            Invoke-Git @('-C', $branchRepo, 'config', '--unset', 'remote.origin.push')
+        }
+        $expected = @($beforeRemote | Where-Object { -not $_.EndsWith(" refs/heads/$branchName") })
+        Invoke-Git @('-C', $branchOrigin, 'show-ref') | Should -Be $expected
+        Get-TestBranchNames $branchRepo | Should -Contain "refs/heads/$branchName"
+    }
+
+    It 'selects a named configured remote and respects its push URL rather than its fetch URL' {
+        $pushTarget = Join-Path $branchFixtureRoot "$branchName.git"
+        Invoke-Git @('clone', '--bare', '--quiet', '--', $branchOrigin, $pushTarget)
+        Invoke-Git @('-C', $branchRepo, 'remote', 'add', $branchName, $branchOrigin)
+        Invoke-Git @('-C', $branchRepo, 'remote', 'set-url', '--push', $branchName, $pushTarget)
+        Remove-Branch $branchName -Path $branchRepo -Remote -RemoteName $branchName -Confirm:$false -ErrorAction Stop
+        Get-TestBranchNames $pushTarget | Should -Not -Contain "refs/heads/$branchName"
+        Get-TestBranchNames $branchOrigin | Should -Contain "refs/heads/$branchName"
+        Get-TestBranchNames $branchRepo | Should -Contain "refs/heads/$branchName"
+    }
+
+    It 'does not infer a remote from an upstream or strip a remote prefix' {
+        $prefixedName = "origin/$branchName"
+        Invoke-Git @('-C', $branchRepo, 'branch', '--set-upstream-to', "origin/$branchName", $branchName)
+        Invoke-Git @('-C', $branchRepo, 'branch', $prefixedName)
+        Invoke-Git @('-C', $branchRepo, 'push', '--quiet', '--', 'origin', "refs/heads/$prefixedName")
+        Remove-Branch $prefixedName -Path $branchRepo -Remote -Confirm:$false -ErrorAction Stop
+        Get-TestBranchNames $branchOrigin | Should -Not -Contain "refs/heads/$prefixedName"
+        Get-TestBranchNames $branchOrigin | Should -Contain "refs/heads/$branchName"
+        Remove-Branch $branchName -Path $branchRepo -Confirm:$false -ErrorAction Stop
+        Get-TestBranchNames $branchOrigin | Should -Contain "refs/heads/$branchName"
+    }
+
+    It 'rejects unknown, option-like and URL/path remote arguments' -ForEach @(
+        @{ InvalidRemote = 'missing' }, @{ InvalidRemote = '--all' }, @{ InvalidRemote = 'ORIGIN' },
+        @{ InvalidRemote = 'https://example.invalid/repo.git' }
+    ) {
+        { Remove-Branch $branchName -Path $branchRepo -Remote -RemoteName $InvalidRemote -Confirm:$false -ErrorAction Stop } |
+            Should -Throw -ExpectedMessage '*Configured remote*was not found*'
+        { Remove-Branch $branchName -Path $branchRepo -Remote -RemoteName $branchOrigin -Confirm:$false -ErrorAction Stop } |
+            Should -Throw -ExpectedMessage '*Configured remote*was not found*'
+        Get-TestBranchNames $branchOrigin | Should -Contain "refs/heads/$branchName"
+    }
+
+    It 'rejects Force with remote deletion and an explicitly disabled Remote switch' {
+        { Remove-Branch $branchName -Path $branchRepo -Remote -Force -Confirm:$false -ErrorAction Stop } |
+            Should -Throw
+        { Remove-Branch $branchName -Path $branchRepo -Remote:$false -RemoteName origin -Confirm:$false -ErrorAction Stop } |
+            Should -Throw -ExpectedMessage '*requires -Remote*'
+        Get-TestBranchNames $branchRepo | Should -Contain "refs/heads/$branchName"
+        Get-TestBranchNames $branchOrigin | Should -Contain "refs/heads/$branchName"
+    }
+
+    It 'reports a nonexistent local branch with a structured native error and no output' {
+        Remove-Branch "$branchName-missing" -Path $branchRepo -Confirm:$false -ErrorAction SilentlyContinue -ErrorVariable failures |
+            Should -BeNullOrEmpty
+        $failures | Should -HaveCount 1
+        $failures[0].FullyQualifiedErrorId | Should -BeLike 'GitCommandFailed*'
+        $failures[0].TargetObject.RepositoryPath | Should -BeExactly $branchRepo
+        $failures[0].TargetObject.ExitCode | Should -Not -Be 0
+        $failures[0].TargetObject.StandardError | Should -Not -BeNullOrEmpty
+    }
+
+    It 'leaves refs unchanged when Git accepts deletion of an already absent remote branch' {
+        $beforeRemote = Invoke-Git @('-C', $branchOrigin, 'show-ref')
+        Remove-Branch "$branchName-missing" -Path $branchRepo -Remote -Confirm:$false -ErrorAction Stop |
+            Should -BeNullOrEmpty
+        Invoke-Git @('-C', $branchOrigin, 'show-ref') | Should -Be $beforeRemote
+    }
+
+    It 'propagates remote rejection and unavailable-remote errors without local deletion' {
+        Invoke-Git @('-C', $branchOrigin, 'config', 'receive.denyDeletes', 'true')
+        try {
+            { Remove-Branch $branchName -Path $branchRepo -Remote -Confirm:$false -ErrorAction Stop } |
+                Should -Throw -ExpectedMessage '*git failed*'
+        } finally {
+            Invoke-Git @('-C', $branchOrigin, 'config', '--unset', 'receive.denyDeletes')
+        }
+        Invoke-Git @('-C', $branchRepo, 'remote', 'add', "$branchName-offline", (Join-Path $branchFixtureRoot 'missing.git'))
+        { Remove-Branch $branchName -Path $branchRepo -Remote -RemoteName "$branchName-offline" -Confirm:$false -ErrorAction Stop } |
+            Should -Throw -ExpectedMessage '*git failed*'
+        Get-TestBranchNames $branchRepo | Should -Contain "refs/heads/$branchName"
+        Get-TestBranchNames $branchOrigin | Should -Contain "refs/heads/$branchName"
+    }
+
+    It 'reports invalid repository paths instead of emitting success' {
+        foreach ($path in @((Join-Path $branchFixtureRoot 'missing'), $branchFixtureRoot, (Join-Path $branchRepo 'README.md'))) {
+            { Remove-Branch $branchName -Path $path -Confirm:$false -ErrorAction Stop } | Should -Throw
+        }
+        Get-TestBranchNames $branchRepo | Should -Contain "refs/heads/$branchName"
+    }
+
+    It 'never invokes push or branch deletion under WhatIf' {
+        InModuleScope Shmuelie.Git -Parameters @{ Repo = $branchRepo; Name = $branchName } {
+            param($Repo, $Name)
+            Mock Invoke-Git {
+                [PSCustomObject]@{ RepositoryPath = $Repo; StandardOutput = "origin`n" }
+            }
+            Remove-Branch $Name -Path $Repo -WhatIf
+            Remove-Branch $Name -Path $Repo -Force -WhatIf
+            Remove-Branch $Name -Path $Repo -Remote -WhatIf
+            Should -Invoke Invoke-Git -Times 0 -ParameterFilter { $Arguments -contains 'push' -or $Arguments -contains 'branch' }
+            Should -Invoke Invoke-Git -Times 3 -ParameterFilter {
+                $Arguments[0] -eq 'check-ref-format' -and $Arguments[1] -ceq "refs/heads/$Name"
+            }
         }
     }
 }
