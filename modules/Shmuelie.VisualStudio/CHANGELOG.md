@@ -6,6 +6,12 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+### Added
+- `Resolve-MSBuild` resolves the newest compatible Visual Studio MSBuild.exe,
+  including standalone Build Tools, with optional year/version and executable
+  architecture filters, typed installation metadata, and a path-only option.
+  Discovery is Windows-only and does not launch MSBuild or change the environment.
+
 ## [0.1.1] - 2026-08-27
 
 ### Fixed

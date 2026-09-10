@@ -1,7 +1,7 @@
 function Get-CopilotSession {
     <#
     .SYNOPSIS
-        Lists GitHub Copilot CLI sessions, optionally filtered to the current directory.
+        Lists GitHub Copilot CLI sessions with directory, metadata, and age filters.
 
     .DESCRIPTION
         Enumerates session-state directories under ~/.copilot/session-state/ and
@@ -9,16 +9,53 @@ function Get-CopilotSession {
         EventCount and EventSize for diagnosing oversized sessions.
 
         By default only sessions matching the current working directory are returned.
-        Use -All to return every session regardless of directory.
+        Use -All to search every directory, or -Cwd to replace the implicit current
+        directory scope. Repository, Branch, and Summary do not broaden that scope.
+        All supplied filters must match. String filters use case-insensitive
+        PowerShell wildcards against recorded metadata, without resolving paths.
+        Results remain sorted by UpdatedAt descending.
+
+        Missing repository, branch, or cwd metadata does not match even '*'.
+        Summary matches the displayed Summary (name, then legacy summary, then
+        '(no summary)'). Missing UpdatedAt never matches a date filter; no
+        creation time or filesystem timestamp is substituted.
 
     .PARAMETER All
-        Return sessions for all directories, not just the current one.
+        Search sessions for all directories, still applying any supplied filters.
 
     .PARAMETER Id
         Return only the session with the specified ID. The ID must be a single
         session directory name (a GUID for CLI-created sessions); values with path
         separators, drive qualifiers, or relative segments are rejected so they
-        cannot escape the session-state root.
+        cannot escape the session-state root. This is an exact lookup, independent
+        of the current directory, and cannot be combined with All or filters.
+
+    .PARAMETER Repository
+        Match recorded Repository using a case-insensitive wildcard pattern.
+
+    .PARAMETER Branch
+        Match recorded Branch using a case-insensitive wildcard pattern.
+
+    .PARAMETER Cwd
+        Match recorded Cwd using a case-insensitive wildcard pattern instead of
+        the implicit current-directory restriction. Paths are not normalized or
+        resolved; escape literal wildcard characters with a PowerShell backtick.
+
+    .PARAMETER Summary
+        Match the displayed Summary using a case-insensitive wildcard pattern.
+        Unnamed sessions have the displayed value '(no summary)'.
+
+    .PARAMETER UpdatedBefore
+        Return sessions whose UpdatedAt is strictly earlier than this DateTimeOffset
+        instant. Use ISO 8601 with Z or an explicit offset for portable results.
+        Input without an offset is interpreted in the local timezone. A date-only
+        input means local midnight, not the end of that day.
+
+    .PARAMETER OlderThan
+        Return sessions last updated strictly more than this positive TimeSpan ago.
+        Use New-TimeSpan -Days 30 or [timespan]::FromDays(30), not a bare number.
+        The UTC clock is sampled once per invocation; days are elapsed 24-hour
+        periods, not calendar days. With UpdatedBefore, both limits must match.
 
     .EXAMPLE
         Get-CopilotSession
@@ -31,6 +68,15 @@ function Get-CopilotSession {
     .EXAMPLE
         Get-CopilotSession -Id "abc-123"
         # Returns the session with the given ID.
+
+    .EXAMPLE
+        Get-CopilotSession -All -Repository 'owner/*' -Branch 'feature/*' -Summary '*cleanup*'
+        # Combines filters across every directory.
+
+    .EXAMPLE
+        Get-CopilotSession -All -UpdatedBefore '2026-08-01T00:00:00Z' -OlderThan (New-TimeSpan -Days 30) |
+            Remove-CopilotSession -WhatIf
+        # Previews cleanup of sessions matching both exclusive age cutoffs.
     #>
     [OutputType('CopilotSession')]
     [CmdletBinding(DefaultParameterSetName = 'Filter')]
@@ -40,15 +86,48 @@ function Get-CopilotSession {
 
         [Parameter(ParameterSetName = 'ById', Mandatory)]
         [ValidateNotNullOrEmpty()]
-        [string]$Id
+        [string]$Id,
+
+        [Parameter(ParameterSetName = 'Filter')]
+        [SupportsWildcards()]
+        [ValidateNotNullOrEmpty()]
+        [string]$Repository,
+
+        [Parameter(ParameterSetName = 'Filter')]
+        [SupportsWildcards()]
+        [ValidateNotNullOrEmpty()]
+        [string]$Branch,
+
+        [Parameter(ParameterSetName = 'Filter')]
+        [SupportsWildcards()]
+        [ValidateNotNullOrEmpty()]
+        [string]$Cwd,
+
+        [Parameter(ParameterSetName = 'Filter')]
+        [SupportsWildcards()]
+        [ValidateNotNullOrEmpty()]
+        [string]$Summary,
+
+        [Parameter(ParameterSetName = 'Filter')]
+        [datetimeoffset]$UpdatedBefore,
+
+        [Parameter(ParameterSetName = 'Filter')]
+        [ValidateScript({ $_ -gt [timespan]::Zero }, ErrorMessage = 'OlderThan must be a positive TimeSpan.')]
+        [timespan]$OlderThan
     )
 
+    $filters = @{}
+    foreach ($filter in 'Repository', 'Branch', 'Cwd', 'Summary', 'UpdatedBefore', 'OlderThan') {
+        if ($PSBoundParameters.ContainsKey($filter)) {
+            $filters[$filter] = $PSBoundParameters[$filter]
+        }
+    }
     $sessionStateDir = Join-Path (Get-CopilotHome) '.copilot' 'session-state'
     if (-not (Test-Path $sessionStateDir)) {
         return
     }
 
-    $cwd = (Get-Location).Path
+    $currentDirectory = (Get-Location).Path
 
     $dirs = if ($Id) {
         $target = Resolve-CopilotSessionPath -Id $Id
@@ -61,16 +140,16 @@ function Get-CopilotSession {
         $wsFile = Join-Path $_.FullName 'workspace.yaml'
         if (Test-Path $wsFile) {
             $content = Get-Content $wsFile -Raw
-            $sessionCwd = Get-CopilotWorkspaceField -Content $content -Field 'cwd'
-            $updatedAt  = Get-CopilotWorkspaceField -Content $content -Field 'updated_at'
-            $summary    = Get-CopilotWorkspaceField -Content $content -Field 'summary'
-            $branch     = Get-CopilotWorkspaceField -Content $content -Field 'branch'
-            $repository = Get-CopilotWorkspaceField -Content $content -Field 'repository'
-            $createdAt  = Get-CopilotWorkspaceField -Content $content -Field 'created_at'
-            $name       = Get-CopilotWorkspaceField -Content $content -Field 'name'
+            $sessionCwd        = Get-CopilotWorkspaceField -Content $content -Field 'cwd'
+            $updatedAt         = Get-CopilotWorkspaceField -Content $content -Field 'updated_at'
+            $sessionSummary    = Get-CopilotWorkspaceField -Content $content -Field 'summary'
+            $sessionBranch     = Get-CopilotWorkspaceField -Content $content -Field 'branch'
+            $sessionRepository = Get-CopilotWorkspaceField -Content $content -Field 'repository'
+            $createdAt         = Get-CopilotWorkspaceField -Content $content -Field 'created_at'
+            $name              = Get-CopilotWorkspaceField -Content $content -Field 'name'
             if ($name) { $name = ($name -split '\r?\n', 2)[0].Trim() }
 
-            if ($All -or $Id -or $sessionCwd -eq $cwd) {
+            if ($All -or $Id -or $filters.ContainsKey('Cwd') -or $sessionCwd -eq $currentDirectory) {
                 $eventsFile = Join-Path $_.FullName 'events.jsonl'
                 $eventCount = 0
                 $eventSize  = [long]0
@@ -88,11 +167,11 @@ function Get-CopilotSession {
                 [PSCustomObject]@{
                     PSTypeName = 'CopilotSession'
                     Id         = $_.Name
-                    Name       = $name ?? $summary ?? '(no summary)'
-                    Summary    = $name ?? $summary ?? '(no summary)'
+                    Name       = $name ?? $sessionSummary ?? '(no summary)'
+                    Summary    = $name ?? $sessionSummary ?? '(no summary)'
                     Cwd        = $sessionCwd
-                    Branch     = $branch
-                    Repository = $repository
+                    Branch     = $sessionBranch
+                    Repository = $sessionRepository
                     CreatedAt  = if ($createdAt) { [DateTimeOffset]::Parse($createdAt) } else { $null }
                     UpdatedAt  = if ($updatedAt) { [DateTimeOffset]::Parse($updatedAt) } else { $null }
                     EventCount = $eventCount
@@ -101,7 +180,7 @@ function Get-CopilotSession {
                 }
             }
         }
-    } | Sort-Object UpdatedAt -Descending
+    } | Select-CopilotSessionMatch @filters | Sort-Object UpdatedAt -Descending
 }
 
 function Remove-CopilotSession {

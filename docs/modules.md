@@ -151,13 +151,19 @@ Highlights:
 
 ## Shmuelie.VisualStudio
 
-Visual Studio developer shell helpers for PowerShell. **Version 0.1.1.**
+Visual Studio discovery, MSBuild resolution, and developer shell helpers for PowerShell. **Version 0.1.1.**
 [README](https://github.com/shmuelie/powershell-modules/blob/main/modules/Shmuelie.VisualStudio/README.md)
 
 Highlights:
 
 - `Get-InstalledVsVersion` lists installed Visual Studio years that have a
   matching `Set-VS<year>` command available.
+- `Resolve-MSBuild` resolves Visual Studio's real `MSBuild.exe` (not
+  `dotnet msbuild`) using `vswhere`, including standalone Build Tools. Optional
+  year/version-prefix and executable-architecture filters select the newest
+  compatible release; the default architecture is native to the OS. Returns
+  typed installation metadata or a path with `-PathOnly`, without running a
+  build or changing `PATH`. Windows-only; module import remains cross-platform.
 - `Start-DevShell` launches a nested `pwsh` inline with `VSDEV_VERSION`,
   `VSDEV_ARCH`, `VSDEV_HOSTARCH`, and a clean login `PATH` for profile-driven
   Visual Studio environment loading.
