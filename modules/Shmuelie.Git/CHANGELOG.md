@@ -7,6 +7,10 @@ Versions change only when a release is cut; unreleased work stays under
 ## [Unreleased]
 
 ### Added
+- Added `Set-Branch` to switch local branches, create at HEAD with `-CreateNew`,
+  or create a local branch with a remote upstream using `-Track`. Supports
+  repository paths, `-WhatIf`/`-Confirm`, and explicit `-Force` to discard local
+  changes without resetting existing branches or bypassing worktree protection.
 - Added `Get-GitTag` for typed, read-only local tag discovery with exact/wildcard
   name filters, repository path input, annotated/lightweight metadata, full tag
   annotations, offset-preserving dates, and correctly peeled commit/blob/tree
