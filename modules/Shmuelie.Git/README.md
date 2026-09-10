@@ -19,6 +19,8 @@ Import-Module Shmuelie.Git
 | `Repair-RepositoryLayout` | Conform existing clones and worktrees to that layout |
 | `Sync-GitRemote` | Fetch all remotes for the current or `-Path` repository with pruning, returning typed results; picks the right `gh` account per host (github.com/GHE) when several are signed in |
 | `Get-Worktrees` | List worktrees for the current or `-Path` repository |
+| `Get-Branch` | List local and cached remote-tracking refs as `GitBranch` objects, with current branch, commit, upstream, ahead/behind counts and symbolic target (`-Local` / `-Remote` filter the results; never fetches) |
+| `Set-Config` | Set one literal git configuration value with `-Location local` (default), `global` or `system`; supports `-Path`, `-WhatIf` and `-Confirm` |
 | `Get-CurrentWorktree` / `Get-RootWorktree` | Resolve the worktree for the current directory/`-Path` or the repository root |
 | `Get-WorktreePath` | Compute the path a branch's worktree would use for the current or `-Path` repository |
 | `New-Worktree` | Create a branch from the current or `-Path` repository and check it out to a worktree, optionally at destination `-WorktreePath` |
@@ -29,12 +31,14 @@ Import-Module Shmuelie.Git
 | `Remove-StaleWorktree` | Prune stale worktree administrative entries for deleted worktree directories |
 | `Repair-Worktree` | Repair worktree links after a repository or worktree move |
 | `Lock-Worktree` / `Unlock-Worktree` | Lock or unlock a worktree by branch name |
-| `Update-Worktrees` | Fast-forward every worktree for the current or `-Path` repository from upstream (forwards the `Sync-GitRemote` GitHub-account options to the fetch) |
+| `Update-Worktrees` | Fast-forward every worktree for the current or `-Path` repository from upstream (`-ChangedOnly` emits only actionable results; forwards the `Sync-GitRemote` GitHub-account options to the fetch) |
 | `Update-AllWorktrees` | Discover repositories under `$env:SOURCE_REPOS` or a supplied `-Path` root and update each repository in parallel (`-ChangedOnly` emits compact actionable worktree rows) |
 | `Find-StaleBranch` | Find local branches in the current or `-Path` repository whose upstream branch is gone (`-IncludeNeverPushed` also includes local-only branches) |
+| `Remove-Branch` | Delete an exact local branch (`-Force` permits unmerged deletion) or a remote branch with `-Remote -RemoteName origin`; high-impact confirmation and `-WhatIf` protect every deletion |
 | `Get-GitStatusSummary` | Parse `git status` for the current or `-Path` repository into a typed object (branch, ahead/behind, conflicts, stash, operation) |
 | `Get-GitTag` | Inspect local annotated/lightweight tags as typed objects, with case-sensitive exact/wildcard `-Name` filtering and standard repository `-Path` input; never fetches |
 | `Save-GitStash` | Save tracked changes with `git stash push`; opt into `-KeepIndex`, `-IncludeUntracked` or `-All`, and a literal `-Message`; supports pipeline repository paths and `-WhatIf`/`-Confirm` |
+| `Set-Branch` | Switch an existing working tree to a local branch; `-CreateNew` creates at HEAD, `-Track` creates from a remote-tracking branch, and `-Force` explicitly discards local changes; supports `-Path`, `-WhatIf` and `-Confirm` |
 | `Format-GitStatusSegment` | Render a `GitStatusSummary` as a colored posh-git-style prompt segment (`$PSStyle` string; `-ShowChangeCounts` toggles the change counts) |
 | `Update-WorktreePrediction` | Refresh the bundled predictor for the current directory |
 
@@ -59,14 +63,57 @@ New-Repository https://github.com/owner/repo
 New-Worktree -WorkName my-feature -SetLocation
 Add-Worktree -BranchName feature/my-feature -WorktreePath ../custom-feature
 Move-Worktree -BranchName feature/my-feature -DestinationPath ../moved-feature
-Update-Worktrees | Where-Object Status -ne Current
+Update-Worktrees -ChangedOnly
 Update-AllWorktrees -Organization shmuelie,microsoft -Exclude 'archive/*'
 Update-AllWorktrees -Organization shmuelie -ChangedOnly
 Find-StaleBranch | Remove-Worktree
 Get-GitStatusSummary
+Get-Branch -Path ../project -Local
 Get-GitTag -Name 'v1.*', 'stable' -Path ../project
 $stash = Save-GitStash -Path ../project -KeepIndex -Message 'Pause work'
+Set-Config -Path ../project -Property user.name -Value 'Example User'
+Set-Config core.editor 'code --wait' -Location global -WhatIf
+Remove-Branch -Name feature/finished -Path ../project -WhatIf
+Remove-Branch -Name feature/finished -Remote -RemoteName upstream
+Set-Branch -Branch feature/new -CreateNew -Path ../project
+Set-Branch -Branch origin/feature/topic -Track
+Set-Branch -Branch main -Force -WhatIf
 ```
+
+`Remove-Branch` accepts an exact branch name or `refs/heads/<name>`, not wildcard
+patterns, revision expressions or remote-tracking refs. It uses Git's safe local
+deletion (`branch -d`), which requires the branch to be merged into its upstream,
+or into HEAD when no upstream is configured. Local-only `-Force` permits unmerged
+deletion but never bypasses confirmation or Git's checked-out-worktree protection.
+Use `-Confirm:$false` explicitly for unattended deletion.
+
+With `-Remote`, only that branch is deleted from the selected configured remote
+(default `origin`), using its push URLs. No remote is inferred from the branch's
+upstream or name, and local branches are left intact. The command disables mirror
+pushes and automatic tag following, never force-pushes, and reports native failures
+as PowerShell errors without success output. `-WhatIf` and declined confirmation
+never push. Git may accept an already absent remote branch as a no-op.
+`-Path` is literal, defaults to the current directory, supports bare
+repositories, and has `RepositoryPath`/`RepoPath` aliases. Pipeline strings bind to
+`Name`; objects can supply both branch and repository path properties.
+
+`Get-Branch` accepts a literal `-Path` (aliases `-RepositoryPath` / `-RepoPath`),
+pipeline paths, or objects with any of those properties. It also accepts bare
+repositories and never changes location. By default it includes both local and
+remote-tracking branches; `-Local -Remote` explicitly selects both.
+
+Each `GitBranch` has `Branch`, `RefName`, `Current`, `Commit`, `Upstream`,
+`AheadBy`, `BehindBy`, `UpstreamGone`, `SymbolicTarget`, `IsRemote`, `Subject`
+and `RepositoryPath`. `Branch` omits `refs/heads/` or `refs/remotes/`, while
+`RefName`, `Upstream` and `SymbolicTarget` use full ref names to avoid ambiguity.
+`RepositoryPath` is the resolved input directory, including when it is a
+subdirectory or linked worktree. Absent upstreams and symbolic targets are null.
+Counts are 64-bit integers relative to locally available upstream history, or
+null when no upstream exists; `UpstreamGone` identifies a configured but missing
+upstream. A detached HEAD marks no branch current, and an unborn branch has no
+ref to list. Remote symbolic refs such as `origin/HEAD` are included.
+Implicit partial-clone fetches are disabled in child git processes; unavailable
+promised objects surface as git errors rather than initiating network access.
 
 `Get-GitTag` returns `GitTag` objects with `Name`, `Reference`, `ObjectId`,
 `ObjectType`, `IsAnnotated`, `TargetObjectId`, `TargetObjectType`, `TargetCommit`,
@@ -81,8 +128,6 @@ the creator date of a lightweight commit tag is the commit's committer date,
 not the tag's creation time. Git does not record creation times for lightweight
 tags. `RepositoryPath` is the resolved input directory. Bare repositories are
 supported; no tags or no name matches produces no output.
-
-### Saving changes
 
 `Save-GitStash` saves staged and unstaged tracked changes, then resets them to
 HEAD. `-KeepIndex` leaves staged changes in the index and working tree, but still
@@ -120,10 +165,47 @@ Avoid concurrent stash operations in the same repository, including linked
 worktrees: Git locks updates, but reading the before/after identity is not atomic
 with another process's stash changes.
 
+`Set-Config` writes one key and produces no output. Property and value are
+literal arguments, including quotes, whitespace, special characters and empty
+or leading-dash values; git validates key syntax. An existing single value is
+replaced, while multiple existing values or write errors are reported by git
+rather than silently replacing all values. Other keys remain unchanged.
+The literal `-Path` defaults to the current directory and has `-RepositoryPath`,
+`-RepoPath` and legacy `-Repository` aliases; paths or path-bearing objects can
+also be piped in. Local scope requires a working tree or bare repository.
+Global/system scope can run outside a repository, but an explicit path must
+still be an existing FileSystem directory. Git selects the scope's file using
+its normal environment and configuration rules; system scope may need elevated
+permissions. Each pipeline item is independently gated by `-WhatIf`/`-Confirm`;
+previewing or declining a change never writes configuration.
+
+`Set-Branch` requires a literal `-Branch` (`-BranchName` is also accepted).
+`-Path` defaults to the current directory and also accepts `-RepositoryPath`,
+`-RepoPath`, pipeline paths, and objects with those path properties. The caller's
+location is unchanged. Without a creation flag, the branch must already exist
+locally; Git's implicit remote-branch guessing is disabled.
+`-CreateNew` creates at HEAD without an upstream and never resets an existing
+branch, even with `-Force`. `-Track` instead takes a remote-tracking name such as
+`origin/feature/topic`, creates `feature/topic`, and sets its upstream. These two
+creation modes cannot be combined. Neither mode fetches or updates a remote.
+`-Force` can discard staged/unstaged changes and obstructing untracked files;
+it does not bypass `-WhatIf`, `-Confirm`, or Git's protection for branches checked
+out in another worktree. Git failures are PowerShell errors (use
+`-ErrorAction Stop` to terminate); success produces no pipeline output.
+
 `Update-Worktrees` skips behind worktrees that have an in-progress git
 operation, returning `Status = 'InProgress'` with the existing operation string
 (for example `MERGING` or `REBASE-i 1/3`) instead of stashing or fast-forwarding
 them.
+
+`Update-Worktrees -ChangedOnly` returns only `WorktreeUpdateResult` objects with
+status `Updated`, `Removed`, `Failed`, or `StashFailed`, matching the actionable
+statuses used by `Update-AllWorktrees -ChangedOnly`. It filters output only:
+fetching, update eligibility, and worktree actions are unchanged. Without the
+switch (or with `-ChangedOnly:$false`), every result is returned as before.
+Warnings and errors remain visible even when there is no result object.
+`-WhatIf` still displays the standard fetch and fast-forward previews without
+performing either operation or reporting a preview as a completed update.
 
 ## Requirements
 
