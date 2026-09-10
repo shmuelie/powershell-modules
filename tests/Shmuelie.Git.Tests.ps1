@@ -94,6 +94,317 @@ BeforeAll {
     }
 }
 
+Describe 'Get-GitTag' {
+    BeforeAll {
+        $tagEnvironment = @{}
+        foreach ($key in @(
+            'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_SYSTEM', 'GIT_CONFIG_NOSYSTEM',
+            'GIT_CONFIG_COUNT', 'GIT_CONFIG_PARAMETERS', 'GIT_AUTHOR_DATE', 'GIT_COMMITTER_DATE'
+        )) {
+            $tagEnvironment[$key] = [Environment]::GetEnvironmentVariable($key, 'Process')
+        }
+        $env:GIT_CONFIG_GLOBAL = Join-Path $TestDrive 'no-global-config'
+        $env:GIT_CONFIG_SYSTEM = Join-Path $TestDrive 'no-system-config'
+        $env:GIT_CONFIG_NOSYSTEM = '1'
+        $env:GIT_CONFIG_COUNT = '0'
+        Remove-Item Env:GIT_CONFIG_PARAMETERS -ErrorAction Ignore
+        $env:GIT_AUTHOR_DATE = '2024-01-02T03:04:05-07:00'
+        $env:GIT_COMMITTER_DATE = '2024-01-03T04:05:06-07:00'
+        $tagRepo = New-TestRepo -Path (Join-Path $TestDrive 'tags repo')
+        $emptyTagRepo = New-TestRepo -Path (Join-Path $TestDrive 'no tags') -NoCommit
+        $commitId = Invoke-Git @('-C', $tagRepo, 'rev-parse', 'HEAD')
+        $treeId = Invoke-Git @('-C', $tagRepo, 'rev-parse', 'HEAD^{tree}')
+        $blobId = Invoke-Git @('-C', $tagRepo, 'rev-parse', 'HEAD:README.md')
+        $tagSubdirectory = New-Item -ItemType Directory -Path (Join-Path $tagRepo 'subdirectory')
+        $env:GIT_COMMITTER_DATE = '2024-02-03T13:45:06+05:45'
+        $unicodeName = "release-$([char]0xe9)-$([char]0x65e5)"
+        $annotation = "Release $([char]0xe9) $([char]::ConvertFromUtf32(0x1f680))`n`nSecond paragraph`nlast line`n`n"
+        $controlAnnotation = "Quote ' and ! and \ and $([char]0x1f) and $([char]0x1e)`n`nTab`tCR`rLF`n`n"
+
+        foreach ($entry in @(
+            @{ Name = 'a-light'; Target = $commitId }
+            @{ Name = 'blob'; Target = $blobId }
+            @{ Name = 'tree'; Target = $treeId }
+            @{ Name = 'release/v1.0'; Target = $commitId }
+            @{ Name = 'release/v1.1'; Target = $commitId }
+            @{ Name = $unicodeName; Target = $commitId }
+        )) {
+            Invoke-Git @('-C', $tagRepo, 'tag', $entry.Name, $entry.Target)
+        }
+        foreach ($entry in @(
+            @{ Name = 'annotated'; Target = $commitId; Message = $annotation }
+            @{ Name = 'control'; Target = $commitId; Message = $controlAnnotation }
+            @{ Name = 'empty'; Target = $commitId; Message = '' }
+            @{ Name = 'annotated-blob'; Target = $blobId; Message = 'blob annotation' }
+            @{ Name = 'annotated-tree'; Target = $treeId; Message = 'tree annotation' }
+            @{ Name = 'nested-commit'; Target = 'refs/tags/annotated'; Message = 'outer commit annotation' }
+            @{ Name = 'nested-blob'; Target = 'refs/tags/annotated-blob'; Message = 'outer blob annotation' }
+            @{ Name = 'nested-tree'; Target = 'refs/tags/annotated-tree'; Message = 'outer tree annotation' }
+            @{ Name = 'nested-twice'; Target = 'refs/tags/nested-commit'; Message = 'two levels' }
+        )) {
+            $messagePath = Join-Path $TestDrive 'tag-message.txt'
+            Set-Content -LiteralPath $messagePath -Value $entry.Message -NoNewline -Encoding utf8
+            Invoke-Git @(
+                '-C', $tagRepo, '-c', 'advice.nestedTag=false', 'tag', '-a', '--cleanup=verbatim',
+                '-F', $messagePath, $entry.Name, $entry.Target
+            )
+        }
+        Invoke-Git @('-C', $tagRepo, 'branch', 'annotated')
+        Invoke-Git @('-C', $tagRepo, 'update-ref', 'refs/archive/annotated', $commitId)
+    }
+
+    AfterAll {
+        foreach ($key in $tagEnvironment.Keys) {
+            [Environment]::SetEnvironmentVariable($key, $tagEnvironment[$key], 'Process')
+        }
+    }
+
+    It 'exports the documented type and standard pipeline path metadata without ShouldProcess' {
+        $command = Get-Command Get-GitTag -Module Shmuelie.Git
+        $command.OutputType.Name | Should -Contain 'GitTag'
+        $command.Parameters.Path.Aliases | Should -Be @('RepositoryPath', 'RepoPath')
+        $pathAttribute = $command.Parameters.Path.Attributes |
+            Where-Object { $_ -is [System.Management.Automation.ParameterAttribute] }
+        $pathAttribute.ValueFromPipeline | Should -BeTrue
+        $pathAttribute.ValueFromPipelineByPropertyName | Should -BeTrue
+        $command.Parameters.Keys | Should -Not -Contain 'WhatIf'
+        (Get-Help Get-GitTag).Description.Text | Should -Not -BeNullOrEmpty
+    }
+
+    It 'returns one stable object per tag, never branches or other refs' {
+        $tags = @(Get-GitTag -Path $tagRepo)
+        $tags.Count | Should -Be 15
+        @($tags.Reference | Where-Object { -not $_.StartsWith('refs/tags/') }) | Should -HaveCount 0
+        @($tags | Where-Object Reference -CEQ 'refs/tags/annotated') | Should -HaveCount 1
+        $tags.Name | Should -Be @($tags.Name | Sort-Object -CaseSensitive -Culture '')
+        foreach ($tag in $tags) {
+            $tag.PSTypeNames[0] | Should -BeExactly 'GitTag'
+            @($tag.PSObject.Properties.Name) | Should -Be @(
+                'Name', 'Reference', 'ObjectId', 'ObjectType', 'IsAnnotated',
+                'TargetObjectId', 'TargetObjectType', 'TargetCommit', 'Subject',
+                'Annotation', 'TaggerDate', 'CreatorDate', 'RepositoryPath'
+            )
+            $tag.IsAnnotated | Should -BeOfType ([bool])
+            $tag.RepositoryPath | Should -BeExactly $tagRepo
+            $tag.ObjectId | Should -Match '^[0-9a-f]{40,64}$'
+        }
+    }
+
+    It 'supports case-sensitive exact and wildcard full-name filters without duplicate results' -ForEach @(
+        @{ Filter = @('annotated'); Expected = @('annotated') }
+        @{ Filter = @('release/v1.?'); Expected = @('release/v1.0', 'release/v1.1') }
+        @{ Filter = @('release/*', 'release/v1.0'); Expected = @('release/v1.0', 'release/v1.1') }
+        @{ Filter = @('release/v1.[01]'); Expected = @('release/v1.0', 'release/v1.1') }
+        @{ Filter = @('ANNOTATED'); Expected = @() }
+        @{ Filter = @('v1.*'); Expected = @() }
+        @{ Filter = @('--contains=HEAD'); Expected = @() }
+        @{ Filter = @('refs/heads/*'); Expected = @() }
+    ) {
+        $tags = @(Get-GitTag -Name $Filter -Path $tagRepo)
+        @($tags | ForEach-Object Name) | Should -Be $Expected
+    }
+
+    It 'distinguishes lightweight commit tags without inventing annotation or tagger dates' {
+        $tag = Get-GitTag 'a-light' -Path $tagRepo
+        $tag.IsAnnotated | Should -BeFalse
+        $tag.ObjectType | Should -BeExactly 'commit'
+        $tag.ObjectId | Should -BeExactly $commitId
+        $tag.TargetCommit | Should -BeExactly $commitId
+        $tag.Subject | Should -BeExactly 'init'
+        ($null -eq $tag.Annotation) | Should -BeTrue
+        ($null -eq $tag.TaggerDate) | Should -BeTrue
+        $tag.CreatorDate | Should -BeOfType ([DateTimeOffset])
+        $tag.CreatorDate.ToString('yyyy-MM-ddTHH:mm:sszzz') | Should -BeExactly '2024-01-03T04:05:06-07:00'
+    }
+
+    It 'preserves annotated tag metadata, full multiline contents and recorded date offsets' {
+        $tag = Get-GitTag annotated -Path $tagRepo
+        $tag.IsAnnotated | Should -BeTrue
+        $tag.ObjectType | Should -BeExactly 'tag'
+        $tag.ObjectId | Should -Not -Be $commitId
+        $tag.TargetCommit | Should -BeExactly $commitId
+        $tag.Subject | Should -BeExactly ($annotation -split "`n")[0]
+        $tag.Annotation | Should -BeExactly $annotation
+        $tag.TaggerDate | Should -BeOfType ([DateTimeOffset])
+        $tag.TaggerDate.ToString('yyyy-MM-ddTHH:mm:sszzz') | Should -BeExactly '2024-02-03T13:45:06+05:45'
+        $tag.CreatorDate | Should -Be $tag.TaggerDate
+    }
+
+    It 'preserves empty annotations and quoted control characters without corrupting adjacent records' {
+        $empty = Get-GitTag empty -Path $tagRepo
+        $empty.IsAnnotated | Should -BeTrue
+        ($null -ne $empty.Annotation) | Should -BeTrue
+        $empty.Annotation | Should -BeExactly ''
+        $empty.Subject | Should -BeExactly ''
+        $tags = @(Get-GitTag -Name 'control', 'empty' -Path $tagRepo)
+        $tags | Should -HaveCount 2
+        $tags[0].Annotation | Should -BeExactly $controlAnnotation
+        $tags[1].Name | Should -BeExactly 'empty'
+    }
+
+    It 'returns Unicode tag names without git short-name quoting or ambiguity' {
+        $tag = Get-GitTag -Name $unicodeName -Path $tagRepo
+        $tag.Name | Should -BeExactly $unicodeName
+        $tag.Reference | Should -BeExactly "refs/tags/$unicodeName"
+    }
+
+    It 'fully peels <TagName> without mistaking a non-commit object for a commit' -ForEach @(
+        @{ TagName = 'blob'; Type = 'blob'; Annotated = $false }
+        @{ TagName = 'tree'; Type = 'tree'; Annotated = $false }
+        @{ TagName = 'annotated-blob'; Type = 'blob'; Annotated = $true }
+        @{ TagName = 'annotated-tree'; Type = 'tree'; Annotated = $true }
+        @{ TagName = 'nested-blob'; Type = 'blob'; Annotated = $true }
+        @{ TagName = 'nested-tree'; Type = 'tree'; Annotated = $true }
+        @{ TagName = 'nested-commit'; Type = 'commit'; Annotated = $true }
+        @{ TagName = 'nested-twice'; Type = 'commit'; Annotated = $true }
+    ) {
+        $tag = Get-GitTag $TagName -Path $tagRepo
+        $tag.IsAnnotated | Should -Be $Annotated
+        $tag.TargetObjectType | Should -BeExactly $Type
+        $expectedId = switch ($Type) { blob { $blobId }; tree { $treeId }; commit { $commitId } }
+        $tag.TargetObjectId | Should -BeExactly $expectedId
+        if ($Type -eq 'commit') {
+            $tag.TargetCommit | Should -BeExactly $commitId
+        } else {
+            ($null -eq $tag.TargetCommit) | Should -BeTrue
+        }
+        if (-not $Annotated) {
+            ($null -eq $tag.CreatorDate) | Should -BeTrue
+            ($null -eq $tag.TaggerDate) | Should -BeTrue
+            $tag.Subject | Should -BeExactly ''
+        }
+    }
+
+    It 'handles no tags and no matches as normal empty results' {
+        @(Get-GitTag -Path $emptyTagRepo -ErrorAction Stop) | Should -HaveCount 0
+        @(Get-GitTag -Path $tagRepo -Name 'missing*' -ErrorAction Stop) | Should -HaveCount 0
+    }
+
+    It 'targets explicit, pipeline and current paths without changing location or repository state' {
+        $beforeLocation = (Get-Location).ProviderPath
+        $beforeRefs = Invoke-Git @('-C', $tagRepo, 'show-ref')
+        $beforeStatus = Invoke-Git @('-C', $tagRepo, 'status', '--porcelain=v1', '--untracked-files=all')
+        foreach ($inputPath in @(
+            $tagRepo,
+            [PSCustomObject]@{ Path = $tagRepo },
+            [PSCustomObject]@{ RepositoryPath = $tagRepo },
+            [PSCustomObject]@{ RepoPath = $tagRepo }
+        )) {
+            ($inputPath | Get-GitTag -Name a-light).TargetCommit | Should -BeExactly $commitId
+        }
+        @($emptyTagRepo, $tagRepo | Get-GitTag -Name a-light) | Should -HaveCount 1
+        (Get-GitTag -RepositoryPath $tagSubdirectory.FullName -Name a-light).RepositoryPath |
+            Should -BeExactly $tagSubdirectory.FullName
+        (Get-GitTag -RepoPath $tagRepo -Name a-light).TargetCommit | Should -BeExactly $commitId
+        (Get-Location).ProviderPath | Should -BeExactly $beforeLocation
+        Push-Location $tagSubdirectory.FullName
+        try {
+            (Get-GitTag -Name a-light).RepositoryPath | Should -BeExactly $tagSubdirectory.FullName
+            (Get-Location).ProviderPath | Should -BeExactly $tagSubdirectory.FullName
+        } finally {
+            Pop-Location
+        }
+        Invoke-Git @('-C', $tagRepo, 'show-ref') | Should -Be $beforeRefs
+        Invoke-Git @('-C', $tagRepo, 'status', '--porcelain=v1', '--untracked-files=all') |
+            Should -Be $beforeStatus
+    }
+
+    It 'supports bare repositories and linked worktrees using only local objects' {
+        $barePath = Join-Path $TestDrive 'tags bare.git'
+        Invoke-Git @('clone', '--bare', '--quiet', '--', $tagRepo, $barePath)
+        (Get-GitTag -Path $barePath -Name nested-commit).TargetCommit | Should -BeExactly $commitId
+        $linkedPath = Join-Path $TestDrive 'tags linked'
+        Invoke-Git @('-C', $tagRepo, 'worktree', 'add', '--detach', '--quiet', $linkedPath)
+        $tag = Get-GitTag -Path $linkedPath -Name annotated
+        $tag.RepositoryPath | Should -BeExactly $linkedPath
+        $tag.Annotation | Should -BeExactly $annotation
+    }
+
+    It 'surfaces invalid repository paths clearly' {
+        { Get-GitTag -Path (Join-Path $TestDrive 'missing') -ErrorAction Stop } |
+            Should -Throw -ExpectedMessage '*repository path not found*'
+        { Get-GitTag -Path $TestDrive -ErrorAction Stop } |
+            Should -Throw -ExpectedMessage '*not inside a git working tree*'
+        { Get-GitTag -Path (Join-Path $tagRepo 'README.md') -ErrorAction Stop } |
+            Should -Throw -ExpectedMessage '*must be a FileSystem directory*'
+    }
+
+    It 'surfaces native failures rather than silently returning an empty tag list' {
+        InModuleScope Shmuelie.Git -Parameters @{ Repo = $tagRepo } {
+            param($Repo)
+            Mock Resolve-GitRepositoryPath { $Repo }
+            Mock Invoke-GitProcess {
+                [PSCustomObject]@{
+                    ExitCode = 128; StandardOutput = ''; StandardError = 'tag objects unavailable'; Output = @()
+                }
+            }
+            Get-GitTag -Path $Repo -ErrorAction SilentlyContinue -ErrorVariable failures |
+                Should -BeNullOrEmpty
+            $failures | Should -HaveCount 1
+            $failures[0].FullyQualifiedErrorId | Should -Match '^GitCommandFailed'
+            $failures[0].TargetObject.ExitCode | Should -Be 128
+            { Get-GitTag -Path $Repo -ErrorAction Stop } |
+                Should -Throw -ExpectedMessage '*tag objects unavailable*'
+            Should -Invoke Invoke-GitProcess -Times 2 -ParameterFilter {
+                $Arguments -contains 'for-each-ref' -and $Arguments -contains 'refs/tags/' -and
+                $Arguments -contains '--shell' -and $Environment.GIT_NO_LAZY_FETCH -eq '1'
+            }
+        }
+    }
+
+    It 'parses quoted fields as data even when the contents contain NUL or executable-looking text' {
+        InModuleScope Shmuelie.Git {
+            $message = "first`0second`n`n" + '$(throw "do not execute")' + "`n"
+            $values = @(
+                'refs/tags/data', 'tag', ('1' * 40), 'commit', ('2' * 40),
+                '', '', 'first', $message
+            )
+            $output = ($values | ForEach-Object { "'$_'" }) -join "`0"
+            Mock Invoke-Git {
+                [PSCustomObject]@{ StandardOutput = "$output`n"; RepositoryPath = 'unused' }
+            }
+            $tag = Get-GitTag
+            $tag.Subject | Should -BeExactly 'first'
+            $tag.Annotation | Should -BeExactly $message
+            ($null -eq $tag.TaggerDate) | Should -BeTrue
+            ($null -eq $tag.CreatorDate) | Should -BeTrue
+        }
+    }
+
+    It 'surfaces a nested tag peeling failure without returning a misleading target' {
+        InModuleScope Shmuelie.Git {
+            $output = @(
+                "'refs/tags/nested'", "'tag'", "'$('1' * 40)'", "'tag'", "'$('2' * 40)'",
+                "''", "''", "'subject'", "'annotation'"
+            ) -join "`0"
+            Mock Resolve-GitRepositoryPath { 'unused' }
+            Mock Invoke-GitProcess {
+                if ($Arguments -contains 'for-each-ref') {
+                    [PSCustomObject]@{ ExitCode = 0; StandardOutput = "$output`n"; StandardError = ''; Output = @() }
+                } else {
+                    [PSCustomObject]@{ ExitCode = 128; StandardOutput = ''; StandardError = 'missing nested target'; Output = @() }
+                }
+            }
+            Get-GitTag -ErrorAction SilentlyContinue -ErrorVariable failures | Should -BeNullOrEmpty
+            $failures | Should -HaveCount 1
+            $failures[0].Exception.Message | Should -BeLike '*missing nested target*'
+            Should -Invoke Invoke-GitProcess -Times 1 -ParameterFilter {
+                $Arguments -contains 'rev-parse' -and $Arguments -contains "$('1' * 40)^{}" -and
+                $Environment.GIT_NO_LAZY_FETCH -eq '1'
+            }
+        }
+    }
+
+    It 'rejects malformed machine output instead of producing success-shaped rows' {
+        InModuleScope Shmuelie.Git {
+            Mock Invoke-Git {
+                [PSCustomObject]@{ StandardOutput = "not formatted`n"; RepositoryPath = 'unused' }
+            }
+            { Get-GitTag } | Should -Throw -ErrorId 'GitTagFormatInvalid,Get-GitTag'
+        }
+    }
+}
+
 Describe 'Private git invocation error contracts' {
     BeforeAll {
         $script:invocationRepo = New-TestRepo -Path (Join-Path $TestDrive 'invocation-contract')

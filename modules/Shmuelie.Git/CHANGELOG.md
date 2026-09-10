@@ -6,6 +6,12 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+### Added
+- Added `Get-GitTag` for typed, read-only local tag discovery with exact/wildcard
+  name filters, repository path input, annotated/lightweight metadata, full tag
+  annotations, offset-preserving dates, and correctly peeled commit/blob/tree
+  targets (including nested tags).
+
 ## [0.8.2] - 2026-09-08
 
 ### Fixed
