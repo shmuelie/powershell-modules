@@ -34,8 +34,10 @@ Import-Module Shmuelie.Git
 | `Update-Worktrees` | Fast-forward every worktree for the current or `-Path` repository from upstream (`-ChangedOnly` emits only actionable results; forwards the `Sync-GitRemote` GitHub-account options to the fetch) |
 | `Update-AllWorktrees` | Discover repositories under `$env:SOURCE_REPOS` or a supplied `-Path` root and update each repository in parallel (`-ChangedOnly` emits compact actionable worktree rows) |
 | `Find-StaleBranch` | Find local branches in the current or `-Path` repository whose upstream branch is gone (`-IncludeNeverPushed` also includes local-only branches) |
+| `Remove-Branch` | Delete an exact local branch (`-Force` permits unmerged deletion) or a remote branch with `-Remote -RemoteName origin`; high-impact confirmation and `-WhatIf` protect every deletion |
 | `Get-GitStatusSummary` | Parse `git status` for the current or `-Path` repository into a typed object (branch, ahead/behind, conflicts, stash, operation) |
 | `Get-GitTag` | Inspect local annotated/lightweight tags as typed objects, with case-sensitive exact/wildcard `-Name` filtering and standard repository `-Path` input; never fetches |
+| `Set-Branch` | Switch an existing working tree to a local branch; `-CreateNew` creates at HEAD, `-Track` creates from a remote-tracking branch, and `-Force` explicitly discards local changes; supports `-Path`, `-WhatIf` and `-Confirm` |
 | `Format-GitStatusSegment` | Render a `GitStatusSummary` as a colored posh-git-style prompt segment (`$PSStyle` string; `-ShowChangeCounts` toggles the change counts) |
 | `Update-WorktreePrediction` | Refresh the bundled predictor for the current directory |
 
@@ -69,7 +71,29 @@ Get-Branch -Path ../project -Local
 Get-GitTag -Name 'v1.*', 'stable' -Path ../project
 Set-Config -Path ../project -Property user.name -Value 'Example User'
 Set-Config core.editor 'code --wait' -Location global -WhatIf
+Remove-Branch -Name feature/finished -Path ../project -WhatIf
+Remove-Branch -Name feature/finished -Remote -RemoteName upstream
+Set-Branch -Branch feature/new -CreateNew -Path ../project
+Set-Branch -Branch origin/feature/topic -Track
+Set-Branch -Branch main -Force -WhatIf
 ```
+
+`Remove-Branch` accepts an exact branch name or `refs/heads/<name>`, not wildcard
+patterns, revision expressions or remote-tracking refs. It uses Git's safe local
+deletion (`branch -d`), which requires the branch to be merged into its upstream,
+or into HEAD when no upstream is configured. Local-only `-Force` permits unmerged
+deletion but never bypasses confirmation or Git's checked-out-worktree protection.
+Use `-Confirm:$false` explicitly for unattended deletion.
+
+With `-Remote`, only that branch is deleted from the selected configured remote
+(default `origin`), using its push URLs. No remote is inferred from the branch's
+upstream or name, and local branches are left intact. The command disables mirror
+pushes and automatic tag following, never force-pushes, and reports native failures
+as PowerShell errors without success output. `-WhatIf` and declined confirmation
+never push. Git may accept an already absent remote branch as a no-op.
+`-Path` is literal, defaults to the current directory, supports bare
+repositories, and has `RepositoryPath`/`RepoPath` aliases. Pipeline strings bind to
+`Name`; objects can supply both branch and repository path properties.
 
 `Get-Branch` accepts a literal `-Path` (aliases `-RepositoryPath` / `-RepoPath`),
 pipeline paths, or objects with any of those properties. It also accepts bare
@@ -116,6 +140,20 @@ still be an existing FileSystem directory. Git selects the scope's file using
 its normal environment and configuration rules; system scope may need elevated
 permissions. Each pipeline item is independently gated by `-WhatIf`/`-Confirm`;
 previewing or declining a change never writes configuration.
+
+`Set-Branch` requires a literal `-Branch` (`-BranchName` is also accepted).
+`-Path` defaults to the current directory and also accepts `-RepositoryPath`,
+`-RepoPath`, pipeline paths, and objects with those path properties. The caller's
+location is unchanged. Without a creation flag, the branch must already exist
+locally; Git's implicit remote-branch guessing is disabled.
+`-CreateNew` creates at HEAD without an upstream and never resets an existing
+branch, even with `-Force`. `-Track` instead takes a remote-tracking name such as
+`origin/feature/topic`, creates `feature/topic`, and sets its upstream. These two
+creation modes cannot be combined. Neither mode fetches or updates a remote.
+`-Force` can discard staged/unstaged changes and obstructing untracked files;
+it does not bypass `-WhatIf`, `-Confirm`, or Git's protection for branches checked
+out in another worktree. Git failures are PowerShell errors (use
+`-ErrorAction Stop` to terminate); success produces no pipeline output.
 
 `Update-Worktrees` skips behind worktrees that have an in-progress git
 operation, returning `Status = 'InProgress'` with the existing operation string
