@@ -70,6 +70,7 @@ Export-ModuleMember -Function @(
     'Get-GitStatusSummary',
     'Format-GitStatusSegment',
     'Get-Worktrees',
+    'Get-Branch',
     'Get-CurrentWorktree',
     'Get-RepositoryName',
     'Get-RootWorktree',

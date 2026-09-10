@@ -10,7 +10,7 @@
     CompatiblePSEditions = @('Core')
     FunctionsToExport = @(
         'Sync-GitRemote', 'Get-GitStatusSummary', 'Format-GitStatusSegment', 'Get-Worktrees',
-        'Get-CurrentWorktree', 'Get-RepositoryName', 'Get-RootWorktree',
+        'Get-Branch', 'Get-CurrentWorktree', 'Get-RepositoryName', 'Get-RootWorktree',
         'Get-WorktreePath', 'Add-Worktree', 'New-Worktree', 'Remove-Worktree',
         'Move-Worktree', 'Set-Worktree', 'Remove-StaleWorktree', 'Repair-Worktree',
         'Lock-Worktree', 'Unlock-Worktree', 'Update-Worktrees', 'Update-AllWorktrees',
