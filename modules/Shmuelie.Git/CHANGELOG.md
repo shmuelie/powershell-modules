@@ -7,6 +7,10 @@ Versions change only when a release is cut; unreleased work stays under
 ## [Unreleased]
 
 ### Added
+- Added `Set-Branch` to switch local branches, create at HEAD with `-CreateNew`,
+  or create a local branch with a remote upstream using `-Track`. Supports
+  repository paths, `-WhatIf`/`-Confirm`, and explicit `-Force` to discard local
+  changes without resetting existing branches or bypassing worktree protection.
 - `Get-Branch` lists local and cached remote-tracking refs as typed `GitBranch`
   objects using machine-readable git output, with current-branch state,
   upstream/ahead/behind information and symbolic targets. Supports repository
