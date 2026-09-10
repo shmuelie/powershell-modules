@@ -1,6 +1,35 @@
 function Invoke-VsWhere {
     [CmdletBinding()]
-    param()
+    param(
+        [switch]$MSBuild
+    )
+
+    if ($MSBuild) {
+        $installerPath = Get-VsInstallerPath
+        $vsWhere = if ($installerPath) { Join-Path $installerPath 'vswhere.exe' }
+        if (-not $vsWhere -or -not (Test-Path -LiteralPath $vsWhere -PathType Leaf -ErrorAction Stop)) {
+            throw 'Cannot discover Visual Studio MSBuild: vswhere.exe was not found in the Visual Studio Installer directory. Install or repair Visual Studio Installer.'
+        }
+
+        $json = Invoke-MSBuildVsWhere -Path $vsWhere
+        if (-not $json) {
+            throw 'Cannot discover Visual Studio MSBuild: vswhere.exe returned no JSON.'
+        }
+        $instances = ConvertFrom-Json -InputObject ($json -join "`n") -NoEnumerate -ErrorAction Stop
+        if ($instances -isnot [array]) {
+            throw 'Cannot discover Visual Studio MSBuild: vswhere.exe did not return a JSON array.'
+        }
+        foreach ($instance in $instances) {
+            $installationVersion = $null
+            if (-not $instance.installationPath -or
+                -not [System.IO.Path]::IsPathFullyQualified([string]$instance.installationPath) -or
+                -not [version]::TryParse([string]$instance.installationVersion, [ref]$installationVersion)) {
+                throw 'Cannot discover Visual Studio MSBuild: vswhere.exe returned invalid installation metadata.'
+            }
+            $instance
+        }
+        return
+    }
 
     $programFilesX86 = ${env:ProgramFiles(x86)}
     if (-not $programFilesX86) {

@@ -5,10 +5,10 @@
     Author               = 'Shmueli Englard'
     CompanyName          = 'Shmuelie'
     Copyright            = '(c) Shmueli Englard. All rights reserved.'
-    Description          = 'Visual Studio developer shell helpers for PowerShell.'
+    Description          = 'Visual Studio discovery, MSBuild resolution, and developer shell helpers for PowerShell.'
     PowerShellVersion    = '7.4'
     CompatiblePSEditions = @('Core')
-    FunctionsToExport    = @('Get-InstalledVsVersion', 'Start-DevShell')
+    FunctionsToExport    = @('Get-InstalledVsVersion', 'Resolve-MSBuild', 'Start-DevShell')
     CmdletsToExport      = @()
     VariablesToExport    = @()
     AliasesToExport      = @()
