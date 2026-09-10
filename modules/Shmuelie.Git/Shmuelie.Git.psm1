@@ -69,6 +69,7 @@ Export-ModuleMember -Function @(
     'Sync-GitRemote',
     'Get-GitStatusSummary',
     'Get-GitTag',
+    'Save-GitStash',
     'Remove-Branch',
     'Set-Branch',
     'Format-GitStatusSegment',

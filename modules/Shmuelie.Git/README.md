@@ -37,6 +37,7 @@ Import-Module Shmuelie.Git
 | `Remove-Branch` | Delete an exact local branch (`-Force` permits unmerged deletion) or a remote branch with `-Remote -RemoteName origin`; high-impact confirmation and `-WhatIf` protect every deletion |
 | `Get-GitStatusSummary` | Parse `git status` for the current or `-Path` repository into a typed object (branch, ahead/behind, conflicts, stash, operation) |
 | `Get-GitTag` | Inspect local annotated/lightweight tags as typed objects, with case-sensitive exact/wildcard `-Name` filtering and standard repository `-Path` input; never fetches |
+| `Save-GitStash` | Save tracked changes with `git stash push`; opt into `-KeepIndex`, `-IncludeUntracked` or `-All`, and a literal `-Message`; supports pipeline repository paths and `-WhatIf`/`-Confirm` |
 | `Set-Branch` | Switch an existing working tree to a local branch; `-CreateNew` creates at HEAD, `-Track` creates from a remote-tracking branch, and `-Force` explicitly discards local changes; supports `-Path`, `-WhatIf` and `-Confirm` |
 | `Format-GitStatusSegment` | Render a `GitStatusSummary` as a colored posh-git-style prompt segment (`$PSStyle` string; `-ShowChangeCounts` toggles the change counts) |
 | `Update-WorktreePrediction` | Refresh the bundled predictor for the current directory |
@@ -69,6 +70,7 @@ Find-StaleBranch | Remove-Worktree
 Get-GitStatusSummary
 Get-Branch -Path ../project -Local
 Get-GitTag -Name 'v1.*', 'stable' -Path ../project
+$stash = Save-GitStash -Path ../project -KeepIndex -Message 'Pause work'
 Set-Config -Path ../project -Property user.name -Value 'Example User'
 Set-Config core.editor 'code --wait' -Location global -WhatIf
 Remove-Branch -Name feature/finished -Path ../project -WhatIf
@@ -126,6 +128,42 @@ the creator date of a lightweight commit tag is the commit's committer date,
 not the tag's creation time. Git does not record creation times for lightweight
 tags. `RepositoryPath` is the resolved input directory. Bare repositories are
 supported; no tags or no name matches produces no output.
+
+`Save-GitStash` saves staged and unstaged tracked changes, then resets them to
+HEAD. `-KeepIndex` leaves staged changes in the index and working tree, but still
+includes them in the stash. Untracked and ignored files stay in place by default:
+`-IncludeUntracked` also saves/removes untracked files; `-All` also saves/removes
+ignored files. Combining `-All` and `-IncludeUntracked` is an error because `-All`
+already includes untracked files. Git's normal submodule and nested-repository
+protections apply; the command does not recurse or perform extra cleanup.
+
+`-Message` passes non-whitespace text as one literal argument, including quotes
+and shell metacharacters. Null, empty and whitespace-only messages select Git's
+default message; other messages are not trimmed before Git receives them.
+Git controls stored message/subject formatting.
+
+`-Path` (aliases `-RepositoryPath` and `-RepoPath`) accepts literal directories,
+pipeline strings and objects with those properties. It defaults to the current
+location, targets the entire working tree even from a subdirectory, and does
+not change the caller's location or `$LASTEXITCODE`. Bare repositories are rejected.
+
+A successful push that changes `refs/stash` returns one **`GitStash`** object:
+
+| Property | Meaning |
+|---|---|
+| `ObjectId` | Full stash commit ID, stable across later stash pushes and stack renumbering |
+| `RepositoryPath` | Resolved input directory identifying the repository/worktree, not necessarily its root |
+| `Subject` | Git's `contents:subject` for the saved stash commit |
+
+Keep `ObjectId` and `RepositoryPath` together for later restoration; do not
+replace the ID with a moving `stash@{N}` selector. These fields do not keep a
+dropped/cleared stash alive indefinitely. Nothing to save, `-WhatIf` and declined
+confirmation produce no result; failures surface as errors. Git's informational
+output is available with `-Verbose`, and successful Git warnings are forwarded
+to the warning stream. No stash is automatically applied, popped or removed.
+Avoid concurrent stash operations in the same repository, including linked
+worktrees: Git locks updates, but reading the before/after identity is not atomic
+with another process's stash changes.
 
 `Set-Config` writes one key and produces no output. Property and value are
 literal arguments, including quotes, whitespace, special characters and empty
