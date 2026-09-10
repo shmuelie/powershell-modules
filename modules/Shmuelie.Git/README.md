@@ -33,6 +33,7 @@ Import-Module Shmuelie.Git
 | `Update-Worktrees` | Fast-forward every worktree for the current or `-Path` repository from upstream (`-ChangedOnly` emits only actionable results; forwards the `Sync-GitRemote` GitHub-account options to the fetch) |
 | `Update-AllWorktrees` | Discover repositories under `$env:SOURCE_REPOS` or a supplied `-Path` root and update each repository in parallel (`-ChangedOnly` emits compact actionable worktree rows) |
 | `Find-StaleBranch` | Find local branches in the current or `-Path` repository whose upstream branch is gone (`-IncludeNeverPushed` also includes local-only branches) |
+| `Remove-Branch` | Delete an exact local branch (`-Force` permits unmerged deletion) or a remote branch with `-Remote -RemoteName origin`; high-impact confirmation and `-WhatIf` protect every deletion |
 | `Get-GitStatusSummary` | Parse `git status` for the current or `-Path` repository into a typed object (branch, ahead/behind, conflicts, stash, operation) |
 | `Get-GitTag` | Inspect local annotated/lightweight tags as typed objects, with case-sensitive exact/wildcard `-Name` filtering and standard repository `-Path` input; never fetches |
 | `Set-Branch` | Switch an existing working tree to a local branch; `-CreateNew` creates at HEAD, `-Track` creates from a remote-tracking branch, and `-Force` explicitly discards local changes; supports `-Path`, `-WhatIf` and `-Confirm` |
@@ -67,10 +68,29 @@ Find-StaleBranch | Remove-Worktree
 Get-GitStatusSummary
 Get-Branch -Path ../project -Local
 Get-GitTag -Name 'v1.*', 'stable' -Path ../project
+Remove-Branch -Name feature/finished -Path ../project -WhatIf
+Remove-Branch -Name feature/finished -Remote -RemoteName upstream
 Set-Branch -Branch feature/new -CreateNew -Path ../project
 Set-Branch -Branch origin/feature/topic -Track
 Set-Branch -Branch main -Force -WhatIf
 ```
+
+`Remove-Branch` accepts an exact branch name or `refs/heads/<name>`, not wildcard
+patterns, revision expressions or remote-tracking refs. It uses Git's safe local
+deletion (`branch -d`), which requires the branch to be merged into its upstream,
+or into HEAD when no upstream is configured. Local-only `-Force` permits unmerged
+deletion but never bypasses confirmation or Git's checked-out-worktree protection.
+Use `-Confirm:$false` explicitly for unattended deletion.
+
+With `-Remote`, only that branch is deleted from the selected configured remote
+(default `origin`), using its push URLs. No remote is inferred from the branch's
+upstream or name, and local branches are left intact. The command disables mirror
+pushes and automatic tag following, never force-pushes, and reports native failures
+as PowerShell errors without success output. `-WhatIf` and declined confirmation
+never push. Git may accept an already absent remote branch as a no-op.
+`-Path` is literal, defaults to the current directory, supports bare
+repositories, and has `RepositoryPath`/`RepoPath` aliases. Pipeline strings bind to
+`Name`; objects can supply both branch and repository path properties.
 
 `Get-Branch` accepts a literal `-Path` (aliases `-RepositoryPath` / `-RepoPath`),
 pipeline paths, or objects with any of those properties. It also accepts bare
