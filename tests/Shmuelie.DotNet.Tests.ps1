@@ -157,6 +157,7 @@ Describe 'Install-DotNetSdk' {
                 $file
             }
             Mock Test-DotNetSdkInstaller {}
+            Mock Get-Command { @{ Source = (Join-Path $TestDrive 'synthetic-bash') } } -ParameterFilter { $Name -eq 'bash' }
             Mock Invoke-WebRequest { throw 'No real network operations permitted.' }
             Mock Invoke-DotNetSdkProcess {
                 param($FilePath, $Arguments, $Environment)
@@ -212,6 +213,32 @@ Describe 'Install-DotNetSdk' {
             $result.Status | Should -Be 'AlreadyInstalled'
             Should -Invoke Get-DotNetSdkInstallerFile -Times 1 -Exactly
             Should -Invoke Invoke-DotNetSdkProcess -Times 1 -Exactly
+        }
+
+        It 'passes discrete <Selection> installer arguments on <Platform>' -ForEach @(
+            @{ Platform = 'Linux'; Selection = 'Version' }
+            @{ Platform = 'macOS'; Selection = 'Version' }
+            @{ Platform = 'Linux'; Selection = 'Channel' }
+            @{ Platform = 'macOS'; Selection = 'Channel' }
+        ) {
+            $script:platform = $Platform
+            $parameters = if ($Selection -eq 'Version') { @{ Version = '8.0.412' } } else { @{ Channel = '8.0'; Quality = 'GA' } }
+            $result = Install-DotNetSdk @parameters -Architecture x64 -InstallDir $script:sdkRoot -Confirm:$false
+            $result.Status | Should -Be 'Installed'
+            $result.ResolvedVersion | Should -Be '8.0.412'
+            $script:invocations | Should -HaveCount $(if ($Selection -eq 'Version') { 1 } else { 2 })
+            foreach ($invocation in $script:invocations) {
+                $invocation.FilePath | Should -Be (Join-Path $TestDrive 'synthetic-bash')
+                $invocation.Arguments[0] | Should -Be (Join-Path $invocation.Environment.TMPDIR 'dotnet-install.sh')
+                $invocation.Arguments[1..7] | Should -Be @(
+                    '--architecture', 'x64', '--install-dir', $script:sdkRoot,
+                    '--no-path', '--zip-path', (Join-Path $invocation.Environment.TMPDIR 'sdk.tar.gz')
+                )
+            }
+            $script:invocations[-1].Arguments[8..9] | Should -Be @('--version', '8.0.412')
+            if ($Selection -eq 'Channel') {
+                $script:invocations[0].Arguments[8..12] | Should -Be @('--channel', '8.0', '--dry-run', '--quality', 'GA')
+            }
         }
 
         It 'preserves other SDK versions in the installation directory' {

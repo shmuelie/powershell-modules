@@ -369,7 +369,9 @@ function Install-DotNetSdk {
             Test-DotNetSdkInstaller -Installer $installer -Platform $platform -Directory $directory
             $executable = if ($windows) { Join-Path $PSHOME 'pwsh.exe' }
                 else { (Get-Command bash -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source }
-            $prefix = if ($windows) { @('-NoProfile', '-NonInteractive', '-File', $installer) } else { @($installer) }
+            # Keep the one-element Unix prefix as an array, not a string that
+            # concatenates subsequent argument arrays into a single token.
+            [string[]]$prefix = if ($windows) { @('-NoProfile', '-NonInteractive', '-File', $installer) } else { @($installer) }
             $common = if ($windows) { @('-Architecture', $Architecture, '-InstallDir', $InstallDir, '-NoPath', '-ZipPath', (Join-Path $directory 'sdk.zip')) }
                 else { @('--architecture', $Architecture, '--install-dir', $InstallDir, '--no-path', '--zip-path', (Join-Path $directory 'sdk.tar.gz')) }
             $environment = @{ TMPDIR = $directory; TEMP = $directory; TMP = $directory; DOTNET_CLI_UI_LANGUAGE = 'en-US' }
