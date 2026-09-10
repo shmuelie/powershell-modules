@@ -6,6 +6,19 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+### Added
+- `Get-CopilotSession` supports composable wildcard Repository, Branch, Cwd, and
+  Summary filters plus exclusive UpdatedBefore and positive elapsed OlderThan
+  filters. Existing local discovery and exact ID lookup remain unchanged;
+  explicit Cwd replaces the implicit directory scope, and All searches globally.
+  Missing timestamps never qualify for age-based cleanup.
+
+### Changed
+- `Select-CopilotSession` reuses shared session matching, adds Cwd, Summary, and
+  age filters, and retains global discovery, wildcard IDs, and newest-first
+  selection. Discovery help documents timezone, missing metadata, and safe
+  cleanup pipeline semantics.
+
 ## [0.3.2] - 2026-09-08
 
 ### Fixed

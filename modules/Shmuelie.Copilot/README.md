@@ -18,7 +18,7 @@ Start-Copilot
 | Area | Commands |
 |---|---|
 | Launcher | `Start-Copilot`, `Get-CopilotLaunchPlan` |
-| Sessions | `Get-CopilotSession`, `Select-CopilotSession`, `Resume-CopilotSession`, `Rename-CopilotSession`, `Remove-CopilotSession` |
+| Sessions | `Get-CopilotSession` / `Select-CopilotSession` (composable metadata and age filters), `Resume-CopilotSession`, `Rename-CopilotSession`, `Remove-CopilotSession` |
 | Session maintenance | `Merge-CopilotSession`, `Compress-CopilotSession`, `Repair-CopilotSessionEvents` |
 | Plugins | `Get-CopilotPlugin`, `Install-CopilotPlugin`, `Update-CopilotPlugin`, `Uninstall-CopilotPlugin` |
 | Marketplaces | `Get-CopilotMarketplace`, `Register-CopilotMarketplace`, `Unregister-CopilotMarketplace`, `Get-CopilotMarketplacePlugin` |
@@ -62,6 +62,52 @@ Start-Copilot -Model claude-opus-4.7 -ReasoningEffort high
 Start-Copilot -ResumeLatest
 Start-Copilot -NoResume -WhatIf   # preview the command line without launching
 ```
+
+## Session discovery and cleanup
+
+`Get-CopilotSession` without arguments still returns sessions for the current
+directory. `-Repository`, `-Branch`, and `-Summary` narrow that scope; use `-All`
+to search globally. Explicit `-Cwd` replaces the implicit current-directory
+restriction, with or without `-All`.
+
+The four string filters accept case-insensitive PowerShell wildcard patterns
+and combine with **AND**. They match recorded strings, not resolved filesystem
+paths: separators and trailing separators are not normalized, and wildcard
+characters in literal paths must be escaped with a PowerShell backtick.
+Missing or empty Repository, Branch, or Cwd does not match even `'*'`.
+Summary matches the displayed value: `name`, then legacy `summary`, then
+`'(no summary)'` for unnamed sessions.
+
+| Date filter | Meaning |
+|---|---|
+| `-UpdatedBefore <DateTimeOffset>` | `UpdatedAt` is strictly before the given instant. Prefer ISO 8601 with `Z` or an explicit offset. Offset-less input means local time; date-only input means local midnight, not the end of the day. |
+| `-OlderThan <TimeSpan>` | `UpdatedAt` is strictly more than the positive elapsed duration ago. The UTC clock is sampled once for the invocation. Use `New-TimeSpan -Days 30`, not a bare number; days are 24-hour periods, not calendar days. |
+
+Both date filters can be combined; the earlier cutoff wins. Sessions with missing
+UpdatedAt are excluded when either is supplied, without falling back to CreatedAt
+or filesystem timestamps. Sessions without workspace metadata are still skipped.
+Output remains sorted by UpdatedAt descending.
+
+`-Id` remains an exact, directory-independent lookup, cannot be combined with
+filters or `-All`, and retains the session-root guard. `Select-CopilotSession`
+uses the same matching logic but still searches **all** directories by default,
+supports wildcard IDs, and applies `-First` after filtering and sorting.
+
+```powershell
+Get-CopilotSession -All -Repository 'owner/*' -Branch 'feature/*' -Summary '*cleanup*'
+Get-CopilotSession -Cwd (Join-Path $HOME 'projects' '*')
+Select-CopilotSession -Repository 'owner/repo' -Summary '*investigate*' -First 1
+
+# Capture and inspect the exact batch before deletion.
+$stale = Get-CopilotSession -All -Repository 'owner/repo' `
+    -UpdatedBefore '2026-08-01T00:00:00Z' -OlderThan (New-TimeSpan -Days 30)
+$stale | Remove-CopilotSession -WhatIf
+$stale | Remove-CopilotSession -Confirm
+```
+
+Cleanup remains an explicit pipeline into `Remove-CopilotSession`: discovery
+never deletes anything, and removal re-resolves each ID rather than trusting
+the pipeline object's Path.
 
 ## MCP configuration management
 
