@@ -7,6 +7,10 @@ Versions change only when a release is cut; unreleased work stays under
 ## [Unreleased]
 
 ### Added
+- `Set-Config` sets a literal local, global or system git configuration value
+  through the shared native runner, preserving empty strings, quotes and leading
+  dashes. Supports repository path input, `-WhatIf` and `-Confirm`, reports git
+  errors, and permits global/system configuration outside a repository.
 - `Get-Branch` lists local and cached remote-tracking refs as typed `GitBranch`
   objects using machine-readable git output, with current-branch state,
   upstream/ahead/behind information and symbolic targets. Supports repository
