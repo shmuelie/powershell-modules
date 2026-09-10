@@ -20,6 +20,10 @@ function Get-PackageProvider {
             Get-PipPackageProvider
             continue
         }
+        if ($name -eq 'Uv') {
+            Get-UvPackageProvider
+            continue
+        }
         [pscustomobject]@{
             Name             = $name
             Platforms        = if ($name -in 'WinGet', 'AppInstaller') { @('Windows') } else { @('Windows', 'Linux', 'MacOS') }

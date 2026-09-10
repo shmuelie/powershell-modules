@@ -6,6 +6,10 @@ under [Unreleased]; versions change only when a release is cut.
 ## [Unreleased]
 
 ### Added
+- Optional Uv provider for outdated top-level system Python packages and
+  individually approved installed-tool upgrades, with scope selection,
+  lazy Utilities commands, distinct package/tool targets, observed versions,
+  strict tool-list parsing, and explicit dependency skips and failures.
 - PSResourceGet adapter for configured module roots, name/exclusion filters, and
   optional repository overrides, reusing Utilities' canonical discovery,
   provenance, prerelease, and update behavior. Read-only previews avoid network

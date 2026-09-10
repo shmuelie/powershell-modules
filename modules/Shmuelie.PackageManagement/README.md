@@ -7,7 +7,7 @@ Provider-neutral package update orchestration for PowerShell 7.4+.
 ## Provider availability
 
 The ordered catalog contains `PSResourceGet`, `DotNet`, `Npm`, `Pip`, `Uv`,
-`VSCode`, `WinGet`, and `AppInstaller`. **PSResourceGet**, **DotNet**, **Npm**, and **Pip** are implemented;
+`VSCode`, `WinGet`, and `AppInstaller`. **PSResourceGet**, **DotNet**, **Npm**, **Pip**, and **Uv** are implemented;
 the other adapters remain separate follow-up work and report explicit
 `Skipped` results, not successful updates.
 
@@ -201,6 +201,56 @@ Warnings retain their stream, errors retain their records when available, and
 native diagnostics routed through the updater's verbose stream are included in
 reported failure reasons. Independent packages continue unless `-StopOnFailure`
 is set.
+
+## Uv
+
+`Uv` covers both **system Python environment packages** and **installed uv
+tools**. Install uv separately. Package operations additionally require
+`Shmuelie.Utilities` (`Install-PSResource Shmuelie.Utilities`); this optional
+module is loaded only when package operations are selected. A tools-only run
+does not require Utilities. Nothing is installed automatically.
+
+| Option | Values / default | Behavior |
+|---|---|---|
+| `Scope` | `All` (default), `Packages`, `Tools` | Select both kinds of target or just one |
+| `TopLevelOnly` | Boolean; `$true` by default | Package filtering; `$false` includes outdated dependencies. Not valid for `Tools` |
+
+```powershell
+Update-AllPackages -Provider Uv -WhatIf
+Update-AllPackages -Provider Uv -ProviderOptions @{ Uv = @{ Scope = 'Tools' } } -Confirm:$false
+Update-AllPackages -Provider Uv -ProviderOptions @{ Uv = @{ Scope = 'Packages'; TopLevelOnly = $false } }
+```
+
+Package discovery reuses `Shmuelie.Utilities\Get-UvPackages -Outdated
+-TopLevelOnly`, and approved updates reuse `Shmuelie.Utilities\Update-UvPackage`
+with inner confirmation disabled. These commands always use uv's `--system`
+selection, **not** the active virtual environment. The adapter does not support
+custom Python interpreters, project environments, extra indexes, arbitrary
+arguments, or an environment-path option. Invalid option values fail explicitly;
+unknown option names terminate before discovery.
+
+Targets are `pip:system:<distribution-name>` for packages and
+`tool:<distribution-name>` for installed tools, including previews and failures.
+Tools are listed using `uv tool list --color never --no-progress`. The official
+CLI currently has **no JSON output format for tool listing**; the adapter
+strictly validates tool headings and entrypoint lines instead of guessing
+through warnings or unknown formats. Pip package discovery already uses JSON.
+
+Every installed tool is an update candidate (not just those with a newer
+index version). Its approved callback runs `uv tool upgrade` for that single
+tool, preserving recorded version constraints and installation settings. There
+is no `uv tool run`, `uvx` cache refresh, self-update, or shell/PATH modification.
+After successful updates, the adapter re-reads the relevant installed listing:
+`ResultingVersion` is observed, never copied from an available/proposed version.
+`Unchanged` means the main distribution's version is unchanged; a tool's
+dependencies or executables may still have been refreshed. Tool previews have
+no proposed version. Native failures and malformed/absent update evidence fail;
+discovery failures prevent all mutations for this provider. A missing previous
+or observed version produces `Failed` rather than assuming the version changed.
+
+Official uv references: [CLI flags](https://docs.astral.sh/uv/reference/cli/#uv-tool-list),
+[tool upgrade semantics](https://docs.astral.sh/uv/concepts/tools/#upgrading-tools),
+and [tool list output implementation](https://github.com/astral-sh/uv/blob/main/crates/uv/src/commands/tool/list.rs).
 
 ## Output
 
