@@ -145,10 +145,8 @@ function ConvertTo-UpdateAllWorktreesOutput {
             return
         }
 
-        $actionableStatuses = @('Updated', 'Removed', 'Failed', 'StashFailed')
         $matchingWorktrees = @(
-            $InputObject.WorktreeResults |
-                Where-Object { $_.Status -in $actionableStatuses }
+            $InputObject.WorktreeResults | Select-ChangedWorktreeResult
         )
 
         foreach ($worktree in $matchingWorktrees) {

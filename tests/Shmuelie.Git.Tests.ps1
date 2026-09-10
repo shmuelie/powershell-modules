@@ -488,6 +488,317 @@ Describe 'Get-Branch integration' -Skip:(-not (Get-Command git -ErrorAction Sile
     }
 }
 
+Describe 'Get-GitTag' {
+    BeforeAll {
+        $tagEnvironment = @{}
+        foreach ($key in @(
+            'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_SYSTEM', 'GIT_CONFIG_NOSYSTEM',
+            'GIT_CONFIG_COUNT', 'GIT_CONFIG_PARAMETERS', 'GIT_AUTHOR_DATE', 'GIT_COMMITTER_DATE'
+        )) {
+            $tagEnvironment[$key] = [Environment]::GetEnvironmentVariable($key, 'Process')
+        }
+        $env:GIT_CONFIG_GLOBAL = Join-Path $TestDrive 'no-global-config'
+        $env:GIT_CONFIG_SYSTEM = Join-Path $TestDrive 'no-system-config'
+        $env:GIT_CONFIG_NOSYSTEM = '1'
+        $env:GIT_CONFIG_COUNT = '0'
+        Remove-Item Env:GIT_CONFIG_PARAMETERS -ErrorAction Ignore
+        $env:GIT_AUTHOR_DATE = '2024-01-02T03:04:05-07:00'
+        $env:GIT_COMMITTER_DATE = '2024-01-03T04:05:06-07:00'
+        $tagRepo = New-TestRepo -Path (Join-Path $TestDrive 'tags repo')
+        $emptyTagRepo = New-TestRepo -Path (Join-Path $TestDrive 'no tags') -NoCommit
+        $commitId = Invoke-Git @('-C', $tagRepo, 'rev-parse', 'HEAD')
+        $treeId = Invoke-Git @('-C', $tagRepo, 'rev-parse', 'HEAD^{tree}')
+        $blobId = Invoke-Git @('-C', $tagRepo, 'rev-parse', 'HEAD:README.md')
+        $tagSubdirectory = New-Item -ItemType Directory -Path (Join-Path $tagRepo 'subdirectory')
+        $env:GIT_COMMITTER_DATE = '2024-02-03T13:45:06+05:45'
+        $unicodeName = "release-$([char]0xe9)-$([char]0x65e5)"
+        $annotation = "Release $([char]0xe9) $([char]::ConvertFromUtf32(0x1f680))`n`nSecond paragraph`nlast line`n`n"
+        $controlAnnotation = "Quote ' and ! and \ and $([char]0x1f) and $([char]0x1e)`n`nTab`tCR`rLF`n`n"
+
+        foreach ($entry in @(
+            @{ Name = 'a-light'; Target = $commitId }
+            @{ Name = 'blob'; Target = $blobId }
+            @{ Name = 'tree'; Target = $treeId }
+            @{ Name = 'release/v1.0'; Target = $commitId }
+            @{ Name = 'release/v1.1'; Target = $commitId }
+            @{ Name = $unicodeName; Target = $commitId }
+        )) {
+            Invoke-Git @('-C', $tagRepo, 'tag', $entry.Name, $entry.Target)
+        }
+        foreach ($entry in @(
+            @{ Name = 'annotated'; Target = $commitId; Message = $annotation }
+            @{ Name = 'control'; Target = $commitId; Message = $controlAnnotation }
+            @{ Name = 'empty'; Target = $commitId; Message = '' }
+            @{ Name = 'annotated-blob'; Target = $blobId; Message = 'blob annotation' }
+            @{ Name = 'annotated-tree'; Target = $treeId; Message = 'tree annotation' }
+            @{ Name = 'nested-commit'; Target = 'refs/tags/annotated'; Message = 'outer commit annotation' }
+            @{ Name = 'nested-blob'; Target = 'refs/tags/annotated-blob'; Message = 'outer blob annotation' }
+            @{ Name = 'nested-tree'; Target = 'refs/tags/annotated-tree'; Message = 'outer tree annotation' }
+            @{ Name = 'nested-twice'; Target = 'refs/tags/nested-commit'; Message = 'two levels' }
+        )) {
+            $messagePath = Join-Path $TestDrive 'tag-message.txt'
+            Set-Content -LiteralPath $messagePath -Value $entry.Message -NoNewline -Encoding utf8
+            Invoke-Git @(
+                '-C', $tagRepo, '-c', 'advice.nestedTag=false', 'tag', '-a', '--cleanup=verbatim',
+                '-F', $messagePath, $entry.Name, $entry.Target
+            )
+        }
+        Invoke-Git @('-C', $tagRepo, 'branch', 'annotated')
+        Invoke-Git @('-C', $tagRepo, 'update-ref', 'refs/archive/annotated', $commitId)
+    }
+
+    AfterAll {
+        foreach ($key in $tagEnvironment.Keys) {
+            [Environment]::SetEnvironmentVariable($key, $tagEnvironment[$key], 'Process')
+        }
+    }
+
+    It 'exports the documented type and standard pipeline path metadata without ShouldProcess' {
+        $command = Get-Command Get-GitTag -Module Shmuelie.Git
+        $command.OutputType.Name | Should -Contain 'GitTag'
+        $command.Parameters.Path.Aliases | Should -Be @('RepositoryPath', 'RepoPath')
+        $pathAttribute = $command.Parameters.Path.Attributes |
+            Where-Object { $_ -is [System.Management.Automation.ParameterAttribute] }
+        $pathAttribute.ValueFromPipeline | Should -BeTrue
+        $pathAttribute.ValueFromPipelineByPropertyName | Should -BeTrue
+        $command.Parameters.Keys | Should -Not -Contain 'WhatIf'
+        (Get-Help Get-GitTag).Description.Text | Should -Not -BeNullOrEmpty
+    }
+
+    It 'returns one stable object per tag, never branches or other refs' {
+        $tags = @(Get-GitTag -Path $tagRepo)
+        $tags.Count | Should -Be 15
+        @($tags.Reference | Where-Object { -not $_.StartsWith('refs/tags/') }) | Should -HaveCount 0
+        @($tags | Where-Object Reference -CEQ 'refs/tags/annotated') | Should -HaveCount 1
+        $tags.Name | Should -Be @($tags.Name | Sort-Object -CaseSensitive -Culture '')
+        foreach ($tag in $tags) {
+            $tag.PSTypeNames[0] | Should -BeExactly 'GitTag'
+            @($tag.PSObject.Properties.Name) | Should -Be @(
+                'Name', 'Reference', 'ObjectId', 'ObjectType', 'IsAnnotated',
+                'TargetObjectId', 'TargetObjectType', 'TargetCommit', 'Subject',
+                'Annotation', 'TaggerDate', 'CreatorDate', 'RepositoryPath'
+            )
+            $tag.IsAnnotated | Should -BeOfType ([bool])
+            $tag.RepositoryPath | Should -BeExactly $tagRepo
+            $tag.ObjectId | Should -Match '^[0-9a-f]{40,64}$'
+        }
+    }
+
+    It 'supports case-sensitive exact and wildcard full-name filters without duplicate results' -ForEach @(
+        @{ Filter = @('annotated'); Expected = @('annotated') }
+        @{ Filter = @('release/v1.?'); Expected = @('release/v1.0', 'release/v1.1') }
+        @{ Filter = @('release/*', 'release/v1.0'); Expected = @('release/v1.0', 'release/v1.1') }
+        @{ Filter = @('release/v1.[01]'); Expected = @('release/v1.0', 'release/v1.1') }
+        @{ Filter = @('ANNOTATED'); Expected = @() }
+        @{ Filter = @('v1.*'); Expected = @() }
+        @{ Filter = @('--contains=HEAD'); Expected = @() }
+        @{ Filter = @('refs/heads/*'); Expected = @() }
+    ) {
+        $tags = @(Get-GitTag -Name $Filter -Path $tagRepo)
+        @($tags | ForEach-Object Name) | Should -Be $Expected
+    }
+
+    It 'distinguishes lightweight commit tags without inventing annotation or tagger dates' {
+        $tag = Get-GitTag 'a-light' -Path $tagRepo
+        $tag.IsAnnotated | Should -BeFalse
+        $tag.ObjectType | Should -BeExactly 'commit'
+        $tag.ObjectId | Should -BeExactly $commitId
+        $tag.TargetCommit | Should -BeExactly $commitId
+        $tag.Subject | Should -BeExactly 'init'
+        ($null -eq $tag.Annotation) | Should -BeTrue
+        ($null -eq $tag.TaggerDate) | Should -BeTrue
+        $tag.CreatorDate | Should -BeOfType ([DateTimeOffset])
+        $tag.CreatorDate.ToString('yyyy-MM-ddTHH:mm:sszzz') | Should -BeExactly '2024-01-03T04:05:06-07:00'
+    }
+
+    It 'preserves annotated tag metadata, full multiline contents and recorded date offsets' {
+        $tag = Get-GitTag annotated -Path $tagRepo
+        $tag.IsAnnotated | Should -BeTrue
+        $tag.ObjectType | Should -BeExactly 'tag'
+        $tag.ObjectId | Should -Not -Be $commitId
+        $tag.TargetCommit | Should -BeExactly $commitId
+        $tag.Subject | Should -BeExactly ($annotation -split "`n")[0]
+        $tag.Annotation | Should -BeExactly $annotation
+        $tag.TaggerDate | Should -BeOfType ([DateTimeOffset])
+        $tag.TaggerDate.ToString('yyyy-MM-ddTHH:mm:sszzz') | Should -BeExactly '2024-02-03T13:45:06+05:45'
+        $tag.CreatorDate | Should -Be $tag.TaggerDate
+    }
+
+    It 'preserves empty annotations and quoted control characters without corrupting adjacent records' {
+        $empty = Get-GitTag empty -Path $tagRepo
+        $empty.IsAnnotated | Should -BeTrue
+        ($null -ne $empty.Annotation) | Should -BeTrue
+        $empty.Annotation | Should -BeExactly ''
+        $empty.Subject | Should -BeExactly ''
+        $tags = @(Get-GitTag -Name 'control', 'empty' -Path $tagRepo)
+        $tags | Should -HaveCount 2
+        $tags[0].Annotation | Should -BeExactly $controlAnnotation
+        $tags[1].Name | Should -BeExactly 'empty'
+    }
+
+    It 'returns Unicode tag names without git short-name quoting or ambiguity' {
+        $tag = Get-GitTag -Name $unicodeName -Path $tagRepo
+        $tag.Name | Should -BeExactly $unicodeName
+        $tag.Reference | Should -BeExactly "refs/tags/$unicodeName"
+    }
+
+    It 'fully peels <TagName> without mistaking a non-commit object for a commit' -ForEach @(
+        @{ TagName = 'blob'; Type = 'blob'; Annotated = $false }
+        @{ TagName = 'tree'; Type = 'tree'; Annotated = $false }
+        @{ TagName = 'annotated-blob'; Type = 'blob'; Annotated = $true }
+        @{ TagName = 'annotated-tree'; Type = 'tree'; Annotated = $true }
+        @{ TagName = 'nested-blob'; Type = 'blob'; Annotated = $true }
+        @{ TagName = 'nested-tree'; Type = 'tree'; Annotated = $true }
+        @{ TagName = 'nested-commit'; Type = 'commit'; Annotated = $true }
+        @{ TagName = 'nested-twice'; Type = 'commit'; Annotated = $true }
+    ) {
+        $tag = Get-GitTag $TagName -Path $tagRepo
+        $tag.IsAnnotated | Should -Be $Annotated
+        $tag.TargetObjectType | Should -BeExactly $Type
+        $expectedId = switch ($Type) { blob { $blobId }; tree { $treeId }; commit { $commitId } }
+        $tag.TargetObjectId | Should -BeExactly $expectedId
+        if ($Type -eq 'commit') {
+            $tag.TargetCommit | Should -BeExactly $commitId
+        } else {
+            ($null -eq $tag.TargetCommit) | Should -BeTrue
+        }
+        if (-not $Annotated) {
+            ($null -eq $tag.CreatorDate) | Should -BeTrue
+            ($null -eq $tag.TaggerDate) | Should -BeTrue
+            $tag.Subject | Should -BeExactly ''
+        }
+    }
+
+    It 'handles no tags and no matches as normal empty results' {
+        @(Get-GitTag -Path $emptyTagRepo -ErrorAction Stop) | Should -HaveCount 0
+        @(Get-GitTag -Path $tagRepo -Name 'missing*' -ErrorAction Stop) | Should -HaveCount 0
+    }
+
+    It 'targets explicit, pipeline and current paths without changing location or repository state' {
+        $beforeLocation = (Get-Location).ProviderPath
+        $beforeRefs = Invoke-Git @('-C', $tagRepo, 'show-ref')
+        $beforeStatus = Invoke-Git @('-C', $tagRepo, 'status', '--porcelain=v1', '--untracked-files=all')
+        foreach ($inputPath in @(
+            $tagRepo,
+            [PSCustomObject]@{ Path = $tagRepo },
+            [PSCustomObject]@{ RepositoryPath = $tagRepo },
+            [PSCustomObject]@{ RepoPath = $tagRepo }
+        )) {
+            ($inputPath | Get-GitTag -Name a-light).TargetCommit | Should -BeExactly $commitId
+        }
+        @($emptyTagRepo, $tagRepo | Get-GitTag -Name a-light) | Should -HaveCount 1
+        (Get-GitTag -RepositoryPath $tagSubdirectory.FullName -Name a-light).RepositoryPath |
+            Should -BeExactly $tagSubdirectory.FullName
+        (Get-GitTag -RepoPath $tagRepo -Name a-light).TargetCommit | Should -BeExactly $commitId
+        (Get-Location).ProviderPath | Should -BeExactly $beforeLocation
+        Push-Location $tagSubdirectory.FullName
+        try {
+            (Get-GitTag -Name a-light).RepositoryPath | Should -BeExactly $tagSubdirectory.FullName
+            (Get-Location).ProviderPath | Should -BeExactly $tagSubdirectory.FullName
+        } finally {
+            Pop-Location
+        }
+        Invoke-Git @('-C', $tagRepo, 'show-ref') | Should -Be $beforeRefs
+        Invoke-Git @('-C', $tagRepo, 'status', '--porcelain=v1', '--untracked-files=all') |
+            Should -Be $beforeStatus
+    }
+
+    It 'supports bare repositories and linked worktrees using only local objects' {
+        $barePath = Join-Path $TestDrive 'tags bare.git'
+        Invoke-Git @('clone', '--bare', '--quiet', '--', $tagRepo, $barePath)
+        (Get-GitTag -Path $barePath -Name nested-commit).TargetCommit | Should -BeExactly $commitId
+        $linkedPath = Join-Path $TestDrive 'tags linked'
+        Invoke-Git @('-C', $tagRepo, 'worktree', 'add', '--detach', '--quiet', $linkedPath)
+        $tag = Get-GitTag -Path $linkedPath -Name annotated
+        $tag.RepositoryPath | Should -BeExactly $linkedPath
+        $tag.Annotation | Should -BeExactly $annotation
+    }
+
+    It 'surfaces invalid repository paths clearly' {
+        { Get-GitTag -Path (Join-Path $TestDrive 'missing') -ErrorAction Stop } |
+            Should -Throw -ExpectedMessage '*repository path not found*'
+        { Get-GitTag -Path $TestDrive -ErrorAction Stop } |
+            Should -Throw -ExpectedMessage '*not inside a git working tree*'
+        { Get-GitTag -Path (Join-Path $tagRepo 'README.md') -ErrorAction Stop } |
+            Should -Throw -ExpectedMessage '*must be a FileSystem directory*'
+    }
+
+    It 'surfaces native failures rather than silently returning an empty tag list' {
+        InModuleScope Shmuelie.Git -Parameters @{ Repo = $tagRepo } {
+            param($Repo)
+            Mock Resolve-GitRepositoryPath { $Repo }
+            Mock Invoke-GitProcess {
+                [PSCustomObject]@{
+                    ExitCode = 128; StandardOutput = ''; StandardError = 'tag objects unavailable'; Output = @()
+                }
+            }
+            Get-GitTag -Path $Repo -ErrorAction SilentlyContinue -ErrorVariable failures |
+                Should -BeNullOrEmpty
+            $failures | Should -HaveCount 1
+            $failures[0].FullyQualifiedErrorId | Should -Match '^GitCommandFailed'
+            $failures[0].TargetObject.ExitCode | Should -Be 128
+            { Get-GitTag -Path $Repo -ErrorAction Stop } |
+                Should -Throw -ExpectedMessage '*tag objects unavailable*'
+            Should -Invoke Invoke-GitProcess -Times 2 -ParameterFilter {
+                $Arguments -contains 'for-each-ref' -and $Arguments -contains 'refs/tags/' -and
+                $Arguments -contains '--shell' -and $Environment.GIT_NO_LAZY_FETCH -eq '1'
+            }
+        }
+    }
+
+    It 'parses quoted fields as data even when the contents contain NUL or executable-looking text' {
+        InModuleScope Shmuelie.Git {
+            $message = "first`0second`n`n" + '$(throw "do not execute")' + "`n"
+            $values = @(
+                'refs/tags/data', 'tag', ('1' * 40), 'commit', ('2' * 40),
+                '', '', 'first', $message
+            )
+            $output = ($values | ForEach-Object { "'$_'" }) -join "`0"
+            Mock Invoke-Git {
+                [PSCustomObject]@{ StandardOutput = "$output`n"; RepositoryPath = 'unused' }
+            }
+            $tag = Get-GitTag
+            $tag.Subject | Should -BeExactly 'first'
+            $tag.Annotation | Should -BeExactly $message
+            ($null -eq $tag.TaggerDate) | Should -BeTrue
+            ($null -eq $tag.CreatorDate) | Should -BeTrue
+        }
+    }
+
+    It 'surfaces a nested tag peeling failure without returning a misleading target' {
+        InModuleScope Shmuelie.Git {
+            $output = @(
+                "'refs/tags/nested'", "'tag'", "'$('1' * 40)'", "'tag'", "'$('2' * 40)'",
+                "''", "''", "'subject'", "'annotation'"
+            ) -join "`0"
+            Mock Resolve-GitRepositoryPath { 'unused' }
+            Mock Invoke-GitProcess {
+                if ($Arguments -contains 'for-each-ref') {
+                    [PSCustomObject]@{ ExitCode = 0; StandardOutput = "$output`n"; StandardError = ''; Output = @() }
+                } else {
+                    [PSCustomObject]@{ ExitCode = 128; StandardOutput = ''; StandardError = 'missing nested target'; Output = @() }
+                }
+            }
+            Get-GitTag -ErrorAction SilentlyContinue -ErrorVariable failures | Should -BeNullOrEmpty
+            $failures | Should -HaveCount 1
+            $failures[0].Exception.Message | Should -BeLike '*missing nested target*'
+            Should -Invoke Invoke-GitProcess -Times 1 -ParameterFilter {
+                $Arguments -contains 'rev-parse' -and $Arguments -contains "$('1' * 40)^{}" -and
+                $Environment.GIT_NO_LAZY_FETCH -eq '1'
+            }
+        }
+    }
+
+    It 'rejects malformed machine output instead of producing success-shaped rows' {
+        InModuleScope Shmuelie.Git {
+            Mock Invoke-Git {
+                [PSCustomObject]@{ StandardOutput = "not formatted`n"; RepositoryPath = 'unused' }
+            }
+            { Get-GitTag } | Should -Throw -ErrorId 'GitTagFormatInvalid,Get-GitTag'
+        }
+    }
+}
+
 Describe 'Private git invocation error contracts' {
     BeforeAll {
         $script:invocationRepo = New-TestRepo -Path (Join-Path $TestDrive 'invocation-contract')
@@ -1627,15 +1938,19 @@ Describe 'Update-AllWorktrees' -Skip:(-not (Get-Command git -ErrorAction Silentl
         }
     }
 
-    It 'retains a repository-level failure when no worktree result was produced' {
-        InModuleScope Shmuelie.Git {
+    It 'retains a repository-level failure when worktree results are <Name>' -ForEach @(
+        @{ Name = 'empty'; WorktreeResults = @() }
+        @{ Name = 'null'; WorktreeResults = $null }
+    ) {
+        InModuleScope Shmuelie.Git -Parameters @{ WorktreeResults = $WorktreeResults } {
+            param($WorktreeResults)
             $repositoryResult = [PSCustomObject]@{
                 PSTypeName      = 'AllWorktreesUpdateResult'
                 Organization    = 'example'
                 Repository      = 'repo'
                 Path            = 'repo-path'
                 Status          = 'Failed'
-                WorktreeResults = @()
+                WorktreeResults = $WorktreeResults
                 Error           = 'worker failed before update'
             }
 
@@ -1783,6 +2098,243 @@ Describe 'Update-AllWorktrees' -Skip:(-not (Get-Command git -ErrorAction Silentl
         $results | Should -HaveCount 1
         $results[0].Status | Should -Be 'Completed'
         $results[0].Error | Should -BeNullOrEmpty
+    }
+}
+
+Describe 'Changed worktree result selection' {
+    It 'keeps the selector private' {
+        (Get-Module Shmuelie.Git).ExportedFunctions.Keys | Should -Not -Contain 'Select-ChangedWorktreeResult'
+    }
+
+    It 'selects <Status> only when actionable, preserving the original object' -ForEach @(
+        @{ Status = 'Updated'; ExpectedCount = 1 }
+        @{ Status = 'Removed'; ExpectedCount = 1 }
+        @{ Status = 'Failed'; ExpectedCount = 1 }
+        @{ Status = 'StashFailed'; ExpectedCount = 1 }
+        @{ Status = 'Current'; ExpectedCount = 0 }
+        @{ Status = 'NoUpstream'; ExpectedCount = 0 }
+        @{ Status = 'Skipped'; ExpectedCount = 0 }
+        @{ Status = 'InProgress'; ExpectedCount = 0 }
+        @{ Status = 'Unknown'; ExpectedCount = 0 }
+        @{ Status = 'WhatIf'; ExpectedCount = 0 }
+    ) {
+        InModuleScope Shmuelie.Git -Parameters @{ Status = $Status; ExpectedCount = $ExpectedCount } {
+            param($Status, $ExpectedCount)
+            $original = [PSCustomObject]@{
+                PSTypeName = 'WorktreeUpdateResult'
+                Branch = 'branch'
+                Path = 'worktree-path'
+                Status = $Status
+                BehindBy = 2
+                Stashed = $true
+                Operation = $null
+                PopFailed = $true
+            }
+
+            $results = @($original | Select-ChangedWorktreeResult)
+
+            $results | Should -HaveCount $ExpectedCount
+            if ($ExpectedCount) {
+                [object]::ReferenceEquals($original, $results[0]) | Should -BeTrue
+                $results[0].PSTypeNames[0] | Should -Be 'WorktreeUpdateResult'
+                $results[0].PopFailed | Should -BeTrue
+            }
+        }
+    }
+}
+
+Describe 'Update-Worktrees ChangedOnly' -Skip:(-not (Get-Command git -ErrorAction SilentlyContinue)) {
+    BeforeAll {
+        function New-UpdateFixture {
+            param([string]$Name, [switch]$Current)
+
+            $root = Join-Path $TestDrive $Name
+            $seed = New-TestRepo -Path (Join-Path $root 'seed')
+            $origin = Join-Path $root 'origin.git'
+            Invoke-Git @('init', '--bare', '-b', 'main', '--quiet', $origin)
+            Invoke-Git @('-C', $seed, 'remote', 'add', 'origin', $origin)
+            Invoke-Git @('-C', $seed, 'push', '-u', 'origin', 'main', '--quiet')
+            $clone = Join-Path $root 'clone'
+            Invoke-Git @('clone', '--quiet', $origin, $clone)
+            Set-TestRepoConfig $clone
+
+            if (-not $Current) {
+                Set-Content -LiteralPath (Join-Path $seed 'README.md') -Value 'updated'
+                Invoke-Git @('-C', $seed, 'add', 'README.md')
+                Invoke-TestCommit -Path $seed -Message 'upstream update'
+                Invoke-Git @('-C', $seed, 'push', 'origin', 'main', '--quiet')
+            }
+
+            [PSCustomObject]@{ Root = $root; Seed = $seed; Origin = $origin; Clone = $clone }
+        }
+    }
+
+    It 'filters output but performs the same update with ChangedOnly <Mode>' -ForEach @(
+        @{ Mode = 'omitted'; Options = @{}; ExpectedCount = 5 }
+        @{ Mode = 'false'; Options = @{ ChangedOnly = $false }; ExpectedCount = 5 }
+        @{ Mode = 'true'; Options = @{ ChangedOnly = $true }; ExpectedCount = 2 }
+    ) {
+        $fixture = New-UpdateFixture -Name "mixed-$Mode"
+        $clone = $fixture.Clone
+        foreach ($branch in 'current', 'skipped', 'no-upstream', 'removed') {
+            $worktree = Join-Path $fixture.Root $branch
+            Invoke-Git @('-C', $clone, 'worktree', 'add', '--quiet', '-b', $branch, $worktree, 'HEAD')
+            if ($branch -ne 'no-upstream') {
+                Invoke-Git @('-C', $clone, 'update-ref', "refs/remotes/origin/$branch", 'HEAD')
+                Invoke-Git @('-C', $clone, 'branch', "--set-upstream-to=origin/$branch", $branch)
+            }
+            if ($branch -eq 'skipped') {
+                Invoke-Git @('-C', $worktree, 'commit', '--allow-empty', '-m', 'local commit', '--quiet')
+            }
+        }
+        Invoke-Git @('-C', $clone, 'update-ref', '-d', 'refs/remotes/origin/removed')
+        Invoke-Git @('-C', $clone, 'fetch', '--quiet', 'origin', 'main')
+        # Keep the synthetic current/skipped tracking refs; real fetch pruning
+        # is covered by the separate offline integration scenarios below.
+        Mock -ModuleName Shmuelie.Git Sync-GitRemote { @() }
+
+        $results = @(Update-Worktrees -Path $clone @Options -NoGitHubAccountResolve -Confirm:$false)
+
+        $results | Should -HaveCount $ExpectedCount
+        foreach ($result in $results) {
+            $result.PSTypeNames[0] | Should -Be 'WorktreeUpdateResult'
+            $result.Path | Should -Not -BeNullOrEmpty
+        }
+        ($results | Where-Object Branch -eq 'main').Status | Should -Be 'Updated'
+        ($results | Where-Object Branch -eq 'main').BehindBy | Should -Be 1
+        ($results | Where-Object Branch -eq 'removed').Status | Should -Be 'Removed'
+        if ($Mode -ne 'true') {
+            ($results | Where-Object Branch -eq 'current').Status | Should -Be 'Current'
+            ($results | Where-Object Branch -eq 'skipped').Status | Should -Be 'Skipped'
+            ($results | Where-Object Branch -eq 'no-upstream').Status | Should -Be 'NoUpstream'
+        }
+        (Get-Content -LiteralPath (Join-Path $clone 'README.md') -Raw).Trim() | Should -BeExactly 'updated'
+        Invoke-Git @('-C', $clone, 'rev-parse', 'HEAD') | Should -Be (Invoke-Git @('-C', $fixture.Seed, 'rev-parse', 'HEAD'))
+        Should -Invoke -ModuleName Shmuelie.Git Sync-GitRemote -Times 1 -ParameterFilter { $Path -eq $clone }
+    }
+
+    It 'preserves <Status> results and diagnostics for <Scenario>' -ForEach @(
+        @{ Scenario = 'merge failure'; Status = 'Failed'; Dirty = $false; LockIndex = $true; Warning = 'Fast-forward failed'; PopFailed = $false }
+        @{ Scenario = 'stash failure'; Status = 'StashFailed'; Dirty = $true; LockIndex = $true; Warning = 'git stash push failed'; PopFailed = $false }
+        @{ Scenario = 'stash pop conflict'; Status = 'Updated'; Dirty = $true; LockIndex = $false; Warning = 'git stash pop failed'; PopFailed = $true }
+    ) {
+        $fixture = New-UpdateFixture -Name ($Scenario -replace ' ', '-')
+        $clone = $fixture.Clone
+        if ($Dirty) {
+            Set-Content -LiteralPath (Join-Path $clone 'README.md') -Value 'local edits'
+        }
+        $indexLock = Join-Path (Get-TestGitDir -Path $clone) 'index.lock'
+        if ($LockIndex) { New-Item -ItemType File -Path $indexLock | Out-Null }
+        $headBefore = Invoke-Git @('-C', $clone, 'rev-parse', 'HEAD')
+        try {
+            $results = @(Update-Worktrees -Path $clone -ChangedOnly -NoGitHubAccountResolve -Confirm:$false -WarningVariable diagnostics)
+
+            $results | Should -HaveCount 1
+            $results[0].Status | Should -Be $Status
+            $results[0].PSTypeNames[0] | Should -Be 'WorktreeUpdateResult'
+            $results[0].BehindBy | Should -Be 1
+            $results[0].PopFailed | Should -Be $PopFailed
+            $results[0].Stashed | Should -Be $PopFailed
+            ($diagnostics -join "`n") | Should -Match $Warning
+            if ($LockIndex) {
+                Invoke-Git @('-C', $clone, 'rev-parse', 'HEAD') | Should -Be $headBefore
+                @(Invoke-Git @('-C', $clone, 'stash', 'list')) | Should -HaveCount 0
+                if ($Dirty) {
+                    (Get-Content -LiteralPath (Join-Path $clone 'README.md') -Raw).Trim() | Should -BeExactly 'local edits'
+                }
+            } else {
+                @(Invoke-Git @('-C', $clone, 'stash', 'list')) | Should -HaveCount 1
+            }
+        } finally {
+            if ($LockIndex) { Remove-Item -LiteralPath $indexLock }
+        }
+    }
+
+    It 'processes each pipeline repository independently with <InputKind> paths and keeps errors without rows' -ForEach @(
+        @{ InputKind = 'string' }
+        @{ InputKind = 'property-bound' }
+    ) {
+        $current = New-UpdateFixture -Name "pipeline-current-$InputKind" -Current
+        $behind = New-UpdateFixture -Name "pipeline-behind-$InputKind"
+        $paths = @($current.Clone, (Join-Path $TestDrive 'missing-repository'), $behind.Clone)
+        $inputPaths = if ($InputKind -eq 'string') { $paths } else {
+            $paths | ForEach-Object { [PSCustomObject]@{ RepositoryPath = $_ } }
+        }
+        $locationBefore = (Get-Location).Path
+
+        $results = @($inputPaths | Update-Worktrees -ChangedOnly -NoGitHubAccountResolve -Confirm:$false -ErrorAction SilentlyContinue -ErrorVariable failures)
+
+        $results | Should -HaveCount 1
+        $results[0].Status | Should -Be 'Updated'
+        $results[0].Path | Should -BeExactly (ConvertTo-NativeTestPath $behind.Clone)
+        $failures | Should -Not -BeNullOrEmpty
+        ($failures -join "`n") | Should -Match 'missing-repository'
+        (Get-Location).Path | Should -BeExactly $locationBefore
+        (Get-Content -LiteralPath (Join-Path $current.Clone 'README.md') -Raw).Trim() | Should -BeExactly 'initial'
+        (Get-Content -LiteralPath (Join-Path $behind.Clone 'README.md') -Raw).Trim() | Should -BeExactly 'updated'
+    }
+
+    It 'does not turn a fetch error without a worktree result into successful output' {
+        $repo = New-TestRepo -Path (Join-Path $TestDrive 'fetch-failure')
+        Invoke-Git @('-C', $repo, 'remote', 'add', 'origin', (Join-Path $TestDrive 'missing-origin.git'))
+
+        $results = @(Update-Worktrees -Path $repo -ChangedOnly -NoGitHubAccountResolve -ErrorAction SilentlyContinue -ErrorVariable failures)
+
+        $results | Should -HaveCount 0
+        $failures | Should -Not -BeNullOrEmpty
+        ($failures -join "`n") | Should -Match 'git fetch'
+    }
+
+    It 'filters only after CheckRemote reclassifies a local-only branch' {
+        $fixture = New-UpdateFixture -Name 'check-remote' -Current
+        $worktree = Join-Path $fixture.Root 'local-only'
+        Invoke-Git @('-C', $fixture.Clone, 'worktree', 'add', '--quiet', '-b', 'local-only', $worktree)
+
+        $results = @(Update-Worktrees -Path $fixture.Clone -ChangedOnly -CheckRemote -NoGitHubAccountResolve -Confirm:$false)
+
+        $results | Should -HaveCount 1
+        $results[0].Branch | Should -Be 'local-only'
+        $results[0].Status | Should -Be 'Removed'
+        Test-Path -LiteralPath $worktree | Should -BeTrue
+    }
+
+    It 'keeps WhatIf previews visible without fetching, merging, or stashing' {
+        $fixture = New-UpdateFixture -Name 'preview'
+        $clone = $fixture.Clone
+        Invoke-Git @('-C', $clone, 'fetch', '--quiet', 'origin', 'main')
+        $trackingBefore = Invoke-Git @('-C', $clone, 'rev-parse', 'origin/main')
+        $headBefore = Invoke-Git @('-C', $clone, 'rev-parse', 'HEAD')
+        Set-Content -LiteralPath (Join-Path $fixture.Seed 'README.md') -Value 'latest'
+        Invoke-Git @('-C', $fixture.Seed, 'add', 'README.md')
+        Invoke-TestCommit -Path $fixture.Seed -Message 'another upstream update'
+        Invoke-Git @('-C', $fixture.Seed, 'push', 'origin', 'main', '--quiet')
+        $localFile = Join-Path $clone 'local.txt'
+        Set-Content -LiteralPath $localFile -Value 'keep local changes'
+        $transcript = Join-Path $TestDrive 'changed-only-preview.txt'
+
+        Start-Transcript -Path $transcript -Force | Out-Null
+        try {
+            $results = @(Update-Worktrees -Path $clone -ChangedOnly -WhatIf -NoGitHubAccountResolve -Confirm:$false)
+        } finally {
+            Stop-Transcript | Out-Null
+        }
+
+        $results | Should -HaveCount 0
+        $preview = Get-Content -LiteralPath $transcript -Raw
+        $preview | Should -Match 'What if:.*git fetch'
+        $preview | Should -Match 'What if:.*Fast-forward merge from upstream'
+        Invoke-Git @('-C', $clone, 'rev-parse', 'origin/main') | Should -BeExactly $trackingBefore
+        Invoke-Git @('-C', $clone, 'rev-parse', 'HEAD') | Should -BeExactly $headBefore
+        @(Invoke-Git @('-C', $clone, 'stash', 'list')) | Should -HaveCount 0
+        (Get-Content -LiteralPath $localFile -Raw).Trim() | Should -BeExactly 'keep local changes'
+
+        $applied = @(Update-Worktrees -Path $clone -ChangedOnly -NoGitHubAccountResolve -Confirm:$false)
+        $applied | Should -HaveCount 1
+        $applied[0].Status | Should -Be 'Updated'
+        $applied[0].Stashed | Should -BeTrue
+        $applied[0].PopFailed | Should -BeFalse
+        (Get-Content -LiteralPath (Join-Path $clone 'README.md') -Raw).Trim() | Should -BeExactly 'latest'
+        (Get-Content -LiteralPath $localFile -Raw).Trim() | Should -BeExactly 'keep local changes'
     }
 }
 
@@ -2195,16 +2747,19 @@ public static class GitShim
         $result[0].Stashed | Should -BeFalse
     }
 
-    It 'leaves NoUpstream worktrees unclassified and warns when -CheckRemote cannot reach the remote' -Skip:(-not (Get-Command git -ErrorAction SilentlyContinue)) {
-        $clone = Join-Path $TestDrive 'checkremote-unreachable-clone'
+    It 'leaves NoUpstream worktrees unclassified and warns when -CheckRemote cannot reach the remote (ChangedOnly=<ChangedOnly>)' -ForEach @(
+        @{ ChangedOnly = $false }
+        @{ ChangedOnly = $true }
+    ) -Skip:(-not (Get-Command git -ErrorAction SilentlyContinue)) {
+        $clone = Join-Path $TestDrive "checkremote-unreachable-$ChangedOnly-clone"
         New-TestRepo -Path $clone | Out-Null
         # Origin points at a path that is not a git repository, so the
         # -CheckRemote ls-remote call fails rather than returning an empty set.
-        $missing = Join-Path $TestDrive 'checkremote-unreachable-missing'
+        $missing = Join-Path $TestDrive "checkremote-unreachable-$ChangedOnly-missing"
         $missingUrl = 'file:///' + (($missing -replace '\\', '/'))
         Invoke-Git @('-C', $clone, 'remote', 'add', 'origin', $missingUrl)
         Invoke-Git @('-C', $clone, 'branch', 'local-only')
-        $worktree = Join-Path $TestDrive 'checkremote-unreachable-worktree'
+        $worktree = Join-Path $TestDrive "checkremote-unreachable-$ChangedOnly-worktree"
         Invoke-Git @('-C', $clone, 'worktree', 'add', '--quiet', $worktree, 'local-only')
         Set-TestRepoConfig $worktree
 
@@ -2212,15 +2767,19 @@ public static class GitShim
 
         Push-Location $clone
         try {
-            $results = Update-Worktrees -CheckRemote -NoGitHubAccountResolve -WarningVariable checkWarnings
+            $results = @(Update-Worktrees -CheckRemote -ChangedOnly:$ChangedOnly -NoGitHubAccountResolve -WarningVariable checkWarnings)
         } finally {
             Pop-Location
         }
 
         $result = @($results | Where-Object Branch -eq 'local-only')
-        $result | Should -HaveCount 1
-        # The unreachable remote must NOT cause a false 'Removed' classification.
-        $result[0].Status | Should -Be 'NoUpstream'
+        if ($ChangedOnly) {
+            @($results) | Should -HaveCount 0
+        } else {
+            $result | Should -HaveCount 1
+            # The unreachable remote must NOT cause a false 'Removed' classification.
+            $result[0].Status | Should -Be 'NoUpstream'
+        }
         ($checkWarnings | ForEach-Object { "$_" }) -join "`n" | Should -Match 'ls-remote failed'
     }
 

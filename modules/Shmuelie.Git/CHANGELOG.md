@@ -13,6 +13,14 @@ Versions change only when a release is cut; unreleased work stays under
   path pipeline input and local/remote filtering without fetching or changing
   the current directory. Implicit partial-clone object fetches are disabled
   in child git processes.
+- `Update-Worktrees -ChangedOnly` returns only `Updated`, `Removed`, `Failed`,
+  and `StashFailed` worktree results, matching `Update-AllWorktrees`. Default
+  output and update behavior are unchanged; WhatIf previews, warnings, and
+  errors remain visible.
+- Added `Get-GitTag` for typed, read-only local tag discovery with exact/wildcard
+  name filters, repository path input, annotated/lightweight metadata, full tag
+  annotations, offset-preserving dates, and correctly peeled commit/blob/tree
+  targets (including nested tags).
 
 ## [0.8.2] - 2026-09-08
 
