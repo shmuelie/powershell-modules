@@ -558,6 +558,286 @@ Export-ModuleMember -Function Get-FakePackageName, Update-FakePackage
     }
 }
 
+Describe 'Update-AllPackages Npm adapter' {
+    BeforeAll {
+        $script:NpmModuleWasLoaded = [bool](Get-Module Shmuelie.Node)
+        $script:NpmNodeModule = Import-Module (Join-Path $repoRoot 'modules' 'Shmuelie.Node' 'Shmuelie.Node.psd1') -PassThru
+        $script:CanonicalNpmGetter = (Get-Command Shmuelie.Node\Get-NpmPackage).ScriptBlock
+        $script:OriginalNpmFunction = & $script:NpmNodeModule { Get-Item Function:script:npm -ErrorAction Ignore }
+        & $script:NpmNodeModule {
+            function script:npm { throw 'Tests must never invoke real npm.' }
+        }
+        function New-NpmAdapterTestPackage {
+            param([string]$Name = '@scope/tool', [string]$Version = '1.0.0', [string]$Latest = '2.0.0', [bool]$Global = $true)
+            [pscustomobject]@{ PSTypeName = 'NpmPackage'; Name = $Name; Version = $Version; Latest = $Latest; Global = $Global }
+        }
+    }
+
+    AfterAll {
+        & $script:NpmNodeModule {
+            param($Original)
+            if ($Original) { Set-Item Function:script:npm -Value $Original.ScriptBlock }
+            else { Remove-Item Function:script:npm }
+        } $script:OriginalNpmFunction
+        if (-not $script:NpmModuleWasLoaded) { Remove-Module Shmuelie.Node -Force }
+    }
+
+    BeforeEach {
+        $script:NpmOutdated = @(New-NpmAdapterTestPackage)
+        $script:NpmInstalled = @(New-NpmAdapterTestPackage -Version '2.1.0')
+        $script:NpmDiscoveryExit = 1
+        $script:NpmListExit = 0
+        Mock Get-Module -ModuleName Shmuelie.PackageManagement { $script:NpmNodeModule } -ParameterFilter { $Name -eq 'Shmuelie.Node' }
+        Mock Import-Module -ModuleName Shmuelie.PackageManagement { }
+        Mock Get-Command -ModuleName Shmuelie.PackageManagement { [pscustomobject]@{ Name = $Name } }
+        Mock Get-NpmPackage -ModuleName Shmuelie.Node {
+            if (-not $Global) { throw 'Local discovery must never run.' }
+            if ($Outdated) {
+                $global:LASTEXITCODE = $script:NpmDiscoveryExit
+                $script:NpmOutdated
+            } else {
+                $global:LASTEXITCODE = $script:NpmListExit
+                $script:NpmInstalled
+            }
+        }
+        Mock Shmuelie.Node\Update-NpmPackage -ModuleName Shmuelie.PackageManagement {
+            if (-not $Global -or $Confirm) { throw 'Only already-confirmed global updates are allowed.' }
+            [pscustomobject]@{ PSTypeName = 'NpmUpdateResult'; Name = $Name; Global = $true; Success = $true }
+        }
+    }
+
+    It 'keeps the eight-name catalog side-effect-free and declares Npm dependencies' {
+        $catalog = & (Get-Module Shmuelie.PackageManagement) { @(Get-PackageProvider) }
+        $catalog.Name | Should -Be @('PSResourceGet', 'DotNet', 'Npm', 'Pip', 'Uv', 'VSCode', 'WinGet', 'AppInstaller')
+        $catalog[2].GetTargets | Should -BeOfType ([scriptblock])
+        $catalog[2].Update | Should -BeOfType ([scriptblock])
+        $catalog[2].RequiredModules | Should -Be @('Shmuelie.Node')
+        $catalog[2].OptionNames | Should -HaveCount 0
+        Should -Invoke Import-Module -ModuleName Shmuelie.PackageManagement -Times 0 -Exactly
+        Should -Invoke Get-Command -ModuleName Shmuelie.PackageManagement -Times 0 -Exactly
+    }
+
+    It 'preserves scoped names and uses observed rather than proposed versions' {
+        $result = Update-AllPackages -Provider Npm -Confirm:$false
+        $result.PSTypeNames[0] | Should -BeExactly 'Shmuelie.PackageManagement.UpdateResult'
+        $result.Provider | Should -BeExactly 'Npm'
+        $result.Target | Should -BeExactly '@scope/tool'
+        $result.Status | Should -BeExactly 'Updated'
+        $result.PreviousVersion | Should -BeExactly '1.0.0'
+        $result.ResultingVersion | Should -BeExactly '2.1.0'
+        Should -Invoke Get-NpmPackage -ModuleName Shmuelie.Node -Times 1 -Exactly -ParameterFilter { $Global -and $Outdated }
+        Should -Invoke Get-NpmPackage -ModuleName Shmuelie.Node -Times 1 -Exactly -ParameterFilter { $Global -and -not $Outdated }
+        Should -Invoke Shmuelie.Node\Update-NpmPackage -ModuleName Shmuelie.PackageManagement -Times 1 -Exactly -ParameterFilter {
+            $Name -ceq '@scope/tool' -and $Global -and $null -ne $Confirm -and -not $Confirm
+        }
+    }
+
+    It 'reports no outdated global packages as Unchanged' {
+        $script:NpmOutdated = @()
+        $script:NpmDiscoveryExit = 0
+        $result = Update-AllPackages -Provider Npm -Confirm:$false
+        $result.Status | Should -BeExactly 'Unchanged'
+        $result.Target | Should -BeExactly 'Npm'
+        Should -Invoke Shmuelie.Node\Update-NpmPackage -ModuleName Shmuelie.PackageManagement -Times 0 -Exactly
+    }
+
+    It 'does not update an already-current package from discovery' {
+        $script:NpmOutdated = @(New-NpmAdapterTestPackage -Version '2.0.0')
+        (Update-AllPackages -Provider Npm -Confirm:$false).Status | Should -BeExactly 'Unchanged'
+        Should -Invoke Shmuelie.Node\Update-NpmPackage -ModuleName Shmuelie.PackageManagement -Times 0 -Exactly
+    }
+
+    It 'skips a missing module without importing or running npm' {
+        Mock Get-Module -ModuleName Shmuelie.PackageManagement { $null } -ParameterFilter { $Name -eq 'Shmuelie.Node' }
+        $result = Update-AllPackages -Provider Npm -Confirm:$false
+        $result.Status | Should -BeExactly 'Skipped'
+        $result.Reason | Should -Match 'Install.*Shmuelie.Node'
+        Should -Invoke Import-Module -ModuleName Shmuelie.PackageManagement -Times 0 -Exactly
+        Should -Invoke Get-NpmPackage -ModuleName Shmuelie.Node -Times 0 -Exactly
+    }
+
+    It 'skips a missing npm command after lazy module import' {
+        Mock Get-Command -ModuleName Shmuelie.PackageManagement { $null } -ParameterFilter { $Name -eq 'npm' }
+        $result = Update-AllPackages -Provider Npm -Confirm:$false
+        $result.Status | Should -BeExactly 'Skipped'
+        $result.Reason | Should -Match 'npm.*PATH'
+        Should -Invoke Import-Module -ModuleName Shmuelie.PackageManagement -Times 1 -Exactly -ParameterFilter { $Name -eq 'Shmuelie.Node' }
+        Should -Invoke Get-NpmPackage -ModuleName Shmuelie.Node -Times 0 -Exactly
+    }
+
+    It 'does not discover dependencies for excluded Npm' {
+        @(Update-AllPackages -Provider Npm -ExcludeProvider Npm) | Should -HaveCount 0
+        Should -Invoke Import-Module -ModuleName Shmuelie.PackageManagement -Times 0 -Exactly
+        Should -Invoke Get-Command -ModuleName Shmuelie.PackageManagement -Times 0 -Exactly
+        Should -Invoke Get-NpmPackage -ModuleName Shmuelie.Node -Times 0 -Exactly
+    }
+
+    It 'rejects unsupported <Option> options before discovery' -ForEach @(
+        @{ Option = 'Global' }, @{ Option = 'Name' }, @{ Option = 'Path' },
+        @{ Option = 'Confirm' }, @{ Option = 'WhatIf' }, @{ Option = 'ErrorAction' },
+        @{ Option = 'ScriptBlock' }
+    ) {
+        { Update-AllPackages -Provider Npm -ProviderOptions @{ Npm = @{ $Option = $false } } -Confirm:$false } | Should -Throw '*Unknown option*'
+        Should -Invoke Get-NpmPackage -ModuleName Shmuelie.Node -Times 0 -Exactly
+        Should -Invoke Shmuelie.Node\Update-NpmPackage -ModuleName Shmuelie.PackageManagement -Times 0 -Exactly
+    }
+
+    It 'returns previews without invoking updates or post-update observation' {
+        $result = Update-AllPackages -Provider Npm -WhatIf
+        $result.Status | Should -BeExactly 'Planned'
+        $result.ResultingVersion | Should -BeExactly '2.0.0'
+        Should -Invoke Get-NpmPackage -ModuleName Shmuelie.Node -Times 1 -Exactly -ParameterFilter { $Global -and $Outdated }
+        Should -Invoke Get-NpmPackage -ModuleName Shmuelie.Node -Times 0 -Exactly -ParameterFilter { -not $Outdated }
+        Should -Invoke Shmuelie.Node\Update-NpmPackage -ModuleName Shmuelie.PackageManagement -Times 0 -Exactly
+    }
+
+    It 'rejects unsafe package identifiers before invoking the canonical updater: <Name>' -ForEach @(
+        @{ Name = 'tool&whoami' }, @{ Name = 'tool|whoami' }, @{ Name = 'tool>file' },
+        @{ Name = 'tool<file' }, @{ Name = 'tool^name' }, @{ Name = 'tool%PATH%' },
+        @{ Name = 'tool!PATH!' }, @{ Name = 'tool(name)' }, @{ Name = 'tool"name' },
+        @{ Name = "tool`nname" }, @{ Name = 'tool name' }, @{ Name = '--prefix' },
+        @{ Name = 'tool@next' }, @{ Name = 'file:../tool' }, @{ Name = '../tool' },
+        @{ Name = '@scope/tool&whoami' }
+    ) {
+        $script:NpmOutdated = @(New-NpmAdapterTestPackage -Name $Name)
+        $result = Update-AllPackages -Provider Npm -Confirm:$false
+        $result.Status | Should -BeExactly 'Failed'
+        $result.Error.Exception.Message | Should -Match 'Invalid npm registry package name'
+        Should -Invoke Shmuelie.Node\Update-NpmPackage -ModuleName Shmuelie.PackageManagement -Times 0 -Exactly
+    }
+
+    It 'does not mutate any local dependency or lockfile' {
+        $project = Join-Path $TestDrive 'project'
+        New-Item -ItemType Directory -Path $project -ErrorAction Stop | Out-Null
+        '{"dependencies":{"local-only":"1.0.0"}}' | Set-Content (Join-Path $project 'package.json')
+        '{"lockfileVersion":3}' | Set-Content (Join-Path $project 'package-lock.json')
+        $before = @(Get-ChildItem $project -File | Get-FileHash).Hash
+        $script:NpmInstalled += New-NpmAdapterTestPackage -Name 'current-global' -Version '3.0.0'
+        Push-Location $project
+        try { $result = Update-AllPackages -Provider Npm -Confirm:$false }
+        finally { Pop-Location }
+        $result.Status | Should -BeExactly 'Updated'
+        @(Get-ChildItem $project -File | Get-FileHash).Hash | Should -Be $before
+        Should -Invoke Get-NpmPackage -ModuleName Shmuelie.Node -Times 0 -Exactly -ParameterFilter { -not $Global }
+        Should -Invoke Shmuelie.Node\Update-NpmPackage -ModuleName Shmuelie.PackageManagement -Times 0 -Exactly -ParameterFilter {
+            -not $Global -or $Name -ne '@scope/tool'
+        }
+    }
+
+    It 'rejects non-global discovery output rather than updating it' {
+        $script:NpmOutdated = @(New-NpmAdapterTestPackage -Global $false)
+        (Update-AllPackages -Provider Npm -Confirm:$false).Status | Should -BeExactly 'Failed'
+        Should -Invoke Shmuelie.Node\Update-NpmPackage -ModuleName Shmuelie.PackageManagement -Times 0 -Exactly
+    }
+
+    It 'rejects incomplete discovery data for <Kind> before any package is updated' -ForEach @(
+        @{ Kind = 'npm error metadata'; Package = [pscustomobject]@{ PSTypeName = 'NpmPackage'; Name = 'error'; Version = $null; Latest = $null; Global = $true } }
+        @{ Kind = 'missing installed package'; Package = [pscustomobject]@{ PSTypeName = 'NpmPackage'; Name = 'missing'; Version = $null; Latest = '2.0.0'; Global = $true } }
+        @{ Kind = 'missing latest version'; Package = [pscustomobject]@{ PSTypeName = 'NpmPackage'; Name = 'tool'; Version = '1.0.0'; Latest = $null; Global = $true } }
+    ) {
+        $script:NpmOutdated = @(New-NpmAdapterTestPackage; $Package)
+        $result = Update-AllPackages -Provider Npm -Confirm:$false
+        $result.Status | Should -BeExactly 'Failed'
+        $result.Reason | Should -Match 'outdated global discovery is incomplete'
+        Should -Invoke Shmuelie.Node\Update-NpmPackage -ModuleName Shmuelie.PackageManagement -Times 0 -Exactly
+    }
+
+    It 'reports an observed unchanged version honestly' {
+        $script:NpmInstalled = @(New-NpmAdapterTestPackage)
+        $result = Update-AllPackages -Provider Npm -Confirm:$false
+        $result.Status | Should -BeExactly 'Unchanged'
+        $result.ResultingVersion | Should -BeExactly '1.0.0'
+    }
+
+    It 'does not invent observed versions when verification <Kind>' -ForEach @(
+        @{ Kind = 'finds no package'; Packages = @(); Exit = 0 }
+        @{ Kind = 'finds an unknown version'; Packages = @([pscustomobject]@{ PSTypeName = 'NpmPackage'; Name = '@scope/tool'; Version = $null; Global = $true }); Exit = 0 }
+        @{ Kind = 'fails'; Packages = @(); Exit = 2 }
+    ) {
+        $script:NpmInstalled = $Packages
+        $script:NpmListExit = $Exit
+        $result = Update-AllPackages -Provider Npm -Confirm:$false
+        $result.Status | Should -BeExactly 'Failed'
+        $result.ResultingVersion | Should -BeNullOrEmpty
+    }
+
+    It 'does not treat <Kind> update output as success' -ForEach @(
+        @{ Kind = 'void'; Callback = {} }
+        @{ Kind = 'native text'; Callback = { 'added one package' } }
+        @{ Kind = 'false success'; Callback = { [pscustomobject]@{ PSTypeName = 'NpmUpdateResult'; Name = '@scope/tool'; Global = $true; Success = $false } } }
+    ) {
+        Mock Shmuelie.Node\Update-NpmPackage -ModuleName Shmuelie.PackageManagement $Callback
+        $result = Update-AllPackages -Provider Npm -Confirm:$false
+        $result.Status | Should -BeExactly 'Failed'
+        $result.ResultingVersion | Should -BeNullOrEmpty
+        Should -Invoke Get-NpmPackage -ModuleName Shmuelie.Node -Times 0 -Exactly -ParameterFilter { -not $Outdated }
+    }
+
+    It 'continues individual failures unless StopOnFailure is <Stop>' -ForEach @(
+        @{ Stop = $false; Expected = @('Failed', 'Updated'); Updates = 2 }
+        @{ Stop = $true; Expected = @('Failed'); Updates = 1 }
+    ) {
+        $script:NpmOutdated = @(New-NpmAdapterTestPackage -Name 'first'; New-NpmAdapterTestPackage)
+        Mock Shmuelie.Node\Update-NpmPackage -ModuleName Shmuelie.PackageManagement {
+            [pscustomobject]@{ PSTypeName = 'NpmUpdateResult'; Name = $Name; Global = $true; Success = $false }
+        } -ParameterFilter { $Name -eq 'first' }
+        $results = @(Update-AllPackages -Provider Npm -StopOnFailure:$Stop -Confirm:$false)
+        $results.Status | Should -Be $Expected
+        Should -Invoke Shmuelie.Node\Update-NpmPackage -ModuleName Shmuelie.PackageManagement -Times $Updates -Exactly
+    }
+
+    It 'continues after a canonical nonterminating update error' {
+        $script:NpmOutdated = @(New-NpmAdapterTestPackage -Name 'first'; New-NpmAdapterTestPackage)
+        Mock Shmuelie.Node\Update-NpmPackage -ModuleName Shmuelie.PackageManagement { Write-Error 'npm update failed.' } -ParameterFilter { $Name -eq 'first' }
+        $results = @(Update-AllPackages -Provider Npm -Confirm:$false)
+        $results.Status | Should -Be @('Failed', 'Updated')
+        $results[0].Error.Exception.Message | Should -Match 'npm update failed'
+    }
+
+    It 'fails native discovery errors instead of reporting no updates' {
+        $script:NpmOutdated = @()
+        $script:NpmDiscoveryExit = 1
+        $result = Update-AllPackages -Provider Npm -Confirm:$false
+        $result.Status | Should -BeExactly 'Failed'
+        $result.Reason | Should -Match 'exit code 1'
+        Should -Invoke Shmuelie.Node\Update-NpmPackage -ModuleName Shmuelie.PackageManagement -Times 0 -Exactly
+    }
+
+    It 'restores native exit status and preference after read-only discovery' {
+        $oldExit = $global:LASTEXITCODE
+        $oldPreference = $global:PSNativeCommandUseErrorActionPreference
+        try {
+            $global:LASTEXITCODE = 37
+            $global:PSNativeCommandUseErrorActionPreference = $true
+            (Update-AllPackages -Provider Npm -WhatIf).Status | Should -BeExactly 'Planned'
+            $global:LASTEXITCODE | Should -Be 37
+            $global:PSNativeCommandUseErrorActionPreference | Should -BeTrue
+        } finally {
+            $global:LASTEXITCODE = $oldExit
+            $global:PSNativeCommandUseErrorActionPreference = $oldPreference
+        }
+    }
+
+    It 'accepts canonical npm outdated JSON with exit one using only mocked npm' {
+        Mock Get-NpmPackage -ModuleName Shmuelie.Node {
+            & $script:CanonicalNpmGetter -Global:$Global -Outdated:$Outdated
+        }
+        Mock npm -ModuleName Shmuelie.Node {
+            $global:LASTEXITCODE = 1
+            '{"@scope/tool":{"current":"1.0.0","wanted":"1.5.0","latest":"2.0.0"}}'
+        }
+        $result = Update-AllPackages -Provider Npm -WhatIf
+        $result.Status | Should -BeExactly 'Planned'
+        $result.Target | Should -BeExactly '@scope/tool'
+        $result.PreviousVersion | Should -BeExactly '1.0.0'
+        $result.ResultingVersion | Should -BeExactly '2.0.0'
+        Should -Invoke npm -ModuleName Shmuelie.Node -Times 1 -Exactly -ParameterFilter {
+            $args.Count -eq 3 -and $args[0] -eq 'outdated' -and $args[1] -eq '--json' -and $args[2] -eq '--global'
+        }
+        Should -Invoke Shmuelie.Node\Update-NpmPackage -ModuleName Shmuelie.PackageManagement -Times 0 -Exactly
+    }
+}
+
 Describe 'Update-AllPackages Pip provider' {
     BeforeAll {
         $script:pipUtilities = Import-Module (Join-Path $repoRoot 'modules' 'Shmuelie.Utilities' 'Shmuelie.Utilities.psd1') -Force -PassThru -ErrorAction Stop

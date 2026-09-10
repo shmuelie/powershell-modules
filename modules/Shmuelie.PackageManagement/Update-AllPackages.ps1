@@ -53,6 +53,9 @@ function Update-AllPackages {
         Update-AllPackages -Provider Npm, DotNet -ExcludeProvider Npm -StopOnFailure
         Select only DotNet and stop if its integration fails.
     .EXAMPLE
+        Update-AllPackages -Provider Npm -WhatIf
+        Preview outdated global npm packages without touching local dependencies.
+    .EXAMPLE
         Update-AllPackages -Provider Pip -ProviderOptions @{ Pip = @{ User = $true } } -WhatIf
         Preview outdated top-level user-installed pip packages.
     #>

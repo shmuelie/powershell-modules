@@ -7,7 +7,7 @@ Provider-neutral package update orchestration for PowerShell 7.4+.
 ## Provider availability
 
 The ordered catalog contains `PSResourceGet`, `DotNet`, `Npm`, `Pip`, `Uv`,
-`VSCode`, `WinGet`, and `AppInstaller`. The **Pip** adapter is implemented;
+`VSCode`, `WinGet`, and `AppInstaller`. The **Npm** and **Pip** adapters are implemented;
 the other adapters remain separate follow-up work and report explicit
 `Skipped` results, not successful updates.
 
@@ -18,7 +18,7 @@ gated before dependency discovery on Linux and macOS.
 
 | Command | Description |
 |---|---|
-| `Update-AllPackages` | Discover selected providers, preview or confirm each package update, and return typed outcomes; see provider availability and Pip options below |
+| `Update-AllPackages` | Discover selected providers, preview or confirm each package update, and return typed outcomes; see provider availability and options below |
 
 ```powershell
 Update-AllPackages -WhatIf
@@ -54,6 +54,23 @@ outcomes already produced by that callback. Skips do not trigger fail-fast.
 Provider failures are result data even with `-ErrorAction Stop`; invalid
 arguments remain terminating errors. Read-only discovery errors prevent any
 updates for that provider. No results are invented for unstarted providers.
+
+## Npm
+
+Install `Shmuelie.Node` separately and make npm available on `PATH`. Neither
+dependency is installed automatically; missing dependencies return `Skipped`.
+Discovery reuses `Get-NpmPackage -Global -Outdated`, and each outdated global
+package is passed to `Update-NpmPackage -Global`. Scoped names such as
+`@scope/tool` are preserved. Package specs, paths, options, and shell
+metacharacters are rejected before forwarding names to npm.
+
+Npm accepts no provider options. Repository dependencies and lockfiles are never
+update targets. An empty outdated set returns `Unchanged`. After each successful
+update, the installed global version is read again. Equal versions return
+`Unchanged`; different observed versions return `Updated`. Failed commands,
+invalid results, or an unverifiable version change return `Failed`, never an
+assumed success based on the proposed latest version. Individual failures do not
+prevent later package updates unless `-StopOnFailure` is set.
 
 ## Pip
 
