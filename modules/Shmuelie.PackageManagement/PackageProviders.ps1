@@ -8,6 +8,14 @@ function Get-PackageProvider {
             Get-DotNetPackageProvider
             continue
         }
+        if ($name -eq 'Npm') {
+            Get-NpmPackageProvider
+            continue
+        }
+        if ($name -eq 'Pip') {
+            Get-PipPackageProvider
+            continue
+        }
         [pscustomobject]@{
             Name             = $name
             Platforms        = if ($name -in 'WinGet', 'AppInstaller') { @('Windows') } else { @('Windows', 'Linux', 'MacOS') }

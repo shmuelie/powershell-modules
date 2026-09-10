@@ -10,6 +10,15 @@ under [Unreleased]; versions change only when a release is cut.
   lazy module/SDK discovery, optional wildcard Name filtering, per-tool previews
   and confirmation, observed version outcomes, and native failure reporting.
   Local manifests and SDK installation are not part of this integration.
+- Npm provider for outdated global packages, using the optional Shmuelie.Node
+  module, preserving scoped names, rejecting unsafe package identifiers, and
+  reporting observed installed versions with per-package failure handling.
+- Pip adapter using optional `Shmuelie.Utilities` commands, with outdated
+  top-level discovery by default and Boolean `User`/`TopLevelOnly` options.
+  Updates honor per-package confirmation, validate distribution names, preserve
+  failures, and observe installed versions before reporting update outcomes.
+  `User` filters discovery and observation; it does not override the updater's
+  installation destination.
 
 ## [0.1.0] - 2026-09-08
 
