@@ -94,6 +94,384 @@ BeforeAll {
     }
 }
 
+Describe 'Set-Config' {
+    BeforeAll {
+        function Read-TestConfig {
+            param([string]$Path, [string]$Location = 'local', [string]$Property = 'example.value')
+            InModuleScope Shmuelie.Git -Parameters @{ Path = $Path; Location = $Location; Property = $Property } {
+                param($Path, $Location, $Property)
+                $result = Invoke-GitProcess -Arguments @('-C', $Path, 'config', "--$Location", '--null', '--get-all', '--', $Property)
+                if ($result.ExitCode -ne 0) { throw $result.StandardError }
+                $result.StandardOutput
+            }
+        }
+
+        if (-not ('SetConfigConfirmationHost' -as [type])) {
+            Add-Type -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.Collections.ObjectModel;
+using System.Globalization;
+using System.Management.Automation;
+using System.Management.Automation.Host;
+using System.Security;
+
+public sealed class SetConfigConfirmationHost : PSHost
+{
+    public readonly SetConfigConfirmationUI PromptUI = new SetConfigConfirmationUI();
+    public override Guid InstanceId { get; } = Guid.NewGuid();
+    public override string Name => "SetConfigConfirmationHost";
+    public override Version Version => new Version(1, 0);
+    public override PSHostUserInterface UI => PromptUI;
+    public override CultureInfo CurrentCulture => CultureInfo.InvariantCulture;
+    public override CultureInfo CurrentUICulture => CultureInfo.InvariantCulture;
+    public override void SetShouldExit(int exitCode) { }
+    public override void EnterNestedPrompt() => throw new NotSupportedException();
+    public override void ExitNestedPrompt() => throw new NotSupportedException();
+    public override void NotifyBeginApplication() { }
+    public override void NotifyEndApplication() { }
+}
+
+public sealed class SetConfigConfirmationUI : PSHostUserInterface
+{
+    public int Choice;
+    public int PromptCount;
+    public override PSHostRawUserInterface RawUI => null;
+    public override int PromptForChoice(string caption, string message, Collection<ChoiceDescription> choices, int defaultChoice)
+    {
+        PromptCount++;
+        return Choice;
+    }
+    public override string ReadLine() => throw new NotSupportedException();
+    public override SecureString ReadLineAsSecureString() => throw new NotSupportedException();
+    public override Dictionary<string, PSObject> Prompt(string caption, string message, Collection<FieldDescription> descriptions) => throw new NotSupportedException();
+    public override PSCredential PromptForCredential(string caption, string message, string userName, string targetName) => throw new NotSupportedException();
+    public override PSCredential PromptForCredential(string caption, string message, string userName, string targetName, PSCredentialTypes types, PSCredentialUIOptions options) => throw new NotSupportedException();
+    public override void Write(string value) { }
+    public override void Write(ConsoleColor foreground, ConsoleColor background, string value) { }
+    public override void WriteLine(string value) { }
+    public override void WriteErrorLine(string value) { }
+    public override void WriteDebugLine(string value) { }
+    public override void WriteVerboseLine(string value) { }
+    public override void WriteWarningLine(string value) { }
+    public override void WriteProgress(long sourceId, ProgressRecord record) { }
+}
+'@
+        }
+    }
+
+    BeforeEach {
+        $ErrorActionPreference = 'Stop'
+        Push-Location -LiteralPath $TestDrive -ErrorAction Stop
+        $configEnvironment = @{}
+        foreach ($entry in Get-ChildItem Env: | Where-Object Name -Like 'GIT_*') {
+            $configEnvironment[$entry.Name] = $entry.Value
+            [Environment]::SetEnvironmentVariable($entry.Name, $null, 'Process')
+        }
+        foreach ($environmentKey in 'HOME', 'USERPROFILE', 'XDG_CONFIG_HOME') {
+            $configEnvironment[$environmentKey] = [Environment]::GetEnvironmentVariable($environmentKey, 'Process')
+        }
+        $configSandbox = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
+        $configHome = New-Item -ItemType Directory -Path (Join-Path $configSandbox 'home')
+        $env:HOME = $configHome.FullName
+        $env:USERPROFILE = $configHome.FullName
+        $env:XDG_CONFIG_HOME = $configHome.FullName
+        $env:GIT_CONFIG_GLOBAL = Join-Path $configHome.FullName 'global.gitconfig'
+        $env:GIT_CONFIG_SYSTEM = Join-Path $configHome.FullName 'system.gitconfig'
+        $env:GIT_CONFIG_COUNT = '0'
+        foreach ($file in $env:GIT_CONFIG_GLOBAL, $env:GIT_CONFIG_SYSTEM) {
+            Set-Content -LiteralPath $file -Value "[sentinel]`n`tvalue = original"
+        }
+        $configRepo = New-TestRepo -Path (Join-Path $configSandbox "repo [literal] & 'quoted'") -NoCommit
+        $configFiles = @{
+            local = Join-Path $configRepo '.git' 'config'
+            global = $env:GIT_CONFIG_GLOBAL
+            system = $env:GIT_CONFIG_SYSTEM
+        }
+        $configBefore = @{}
+        foreach ($configLocation in $configFiles.Keys) {
+            $configBefore[$configLocation] = [IO.File]::ReadAllText($configFiles[$configLocation])
+        }
+    }
+
+    AfterEach {
+        foreach ($entry in Get-ChildItem Env: | Where-Object Name -Like 'GIT_*') {
+            [Environment]::SetEnvironmentVariable($entry.Name, $null, 'Process')
+        }
+        foreach ($environmentKey in $configEnvironment.Keys) {
+            [Environment]::SetEnvironmentVariable($environmentKey, $configEnvironment[$environmentKey], 'Process')
+        }
+        Pop-Location
+    }
+
+    It 'exports ShouldProcess, void output, literal value and path metadata with help' {
+        $command = Get-Command Set-Config -Module Shmuelie.Git
+        $command.Parameters.Keys | Should -Contain 'WhatIf'
+        $command.Parameters.Keys | Should -Contain 'Confirm'
+        $command.OutputType.Name | Should -Contain 'System.Void'
+        $command.Parameters.Path.Aliases | Should -Be @('RepositoryPath', 'RepoPath', 'Repository')
+        $pathMetadata = $command.Parameters.Path.Attributes |
+            Where-Object { $_ -is [System.Management.Automation.ParameterAttribute] }
+        $pathMetadata.ValueFromPipeline | Should -Contain $true
+        $pathMetadata.ValueFromPipelineByPropertyName | Should -Contain $true
+        $command.Parameters.Value.Attributes.TypeId.Name | Should -Contain 'AllowEmptyStringAttribute'
+        ($command.Parameters.Location.Attributes |
+            Where-Object { $_ -is [System.Management.Automation.ValidateSetAttribute] }).ValidValues |
+            Should -Be @('local', 'global', 'system')
+        (Get-Help Set-Config).Synopsis | Should -BeLike '*git configuration value*'
+    }
+
+    It 'sets and replaces a <Scope> value without changing other scopes or keys' -ForEach @(
+        @{ Scope = 'local' }; @{ Scope = 'global' }; @{ Scope = 'system' }
+    ) {
+        @(Set-Config example.value first -Path $configRepo -Location $Scope -Confirm:$false) | Should -HaveCount 0
+        Set-Config example.value second -Path $configRepo -Location $Scope.ToUpperInvariant() -Confirm:$false
+        Read-TestConfig -Path $configRepo -Location $Scope | Should -BeExactly "second`0"
+        foreach ($other in $configFiles.Keys | Where-Object { $_ -ne $Scope }) {
+            [IO.File]::ReadAllText($configFiles[$other]) | Should -BeExactly $configBefore[$other]
+        }
+        $preserved = if ($Scope -eq 'local') { 'user.name' } else { 'sentinel.value' }
+        $expected = if ($Scope -eq 'local') { "Test User`0" } else { "original`0" }
+        Read-TestConfig -Path $configRepo -Location $Scope -Property $preserved | Should -BeExactly $expected
+    }
+
+    It 'round-trips the literal <Label> value and subsection key' -ForEach @(
+        @{ Label = 'empty'; Value = '' }
+        @{ Label = 'whitespace'; Value = '  leading and trailing  ' }
+        @{ Label = 'quotes'; Value = 'both "double" and ''single'' quotes \' }
+        @{ Label = 'shell characters'; Value = '$(throw "evaluated"); & | < > %PATH% ! ` [*] # ;' }
+        @{ Label = 'leading dashes'; Value = '--unset-all' }
+        @{ Label = 'separator'; Value = '--' }
+        @{ Label = 'newlines and Unicode'; Value = "line`t1`nline2 $([char]0x96ea)`n" }
+    ) {
+        $key = 'example. subsection "quoted"; $literal & | % ! .value'
+        Set-Config -Property $key -Value $Value -Path $configRepo -Confirm:$false
+        Read-TestConfig -Path $configRepo -Property $key | Should -BeExactly "$Value`0"
+    }
+
+    It 'defaults to local and the current directory without changing location or LASTEXITCODE' {
+        $subdirectory = New-Item -ItemType Directory -Path (Join-Path $configRepo 'nested')
+        Push-Location -LiteralPath $subdirectory.FullName
+        try {
+            $global:LASTEXITCODE = 73
+            Set-Config example.value current -Confirm:$false
+            $LASTEXITCODE | Should -Be 73
+            (Get-Location).ProviderPath | Should -BeExactly $subdirectory.FullName
+            Read-TestConfig -Path $configRepo | Should -BeExactly "current`0"
+        } finally { Pop-Location }
+    }
+
+    It 'accepts relative literal paths and the <Alias> alias' -ForEach @(
+        @{ Alias = 'Path' }; @{ Alias = 'RepositoryPath' }; @{ Alias = 'RepoPath' }; @{ Alias = 'Repository' }
+    ) {
+        Push-Location -LiteralPath $configSandbox
+        try {
+            $options = @{ $Alias = (Split-Path $configRepo -Leaf) }
+            Set-Config example.value relative @options -Confirm:$false
+            (Get-Location).ProviderPath | Should -BeExactly $configSandbox
+            Read-TestConfig -Path $configRepo | Should -BeExactly "relative`0"
+        } finally { Pop-Location }
+    }
+
+    It 'accepts a bare repository for local configuration' {
+        $bare = Join-Path $configSandbox 'bare.git'
+        Invoke-Git @('-c', 'init.templateDir=', 'init', '--bare', '--quiet', $bare)
+        Set-Config example.value bare -Path $bare -Confirm:$false
+        Read-TestConfig -Path $bare | Should -BeExactly "bare`0"
+    }
+
+    It 'runs <Scope> configuration outside any repository, with or without an explicit path' -ForEach @(
+        @{ Scope = 'global' }; @{ Scope = 'system' }
+    ) {
+        Push-Location -LiteralPath $configHome.FullName
+        try {
+            Set-Config example.value implicit -Location $Scope -Confirm:$false
+            Read-TestConfig -Path $configHome.FullName -Location $Scope | Should -BeExactly "implicit`0"
+            Set-Config example.value explicit -Location $Scope -Path $configHome.FullName -Confirm:$false
+            Read-TestConfig -Path $configHome.FullName -Location $Scope | Should -BeExactly "explicit`0"
+        } finally { Pop-Location }
+    }
+
+    It 'requires a repository for local configuration and keeps the shared runner default strict' {
+        { Set-Config example.value unused -Path $configHome.FullName -ErrorAction Stop } |
+            Should -Throw '*not inside a git working tree*'
+        InModuleScope Shmuelie.Git -Parameters @{ Directory = $configHome.FullName } {
+            param($Directory)
+            { Invoke-Git -Path $Directory -Arguments @('config', '--global', '--get', 'sentinel.value') -ErrorAction Stop } |
+                Should -Throw '*not inside a git working tree*'
+        }
+    }
+
+    It 'rejects invalid paths for <Scope> without falling back to the current directory' -ForEach @(
+        @{ Scope = 'local' }; @{ Scope = 'global' }; @{ Scope = 'system' }
+    ) {
+        { Set-Config example.value unused -Location $Scope -Path (Join-Path $configSandbox 'missing') -ErrorAction Stop } |
+            Should -Throw '*path not found*'
+        { Set-Config example.value unused -Location $Scope -Path $configFiles.local -ErrorAction Stop } |
+            Should -Throw '*must be a FileSystem directory*'
+        { Set-Config example.value unused -Location $Scope -Path 'Env:' -ErrorAction Stop } |
+            Should -Throw '*must be a FileSystem directory*'
+        { Set-Config example.value unused -Location $Scope -Path '' -ErrorAction Stop } | Should -Throw
+        foreach ($configLocation in $configFiles.Keys) {
+            [IO.File]::ReadAllText($configFiles[$configLocation]) | Should -BeExactly $configBefore[$configLocation]
+        }
+    }
+
+    It 'rejects an invalid location, empty key or NUL before invoking git' {
+        InModuleScope Shmuelie.Git {
+            Mock Invoke-Git {}
+            Mock Resolve-GitRepositoryPath {}
+            { Set-Config example.value unused -Location worktree } | Should -Throw
+            { Set-Config -Property '' -Value unused } | Should -Throw
+            { Set-Config -Property "example.`0value" -Value unused } | Should -Throw '*NUL*'
+            { Set-Config -Property example.value -Value "invalid`0value" } | Should -Throw '*NUL*'
+            Should -Invoke Invoke-Git -Times 0 -Exactly
+            Should -Invoke Resolve-GitRepositoryPath -Times 0 -Exactly
+        }
+    }
+
+    It 'reports invalid key <Key> through git rather than interpreting it as an option' -ForEach @(
+        @{ Key = 'notakey' }; @{ Key = '--global' }
+        @{ Key = 'example.invalid_key' }; @{ Key = 'example.' }
+    ) {
+        Set-Config -Property $Key -Value unused -Path $configRepo -ErrorAction SilentlyContinue -ErrorVariable failures |
+            Should -BeNullOrEmpty
+        $failures | Should -HaveCount 1
+        $failures[0].FullyQualifiedErrorId | Should -Match '^GitCommandFailed'
+        $failures[0].TargetObject.ExitCode | Should -Not -Be 0
+        $failures[0].TargetObject.StandardError | Should -Not -BeNullOrEmpty
+        [IO.File]::ReadAllText($configFiles.local) | Should -BeExactly $configBefore.local
+    }
+
+    It 'preserves a leading-dash section name when git permits it' {
+        Set-Config -Property '-example.value' -Value '--literal' -Path $configRepo -Confirm:$false
+        Read-TestConfig -Path $configRepo -Property '-example.value' | Should -BeExactly "--literal`0"
+    }
+
+    It 'does not overwrite multiple existing values or conceal the native failure' {
+        Invoke-Git @('-C', $configRepo, 'config', '--local', '--add', 'example.value', 'first')
+        Invoke-Git @('-C', $configRepo, 'config', '--local', '--add', 'example.value', 'second')
+        { Set-Config example.value replacement -Path $configRepo -ErrorAction Stop } |
+            Should -Throw '*git failed*'
+        Read-TestConfig -Path $configRepo | Should -BeExactly "first`0second`0"
+    }
+
+    It 'reports a <Scope> write failure through the shared helper without success output' -ForEach @(
+        @{ Scope = 'local' }; @{ Scope = 'global' }; @{ Scope = 'system' }
+    ) {
+        Set-Content -LiteralPath "$($configFiles[$Scope]).lock" -Value 'locked'
+        Set-Config example.value unused -Path $configRepo -Location $Scope -ErrorAction SilentlyContinue -ErrorVariable failures |
+            Should -BeNullOrEmpty
+        $failures | Should -HaveCount 1
+        $failures[0].FullyQualifiedErrorId | Should -Match '^GitCommandFailed'
+        $failures[0].Exception.Message | Should -Match 'lock'
+        $failures[0].TargetObject.StandardError | Should -Not -BeNullOrEmpty
+        { Set-Config example.value unused -Path $configRepo -Location $Scope -ErrorAction Stop } |
+            Should -Throw '*lock*'
+        [IO.File]::ReadAllText($configFiles[$Scope]) | Should -BeExactly $configBefore[$Scope]
+    }
+
+    It 'passes exactly two operands after the separator to the private shared runner' {
+        InModuleScope Shmuelie.Git -Parameters @{ Repo = $configRepo } {
+            param($Repo)
+            Mock Invoke-Git {}
+            Set-Config -Property 'example.literal "key".value' -Value '--literal "value"' -Path $Repo -Confirm:$false
+            Should -Invoke Invoke-Git -Times 1 -Exactly -ParameterFilter {
+                $Arguments.Count -eq 5 -and $Arguments[0] -ceq 'config' -and $Arguments[1] -ceq '--local' -and
+                $Arguments[2] -ceq '--' -and $Arguments[3] -ceq 'example.literal "key".value' -and
+                $Arguments[4] -ceq '--literal "value"' -and $Path -ceq $Repo -and -not $AllowNonRepository
+            }
+        }
+    }
+
+    It 'preserves arbitrary native exit codes and stderr in the shared error record' {
+        InModuleScope Shmuelie.Git -Parameters @{ Repo = $configRepo } {
+            param($Repo)
+            Mock Resolve-GitRepositoryPath { $Repo }
+            Mock Invoke-GitProcess {
+                [PSCustomObject]@{ ExitCode = 42; StandardOutput = ''; StandardError = 'deliberate native failure'; Output = @() }
+            }
+            Set-Config example.value unused -Path $Repo -ErrorAction SilentlyContinue -ErrorVariable failures |
+                Should -BeNullOrEmpty
+            $failures | Should -HaveCount 1
+            $failures[0].FullyQualifiedErrorId | Should -Match '^GitCommandFailed'
+            $failures[0].TargetObject.ExitCode | Should -Be 42
+            $failures[0].TargetObject.StandardError | Should -BeExactly 'deliberate native failure'
+            $failures[0].TargetObject.RepositoryPath | Should -BeExactly $Repo
+            Should -Invoke Invoke-GitProcess -Times 1 -Exactly
+        }
+    }
+
+    It 'WhatIf does not create an absent <Scope> configuration file' -ForEach @(
+        @{ Scope = 'global' }; @{ Scope = 'system' }
+    ) {
+        Remove-Item -LiteralPath $configFiles[$Scope]
+        Set-Config example.value unused -Location $Scope -Path $configHome.FullName -WhatIf
+        Test-Path -LiteralPath $configFiles[$Scope] | Should -BeFalse
+        Set-Config example.value created -Location $Scope -Path $configHome.FullName -Confirm:$false
+        Read-TestConfig -Path $configHome.FullName -Location $Scope | Should -BeExactly "created`0"
+    }
+
+    It 'WhatIf leaves <Scope> configuration unchanged and never invokes the writer' -ForEach @(
+        @{ Scope = 'local' }; @{ Scope = 'global' }; @{ Scope = 'system' }
+    ) {
+        InModuleScope Shmuelie.Git -Parameters @{ Repo = $configRepo; Scope = $Scope } {
+            param($Repo, $Scope)
+            Mock Invoke-Git {}
+            @(Set-Config example.value unused -Path $Repo -Location $Scope -WhatIf) | Should -HaveCount 0
+            Should -Invoke Invoke-Git -Times 0 -Exactly
+        }
+        Set-Config example.value unused -Path $configRepo -Location $Scope -WhatIf
+        foreach ($configLocation in $configFiles.Keys) {
+            [IO.File]::ReadAllText($configFiles[$configLocation]) | Should -BeExactly $configBefore[$configLocation]
+        }
+    }
+
+    It 'prompts independently for each piped path in <Scope> scope and honors <Mode>' -ForEach @(
+        foreach ($scope in 'local', 'global', 'system') {
+            @{ Scope = $scope; Mode = 'confirm yes'; Choice = 0; ExpectedPrompts = 2; Writes = $true; Options = @{ Confirm = $true } }
+            @{ Scope = $scope; Mode = 'confirm no'; Choice = 2; ExpectedPrompts = 2; Writes = $false; Options = @{ Confirm = $true } }
+            @{ Scope = $scope; Mode = 'confirm false'; Choice = 2; ExpectedPrompts = 0; Writes = $true; Options = @{ Confirm = $false } }
+            @{ Scope = $scope; Mode = 'ambient WhatIf'; Choice = 0; ExpectedPrompts = 0; Writes = $false; Options = @{} }
+        }
+    ) {
+        $hostStub = [SetConfigConfirmationHost]::new()
+        $hostStub.PromptUI.Choice = $Choice
+        $runspace = [runspacefactory]::CreateRunspace($hostStub)
+        $powershell = [powershell]::Create()
+        try {
+            $runspace.Open()
+            $powershell.Runspace = $runspace
+            $null = $powershell.AddScript({
+                param($root, $path, $scope, $mode, $options)
+                $ErrorActionPreference = 'Stop'
+                Import-Module (Join-Path $root 'modules' 'Shmuelie.Git' 'Shmuelie.Git.psd1')
+                if ($mode -eq 'ambient WhatIf') { $WhatIfPreference = $true }
+                $ConfirmPreference = 'Low'
+                @($path, [PSCustomObject]@{ RepositoryPath = $path }) |
+                    Set-Config -Property example.value -Value approved -Location $scope @options
+            }.ToString()).AddArgument($repoRoot).AddArgument($configRepo).AddArgument($Scope).AddArgument($Mode).AddArgument($Options)
+            @($powershell.Invoke()) | Should -HaveCount 0
+            $powershell.HadErrors | Should -BeFalse -Because ($powershell.Streams.Error -join "`n")
+            $hostStub.PromptUI.PromptCount | Should -Be $ExpectedPrompts
+            if ($Writes) {
+                Read-TestConfig -Path $configRepo -Location $Scope | Should -BeExactly "approved`0"
+            } else {
+                [IO.File]::ReadAllText($configFiles[$Scope]) | Should -BeExactly $configBefore[$Scope]
+            }
+        } finally {
+            $powershell.Dispose()
+            $runspace.Dispose()
+        }
+    }
+
+    It 'preserves newline and backslash characters in Unix paths' -Skip:$IsWindows {
+        $path = New-TestRepo -Path (Join-Path $configSandbox "config`nrepo\literal") -NoCommit
+        Set-Config example.value literal -Path $path -Confirm:$false
+        Read-TestConfig -Path $path | Should -BeExactly "literal`0"
+    }
+}
+
 Describe 'Remove-Branch' {
     BeforeAll {
         $branchEnvironment = @{}

@@ -4,6 +4,9 @@ function Resolve-GitRepositoryPath {
     <#
     .SYNOPSIS
     Resolve and validate a path inside a git working tree.
+    .PARAMETER AllowNonRepository
+    Validate only that the literal path is an existing FileSystem directory.
+    Use for operations that do not require repository context.
     #>
     [CmdletBinding()]
     param(
@@ -12,6 +15,8 @@ function Resolve-GitRepositoryPath {
         [string]$Path,
 
         [switch]$AllowBare,
+
+        [switch]$AllowNonRepository,
 
         [hashtable]$Environment
     )
@@ -28,6 +33,8 @@ function Resolve-GitRepositoryPath {
         Write-Error "Git repository path must be a FileSystem directory: '$candidate'."
         return
     }
+
+    if ($AllowNonRepository) { return $providerPath }
 
     $inside = Invoke-GitProcess -Arguments @('-C', $providerPath, 'rev-parse', '--is-inside-work-tree') -Environment $Environment
     if ($inside.ExitCode -ne 0 -or $inside.StandardOutput.Trim() -ne 'true') {

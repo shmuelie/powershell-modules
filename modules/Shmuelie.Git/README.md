@@ -20,6 +20,7 @@ Import-Module Shmuelie.Git
 | `Sync-GitRemote` | Fetch all remotes for the current or `-Path` repository with pruning, returning typed results; picks the right `gh` account per host (github.com/GHE) when several are signed in |
 | `Get-Worktrees` | List worktrees for the current or `-Path` repository |
 | `Get-Branch` | List local and cached remote-tracking refs as `GitBranch` objects, with current branch, commit, upstream, ahead/behind counts and symbolic target (`-Local` / `-Remote` filter the results; never fetches) |
+| `Set-Config` | Set one literal git configuration value with `-Location local` (default), `global` or `system`; supports `-Path`, `-WhatIf` and `-Confirm` |
 | `Get-CurrentWorktree` / `Get-RootWorktree` | Resolve the worktree for the current directory/`-Path` or the repository root |
 | `Get-WorktreePath` | Compute the path a branch's worktree would use for the current or `-Path` repository |
 | `New-Worktree` | Create a branch from the current or `-Path` repository and check it out to a worktree, optionally at destination `-WorktreePath` |
@@ -68,6 +69,8 @@ Find-StaleBranch | Remove-Worktree
 Get-GitStatusSummary
 Get-Branch -Path ../project -Local
 Get-GitTag -Name 'v1.*', 'stable' -Path ../project
+Set-Config -Path ../project -Property user.name -Value 'Example User'
+Set-Config core.editor 'code --wait' -Location global -WhatIf
 Remove-Branch -Name feature/finished -Path ../project -WhatIf
 Remove-Branch -Name feature/finished -Remote -RemoteName upstream
 Set-Branch -Branch feature/new -CreateNew -Path ../project
@@ -123,6 +126,20 @@ the creator date of a lightweight commit tag is the commit's committer date,
 not the tag's creation time. Git does not record creation times for lightweight
 tags. `RepositoryPath` is the resolved input directory. Bare repositories are
 supported; no tags or no name matches produces no output.
+
+`Set-Config` writes one key and produces no output. Property and value are
+literal arguments, including quotes, whitespace, special characters and empty
+or leading-dash values; git validates key syntax. An existing single value is
+replaced, while multiple existing values or write errors are reported by git
+rather than silently replacing all values. Other keys remain unchanged.
+The literal `-Path` defaults to the current directory and has `-RepositoryPath`,
+`-RepoPath` and legacy `-Repository` aliases; paths or path-bearing objects can
+also be piped in. Local scope requires a working tree or bare repository.
+Global/system scope can run outside a repository, but an explicit path must
+still be an existing FileSystem directory. Git selects the scope's file using
+its normal environment and configuration rules; system scope may need elevated
+permissions. Each pipeline item is independently gated by `-WhatIf`/`-Confirm`;
+previewing or declining a change never writes configuration.
 
 `Set-Branch` requires a literal `-Branch` (`-BranchName` is also accepted).
 `-Path` defaults to the current directory and also accepts `-RepositoryPath`,
