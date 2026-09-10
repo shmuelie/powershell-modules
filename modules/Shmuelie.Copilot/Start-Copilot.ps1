@@ -78,6 +78,20 @@ function Start-Copilot {
     .PARAMETER Model
         The AI model to use for the session.
 
+    .PARAMETER SessionSelector
+        Optional scriptblock replacing the numbered picker, forwarded unchanged
+        to Get-CopilotLaunchPlan. Receives one object[] of CopilotSession candidates
+        (Id, Name, Summary, Branch, UpdatedAt, Cwd). Return one candidate or
+        $null/no output to start a new session; errors and invalid/noncandidate
+        results terminate without launching. Automatic resume still takes
+        precedence; use -NoAutoResume to force selection. -NoResume, -ResumeLatest,
+        -ResumeSession, -SessionId, -DeferResume, help/update passthrough, and
+        -WhatIf bypass it.
+        Zero candidates start a new session without calling the selector.
+        Custom selectors need no interactive console and own their UI requirements.
+        The default picker requires interactive input; unavailable input or host
+        prompt errors terminate instead of choosing a session automatically.
+
     .PARAMETER Version
         Run a specific Copilot CLI engine version for this session, e.g. '1.0.55'.
         Maps to the engine's --prefer-version flag. When set, --no-auto-update is
@@ -348,6 +362,13 @@ function Start-Copilot {
         $plan = Start-Copilot -PassThru -DeferResume
         # Returns the plan with no --resume and no picker, so an overlay can make
         # the session-resume decision itself.
+
+    .EXAMPLE
+        Start-Copilot -NoAutoResume -SessionSelector {
+            param([object[]]$Sessions)
+            $Sessions | Sort-Object UpdatedAt -Descending | Select-Object -First 1
+        } -Model gpt-5.4
+        # Selects without console input on any supported platform.
     #>
     [CmdletBinding(SupportsShouldProcess, DefaultParameterSetName = 'Copilot')]
     [OutputType('CopilotLaunchPlan')]
@@ -395,6 +416,9 @@ function Start-Copilot {
 
         [Alias('ShowUnnamed')]
         [switch]$IncludeUnnamed,
+
+        [ValidateNotNull()]
+        [scriptblock]$SessionSelector,
 
         [ArgumentCompleter({
             param($commandName, $parameterName, $wordToComplete)

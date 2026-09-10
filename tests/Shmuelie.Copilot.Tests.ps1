@@ -602,6 +602,330 @@ Describe 'Get-CopilotLaunchPlan' {
     }
 }
 
+Describe 'Copilot pluggable session selector' {
+    BeforeEach {
+        $testHome = Join-Path $TestDrive ([guid]::NewGuid().ToString())
+        $workspace = Join-Path $testHome 'workspace'
+        $sessionRoot = Join-Path $testHome '.copilot' 'session-state'
+        New-Item -ItemType Directory -Path $workspace -Force -ErrorAction Stop | Out-Null
+        Mock -ModuleName Shmuelie.Copilot Get-CopilotHome { $testHome }
+        Mock -ModuleName Shmuelie.Copilot Get-Command {
+            [pscustomobject]@{ Source = 'unused-copilot' }
+        } -ParameterFilter { $Name -eq 'copilot' }
+        Mock -ModuleName Shmuelie.Copilot git { 'test-branch' }
+        $script:ExpectedConsoleReads = 0
+        Mock -ModuleName Shmuelie.Copilot Assert-CopilotSessionPickerInteractive { throw 'No interactive console.' }
+        Mock -ModuleName Shmuelie.Copilot Read-Host { throw 'Unexpected console read.' }
+        Mock -ModuleName Shmuelie.Copilot Invoke-CopilotSessionPicker { throw 'Unexpected default picker.' }
+        Mock -ModuleName Shmuelie.Copilot Resume-CopilotSession {}
+        $recentId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+        $olderId = 'ffffffff-1111-2222-3333-444444444444'
+        $recentPath = New-CopilotSessionState -SessionRoot $sessionRoot -Id $recentId -Cwd $workspace -Summary 'Recent session'
+        $olderPath = New-CopilotSessionState -SessionRoot $sessionRoot -Id $olderId -Cwd $workspace -Summary 'Older session' -UpdatedAt '2026-08-11T22:00:00Z'
+        Push-Location -LiteralPath $workspace
+    }
+
+    AfterEach {
+        Pop-Location
+        Should -Invoke -ModuleName Shmuelie.Copilot Read-Host -Times $script:ExpectedConsoleReads -Exactly
+        Should -Invoke -ModuleName Shmuelie.Copilot Invoke-CopilotSessionPicker -Times 0 -Exactly
+    }
+
+    It 'receives one array of typed metadata and changes only the resume argument' {
+        $options = @{
+            Model = 'gpt-5.4'
+            Prompt = 'continue work'
+            AdditionalMcpConfig = '{"mcpServers":{}}'
+            EnableMcpServer = 'enabled'
+            DisableMcpServer = 'disabled'
+            DenyTool = 'shell(example)'
+            AllowTool = 'read'
+            Version = '1.0.55'
+            RemainingArgs = @('--custom-flag', 'custom-value')
+        }
+        $baseline = Get-CopilotLaunchPlan @options -ResumeSession $olderId
+        $plan = Get-CopilotLaunchPlan @options -SessionSelector {
+            param([object[]]$Sessions)
+            $args.Count | Should -Be 0
+            $Sessions | Should -HaveCount 2
+            foreach ($session in $Sessions) {
+                $session.PSObject.TypeNames | Should -Contain 'CopilotSession'
+                $session.Name | Should -Not -BeNullOrEmpty
+                $session.Summary | Should -Not -BeNullOrEmpty
+                $session.UpdatedAt | Should -BeOfType ([DateTimeOffset])
+                $session.PSObject.Properties.Name | Should -Contain 'Branch'
+                $session.Cwd | Should -Be (Get-Location).Path
+            }
+            $Sessions[1]
+        }
+        $plan.Args | Should -Be $baseline.Args
+        $plan.Exe | Should -Be $baseline.Exe
+        $plan.Passthrough | Should -Be $baseline.Passthrough
+    }
+
+    It 'forwards the callback through Start-Copilot PassThru without launching' {
+        $plan = Start-Copilot -PassThru -SessionSelector { param($Sessions) $Sessions[1] } -Model 'gpt-5.4'
+        $plan.Args[([array]::IndexOf($plan.Args, '--resume') + 1)] | Should -Be $olderId
+        $plan.Args | Should -Contain 'gpt-5.4'
+    }
+
+    It 'bypasses the callback with <Label>' -ForEach @(
+        @{ Label = 'NoResume'; Options = @{ NoResume = $true } }
+        @{ Label = 'ResumeLatest'; Options = @{ ResumeLatest = $true } }
+        @{ Label = 'ResumeSession'; Options = @{ ResumeSession = 'explicit-name' } }
+        @{ Label = 'SessionId'; Options = @{ SessionId = 'assigned-id' } }
+        @{ Label = 'DeferResume'; Options = @{ DeferResume = $true } }
+        @{ Label = 'help passthrough'; Options = @{ Prompt = 'help'; RemainingArgs = @('--custom') } }
+        @{ Label = 'update passthrough'; Options = @{ Prompt = 'update'; RemainingArgs = @('--custom') } }
+    ) {
+        $baseline = Get-CopilotLaunchPlan @Options
+        $plan = Get-CopilotLaunchPlan @Options -SessionSelector { throw 'Selector must be bypassed.' }
+        $plan.Args | Should -Be $baseline.Args
+        $plan.Passthrough | Should -Be $baseline.Passthrough
+    }
+
+    It 'never calls the selector during WhatIf even with NoAutoResume' {
+        $plan = Start-Copilot -PassThru -WhatIf -NoAutoResume -SessionSelector { throw 'Unexpected selector.' }
+        $plan.Args | Should -Not -Contain '--resume'
+    }
+
+    It 'preserves single-session resume but lets NoAutoResume force the selector' {
+        Remove-Item -LiteralPath $olderPath -Recurse -Force -ErrorAction Stop
+        $plan = Get-CopilotLaunchPlan -SessionSelector { throw 'Unexpected selector.' }
+        $plan.Args | Should -Contain $recentId
+        $fresh = Get-CopilotLaunchPlan -NoAutoResume -SessionSelector {
+            param([object[]]$Sessions)
+            $Sessions | Should -HaveCount 1
+            $null
+        }
+        $fresh.Args | Should -Not -Contain '--resume'
+    }
+
+    It 'preserves lone-named preference regardless of IncludeUnnamed' {
+        Set-Content -LiteralPath (Join-Path $olderPath 'workspace.yaml') -Value @(
+            "cwd: $workspace"
+            'updated_at: 2026-08-13T22:00:00Z'
+        ) -ErrorAction Stop
+        $plan = Get-CopilotLaunchPlan -IncludeUnnamed -SessionSelector { throw 'Unexpected selector.' }
+        $plan.Args | Should -Contain $recentId
+        $latest = Get-CopilotLaunchPlan -ResumeLatest -SessionSelector { throw 'Unexpected selector.' }
+        $latest.Args | Should -Contain $olderId
+    }
+
+    It 'filters unnamed stubs only for picker candidates unless IncludeUnnamed is set' {
+        Set-Content -LiteralPath (Join-Path $olderPath 'workspace.yaml') -Value @(
+            "cwd: $workspace"
+            'updated_at: 2026-08-13T22:00:00Z'
+        ) -ErrorAction Stop
+        Get-CopilotLaunchPlan -NoAutoResume -SessionSelector {
+            param([object[]]$Sessions)
+            $Sessions | Should -HaveCount 1
+            $Sessions[0].Summary | Should -Be 'Recent session'
+            $null
+        } | Out-Null
+        $plan = Get-CopilotLaunchPlan -NoAutoResume -IncludeUnnamed -SessionSelector {
+            param([object[]]$Sessions)
+            $Sessions | Should -HaveCount 2
+            $Sessions[0].Summary | Should -Be '(no summary)'
+            $Sessions[0]
+        }
+        $plan.Args | Should -Contain $olderId
+    }
+
+    It 'returns a new-session plan for <Label>' -ForEach @(
+        @{ Label = 'null'; Selector = { $null } }
+        @{ Label = 'no output'; Selector = {} }
+    ) {
+        $plan = Get-CopilotLaunchPlan -SessionSelector $Selector -Name 'New work' -Model 'gpt-5.4'
+        $plan.Args | Should -Not -Contain '--resume'
+        $plan.Args | Should -Contain '--name'
+        $plan.Args | Should -Contain 'New work'
+        $plan.Args | Should -Contain 'gpt-5.4'
+    }
+
+    It 'does not call the selector for zero candidates' {
+        Remove-Item -LiteralPath $sessionRoot -Recurse -Force -ErrorAction Stop
+        $plan = Get-CopilotLaunchPlan -NoAutoResume -SessionSelector { throw 'Unexpected selector.' }
+        $plan.Args | Should -Not -Contain '--resume'
+        { Select-CopilotSession -SessionSelector { throw 'Unexpected selector.' } -ErrorAction Stop } |
+            Should -Throw '*No Copilot sessions matched*'
+    }
+
+    It 'terminates rather than falling back for <Label>' -ForEach @(
+        @{ Label = 'multiple sessions'; Selector = { param($Sessions) $Sessions }; Message = '*exactly one*' }
+        @{ Label = 'an ID string'; Selector = { param($Sessions) $Sessions[0].Id }; Message = '*exactly one*' }
+        @{ Label = 'untyped object'; Selector = { param($Sessions) [pscustomobject]@{ Id = $Sessions[0].Id } }; Message = '*exactly one*' }
+        @{ Label = 'empty ID'; Selector = { param($Sessions) $Sessions[0].Id = ''; $Sessions[0] }; Message = '*exactly one*' }
+        @{ Label = 'nonstring ID'; Selector = { param($Sessions) $Sessions[0].Id = 42; $Sessions[0] }; Message = '*exactly one*' }
+        @{ Label = 'noncandidate'; Selector = { param($Sessions) $Sessions[0].Id = 'not-a-candidate'; $Sessions[0] }; Message = '*not a candidate*' }
+        @{ Label = 'traversal ID'; Selector = { param($Sessions) $Sessions[0].Id = '../outside'; $Sessions[0] }; Message = '*not a candidate*' }
+        @{ Label = 'extra output'; Selector = { param($Sessions) 'diagnostic'; $Sessions[0] }; Message = '*exactly one*' }
+        @{ Label = 'exception'; Selector = { throw 'selector failed' }; Message = '*selector failed*' }
+        @{ Label = 'nonterminating error'; Selector = { param($Sessions) Write-Error 'selector failed' -ErrorAction Continue; $Sessions[0] }; Message = '*selector failed*' }
+    ) {
+        { Start-Copilot -SessionSelector $Selector -Confirm:$false } | Should -Throw $Message
+        { Select-CopilotSession -SessionSelector $Selector -Confirm:$false } | Should -Throw $Message
+        Should -Invoke -ModuleName Shmuelie.Copilot Resume-CopilotSession -Times 0 -Exactly
+    }
+
+    It 'ignores selector changes to canonical metadata and preserves resume arguments' {
+        Select-CopilotSession -SessionSelector {
+            param($Sessions)
+            $Sessions[1].Cwd = 'nonexistent-workspace'
+            $Sessions[1].Path = 'untrusted-path'
+            $Sessions[1]
+        } -Prompt 'continue' -RemainingArgs '--model', 'gpt-5.4' -Confirm:$false
+        Should -Invoke -ModuleName Shmuelie.Copilot Resume-CopilotSession -Times 1 -Exactly -ParameterFilter {
+            $Id -eq $olderId -and $Prompt -eq 'continue' -and
+            ($RemainingArgs -join ' ') -eq '--model gpt-5.4' -and
+            (Get-Location).Path -eq $workspace
+        }
+    }
+
+    It 'accepts a typed copy while retaining the exact original ID' {
+        $plan = Get-CopilotLaunchPlan -SessionSelector {
+            param($Sessions)
+            $Sessions[1].PSObject.Copy()
+        }
+        $plan.Args | Should -Contain $olderId
+    }
+
+    It 'cancels Select without launching when the callback returns null' {
+        Select-CopilotSession -SessionSelector { $null } -Confirm:$false
+        Should -Invoke -ModuleName Shmuelie.Copilot Resume-CopilotSession -Times 0 -Exactly
+    }
+
+    It 'preserves Select single-match and WhatIf bypass behavior' {
+        Select-CopilotSession -Id $recentId -SessionSelector { throw 'Unexpected selector.' } -WhatIf
+        { Select-CopilotSession -SessionSelector { throw 'Unexpected selector.' } -WhatIf -ErrorAction Stop } |
+            Should -Throw '*Multiple Copilot sessions matched*'
+        Select-CopilotSession -Id $recentId -SessionSelector { throw 'Unexpected selector.' } -Confirm:$false
+        Should -Invoke -ModuleName Shmuelie.Copilot Resume-CopilotSession -Times 1 -Exactly
+    }
+
+    It 'applies shared metadata and age filters before invoking a custom selector' {
+        New-CopilotSessionState -SessionRoot $sessionRoot -Id 'future-session' -Cwd $workspace `
+            -Summary 'Future session' -UpdatedAt '2026-08-14T22:00:00Z' | Out-Null
+        New-CopilotSessionState -SessionRoot $sessionRoot -Id 'unrelated-session' -Cwd $workspace `
+            -Summary 'Unrelated' -UpdatedAt '2026-08-10T22:00:00Z' | Out-Null
+
+        Select-CopilotSession -Summary '*session' -Cwd ([WildcardPattern]::Escape($workspace)) `
+            -UpdatedBefore '2026-08-13T00:00:00Z' -SessionSelector {
+                param([object[]]$Sessions)
+                $Sessions | Should -HaveCount 2
+                $Sessions.Id | Should -Not -Contain 'future-session'
+                $Sessions.Id | Should -Not -Contain 'unrelated-session'
+                $Sessions[0].UpdatedAt | Should -BeGreaterThan $Sessions[1].UpdatedAt
+                $Sessions[1]
+            } -StayInDirectory -Confirm:$false
+
+        Should -Invoke -ModuleName Shmuelie.Copilot Resume-CopilotSession -Times 1 -Exactly `
+            -ParameterFilter { $Id -eq $olderId }
+    }
+
+    It 'revalidates the selected session after the callback' {
+        $selector = {
+            param($Sessions)
+            Remove-Item -LiteralPath $recentPath -Recurse -Force -ErrorAction Stop
+            $Sessions[0]
+        }.GetNewClosure()
+        { Get-CopilotLaunchPlan -SessionSelector $selector } | Should -Throw '*no longer exists*'
+    }
+
+    It 'keeps the complete unnamed list when no named candidates exist' {
+        foreach ($path in @($recentPath, $olderPath)) {
+            $content = Get-Content -LiteralPath (Join-Path $path 'workspace.yaml') -Raw
+            $content = $content -replace '(?m)^(name|summary):.*\r?\n', ''
+            Set-Content -LiteralPath (Join-Path $path 'workspace.yaml') -Value $content -ErrorAction Stop
+        }
+        Get-CopilotLaunchPlan -SessionSelector {
+            param($Sessions)
+            $Sessions | Should -HaveCount 2
+            $Sessions[0].Summary | Should -Be '(no summary)'
+            $Sessions[1].Summary | Should -Be '(no summary)'
+            $null
+        } | Out-Null
+    }
+
+    It 'applies branch preference before rendering and falls back when no branch matches' {
+        Add-Content -LiteralPath (Join-Path $olderPath 'workspace.yaml') -Value 'branch: test-branch' -ErrorAction Stop
+        $preferred = Get-CopilotLaunchPlan -SessionSelector { throw 'Unexpected selector.' }
+        $preferred.Args | Should -Contain $olderId
+        Mock -ModuleName Shmuelie.Copilot git { 'unmatched-branch' }
+        Get-CopilotLaunchPlan -SessionSelector {
+            param($Sessions)
+            $Sessions | Should -HaveCount 2
+            $null
+        } | Out-Null
+    }
+
+    It 'keeps discovery reusable without rendering and preserves raw-name maintenance exclusion' {
+        Set-Content -LiteralPath (Join-Path $recentPath 'workspace.yaml') -Value @(
+            "cwd: $workspace"
+            'updated_at: 2026-08-13T22:00:00Z'
+            'summary: Session File Path:'
+        ) -ErrorAction Stop
+        Set-Content -LiteralPath (Join-Path $olderPath 'workspace.yaml') -Value @(
+            "cwd: $workspace"
+            'updated_at: 2026-08-12T22:00:00Z'
+            'name: Session File Path:'
+        ) -ErrorAction Stop
+        $candidates = @(& (Get-Module Shmuelie.Copilot) { Get-CopilotResumeCandidate })
+        $candidates | Should -HaveCount 1
+        $candidates[0].Id | Should -Be $recentId
+        Get-CopilotSession | Should -HaveCount 2
+    }
+
+    It 'retains only current-folder candidates with an update timestamp' {
+        $content = Get-Content -LiteralPath (Join-Path $olderPath 'workspace.yaml') -Raw
+        Set-Content -LiteralPath (Join-Path $olderPath 'workspace.yaml') -Value ($content -replace '(?m)^updated_at:.*\r?\n', '') -ErrorAction Stop
+        $otherWorkspace = Join-Path $testHome 'other'
+        New-Item -ItemType Directory -Path $otherWorkspace -ErrorAction Stop | Out-Null
+        New-CopilotSessionState -SessionRoot $sessionRoot -Id 'other-session' -Cwd $otherWorkspace -Summary 'Other' | Out-Null
+        $candidates = @(& (Get-Module Shmuelie.Copilot) { Get-CopilotResumeCandidate })
+        $candidates | Should -HaveCount 1
+        $candidates[0].Id | Should -Be $recentId
+    }
+
+    It 'fails before prompting when the default picker has no interactive input' {
+        { Get-CopilotLaunchPlan } | Should -Throw '*No interactive console*'
+        Should -Invoke -ModuleName Shmuelie.Copilot Assert-CopilotSessionPickerInteractive -Times 1 -Exactly
+    }
+
+    It 'preserves the default numeric picker choice <Choice>' -ForEach @(
+        @{ Choice = '2'; ExpectedResume = $true }
+        @{ Choice = 'N'; ExpectedResume = $false }
+    ) {
+        Mock -ModuleName Shmuelie.Copilot Assert-CopilotSessionPickerInteractive {}
+        Mock -ModuleName Shmuelie.Copilot Read-Host { $Choice }
+        $script:ExpectedConsoleReads = 1
+        $plan = Get-CopilotLaunchPlan
+        if ($ExpectedResume) {
+            $plan.Args | Should -Contain $olderId
+        } else {
+            $plan.Args | Should -Not -Contain '--resume'
+        }
+    }
+
+    It 'surfaces a host prompt error instead of repeatedly retrying' {
+        Mock -ModuleName Shmuelie.Copilot Assert-CopilotSessionPickerInteractive {}
+        Mock -ModuleName Shmuelie.Copilot Read-Host { throw 'Host does not support prompting.' }
+        $script:ExpectedConsoleReads = 1
+        { Get-CopilotLaunchPlan } | Should -Throw '*Host does not support prompting*'
+    }
+
+    It 'rejects an unsafe candidate ID before invoking the custom selector' {
+        $candidate = [pscustomobject]@{
+            PSTypeName = 'CopilotSession'
+            Id = '../outside'
+        }
+        { & (Get-Module Shmuelie.Copilot) {
+            param($Candidate)
+            Invoke-CopilotSessionSelector -Sessions @($Candidate) -SessionSelector { throw 'Unexpected selector.' }
+        } $candidate } | Should -Throw '*Invalid Copilot session ID*'
+    }
+}
+
 Describe 'Start-Copilot' {
     BeforeEach {
         $testHome = Join-Path $TestDrive 'home'

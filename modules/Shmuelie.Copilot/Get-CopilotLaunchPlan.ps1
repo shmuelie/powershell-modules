@@ -87,6 +87,24 @@ function Get-CopilotLaunchPlan {
     .PARAMETER Model
         The AI model to use for the session.
 
+    .PARAMETER SessionSelector
+        Optional scriptblock replacing only the numbered session picker. Receives
+        one object[] argument containing CopilotSession objects with Id, Name,
+        Summary, Branch, UpdatedAt (DateTimeOffset), and Cwd. Return exactly one
+        CopilotSession whose Id exactly matches a candidate, or $null/no output
+        to start a new session. Other success-stream output is invalid; use
+        Write-Host or Write-Verbose for UI/diagnostics. Returned metadata changes
+        are ignored. Errors and invalid results terminate without launching or
+        falling back to the console picker.
+
+        Automatic single-session/lone-named-session resume still takes precedence;
+        use -NoAutoResume to force selection. -NoResume, -ResumeLatest,
+        -ResumeSession, -SessionId, -DeferResume, and help/update passthrough bypass
+        the selector. It is never called for zero candidates. Custom selectors work
+        in noninteractive hosts without console access; they own any UI they use.
+        The default picker requires interactive input; unavailable input or host
+        prompt errors terminate instead of choosing a session automatically.
+
     .PARAMETER Version
         Run a specific Copilot CLI engine version for this session, e.g. '1.0.55'.
         Maps to the engine's --prefer-version flag. When set, --no-auto-update is
@@ -332,6 +350,13 @@ function Get-CopilotLaunchPlan {
         $plan = Get-CopilotLaunchPlan -DeferResume
         # Returns the plan with no --resume and no picker, so an overlay can make
         # the session-resume decision itself.
+
+    .EXAMPLE
+        $plan = Get-CopilotLaunchPlan -NoAutoResume -SessionSelector {
+            param([object[]]$Sessions)
+            $Sessions | Sort-Object UpdatedAt -Descending | Select-Object -First 1
+        } -Model gpt-5.4
+        # Portable selection without console input; all other launch flags remain intact.
     #>
     [CmdletBinding(DefaultParameterSetName = 'Copilot')]
     [OutputType('CopilotLaunchPlan')]
@@ -379,6 +404,9 @@ function Get-CopilotLaunchPlan {
 
         [Alias('ShowUnnamed')]
         [switch]$IncludeUnnamed,
+
+        [ValidateNotNull()]
+        [scriptblock]$SessionSelector,
 
         [ArgumentCompleter({
             param($commandName, $parameterName, $wordToComplete)
@@ -694,88 +722,14 @@ function Get-CopilotLaunchPlan {
     # parameter-set name is kept as *ShowPicker, so this match covers both.
     $isShowPicker   = $PSCmdlet.ParameterSetName -like '*ShowPicker'
 
-    # Renders the interactive session picker and returns the chosen session object
-    # (or $null if the user chose a new session).
-    function Invoke-SessionPicker {
-        param([object[]]$Sessions)
-        Write-Host "Multiple sessions found for this folder:" -ForegroundColor Yellow
-        Write-Host ""
-        for ($i = 0; $i -lt $Sessions.Count; $i++) {
-            $s = $Sessions[$i]
-            $branchSuffix = if ($s.Branch) { " ($($s.Branch))" } else { '' }
-            $label = "  [$($i + 1)] $($s.Summary)$branchSuffix"
-            $time  = "      $($s.UpdatedAt.LocalDateTime)"
-            if ($i -eq 0) {
-                Write-Host $label -ForegroundColor Cyan
-                Write-Host $time -ForegroundColor DarkGray
-            } else {
-                Write-Host $label
-                Write-Host $time -ForegroundColor DarkGray
-            }
-        }
-        Write-Host "  [N] New session" -ForegroundColor Green
-        Write-Host ""
-        do {
-            Write-Host "Select session [1-$($Sessions.Count)/N]: " -NoNewline -ForegroundColor Yellow
-            $choice = Read-Host
-            if ($choice -eq 'N' -or $choice -eq 'n') { return $null }
-            $num = $choice -as [int]
-        } while ($null -eq $num -or $num -lt 1 -or $num -gt $Sessions.Count)
-        $picked = $Sessions[$num - 1]
-        Write-Host "Resuming session: $($picked.Summary)" -ForegroundColor Cyan
-        return $picked
-    }
-
     if ($ResumeSession) {
         # Resume a specific session directly (id / id-prefix / name).
         Write-Verbose "Resuming session: $ResumeSession"
         $copilotArgs += '--resume', $ResumeSession
     }
     elseif (-not $isNoResume -and -not $isPassthrough -and -not $DeferResume -and -not $SessionId) {
-        $sessionStateDir = Join-Path (Get-CopilotHome) '.copilot' 'session-state'
-        # Auto-generated maintenance sessions to skip when auto-resuming
-        $ignoredSessionNames = @(
-            'Apply context_board add/prune updates for this session. End the turn with a 2-3 sentence summary of the changes you made to the context_board.'
-            'Analyze the session file and write the session insights result to the specified output file as described in the instructions.'
-            # Session-summary worker: its block-scalar name's first line (all the parser captures)
-            'Session File Path:'
-        )
-        if (Test-Path $sessionStateDir) {
-            $cwd = (Get-Location).Path
-            $currentBranch = try { git symbolic-ref --short HEAD 2>$null } catch { $null }
-
-            $sessions = @(Get-ChildItem $sessionStateDir -Directory |
-                ForEach-Object {
-                    $wsFile = Join-Path $_.FullName 'workspace.yaml'
-                    if (Test-Path $wsFile) {
-                        $content = Get-Content $wsFile -Raw
-                        $sessionCwd = Get-CopilotWorkspaceField -Content $content -Field 'cwd'
-                        $updatedAt = Get-CopilotWorkspaceField -Content $content -Field 'updated_at'
-                        $summary = Get-CopilotWorkspaceField -Content $content -Field 'summary'
-                        $sessionBranch = Get-CopilotWorkspaceField -Content $content -Field 'branch'
-                        $sessionName = Get-CopilotWorkspaceField -Content $content -Field 'name'
-                        if ($sessionName) { $sessionName = ($sessionName -split '\r?\n', 2)[0].Trim() }
-                        $displayName = $sessionName ?? $summary ?? '(no summary)'
-                        if ($sessionCwd -eq $cwd -and $updatedAt -and $sessionName -notin $ignoredSessionNames) {
-                            [PSCustomObject]@{
-                                Id        = $_.Name
-                                Summary   = $displayName
-                                Branch    = $sessionBranch
-                                UpdatedAt = [DateTimeOffset]::Parse($updatedAt)
-                            }
-                        }
-                    }
-                } |
-                Sort-Object UpdatedAt -Descending)
-
-            # Prefer sessions matching the current git branch
-            if ($currentBranch -and $sessions.Count -gt 0) {
-                $branchMatches = @($sessions | Where-Object { $_.Branch -and $_.Branch -eq $currentBranch })
-                if ($branchMatches.Count -gt 0) {
-                    $sessions = $branchMatches
-                }
-            }
-
+        $sessions = @(Get-CopilotResumeCandidate)
+        if ($sessions.Count -gt 0) {
             # Named sessions are those with a real display name (not the
             # '(no summary)' placeholder, and not blank). When a lone named
             # session is the only real candidate, auto-resume it instead of
@@ -790,7 +744,7 @@ function Get-CopilotLaunchPlan {
             $chosen = $null
             if ($isShowPicker -and $sessions.Count -ge 1) {
                 # -NoAutoResume (alias -ShowPicker) forces the picker whenever any session exists.
-                $chosen = Invoke-SessionPicker $pickerSessions
+                $chosen = Invoke-CopilotLaunchSessionPicker -Sessions $pickerSessions -SessionSelector $SessionSelector
             }
             elseif ($sessions.Count -eq 1) {
                 $chosen = $sessions[0]
@@ -805,7 +759,7 @@ function Get-CopilotLaunchPlan {
                 Write-Verbose "Resuming the only named session: $($chosen.Summary) (last updated $($chosen.UpdatedAt.LocalDateTime))"
             }
             elseif ($sessions.Count -gt 1) {
-                $chosen = Invoke-SessionPicker $pickerSessions
+                $chosen = Invoke-CopilotLaunchSessionPicker -Sessions $pickerSessions -SessionSelector $SessionSelector
             }
 
             if ($chosen) { $copilotArgs += '--resume', $chosen.Id }
