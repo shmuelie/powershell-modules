@@ -15,7 +15,7 @@ see [`docs/contributing.md`](../docs/contributing.md).
 | `Shmuelie.Node` | Node.js, nvm-windows, npm, and Azure DevOps npm credential helpers |
 | `Shmuelie.DotNet` | Canonical .NET tool discovery, installation, updates, and removal |
 | `Shmuelie.Utilities` | General developer utilities, plus .NET tool compatibility wrappers until Utilities 1.0 |
-| `Shmuelie.PackageManagement` | Provider-neutral package update orchestration foundation; adapters are separate follow-up work |
+| `Shmuelie.PackageManagement` | Provider-neutral package update orchestration; see its README for implemented adapters |
 
 ## Repository layout
 

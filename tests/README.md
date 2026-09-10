@@ -19,7 +19,8 @@ without a full build.
   rounding cases.
 - `Shmuelie.PackageManagement.Tests.ps1` - deterministic fake-provider coverage
   for selection, options, lazy dependencies, result preservation, failures,
-  fail-fast control, previews, and confirmation.
+  fail-fast control, previews, and confirmation, plus mocked canonical DotNet
+  provider discovery, options, per-tool updates, and observed-version outcomes.
 - `Shmuelie.DotNet.Tests.ps1` - canonical .NET tool parsing, parameter and
   pipeline contracts, scope selection, typed results, failure reporting,
   `ShouldProcess`, isolated import, and publishable module layout.

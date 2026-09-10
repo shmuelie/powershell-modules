@@ -4,14 +4,12 @@ Provider-neutral package update orchestration for PowerShell 7.4+.
 
 **Version:** 0.1.0
 
-## Foundation release
+## Provider availability
 
-This module currently ships **only the orchestration foundation** (#177).
-The reserved providers are `PSResourceGet`, `DotNet`, `Npm`, `Pip`, `Uv`,
-`VSCode`, `WinGet`, and `AppInstaller`. Their adapters are separate follow-up
-work (#178-#185); none is implemented in this version. Even if the corresponding
-tools are installed, the foundation returns explicit `Skipped` results, not
-successful updates. The complete provider set is planned for milestone M6.
+The catalog order is `PSResourceGet`, `DotNet`, `Npm`, `Pip`, `Uv`, `VSCode`,
+`WinGet`, and `AppInstaller`. **DotNet is implemented**; the other adapters
+remain follow-up work and return explicit `Skipped` results. The complete
+provider set is planned for milestone M6.
 
 No provider modules are required at import time. Windows-only providers are
 gated before dependency discovery on Linux and macOS.
@@ -35,9 +33,9 @@ validation. Exclusion wins, duplicates run once, and execution follows catalog
 order (the provider order above), then target discovery order. Unknown names
 fail before discovery or mutation.
 
-`ProviderOptions` maps each provider name to its own hashtable. The foundation
-accepts only empty option tables; each future adapter explicitly declares its
-supported options. Invalid option names or non-hashtable values fail before any
+`ProviderOptions` maps each provider name to its own hashtable. Each adapter
+explicitly declares its supported options; placeholders accept empty tables
+only. Invalid option names or non-hashtable values fail before any
 provider starts. Options for unselected providers are validated but not used.
 Provider and option keys are case-insensitive even in JSON-derived or custom
 hashtables. Case-equivalent duplicate keys are rejected before any provider
@@ -56,6 +54,35 @@ outcomes already produced by that callback. Skips do not trigger fail-fast.
 Provider failures are result data even with `-ErrorAction Stop`; invalid
 arguments remain terminating errors. Read-only discovery errors prevent any
 updates for that provider. No results are invented for unstarted providers.
+
+### DotNet global tools
+
+DotNet discovers `Shmuelie.DotNet` lazily and requires `dotnet` with an installed
+SDK. Missing modules, commands, or an SDK produce `Skipped`; nothing is installed
+automatically. If needed, install the canonical module separately with
+`Install-PSResource Shmuelie.DotNet`.
+
+The adapter uses module-qualified `Shmuelie.DotNet\Get-DotNetTool` and
+`Shmuelie.DotNet\Update-DotNetTool`, not compatibility wrappers or shell overlays.
+Only global tools are considered. `Name` is an optional nonempty wildcard string,
+matching the canonical listing filter; it is validated before target discovery.
+Local tools, manifest paths, versions, feeds, and SDK installation are not
+supported provider options.
+
+```powershell
+Update-AllPackages -Provider DotNet -ProviderOptions @{ DotNet = @{ Name = 'dotnet-*' } } -WhatIf
+```
+
+The current canonical API has no read-only outdated/latest-version query.
+Discovery therefore lists installed candidates, not proven outdated tools;
+previews have a null proposed/resulting version. Each approved tool is updated
+individually and then re-listed to observe its installed version. A changed
+version reports `Updated`, an equal version reports `Unchanged`, and unknown
+versions stay null. When versions are unknown, an explicit canonical update
+report is required for `Updated`; otherwise the outcome is `Failed`. Native
+failures, errors, malformed/empty update output, and missing post-update tools
+are failures, never successful fallbacks. No matching installed tools produces
+the standard provider-level `Unchanged` result.
 
 ## Output
 
