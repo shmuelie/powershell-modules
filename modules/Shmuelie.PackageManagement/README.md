@@ -4,14 +4,12 @@ Provider-neutral package update orchestration for PowerShell 7.4+.
 
 **Version:** 0.1.0
 
-## Foundation release
+## Provider availability
 
-This module currently ships **only the orchestration foundation** (#177).
-The reserved providers are `PSResourceGet`, `DotNet`, `Npm`, `Pip`, `Uv`,
-`VSCode`, `WinGet`, and `AppInstaller`. Their adapters are separate follow-up
-work (#178-#185); none is implemented in this version. Even if the corresponding
-tools are installed, the foundation returns explicit `Skipped` results, not
-successful updates. The complete provider set is planned for milestone M6.
+The ordered provider catalog is `PSResourceGet`, `DotNet`, `Npm`, `Pip`, `Uv`,
+`VSCode`, `WinGet`, and `AppInstaller`. **Npm is implemented**; remaining
+adapters are separate follow-up work and report explicit `Skipped` results.
+The complete provider set is planned for milestone M6 (#169).
 
 No provider modules are required at import time. Windows-only providers are
 gated before dependency discovery on Linux and macOS.
@@ -35,14 +33,31 @@ validation. Exclusion wins, duplicates run once, and execution follows catalog
 order (the provider order above), then target discovery order. Unknown names
 fail before discovery or mutation.
 
-`ProviderOptions` maps each provider name to its own hashtable. The foundation
-accepts only empty option tables; each future adapter explicitly declares its
-supported options. Invalid option names or non-hashtable values fail before any
+`ProviderOptions` maps each provider name to its own hashtable. Each adapter
+explicitly declares its supported options; Npm accepts only an empty table.
+Invalid option names or non-hashtable values fail before any
 provider starts. Options for unselected providers are validated but not used.
 Provider and option keys are case-insensitive even in JSON-derived or custom
 hashtables. Case-equivalent duplicate keys are rejected before any provider
 starts, and the caller's maps are not modified.
 Options are data, not commands, module paths, or scripts to execute.
+
+### Npm
+
+Install `Shmuelie.Node` separately and make npm available on `PATH`. Neither
+dependency is installed automatically; missing dependencies return `Skipped`.
+Discovery reuses `Get-NpmPackage -Global -Outdated`, and each outdated global
+package is passed to `Update-NpmPackage -Global`. Scoped names such as
+`@scope/tool` are preserved. Package specs, paths, options, and shell
+metacharacters are rejected before forwarding names to npm.
+
+There is no local-scope option: repository dependencies and lockfiles are never
+update targets. An empty outdated set returns `Unchanged`. After each successful
+update, the installed global version is read again. Equal versions return
+`Unchanged`; different observed versions return `Updated`. Failed commands,
+invalid results, or an unverifiable version change return `Failed`, never an
+assumed success based on the proposed latest version. Individual failures do not
+prevent later package updates unless `-StopOnFailure` is set.
 
 `-WhatIf` performs read-only discovery and returns `Planned` rows for discovered
 targets, without ever invoking mutating callbacks. `-Confirm` asks once per

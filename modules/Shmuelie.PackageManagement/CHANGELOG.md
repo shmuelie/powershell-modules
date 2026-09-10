@@ -5,6 +5,11 @@ under [Unreleased]; versions change only when a release is cut.
 
 ## [Unreleased]
 
+### Added
+- Npm provider for outdated global packages, using the optional Shmuelie.Node
+  module, preserving scoped names, rejecting unsafe package identifiers, and
+  reporting observed installed versions with per-package failure handling.
+
 ## [0.1.0] - 2026-09-08
 
 ### Added
