@@ -48,7 +48,7 @@ BeforeAll {
             [Parameter(Mandatory)][string]$Path,
             [switch]$NoCommit
         )
-        New-Item -ItemType Directory -Path $Path -Force | Out-Null
+        New-Item -ItemType Directory -Path $Path -Force -ErrorAction Stop | Out-Null
         Invoke-Git @('-C', $Path, '-c', 'init.templateDir=', 'init', '-b', 'main', '--quiet')
         Set-TestRepoConfig $Path
         if (-not $NoCommit) {
@@ -91,6 +91,454 @@ BeforeAll {
             '-c', 'user.email=test@example.com',
             'commit', '-m', $Message, '--quiet'
         )
+    }
+}
+
+Describe 'Save-GitStash' {
+    BeforeAll {
+        $stashTestRoot = (New-Item -ItemType Directory -Path (
+            Join-Path $TestDrive "stash-$([guid]::NewGuid().ToString('N').Substring(0, 8))"
+        ) -ErrorAction Stop).FullName
+        $stashEnvironment = @{}
+        foreach ($key in @(
+            'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_SYSTEM', 'GIT_CONFIG_NOSYSTEM',
+            'GIT_CONFIG_COUNT', 'GIT_CONFIG_PARAMETERS', 'GIT_DIR', 'GIT_WORK_TREE',
+            'GIT_COMMON_DIR', 'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY',
+            'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_AUTHOR_DATE', 'GIT_COMMITTER_DATE',
+            'GIT_CEILING_DIRECTORIES'
+        )) {
+            $stashEnvironment[$key] = [Environment]::GetEnvironmentVariable($key, 'Process')
+            Remove-Item "Env:$key" -ErrorAction Ignore
+        }
+        $env:GIT_CONFIG_GLOBAL = Join-Path $stashTestRoot 'no-global-config'
+        $env:GIT_CONFIG_SYSTEM = Join-Path $stashTestRoot 'no-system-config'
+        $env:GIT_CONFIG_NOSYSTEM = '1'
+        $env:GIT_CONFIG_COUNT = '0'
+        $env:GIT_CEILING_DIRECTORIES = $TestDrive
+
+        if (-not ('GitStashConfirmationHost' -as [type])) {
+            Add-Type -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.Collections.ObjectModel;
+using System.Globalization;
+using System.Management.Automation;
+using System.Management.Automation.Host;
+using System.Security;
+
+public sealed class GitStashConfirmationHost : PSHost
+{
+    public readonly GitStashConfirmationUI PromptUI = new GitStashConfirmationUI();
+    public override Guid InstanceId { get; } = Guid.NewGuid();
+    public override string Name => "GitStashConfirmationHost";
+    public override Version Version => new Version(1, 0);
+    public override PSHostUserInterface UI => PromptUI;
+    public override CultureInfo CurrentCulture => CultureInfo.InvariantCulture;
+    public override CultureInfo CurrentUICulture => CultureInfo.InvariantCulture;
+    public override void SetShouldExit(int exitCode) { }
+    public override void EnterNestedPrompt() => throw new NotSupportedException();
+    public override void ExitNestedPrompt() => throw new NotSupportedException();
+    public override void NotifyBeginApplication() { }
+    public override void NotifyEndApplication() { }
+}
+
+public sealed class GitStashConfirmationUI : PSHostUserInterface
+{
+    public int PromptCount;
+    public string TargetMessage;
+    public override PSHostRawUserInterface RawUI => null;
+    public override int PromptForChoice(string caption, string message, Collection<ChoiceDescription> choices, int defaultChoice)
+    {
+        PromptCount++;
+        TargetMessage = message;
+        for (int i = 0; i < choices.Count; i++)
+            if (choices[i].Label == "&No") return i;
+        throw new InvalidOperationException("Expected a No confirmation choice.");
+    }
+    public override string ReadLine() => throw new NotSupportedException();
+    public override SecureString ReadLineAsSecureString() => throw new NotSupportedException();
+    public override Dictionary<string, PSObject> Prompt(string caption, string message, Collection<FieldDescription> descriptions) => throw new NotSupportedException();
+    public override PSCredential PromptForCredential(string caption, string message, string userName, string targetName) => throw new NotSupportedException();
+    public override PSCredential PromptForCredential(string caption, string message, string userName, string targetName, PSCredentialTypes types, PSCredentialUIOptions options) => throw new NotSupportedException();
+    public override void Write(string value) { }
+    public override void Write(ConsoleColor foreground, ConsoleColor background, string value) { }
+    public override void WriteLine(string value) { }
+    public override void WriteErrorLine(string value) { }
+    public override void WriteDebugLine(string value) { }
+    public override void WriteVerboseLine(string value) { }
+    public override void WriteWarningLine(string value) { }
+    public override void WriteProgress(long sourceId, ProgressRecord record) { }
+}
+'@
+        }
+    }
+
+    BeforeEach {
+        $stashLocationPushed = $false
+        Push-Location -LiteralPath $stashTestRoot -ErrorAction Stop
+        $stashLocationPushed = $true
+        (Get-Location).ProviderPath | Should -BeExactly $stashTestRoot
+        $stashRepo = New-TestRepo -Path (Join-Path $stashTestRoot "repo $([guid]::NewGuid().ToString('N').Substring(0, 8))")
+        Set-Content -LiteralPath (Join-Path $stashRepo '.gitignore') -Value 'ignored.txt'
+        Invoke-Git @('-C', $stashRepo, 'add', '.gitignore')
+        Invoke-TestCommit -Path $stashRepo -Message 'ignore fixture'
+        Set-Content -LiteralPath (Join-Path $stashRepo 'README.md') -Value 'staged'
+        Invoke-Git @('-C', $stashRepo, 'add', 'README.md')
+        Set-Content -LiteralPath (Join-Path $stashRepo 'README.md') -Value 'unstaged'
+        Set-Content -LiteralPath (Join-Path $stashRepo 'loose.txt') -Value 'untracked'
+        Set-Content -LiteralPath (Join-Path $stashRepo 'ignored.txt') -Value 'ignored'
+    }
+
+    AfterEach {
+        if ($stashLocationPushed) { Pop-Location }
+    }
+
+    AfterAll {
+        foreach ($key in $stashEnvironment.Keys) {
+            if ($null -eq $stashEnvironment[$key]) {
+                Remove-Item "Env:$key" -ErrorAction Ignore
+            } else {
+                [Environment]::SetEnvironmentVariable($key, $stashEnvironment[$key], 'Process')
+            }
+        }
+        if ($stashTestRoot -and (Test-Path -LiteralPath $stashTestRoot)) {
+            (Split-Path $stashTestRoot -Parent) | Should -BeExactly $TestDrive
+            # Pester 5 shares TestDrive across Describes and its wildcard cleanup
+            # can leave literal bracket paths and read-only git objects behind.
+            Get-ChildItem -LiteralPath $stashTestRoot -Recurse -Force -File -ErrorAction Stop |
+                ForEach-Object { $_.IsReadOnly = $false }
+            Remove-Item -LiteralPath $stashTestRoot -Recurse -Force -ErrorAction Stop
+        }
+    }
+
+    It 'exports the approved command and documents its output and standard pipeline metadata' {
+        $module = Get-Module Shmuelie.Git
+        $command = Get-Command Save-GitStash -Module Shmuelie.Git
+        $module.ExportedFunctions.Keys | Should -Contain 'Save-GitStash'
+        $module.ExportedFunctions.Keys | Should -Not -Contain 'Backup-Changes'
+        $module.ExportedAliases.Count | Should -Be 0
+        $command.OutputType.Name | Should -Contain 'GitStash'
+        $command.Parameters.Keys | Should -Contain 'WhatIf'
+        $command.Parameters.Keys | Should -Contain 'Confirm'
+        $command.Parameters.Path.Aliases | Should -Be @('RepositoryPath', 'RepoPath')
+        $attribute = $command.Parameters.Path.Attributes |
+            Where-Object { $_ -is [System.Management.Automation.ParameterAttribute] }
+        $attribute.ValueFromPipeline | Should -BeTrue
+        $attribute.ValueFromPipelineByPropertyName | Should -BeTrue
+        (Get-Help Save-GitStash).Description.Text | Should -Not -BeNullOrEmpty
+    }
+
+    It 'saves <Mode> changes with KeepIndex=<Keep>, retaining every uncaptured file' -ForEach @(
+        @{ Mode = 'tracked'; Keep = $false; Flags = @{}; Extra = @() }
+        @{ Mode = 'tracked'; Keep = $true; Flags = @{ KeepIndex = $true }; Extra = @() }
+        @{ Mode = 'untracked'; Keep = $false; Flags = @{ IncludeUntracked = $true }; Extra = @('loose.txt') }
+        @{ Mode = 'untracked'; Keep = $true; Flags = @{ IncludeUntracked = $true; KeepIndex = $true }; Extra = @('loose.txt') }
+        @{ Mode = 'all'; Keep = $false; Flags = @{ All = $true }; Extra = @('ignored.txt', 'loose.txt') }
+        @{ Mode = 'all'; Keep = $true; Flags = @{ All = $true; KeepIndex = $true }; Extra = @('ignored.txt', 'loose.txt') }
+    ) {
+        $head = Invoke-Git @('-C', $stashRepo, 'rev-parse', 'HEAD')
+        $results = @(Save-GitStash -Path $stashRepo @Flags -Confirm:$false -ErrorAction Stop)
+        $results | Should -HaveCount 1
+        $stash = $results[0]
+        $stash.PSTypeNames[0] | Should -BeExactly 'GitStash'
+        @($stash.PSObject.Properties.Name) | Should -Be @('ObjectId', 'RepositoryPath', 'Subject')
+        $stash.RepositoryPath | Should -BeExactly $stashRepo
+        $stash.ObjectId | Should -Match '^(?:[0-9a-f]{40}|[0-9a-f]{64})$'
+        $stash.ObjectId | Should -BeExactly (Invoke-Git @('-C', $stashRepo, 'rev-parse', 'refs/stash'))
+        $stash.Subject | Should -BeExactly (Invoke-Git @('-C', $stashRepo, 'show', '-s', '--format=%s', $stash.ObjectId))
+        Invoke-Git @('-C', $stashRepo, 'show', "$($stash.ObjectId):README.md") | Should -BeExactly 'unstaged'
+        Invoke-Git @('-C', $stashRepo, 'show', "$($stash.ObjectId)^2:README.md") | Should -BeExactly 'staged'
+        Invoke-Git @('-C', $stashRepo, 'rev-parse', "$($stash.ObjectId)^1") | Should -BeExactly $head
+        Invoke-Git @('-C', $stashRepo, 'rev-parse', 'HEAD') | Should -BeExactly $head
+        Invoke-Git @('-C', $stashRepo, 'rev-list', '--count', '--walk-reflogs', 'refs/stash') | Should -Be '1'
+
+        $expected = if ($Keep) { 'staged' } else { 'initial' }
+        (Get-Content -LiteralPath (Join-Path $stashRepo 'README.md') -Raw).Trim() | Should -BeExactly $expected
+        Invoke-Git @('-C', $stashRepo, 'show', ':README.md') | Should -BeExactly $expected
+        @(Invoke-Git @('-C', $stashRepo, 'diff', '--name-only')) | Should -HaveCount 0
+        $stagedPaths = @(Invoke-Git @('-C', $stashRepo, 'diff', '--cached', '--name-only'))
+        if ($Keep) { $stagedPaths | Should -Be @('README.md') }
+        else { $stagedPaths | Should -HaveCount 0 }
+        foreach ($file in @('loose.txt', 'ignored.txt')) {
+            $filePath = Join-Path $stashRepo $file
+            if ($file -in $Extra) {
+                Test-Path -LiteralPath $filePath | Should -BeFalse
+                $value = if ($file -eq 'loose.txt') { 'untracked' } else { 'ignored' }
+                Invoke-Git @('-C', $stashRepo, 'show', "$($stash.ObjectId)^3:$file") | Should -BeExactly $value
+            } else {
+                $value = if ($file -eq 'loose.txt') { 'untracked' } else { 'ignored' }
+                (Get-Content -LiteralPath $filePath -Raw).Trim() | Should -BeExactly $value
+            }
+        }
+        $parents = (Invoke-Git @('-C', $stashRepo, 'rev-list', '--parents', '-n', '1', $stash.ObjectId)) -split ' '
+        $parents.Count | Should -Be $(if ($Extra.Count) { 4 } else { 3 })
+    }
+
+    It 'keeps a stable commit identity when later saves move the stack' {
+        $first = Save-GitStash -Path $stashRepo -Message first -Confirm:$false
+        Set-Content -LiteralPath (Join-Path $stashRepo 'README.md') -Value 'second change'
+        $second = Save-GitStash -Path $stashRepo -Message second -Confirm:$false
+        $first.ObjectId | Should -Not -Be $second.ObjectId
+        Invoke-Git @('-C', $stashRepo, 'rev-parse', 'stash@{1}') | Should -BeExactly $first.ObjectId
+        Invoke-Git @('-C', $stashRepo, 'show', "$($first.ObjectId):README.md") | Should -BeExactly 'unstaged'
+        Invoke-Git @('-C', $stashRepo, 'show', "$($second.ObjectId):README.md") | Should -BeExactly 'second change'
+    }
+
+    It 'passes the <Case> message literally rather than evaluating text or options' -ForEach @(
+        @{ Case = 'quoted and executable-looking'; Text = 'a "quote" and ''single'' & | ; $(throw "executed") <> ` %PATH% ! ^' }
+        @{ Case = 'option-looking'; Text = '--all --keep-index' }
+        @{ Case = 'padded'; Text = '  keep  spaces  ' }
+        @{ Case = 'multiline Unicode'; Text = "first $([char]0xe9)`n`nsecond`tline" }
+        @{ Case = 'trailing backslashes'; Text = 'path ends\\' }
+    ) {
+        $stash = Save-GitStash -Path $stashRepo -Message $Text -Confirm:$false -ErrorAction Stop
+        $stored = InModuleScope Shmuelie.Git -Parameters @{ Repo = $stashRepo; Oid = $stash.ObjectId } {
+            param($Repo, $Oid)
+            (Invoke-Git -Path $Repo -Arguments @('cat-file', 'commit', $Oid)).StandardOutput
+        }
+        ($stored -split "`n`n", 2)[1] | Should -BeExactly "On main: $Text"
+        Test-Path -LiteralPath (Join-Path $stashRepo 'loose.txt') | Should -BeTrue
+        Test-Path -LiteralPath (Join-Path $stashRepo 'ignored.txt') | Should -BeTrue
+        Invoke-Git @('-C', $stashRepo, 'show', ':README.md') | Should -BeExactly 'initial'
+    }
+
+    It 'uses the default git message for <Case>' -ForEach @(
+        @{ Case = 'null'; Text = $null }
+        @{ Case = 'empty text'; Text = '' }
+        @{ Case = 'whitespace'; Text = " `t`r`n " }
+    ) {
+        $stash = Save-GitStash -Path $stashRepo -Message $Text -Confirm:$false -ErrorAction Stop
+        $stash.Subject | Should -Match '^WIP on main: [0-9a-f]+ ignore fixture$'
+    }
+
+    It 'returns nothing when only uncaptured files remain and there is no existing stash' {
+        Invoke-Git @('-C', $stashRepo, 'restore', '--staged', '--worktree', '--', '.')
+        @(Save-GitStash -Path $stashRepo -Confirm:$false -ErrorAction Stop) | Should -HaveCount 0
+        @(Invoke-Git @('-C', $stashRepo, 'for-each-ref', '--format=%(objectname)', 'refs/stash')) | Should -HaveCount 0
+        Test-Path -LiteralPath (Join-Path $stashRepo 'loose.txt') | Should -BeTrue
+        Test-Path -LiteralPath (Join-Path $stashRepo 'ignored.txt') | Should -BeTrue
+    }
+
+    It 'never returns an old stash as if a no-op had created it' {
+        $stash = Save-GitStash -Path $stashRepo -All -Confirm:$false
+        @(Save-GitStash -Path $stashRepo -All -Confirm:$false -ErrorAction Stop) | Should -HaveCount 0
+        Invoke-Git @('-C', $stashRepo, 'rev-parse', 'refs/stash') | Should -BeExactly $stash.ObjectId
+        Invoke-Git @('-C', $stashRepo, 'rev-list', '--count', '--walk-reflogs', 'refs/stash') | Should -Be '1'
+    }
+
+    It 'can save only <Mode> files when tracked changes are absent' -ForEach @(
+        @{ Mode = 'untracked'; Flags = @{ IncludeUntracked = $true }; Files = @('loose.txt') }
+        @{ Mode = 'ignored'; Flags = @{ All = $true }; Files = @('ignored.txt') }
+    ) {
+        Invoke-Git @('-C', $stashRepo, 'restore', '--staged', '--worktree', '--', '.')
+        if ($Mode -eq 'ignored') { Remove-Item -LiteralPath (Join-Path $stashRepo 'loose.txt') }
+        $stash = Save-GitStash -Path $stashRepo @Flags -Confirm:$false -ErrorAction Stop
+        $stash.ObjectId | Should -Not -BeNullOrEmpty
+        Invoke-Git @('-C', $stashRepo, 'ls-tree', '-r', '--name-only', "$($stash.ObjectId)^3") | Should -Be $Files
+    }
+
+    It 'rejects conflicting inclusion switches and NUL messages before running git' {
+        InModuleScope Shmuelie.Git -Parameters @{ Repo = $stashRepo } {
+            param($Repo)
+            Mock Invoke-Git { throw 'Git must not run for invalid options.' }
+            { Save-GitStash -Path $Repo -All -IncludeUntracked -Confirm:$false } |
+                Should -Throw -ErrorId 'GitStashOptionsConflict,Save-GitStash' -ExpectedMessage '*either -All or -IncludeUntracked*'
+            { Save-GitStash -Path $Repo -Message "invalid`0message" -Confirm:$false } |
+                Should -Throw -ExpectedMessage '*NUL*'
+            Should -Invoke Invoke-Git -Times 0
+        }
+    }
+
+    It 'treats explicitly false switches as disabled' {
+        $stash = Save-GitStash -Path $stashRepo -All:$false -IncludeUntracked:$false -KeepIndex:$false -Confirm:$false
+        $stash.ObjectId | Should -Not -BeNullOrEmpty
+        Test-Path -LiteralPath (Join-Path $stashRepo 'loose.txt') | Should -BeTrue
+        Test-Path -LiteralPath (Join-Path $stashRepo 'ignored.txt') | Should -BeTrue
+        Invoke-Git @('-C', $stashRepo, 'show', ':README.md') | Should -BeExactly 'initial'
+    }
+
+    It 'does not change any stash, file or index when <Mode>' -ForEach @(
+        @{ Mode = 'WhatIf is set' }
+        @{ Mode = 'confirmation is declined' }
+    ) {
+        $beforeStatus = Invoke-Git @('-C', $stashRepo, 'status', '--porcelain=v1', '--ignored')
+        $indexPath = Join-Path (Get-TestGitDir $stashRepo) 'index'
+        $beforeIndex = (Get-FileHash -LiteralPath $indexPath).Hash
+        $beforeLocation = (Get-Location).ProviderPath
+        if ($Mode -eq 'WhatIf is set') {
+            @(Save-GitStash -Path $stashRepo -All -WhatIf -Confirm:$false -ErrorAction Stop) | Should -HaveCount 0
+        } else {
+            $hostStub = [GitStashConfirmationHost]::new()
+            $runspace = [runspacefactory]::CreateRunspace($hostStub)
+            $powershell = [powershell]::Create()
+            try {
+                $runspace.Open()
+                $powershell.Runspace = $runspace
+                $null = $powershell.AddScript({
+                    param($root, $path)
+                    $ErrorActionPreference = 'Stop'
+                    Import-Module (Join-Path $root 'modules' 'Shmuelie.Git' 'Shmuelie.Git.psd1')
+                    try { Save-GitStash -Path $path -All -Confirm }
+                    finally { Remove-Module Shmuelie.Git }
+                }.ToString()).AddArgument($repoRoot).AddArgument($stashRepo)
+                @($powershell.Invoke()) | Should -HaveCount 0
+                $powershell.HadErrors | Should -BeFalse -Because ($powershell.Streams.Error -join "`n")
+                $hostStub.PromptUI.PromptCount | Should -Be 1
+                $hostStub.PromptUI.TargetMessage | Should -BeLike "*$stashRepo*"
+                $hostStub.PromptUI.TargetMessage | Should -BeLike '*tracked, untracked and ignored*'
+            } finally {
+                $powershell.Dispose()
+                $runspace.Dispose()
+            }
+        }
+        (Get-FileHash -LiteralPath $indexPath).Hash | Should -BeExactly $beforeIndex
+        (Get-Location).ProviderPath | Should -BeExactly $beforeLocation
+        @(Invoke-Git @('-C', $stashRepo, 'for-each-ref', '--format=%(objectname)', 'refs/stash')) | Should -HaveCount 0
+        Invoke-Git @('-C', $stashRepo, 'status', '--porcelain=v1', '--ignored') | Should -Be $beforeStatus
+        (Get-Content -LiteralPath (Join-Path $stashRepo 'README.md') -Raw).Trim() | Should -BeExactly 'unstaged'
+        (Get-Content -LiteralPath (Join-Path $stashRepo 'loose.txt') -Raw).Trim() | Should -BeExactly 'untracked'
+        (Get-Content -LiteralPath (Join-Path $stashRepo 'ignored.txt') -Raw).Trim() | Should -BeExactly 'ignored'
+    }
+
+    It 'targets pipeline <Property> without changing the caller location or LASTEXITCODE' -ForEach @(
+        @{ Property = 'string' }
+        @{ Property = 'Path' }
+        @{ Property = 'RepositoryPath' }
+        @{ Property = 'RepoPath' }
+    ) {
+        $inputPath = if ($Property -eq 'string') { $stashRepo }
+            else { [PSCustomObject]@{ $Property = $stashRepo } }
+        Push-Location -LiteralPath $stashTestRoot -ErrorAction Stop
+        try {
+            $LASTEXITCODE = 37
+            $stash = $inputPath | Save-GitStash -Confirm:$false -ErrorAction Stop
+            $LASTEXITCODE | Should -Be 37
+            $stash.RepositoryPath | Should -BeExactly $stashRepo
+            (Get-Location).ProviderPath | Should -BeExactly $stashTestRoot
+        } finally {
+            Pop-Location
+        }
+    }
+
+    It 'resolves relative literal aliases and defaults to a subdirectory while stashing the entire tree' -ForEach @(
+        @{ Mode = 'RepositoryPath' }
+        @{ Mode = 'RepoPath' }
+        @{ Mode = 'current directory' }
+    ) {
+        $renamed = Join-Path $stashTestRoot "literal [stash] & ($Mode)"
+        Rename-Item -LiteralPath $stashRepo -NewName (Split-Path $renamed -Leaf) -ErrorAction Stop
+        $stashRepo = $renamed
+        $subdirectory = New-Item -ItemType Directory -Path (Join-Path $stashRepo 'subdirectory') -ErrorAction Stop
+        $location = if ($Mode -eq 'current directory') { $subdirectory.FullName } else { $stashTestRoot }
+        Push-Location -LiteralPath $location -ErrorAction Stop
+        try {
+            $parameters = @{ Confirm = $false; ErrorAction = 'Stop' }
+            if ($Mode -ne 'current directory') {
+                $parameters[$Mode] = Join-Path (Split-Path $stashRepo -Leaf) 'subdirectory'
+            }
+            $stash = Save-GitStash @parameters
+            $stash.RepositoryPath | Should -BeExactly $subdirectory.FullName
+            (Get-Location).ProviderPath | Should -BeExactly $location
+            Invoke-Git @('-C', $stashRepo, 'show', "$($stash.ObjectId):README.md") | Should -BeExactly 'unstaged'
+            Invoke-Git @('-C', $stashRepo, 'show', ':README.md') | Should -BeExactly 'initial'
+        } finally {
+            Pop-Location
+        }
+    }
+
+    It 'continues pipeline processing after a no-op repository' {
+        $clean = New-TestRepo -Path (Join-Path $stashTestRoot 'clean stash repo')
+        $results = @($clean, $stashRepo | Save-GitStash -Confirm:$false -ErrorAction Stop)
+        $results | Should -HaveCount 1
+        $results[0].RepositoryPath | Should -BeExactly $stashRepo
+    }
+
+    It 'supports linked worktrees without stashing changes from another worktree' {
+        $linked = Join-Path $stashTestRoot 'linked stash worktree'
+        Invoke-Git @('-C', $stashRepo, 'worktree', 'add', '--detach', '--quiet', $linked)
+        Set-Content -LiteralPath (Join-Path $linked 'README.md') -Value 'linked changes'
+        $stash = Save-GitStash -Path $linked -Confirm:$false -ErrorAction Stop
+        $stash.RepositoryPath | Should -BeExactly $linked
+        Invoke-Git @('-C', $linked, 'show', "$($stash.ObjectId):README.md") | Should -BeExactly 'linked changes'
+        (Get-Content -LiteralPath (Join-Path $linked 'README.md') -Raw).Trim() | Should -BeExactly 'initial'
+        (Get-Content -LiteralPath (Join-Path $stashRepo 'README.md') -Raw).Trim() | Should -BeExactly 'unstaged'
+        Invoke-Git @('-C', $stashRepo, 'show', ':README.md') | Should -BeExactly 'staged'
+    }
+
+    It 'leaves nested repository work untouched with <Mode>' -ForEach @(
+        @{ Mode = 'IncludeUntracked'; Flags = @{ IncludeUntracked = $true } }
+        @{ Mode = 'All'; Flags = @{ All = $true } }
+    ) {
+        $nested = New-TestRepo -Path (Join-Path $stashRepo 'nested repo')
+        Set-Content -LiteralPath (Join-Path $nested 'README.md') -Value 'nested work'
+        $stash = Save-GitStash -Path $stashRepo @Flags -Confirm:$false -ErrorAction Stop
+        $stash.ObjectId | Should -Not -BeNullOrEmpty
+        (Get-Content -LiteralPath (Join-Path $nested 'README.md') -Raw).Trim() | Should -BeExactly 'nested work'
+        @(Invoke-Git @('-C', $nested, 'for-each-ref', '--format=%(objectname)', 'refs/stash')) | Should -HaveCount 0
+        @(Invoke-Git @('-C', $stashRepo, 'ls-tree', '-r', '--name-only', "$($stash.ObjectId)^3")) |
+            Should -Not -Contain 'nested repo/README.md'
+    }
+
+    It 'reports native lock failures without emitting success or altering the working tree' {
+        $beforeLocation = (Get-Location).ProviderPath
+        $indexPath = Join-Path (Get-TestGitDir $stashRepo) 'index'
+        $beforeIndex = (Get-FileHash -LiteralPath $indexPath).Hash
+        Set-Content -LiteralPath "$indexPath.lock" -Value 'held by test'
+        @(Save-GitStash -Path $stashRepo -All -Confirm:$false -ErrorAction SilentlyContinue -ErrorVariable failures) |
+            Should -HaveCount 0
+        $failures | Should -HaveCount 1
+        $failures[0].FullyQualifiedErrorId | Should -Match '^GitCommandFailed'
+        $failures[0].TargetObject.ExitCode | Should -Not -Be 0
+        $failures[0].TargetObject.RepositoryPath | Should -BeExactly $stashRepo
+        { Save-GitStash -Path $stashRepo -Confirm:$false -ErrorAction Stop } | Should -Throw -ExpectedMessage '*git failed*'
+        (Get-FileHash -LiteralPath $indexPath).Hash | Should -BeExactly $beforeIndex
+        (Get-Location).ProviderPath | Should -BeExactly $beforeLocation
+        (Get-Content -LiteralPath (Join-Path $stashRepo 'README.md') -Raw).Trim() | Should -BeExactly 'unstaged'
+        Test-Path -LiteralPath (Join-Path $stashRepo 'loose.txt') | Should -BeTrue
+        Test-Path -LiteralPath (Join-Path $stashRepo 'ignored.txt') | Should -BeTrue
+        @(Invoke-Git @('-C', $stashRepo, 'for-each-ref', '--format=%(objectname)', 'refs/stash')) | Should -HaveCount 0
+    }
+
+    It 'rejects missing paths, nonrepositories, files, bare repositories and unborn histories' {
+        { Save-GitStash -Path (Join-Path $stashTestRoot 'missing') -Confirm:$false -ErrorAction Stop } |
+            Should -Throw -ExpectedMessage '*repository path not found*'
+        { Save-GitStash -Path $stashTestRoot -Confirm:$false -ErrorAction Stop } |
+            Should -Throw -ExpectedMessage '*not inside a git working tree*'
+        { Save-GitStash -Path (Join-Path $stashRepo 'README.md') -Confirm:$false -ErrorAction Stop } |
+            Should -Throw -ExpectedMessage '*must be a FileSystem directory*'
+        $bare = Join-Path $stashTestRoot 'bare stash.git'
+        Invoke-Git @('init', '--bare', '--quiet', $bare)
+        { Save-GitStash -Path $bare -Confirm:$false -ErrorAction Stop } |
+            Should -Throw -ExpectedMessage '*not inside a git working tree*'
+        $unborn = New-TestRepo -Path (Join-Path $stashTestRoot 'unborn stash') -NoCommit
+        { Save-GitStash -Path $unborn -Confirm:$false -ErrorAction Stop } |
+            Should -Throw -ExpectedMessage '*git failed*'
+    }
+
+    It 'surfaces reference-read failures <When> without returning a stash' -ForEach @(
+        @{ When = 'before push'; FailAt = 1; Pushes = 0 }
+        @{ When = 'after push'; FailAt = 2; Pushes = 1 }
+    ) {
+        InModuleScope Shmuelie.Git -Parameters @{ Repo = $stashRepo; FailAt = $FailAt; Pushes = $Pushes } {
+            param($Repo, $FailAt, $Pushes)
+            $script:stashRefReads = 0
+            Mock Resolve-GitRepositoryPath { $Repo }
+            Mock Invoke-GitProcess {
+                if ($Arguments -contains 'for-each-ref') {
+                    $script:stashRefReads++
+                    if ($script:stashRefReads -eq $FailAt) {
+                        return [PSCustomObject]@{ ExitCode = 128; StandardOutput = ''; StandardError = 'ref read failed'; Output = @() }
+                    }
+                }
+                [PSCustomObject]@{ ExitCode = 0; StandardOutput = ''; StandardError = ''; Output = @() }
+            }
+            @(Save-GitStash -Path $Repo -Confirm:$false -ErrorAction SilentlyContinue -ErrorVariable failures) |
+                Should -HaveCount 0
+            $failures | Should -HaveCount 1
+            $failures[0].FullyQualifiedErrorId | Should -Match '^GitCommandFailed'
+            $failures[0].Exception.Message | Should -BeLike '*ref read failed*'
+            Should -Invoke Invoke-GitProcess -Times $Pushes -ParameterFilter { $Arguments -contains 'push' }
+        }
     }
 }
 
