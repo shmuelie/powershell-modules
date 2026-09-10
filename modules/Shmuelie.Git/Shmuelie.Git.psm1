@@ -73,6 +73,7 @@ Export-ModuleMember -Function @(
     'Remove-Branch',
     'Set-Branch',
     'Restore-GitStash',
+    'Restore-Items',
     'Format-GitStatusSegment',
     'Get-Worktrees',
     'Get-Branch',

@@ -13,6 +13,10 @@ Versions change only when a release is cut; unreleased work stays under
   conflict resolution, leaving the stash available after apply failures. Piped
   stash objects require an explicit selector rather than silently ignoring their
   object identity and popping the newest entry.
+- Added `Restore-Items` for explicit literal file/directory selections. Defaults
+  to restoring only unstaged working-tree changes from the index; `-IncludeIndex`
+  restores both index and working tree from HEAD. `-Source` overrides the source,
+  with high-impact `-WhatIf`/`-Confirm` protection and refusal of selected conflicts.
 - Added `Save-GitStash` for `git stash push` with `-KeepIndex`,
   `-IncludeUntracked`, `-All`, literal `-Message` arguments and pipeline repository
   paths. Honors `-WhatIf`/`-Confirm` and returns the stable stash commit ID only
