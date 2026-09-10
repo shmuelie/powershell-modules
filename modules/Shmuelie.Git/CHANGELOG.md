@@ -6,6 +6,8 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-09-10
+
 ### Added
 - Added `Restore-GitStash` for native `git stash pop`, defaulting to the newest
   entry with optional exact `stash@{n}` selection, repository path pipeline input,
