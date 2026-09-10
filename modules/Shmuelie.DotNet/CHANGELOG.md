@@ -5,6 +5,18 @@ Versions change only when a release is cut; pending work lives under [Unreleased
 
 ## [Unreleased]
 
+### Added
+
+- `Install-DotNetSdk` installs exact or channel-selected SDKs side by side using
+  Microsoft's canonical installer, detects existing SDKs, validates available
+  signatures, and cleans staging content on success and failure.
+- Explicit process PATH integration on every platform and persistent user PATH
+  integration on Windows, with independent `ShouldProcess` decisions and typed
+  installation results reporting actual PATH changes. Neither is on by default.
+- Preserve existing non-versioned hosts across SDK feature bands and runtime-only
+  installs; verify the exact SDK's host/runtime compatibility before reporting
+  success. Environment failures stop the command even under `Continue`.
+
 ## [0.1.0] - 2026-09-08
 
 ### Added

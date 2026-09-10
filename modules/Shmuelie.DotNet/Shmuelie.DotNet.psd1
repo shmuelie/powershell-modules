@@ -5,11 +5,12 @@
     Author            = 'Shmueli Englard'
     CompanyName       = 'Shmuelie'
     Copyright         = '(c) Shmueli Englard. All rights reserved.'
-    Description       = '.NET tool discovery, installation, update, and removal helpers.'
+    Description       = 'User-local .NET SDK installation and .NET tool management helpers.'
     PowerShellVersion = '7.4'
     CompatiblePSEditions = @('Core')
     FunctionsToExport = @(
         'Get-DotNetTool',
+        'Install-DotNetSdk',
         'Install-DotNetTool',
         'Update-DotNetTool',
         'Uninstall-DotNetTool'

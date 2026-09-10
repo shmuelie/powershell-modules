@@ -4,6 +4,7 @@ foreach ($script in Get-ChildItem $PSScriptRoot -Filter '*.ps1' -File | Sort-Obj
 
 Export-ModuleMember -Function @(
     'Get-DotNetTool',
+    'Install-DotNetSdk',
     'Install-DotNetTool',
     'Update-DotNetTool',
     'Uninstall-DotNetTool'
