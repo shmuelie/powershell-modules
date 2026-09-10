@@ -177,8 +177,6 @@ Provider-neutral package update orchestration. **Version 0.1.0.**
 option tables, lazy dependency discovery, per-target `ShouldProcess`, typed
 results, and optional fail-fast behavior.
 
-See the module README for current provider availability, dependency requirements,
-and provider-specific options. Unavailable integrations return `Skipped` with
-an actionable reason. The complete provider set is planned for M6 through
-separate adapter issues. Importing the core is portable and does not import
-optional provider modules.
+See the module README for provider availability and supported options.
+Unavailable or unimplemented integrations report `Skipped` with a reason.
+Importing the core is portable and does not import optional provider modules.

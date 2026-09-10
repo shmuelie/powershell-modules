@@ -6,10 +6,10 @@ Provider-neutral package update orchestration for PowerShell 7.4+.
 
 ## Provider availability
 
-The `PSResourceGet` adapter is implemented. `DotNet`, `Npm`, `Pip`, `Uv`,
-`VSCode`, `WinGet`, and `AppInstaller` remain reserved integrations and return
-explicit `Skipped` results until their adapters ship. The complete provider set
-is planned for milestone M6.
+The ordered catalog contains `PSResourceGet`, `DotNet`, `Npm`, `Pip`, `Uv`,
+`VSCode`, `WinGet`, and `AppInstaller`. **PSResourceGet**, **DotNet**, **Npm**, and **Pip** are implemented;
+the other adapters remain separate follow-up work and report explicit
+`Skipped` results, not successful updates.
 
 No provider modules are required at import time. Windows-only providers are
 gated before dependency discovery on Linux and macOS.
@@ -18,12 +18,12 @@ gated before dependency discovery on Linux and macOS.
 
 | Command | Description |
 |---|---|
-| `Update-AllPackages` | Discover selected providers, update configured PowerShell module roots through PSResourceGet, and return typed outcomes |
+| `Update-AllPackages` | Discover selected providers, preview or confirm each package update, and return typed outcomes; see provider availability and options below |
 
 ```powershell
 Update-AllPackages -WhatIf
 Update-AllPackages -Provider DotNet, Npm -ExcludeProvider Npm -StopOnFailure
-Update-AllPackages -ProviderOptions @{ Npm = @{} } -Confirm:$false
+Update-AllPackages -Provider Pip -ProviderOptions @{ Pip = @{ User = $true } } -WhatIf
 ```
 
 Default selection includes every known provider; unavailable providers are
@@ -34,8 +34,8 @@ order (the provider order above), then target discovery order. Unknown names
 fail before discovery or mutation.
 
 `ProviderOptions` maps each provider name to its own hashtable. Each implemented
-adapter explicitly declares its supported options; reserved integrations accept
-only empty tables. Invalid option names or non-hashtable values fail before any
+adapter explicitly declares its supported options; placeholders accept only
+empty tables. Invalid option names or non-hashtable values fail before any
 provider starts. Options for unselected providers are validated but not used.
 Provider and option keys are case-insensitive even in JSON-derived or custom
 hashtables. Case-equivalent duplicate keys are rejected before any provider
@@ -110,6 +110,97 @@ distinguish already-current modules from silent skips such as a module absent
 from its repository. `Unchanged` is not a claim that a repository lookup succeeded.
 Missing post-update observations produce `Failed` with a null resulting version;
 no proposed version or void output is treated as evidence of a successful update.
+
+## DotNet global tools
+
+DotNet discovers `Shmuelie.DotNet` lazily and requires `dotnet` with an installed
+SDK. Missing modules, commands, or an SDK produce `Skipped`; nothing is installed
+automatically. If needed, install the canonical module separately with
+`Install-PSResource Shmuelie.DotNet`.
+
+The adapter uses module-qualified `Shmuelie.DotNet\Get-DotNetTool` and
+`Shmuelie.DotNet\Update-DotNetTool`, not compatibility wrappers or shell overlays.
+Only global tools are considered. `Name` is an optional nonempty wildcard string,
+matching the canonical listing filter; it is validated before target discovery.
+Local tools, manifest paths, versions, feeds, and SDK installation are not
+supported provider options.
+
+```powershell
+Update-AllPackages -Provider DotNet -ProviderOptions @{ DotNet = @{ Name = 'dotnet-*' } } -WhatIf
+```
+
+The current canonical API has no read-only outdated/latest-version query.
+Discovery therefore lists installed candidates, not proven outdated tools;
+previews have a null proposed/resulting version. Each approved tool is updated
+individually and then re-listed to observe its installed version. A changed
+version reports `Updated`, an equal version reports `Unchanged`, and unknown
+versions stay null. When versions are unknown, an explicit canonical update
+report is required for `Updated`; otherwise the outcome is `Failed`. Native
+failures, errors, malformed/empty update output, and missing post-update tools
+are failures, never successful fallbacks. No matching installed tools produces
+the standard provider-level `Unchanged` result.
+
+## Npm
+
+Install `Shmuelie.Node` separately and make npm available on `PATH`. Neither
+dependency is installed automatically; missing dependencies return `Skipped`.
+Discovery reuses `Get-NpmPackage -Global -Outdated`, and each outdated global
+package is passed to `Update-NpmPackage -Global`. Scoped names such as
+`@scope/tool` are preserved. Package specs, paths, options, and shell
+metacharacters are rejected before forwarding names to npm.
+
+Npm accepts no provider options. Repository dependencies and lockfiles are never
+update targets. An empty outdated set returns `Unchanged`. After each successful
+update, the installed global version is read again. Equal versions return
+`Unchanged`; different observed versions return `Updated`. Failed commands,
+invalid results, or an unverifiable version change return `Failed`, never an
+assumed success based on the proposed latest version. Individual failures do not
+prevent later package updates unless `-StopOnFailure` is set.
+
+## Pip
+
+Pip uses the optional `Shmuelie.Utilities` commands `Get-PipPackages` and
+`Update-PipPackage`, with `pip` on PATH. Missing modules or commands produce
+`Skipped` results with a reason. Dependencies are discovered lazily; install
+`Shmuelie.Utilities` separately if needed. The adapter does not install pip,
+choose a Python interpreter, or change environments.
+
+By default, discovery selects **outdated top-level packages** (`--outdated`
+and `--not-required`), avoiding independent updates of transitive dependencies.
+The active pip environment determines which installations are visible.
+
+| Option | Type | Default | Behavior |
+|---|---|---|---|
+| `User` | Boolean | `$false` | Restrict discovery and post-update observation to user-installed packages (`pip list --user`) |
+| `TopLevelOnly` | Boolean | `$true` | Discover only packages not required by other installed packages; `$false` explicitly includes dependencies |
+
+SwitchParameter values are also accepted. Strings such as `'false'`, numbers,
+null, scripts, and other values are rejected during read-only discovery, before
+any package is updated. Additional native arguments and requirement specifiers
+are not supported.
+
+**User scope is a discovery filter, not an installation-destination override.**
+The existing `Update-PipPackage` has no `User` parameter: updates use its
+`pip install --upgrade <name>` behavior in the active environment. This adapter
+does not invent a `--user` installation option or change pip configuration.
+
+```powershell
+Update-AllPackages -Provider Pip -WhatIf
+Update-AllPackages -Provider Pip -ProviderOptions @{ Pip = @{ User = $true } } -Confirm:$false
+Update-AllPackages -Provider Pip -ProviderOptions @{ Pip = @{ TopLevelOnly = $false } } -WhatIf
+```
+
+Each approved package is updated separately, with inner confirmation disabled.
+Package names are validated as distribution identifiers before being forwarded
+to pip. A successful typed updater result is followed by a read-only installed
+package query in the same user scope, without outdated or top-level filters.
+The observed version determines `Updated` versus `Unchanged`; the proposed
+version is used only for `Planned` rows. An empty/invalid updater result, native
+failure, or unavailable/ambiguous post-update version produces `Failed`.
+Warnings retain their stream, errors retain their records when available, and
+native diagnostics routed through the updater's verbose stream are included in
+reported failure reasons. Independent packages continue unless `-StopOnFailure`
+is set.
 
 ## Output
 
