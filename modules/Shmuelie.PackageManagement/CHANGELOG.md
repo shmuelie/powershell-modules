@@ -5,6 +5,8 @@ under [Unreleased]; versions change only when a release is cut.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-10
+
 ### Added
 - VSCode provider using the optional Utilities extension helpers and native CLI:
   default and configured named profiles, per-profile bulk results and observed
