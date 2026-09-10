@@ -6,6 +6,10 @@ under [Unreleased]; versions change only when a release is cut.
 ## [Unreleased]
 
 ### Added
+- DotNet global-tool provider using the canonical Shmuelie.DotNet commands,
+  lazy module/SDK discovery, optional wildcard Name filtering, per-tool previews
+  and confirmation, observed version outcomes, and native failure reporting.
+  Local manifests and SDK installation are not part of this integration.
 - Npm provider for outdated global packages, using the optional Shmuelie.Node
   module, preserving scoped names, rejecting unsafe package identifiers, and
   reporting observed installed versions with per-package failure handling.

@@ -52,6 +52,398 @@ Describe 'PackageManagement foundation surface' {
     }
 }
 
+Describe 'DotNet package provider' {
+    InModuleScope Shmuelie.PackageManagement {
+        BeforeAll {
+            $dotnetManifest = Join-Path (Split-Path (Get-Module Shmuelie.PackageManagement).ModuleBase -Parent) 'Shmuelie.DotNet' 'Shmuelie.DotNet.psd1'
+            $script:DotNetTestModule = Import-Module $dotnetManifest -PassThru -ErrorAction Stop
+            function script:dotnet { throw 'Unexpected SDK operation.' }
+            & $script:DotNetTestModule {
+                function script:dotnet { throw 'Real .NET tool operations are forbidden in these tests.' }
+            }
+            function New-TestDotNetTool {
+                param([string]$Name = 'example.tool', [AllowNull()][string]$Version = '1.0.0')
+                [pscustomobject]@{ PSTypeName = 'DotNetTool'; PackageId = $Name; Version = $Version; Commands = 'example'; Global = $true }
+            }
+            function New-TestDotNetUpdate {
+                param([string]$Name = 'example.tool', [AllowNull()][string]$Version = '2.0.0', [bool]$Updated = $true)
+                [pscustomobject]@{ PSTypeName = 'DotNetToolUpdateResult'; PackageId = $Name; Version = $Version; Updated = $Updated }
+            }
+        }
+
+        AfterAll {
+            Remove-Module -ModuleInfo $script:DotNetTestModule -Force -ErrorAction Stop
+            Remove-Item Function:\script:dotnet -ErrorAction Stop
+        }
+
+        BeforeEach {
+            $script:OriginalDotNetExitCode = $global:LASTEXITCODE
+            $script:ToolVersion = '1.0.0'
+            Mock Get-Module { [pscustomobject]@{ Name = 'Shmuelie.DotNet' } } -ParameterFilter { $Name -eq 'Shmuelie.DotNet' }
+            Mock Import-Module { } -ParameterFilter { $Name -eq 'Shmuelie.DotNet' }
+            Mock dotnet { '8.0.412 [synthetic SDK]' }
+            Mock Shmuelie.DotNet\Get-DotNetTool { New-TestDotNetTool -Version $script:ToolVersion }
+            Mock Shmuelie.DotNet\Update-DotNetTool {
+                $script:ToolVersion = '2.0.0'
+                New-TestDotNetUpdate
+            }
+        }
+
+        AfterEach {
+            $global:LASTEXITCODE = $script:OriginalDotNetExitCode
+        }
+
+        It 'keeps the ordered catalog side-effect-free' {
+            Mock Get-Module { throw 'Catalog must not discover modules.' }
+            Mock Get-Command { throw 'Catalog must not discover commands.' }
+            Mock Import-Module { throw 'Catalog must not import modules.' }
+            $catalog = @(Get-PackageProvider)
+            $catalog.Name | Should -Be @('PSResourceGet', 'DotNet', 'Npm', 'Pip', 'Uv', 'VSCode', 'WinGet', 'AppInstaller')
+            $catalog[1].RequiredModules | Should -Be @('Shmuelie.DotNet')
+            $catalog[1].OptionNames | Should -Be @('Name')
+            $catalog[1].GetTargets | Should -BeOfType ([scriptblock])
+            $catalog[1].Update | Should -BeOfType ([scriptblock])
+            Should -Invoke dotnet -Times 0 -Exactly
+            Should -Invoke Import-Module -Times 0 -Exactly
+        }
+
+        It 'skips a missing canonical module without calling native tools' {
+            Mock Get-Module { $null } -ParameterFilter { $Name -eq 'Shmuelie.DotNet' }
+            Mock Import-Module { throw 'Must not import a missing module.' }
+            $result = Update-AllPackages -Provider DotNet
+            $result.Status | Should -BeExactly 'Skipped'
+            $result.Reason | Should -BeLike '*Install*Shmuelie.DotNet*'
+            Should -Invoke dotnet -Times 0 -Exactly
+            Should -Invoke Shmuelie.DotNet\Update-DotNetTool -Times 0 -Exactly
+        }
+
+        It 'skips missing command <Missing>' -ForEach @(
+            @{ Missing = 'dotnet' }
+            @{ Missing = 'Shmuelie.DotNet\Get-DotNetTool' }
+            @{ Missing = 'Shmuelie.DotNet\Update-DotNetTool' }
+        ) {
+            Mock Get-Command { $null } -ParameterFilter { $Name -eq $Missing }
+            $result = Update-AllPackages -Provider DotNet
+            $result.Status | Should -BeExactly 'Skipped'
+            $result.Reason | Should -BeLike "*$Missing*"
+            Should -Invoke dotnet -Times 0 -Exactly
+            Should -Invoke Shmuelie.DotNet\Update-DotNetTool -Times 0 -Exactly
+        }
+
+        It 'skips a runtime-only installation without treating it as a failure' {
+            Mock dotnet { }
+            $result = Update-AllPackages -Provider DotNet -StopOnFailure
+            $result.Status | Should -BeExactly 'Skipped'
+            $result.Reason | Should -BeLike '*SDK*'
+            Should -Invoke Shmuelie.DotNet\Get-DotNetTool -Times 0 -Exactly
+        }
+
+        It 'reports SDK probe failures and restores stale caller exit state' {
+            $global:LASTEXITCODE = 81
+            Mock dotnet { $global:LASTEXITCODE = 3 }
+            $result = Update-AllPackages -Provider DotNet
+            $result.Status | Should -BeExactly 'Failed'
+            $result.Reason | Should -BeLike '*exit code 3*'
+            $global:LASTEXITCODE | Should -Be 81
+        }
+
+        It 'reports no matching tools as unchanged without invoking update' {
+            Mock Shmuelie.DotNet\Get-DotNetTool { }
+            $result = Update-AllPackages -Provider DotNet -Confirm:$false
+            $result.Status | Should -BeExactly 'Unchanged'
+            $result.Target | Should -BeExactly 'DotNet'
+            $result.PreviousVersion | Should -BeNullOrEmpty
+            $result.ResultingVersion | Should -BeNullOrEmpty
+            Should -Invoke Shmuelie.DotNet\Update-DotNetTool -Times 0 -Exactly
+        }
+
+        It 'uses the canonical global default and maps observed versions' {
+            $global:LASTEXITCODE = 91
+            $result = Update-AllPackages -Provider DotNet -Confirm:$false
+            $result.PSTypeNames[0] | Should -BeExactly 'Shmuelie.PackageManagement.UpdateResult'
+            $result.Provider | Should -BeExactly 'DotNet'
+            $result.Target | Should -BeExactly 'example.tool'
+            $result.Status | Should -BeExactly 'Updated'
+            $result.PreviousVersion | Should -BeExactly '1.0.0'
+            $result.ResultingVersion | Should -BeExactly '2.0.0'
+            $result.Error | Should -BeNullOrEmpty
+            $global:LASTEXITCODE | Should -Be 91
+            Should -Invoke Shmuelie.DotNet\Get-DotNetTool -Times 1 -Exactly -ParameterFilter { $Name -eq '*' -and -not $Local }
+            Should -Invoke Shmuelie.DotNet\Get-DotNetTool -Times 1 -Exactly -ParameterFilter { $Name -eq 'example.tool' -and -not $Local }
+            Should -Invoke Shmuelie.DotNet\Update-DotNetTool -Times 1 -Exactly -ParameterFilter {
+                $InputObject.PackageId -eq 'example.tool' -and $InputObject.Global -and $Confirm -eq $false -and $ErrorAction -eq 'Stop'
+            }
+        }
+
+        It 'maps an already-current tool to unchanged' {
+            Mock Shmuelie.DotNet\Update-DotNetTool { New-TestDotNetUpdate -Version '1.0.0' -Updated $false }
+            $result = Update-AllPackages -Provider DotNet -Confirm:$false
+            $result.Status | Should -BeExactly 'Unchanged'
+            $result.ResultingVersion | Should -BeExactly '1.0.0'
+        }
+
+        It 'uses observed state instead of localized or inaccurate update version text' {
+            Mock Shmuelie.DotNet\Update-DotNetTool {
+                $script:ToolVersion = '2.1.0'
+                New-TestDotNetUpdate -Version $null -Updated $false
+            }
+            $result = Update-AllPackages -Provider DotNet -Confirm:$false
+            $result.Status | Should -BeExactly 'Updated'
+            $result.ResultingVersion | Should -BeExactly '2.1.0'
+        }
+
+        It 'keeps unknown versions null when an explicit update was reported' {
+            Mock Shmuelie.DotNet\Get-DotNetTool { New-TestDotNetTool -Version $null }
+            Mock Shmuelie.DotNet\Update-DotNetTool { New-TestDotNetUpdate -Version 'not-an-observed-version' }
+            $result = Update-AllPackages -Provider DotNet -Confirm:$false
+            $result.Status | Should -BeExactly 'Updated'
+            $result.PreviousVersion | Should -BeNullOrEmpty
+            $result.ResultingVersion | Should -BeNullOrEmpty
+        }
+
+        It 'fails unknown outcomes instead of assuming unchanged' {
+            Mock Shmuelie.DotNet\Get-DotNetTool { New-TestDotNetTool -Version $null }
+            Mock Shmuelie.DotNet\Update-DotNetTool { New-TestDotNetUpdate -Version $null -Updated $false }
+            $result = Update-AllPackages -Provider DotNet -Confirm:$false
+            $result.Status | Should -BeExactly 'Failed'
+            $result.Reason | Should -BeLike '*Cannot determine whether*'
+        }
+
+        It 'passes the Name option to read-only discovery without changing the input map' {
+            $options = '{"dotnet":{"name":"example.*"}}' | ConvertFrom-Json -AsHashtable
+            (Update-AllPackages -Provider DotNet -ProviderOptions $options -Confirm:$false).Status | Should -BeExactly 'Updated'
+            Should -Invoke Shmuelie.DotNet\Get-DotNetTool -Times 1 -Exactly -ParameterFilter { $Name -eq 'example.*' -and -not $Local }
+            $options.dotnet.name | Should -BeExactly 'example.*'
+        }
+
+        It 'rejects invalid Name option values before enumerating tools: <Label>' -ForEach @(
+            @{ Label = 'null'; Value = $null }
+            @{ Label = 'empty'; Value = '' }
+            @{ Label = 'whitespace'; Value = ' ' }
+            @{ Label = 'array'; Value = @('one', 'two') }
+            @{ Label = 'boolean'; Value = $false }
+            @{ Label = 'malformed wildcard'; Value = '[a' }
+        ) {
+            $result = Update-AllPackages -Provider DotNet -ProviderOptions @{ DotNet = @{ Name = $Value } } -Confirm:$false
+            $result.Status | Should -BeExactly 'Failed'
+            Should -Invoke Shmuelie.DotNet\Get-DotNetTool -Times 0 -Exactly
+            Should -Invoke Shmuelie.DotNet\Update-DotNetTool -Times 0 -Exactly
+        }
+
+        It 'rejects unsupported option <Option> before any probing' -ForEach @(
+            @{ Option = 'Local' }
+            @{ Option = 'ManifestPath' }
+            @{ Option = 'Version' }
+            @{ Option = 'Confirm' }
+        ) {
+            { Update-AllPackages -Provider DotNet -ProviderOptions @{ DotNet = @{ $Option = 'value' } } } | Should -Throw '*Unknown option*'
+            Should -Invoke dotnet -Times 0 -Exactly
+        }
+
+        It 'previews installed candidates with unknown proposed versions without updates' {
+            $result = Update-AllPackages -Provider DotNet -WhatIf -Confirm:$false
+            $result.Status | Should -BeExactly 'Planned'
+            $result.PreviousVersion | Should -BeExactly '1.0.0'
+            $result.ResultingVersion | Should -BeNullOrEmpty
+            Should -Invoke Shmuelie.DotNet\Get-DotNetTool -Times 1 -Exactly
+            Should -Invoke Shmuelie.DotNet\Update-DotNetTool -Times 0 -Exactly
+        }
+
+        It 'does not probe an excluded DotNet provider' {
+            Update-AllPackages -Provider DotNet -ExcludeProvider DotNet -Confirm:$false | Out-Null
+            Should -Invoke dotnet -Times 0 -Exactly
+            Should -Invoke Shmuelie.DotNet\Get-DotNetTool -Times 0 -Exactly
+        }
+
+        It 'retains canonical <Kind> update errors' -ForEach @(
+            @{ Kind = 'terminating'; Failure = { throw 'Canonical update failed.' } }
+            @{ Kind = 'nonterminating'; Failure = { Write-Error 'Canonical update failed.' } }
+        ) {
+            $script:DotNetFailure = $Failure
+            Mock Shmuelie.DotNet\Update-DotNetTool { & $script:DotNetFailure }
+            $result = Update-AllPackages -Provider DotNet -Confirm:$false
+            @($result) | Should -HaveCount 1
+            $result.Status | Should -BeExactly 'Failed'
+            $result.Error | Should -BeOfType ([System.Management.Automation.ErrorRecord])
+            $result.Reason | Should -BeLike '*Canonical update failed*'
+            $result.ResultingVersion | Should -BeNullOrEmpty
+        }
+
+        It 'fails native updates even when the canonical command returns an unchanged-looking result' {
+            Mock Shmuelie.DotNet\Update-DotNetTool {
+                $global:LASTEXITCODE = 7
+                New-TestDotNetUpdate -Version $null -Updated $false
+            }
+            $result = Update-AllPackages -Provider DotNet -Confirm:$false
+            $result.Status | Should -BeExactly 'Failed'
+            $result.Reason | Should -BeLike '*exit code 7*'
+            Should -Invoke Shmuelie.DotNet\Get-DotNetTool -Times 1 -Exactly
+        }
+
+        It 'rejects invalid update output: <Kind>' -ForEach @(
+            @{ Kind = 'void'; Output = { } }
+            @{ Kind = 'native string'; Output = { 'success' } }
+            @{ Kind = 'wrong identity'; Output = { New-TestDotNetUpdate -Name wrong.tool } }
+            @{ Kind = 'multiple'; Output = { New-TestDotNetUpdate; New-TestDotNetUpdate } }
+            @{ Kind = 'untyped'; Output = { [pscustomobject]@{ PackageId = 'example.tool'; Updated = $true; Version = '2.0.0' } } }
+        ) {
+            $script:DotNetOutput = $Output
+            Mock Shmuelie.DotNet\Update-DotNetTool { & $script:DotNetOutput }
+            $result = Update-AllPackages -Provider DotNet -Confirm:$false
+            $result.Status | Should -BeExactly 'Failed'
+            $result.Reason | Should -BeLike '*invalid update output*'
+        }
+
+        It 'fails discovery without updating partial or <Kind> data' -ForEach @(
+            @{ Kind = 'local'; Invalid = { $tool = New-TestDotNetTool -Name local.tool; $tool.Global = $false; $tool } }
+            @{ Kind = 'unsafe identity'; Invalid = { New-TestDotNetTool -Name 'tool&unexpected' } }
+            @{ Kind = 'trailing newline'; Invalid = { New-TestDotNetTool -Name "tool`n" } }
+            @{ Kind = 'native string'; Invalid = { 'unexpected native text' } }
+        ) {
+            $script:InvalidDotNetTool = $Invalid
+            Mock Shmuelie.DotNet\Get-DotNetTool {
+                New-TestDotNetTool
+                & $script:InvalidDotNetTool
+            }
+            $result = Update-AllPackages -Provider DotNet -Confirm:$false
+            $result.Status | Should -BeExactly 'Failed'
+            $result.Reason | Should -BeLike '*invalid global tool*'
+            Should -Invoke Shmuelie.DotNet\Update-DotNetTool -Times 0 -Exactly
+        }
+
+        It 'does not assume success when the post-update tool is missing' {
+            Mock Shmuelie.DotNet\Get-DotNetTool {
+                if ($Name -eq '*') { New-TestDotNetTool }
+            }
+            $result = Update-AllPackages -Provider DotNet -Confirm:$false
+            $result.Status | Should -BeExactly 'Failed'
+            $result.Reason | Should -BeLike '*Cannot observe*'
+        }
+
+        It 'honors StopOnFailure=<Stop> between individual tools' -ForEach @(
+            @{ Stop = $true; Count = 1; Statuses = @('Failed') }
+            @{ Stop = $false; Count = 2; Statuses = @('Failed', 'Updated') }
+        ) {
+            Mock Shmuelie.DotNet\Get-DotNetTool {
+                if ($Name -eq '*') { New-TestDotNetTool; New-TestDotNetTool -Name second.tool }
+                else { New-TestDotNetTool -Name second.tool -Version '2.0.0' }
+            }
+            Mock Shmuelie.DotNet\Update-DotNetTool {
+                if ($InputObject.PackageId -eq 'example.tool') { throw 'First failed.' }
+                New-TestDotNetUpdate -Name second.tool
+            }
+            $results = @(Update-AllPackages -Provider DotNet -StopOnFailure:$Stop -Confirm:$false)
+            $results.Status | Should -Be $Statuses
+            Should -Invoke Shmuelie.DotNet\Update-DotNetTool -Times $Count -Exactly
+        }
+    }
+}
+
+Describe 'DotNet provider canonical command integration' {
+    InModuleScope Shmuelie.PackageManagement {
+        BeforeAll {
+            $script:CanonicalOriginalModulePath = $env:PSModulePath
+            $sourceModules = Split-Path (Get-Module Shmuelie.PackageManagement).ModuleBase -Parent
+            $env:PSModulePath = $sourceModules + [IO.Path]::PathSeparator + $env:PSModulePath
+            $script:CanonicalDotNetModule = Import-Module (Join-Path $sourceModules 'Shmuelie.DotNet' 'Shmuelie.DotNet.psd1') -PassThru -ErrorAction Stop
+            & $script:CanonicalDotNetModule { function script:dotnet { throw 'Unexpected native tool operation.' } }
+            function script:dotnet { throw 'Unexpected SDK operation.' }
+        }
+
+        AfterAll {
+            try {
+                Remove-Module -ModuleInfo $script:CanonicalDotNetModule -Force -ErrorAction Stop
+                Remove-Item Function:\script:dotnet -ErrorAction Stop
+            } finally {
+                $env:PSModulePath = $script:CanonicalOriginalModulePath
+            }
+        }
+
+        BeforeEach {
+            $script:CanonicalOriginalExitCode = $global:LASTEXITCODE
+            $script:CanonicalVersion = '1.0.0'
+            $script:NativeCalls = [Collections.Generic.List[string]]::new()
+            $script:NativeFailure = $false
+            $script:NativeDiscoveryFailure = $false
+            $script:NativeUnchanged = $false
+            Mock dotnet { '8.0.412 [synthetic SDK]' }
+            Mock dotnet -ModuleName Shmuelie.DotNet {
+                $arguments = @($args)
+                $script:NativeCalls.Add($arguments -join ' ')
+                $global:LASTEXITCODE = 0
+                if ($arguments[0] -ne 'tool') { throw 'Only tool commands are permitted.' }
+                switch ($arguments[1]) {
+                    'list' {
+                        if (($arguments -join ' ') -ne 'tool list -g') { throw 'Only global listing is permitted.' }
+                        if ($script:NativeDiscoveryFailure) {
+                            $global:LASTEXITCODE = 2
+                            return
+                        }
+                        'Package Id      Version      Commands'
+                        '-------------------------------------'
+                        "example.tool    $script:CanonicalVersion    example"
+                    }
+                    'update' {
+                        if (($arguments -join ' ') -ne 'tool update example.tool -g') { throw 'Only the synthetic global tool may be updated.' }
+                        if ($script:NativeFailure) {
+                            $global:LASTEXITCODE = 7
+                            'Unable to update the requested tool.'
+                        } elseif ($script:NativeUnchanged) {
+                            "Tool 'example.tool' was reinstalled with the stable version (version '1.0.0')."
+                        } else {
+                            $script:CanonicalVersion = '2.0.0'
+                            "Tool 'example.tool' was successfully updated from version '1.0.0' to version '2.0.0'."
+                        }
+                    }
+                    default { throw 'Unexpected dotnet tool operation.' }
+                }
+            }
+        }
+
+        AfterEach {
+            $global:LASTEXITCODE = $script:CanonicalOriginalExitCode
+        }
+
+        It 'calls only global list/update/list and suppresses canonical confirmation' {
+            $ConfirmPreference = 'Low'
+            $result = Update-AllPackages -Provider DotNet -Confirm:$false
+            $result.Status | Should -BeExactly 'Updated'
+            $result.PreviousVersion | Should -BeExactly '1.0.0'
+            $result.ResultingVersion | Should -BeExactly '2.0.0'
+            $script:NativeCalls | Should -Be @('tool list -g', 'tool update example.tool -g', 'tool list -g')
+        }
+
+        It 'maps the canonical reinstall response to unchanged using the installed version' {
+            $script:NativeUnchanged = $true
+            $result = Update-AllPackages -Provider DotNet -Confirm:$false
+            $result.Status | Should -BeExactly 'Unchanged'
+            $result.ResultingVersion | Should -BeExactly '1.0.0'
+        }
+
+        It 'detects native failure hidden behind the canonical result object' {
+            $script:NativeFailure = $true
+            $result = Update-AllPackages -Provider DotNet -Confirm:$false
+            $result.Status | Should -BeExactly 'Failed'
+            $result.Reason | Should -BeLike '*exit code 7*'
+            $script:NativeCalls | Should -Be @('tool list -g', 'tool update example.tool -g')
+        }
+
+        It 'does not interpret native discovery failure as an empty successful update set' {
+            $script:NativeDiscoveryFailure = $true
+            $result = Update-AllPackages -Provider DotNet -Confirm:$false
+            $result.Status | Should -BeExactly 'Failed'
+            $result.Reason | Should -BeLike '*exit code 2*'
+            $script:NativeCalls | Should -Be @('tool list -g')
+        }
+
+        It 'never reaches the canonical mutating command under WhatIf' {
+            $result = Update-AllPackages -Provider DotNet -WhatIf
+            $result.Status | Should -BeExactly 'Planned'
+            $script:NativeCalls | Should -Be @('tool list -g')
+        }
+    }
+}
+
 Describe 'Update-AllPackages orchestration' {
     InModuleScope Shmuelie.PackageManagement {
         BeforeAll {
@@ -288,14 +680,17 @@ Describe 'Update-AllPackages orchestration' {
         }
 
         It 'can call a lazily imported integration from both read-only and update callbacks' {
+            if ([string]::IsNullOrWhiteSpace($TestDrive) -or -not (Test-Path -LiteralPath $TestDrive -PathType Container)) {
+                throw 'A valid Pester TestDrive is required for provider fixture setup.'
+            }
             $moduleRoot = Join-Path $TestDrive 'provider-modules'
             $moduleDir = Join-Path $moduleRoot 'Fake.PackageProvider'
-            New-Item -ItemType Directory -Path $moduleDir -Force | Out-Null
+            New-Item -ItemType Directory -Path $moduleDir -Force -ErrorAction Stop | Out-Null
             @'
 function Get-FakePackageName { 'fake-tool' }
 function Update-FakePackage { '2.0' }
 Export-ModuleMember -Function Get-FakePackageName, Update-FakePackage
-'@ | Set-Content (Join-Path $moduleDir 'Fake.PackageProvider.psm1')
+'@ | Set-Content -LiteralPath (Join-Path $moduleDir 'Fake.PackageProvider.psm1') -ErrorAction Stop
             $script:Providers[0].RequiredModules = @('Fake.PackageProvider')
             $script:Providers[0].RequiredCommands = @('Fake.PackageProvider\Get-FakePackageName', 'Fake.PackageProvider\Update-FakePackage')
             $script:Providers[0].GetTargets = {

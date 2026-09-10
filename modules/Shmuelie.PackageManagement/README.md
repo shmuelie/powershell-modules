@@ -7,7 +7,7 @@ Provider-neutral package update orchestration for PowerShell 7.4+.
 ## Provider availability
 
 The ordered catalog contains `PSResourceGet`, `DotNet`, `Npm`, `Pip`, `Uv`,
-`VSCode`, `WinGet`, and `AppInstaller`. The **Npm** and **Pip** adapters are implemented;
+`VSCode`, `WinGet`, and `AppInstaller`. The **DotNet**, **Npm**, and **Pip** adapters are implemented;
 the other adapters remain separate follow-up work and report explicit
 `Skipped` results, not successful updates.
 
@@ -54,6 +54,35 @@ outcomes already produced by that callback. Skips do not trigger fail-fast.
 Provider failures are result data even with `-ErrorAction Stop`; invalid
 arguments remain terminating errors. Read-only discovery errors prevent any
 updates for that provider. No results are invented for unstarted providers.
+
+## DotNet global tools
+
+DotNet discovers `Shmuelie.DotNet` lazily and requires `dotnet` with an installed
+SDK. Missing modules, commands, or an SDK produce `Skipped`; nothing is installed
+automatically. If needed, install the canonical module separately with
+`Install-PSResource Shmuelie.DotNet`.
+
+The adapter uses module-qualified `Shmuelie.DotNet\Get-DotNetTool` and
+`Shmuelie.DotNet\Update-DotNetTool`, not compatibility wrappers or shell overlays.
+Only global tools are considered. `Name` is an optional nonempty wildcard string,
+matching the canonical listing filter; it is validated before target discovery.
+Local tools, manifest paths, versions, feeds, and SDK installation are not
+supported provider options.
+
+```powershell
+Update-AllPackages -Provider DotNet -ProviderOptions @{ DotNet = @{ Name = 'dotnet-*' } } -WhatIf
+```
+
+The current canonical API has no read-only outdated/latest-version query.
+Discovery therefore lists installed candidates, not proven outdated tools;
+previews have a null proposed/resulting version. Each approved tool is updated
+individually and then re-listed to observe its installed version. A changed
+version reports `Updated`, an equal version reports `Unchanged`, and unknown
+versions stay null. When versions are unknown, an explicit canonical update
+report is required for `Updated`; otherwise the outcome is `Failed`. Native
+failures, errors, malformed/empty update output, and missing post-update tools
+are failures, never successful fallbacks. No matching installed tools produces
+the standard provider-level `Unchanged` result.
 
 ## Npm
 
