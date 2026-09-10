@@ -11,6 +11,14 @@ Versions change only when a release is cut; unreleased work stays under
   to restoring only unstaged working-tree changes from the index; `-IncludeIndex`
   restores both index and working tree from HEAD. `-Source` overrides the source,
   with high-impact `-WhatIf`/`-Confirm` protection and refusal of selected conflicts.
+- Added `Save-GitStash` for `git stash push` with `-KeepIndex`,
+  `-IncludeUntracked`, `-All`, literal `-Message` arguments and pipeline repository
+  paths. Honors `-WhatIf`/`-Confirm` and returns the stable stash commit ID only
+  when a successful push changes `refs/stash`; no legacy command or alias is exported.
+- `Set-Config` sets a literal local, global or system git configuration value
+  through the shared native runner, preserving empty strings, quotes and leading
+  dashes. Supports repository path input, `-WhatIf` and `-Confirm`, reports git
+  errors, and permits global/system configuration outside a repository.
 - Added `Remove-Branch` for explicitly named local or remote branch deletion,
   with high-impact confirmation, `-WhatIf`, local-only `-Force`, validated refs,
   and explicit configured remote selection (`-RemoteName`, default `origin`).

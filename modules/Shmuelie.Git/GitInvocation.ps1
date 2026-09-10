@@ -114,6 +114,9 @@ function Invoke-Git {
     Resolved by Resolve-GitRepositoryPath and passed as a separate -C argument.
     .PARAMETER AllowBare
     Allow targeting a bare repository.
+    .PARAMETER AllowNonRepository
+    Require only an existing FileSystem directory, not a repository. Intended for
+    commands such as global/system configuration that do not need a repository.
     .PARAMETER AllowNonZeroExit
     Return the result without an error when git exits non-zero, for commands whose
     exit codes carry domain meaning. Otherwise emit GitCommandFailed and no result;
@@ -139,10 +142,12 @@ function Invoke-Git {
 
         [switch]$AllowBare,
 
+        [switch]$AllowNonRepository,
+
         [switch]$AllowNonZeroExit
     )
 
-    $repositoryPath = Resolve-GitRepositoryPath -Path $Path -AllowBare:$AllowBare -Environment $Environment
+    $repositoryPath = Resolve-GitRepositoryPath -Path $Path -AllowBare:$AllowBare -AllowNonRepository:$AllowNonRepository -Environment $Environment
     if (-not $repositoryPath) { return }
 
     $result = Invoke-GitProcess -Arguments (@('-C', $repositoryPath) + $Arguments) -Environment $Environment
