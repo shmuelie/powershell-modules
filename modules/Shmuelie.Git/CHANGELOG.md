@@ -6,6 +6,15 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+### Changed
+- **Breaking:** `Remove-Worktree` deletes its backing local branch by default after successful
+  worktree removal, retaining the existing `git branch -D` behavior for unmerged
+  branches. Use `-KeepBranch` to preserve it. `-RemoveBranch` remains compatible,
+  including an explicit false value that keeps the branch; enabling both switches
+  is rejected. High-impact confirmation gates worktree removal and branch deletion
+  separately, and `-WhatIf` previews both without mutation. Detached worktrees and
+  failed removals never delete a branch; `-Force` retains its existing Git semantics.
+
 ## [0.9.0] - 2026-09-10
 
 ### Added

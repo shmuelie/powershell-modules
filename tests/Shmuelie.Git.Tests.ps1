@@ -6261,111 +6261,356 @@ Describe 'New-Worktree' -Skip:(-not (Get-Command git -ErrorAction SilentlyContin
 }
 
 Describe 'Remove-Worktree' -Skip:(-not (Get-Command git -ErrorAction SilentlyContinue)) {
-    It 'does not remove a worktree when WhatIf is used' {
-        $repo = New-TestRepo -Path (Join-Path $TestDrive 'remove-worktree-whatif-main')
-        Invoke-Git @('-C', $repo, 'branch', 'feature/remove-whatif')
-        $worktree = Join-Path $TestDrive (Join-Path 'feature' 'remove-whatif')
-        Invoke-Git @('-C', $repo, 'worktree', 'add', '--quiet', $worktree, 'feature/remove-whatif')
+    BeforeAll {
+        $removalLocation = Get-Location
+        $removalRoot = Join-Path $TestDrive 'remove-worktree'
+        $null = New-Item -ItemType Directory -Path $removalRoot -ErrorAction Stop
+        $removalEnvironment = @{}
+        foreach ($key in @(
+            'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_SYSTEM', 'GIT_CONFIG_NOSYSTEM',
+            'GIT_CONFIG_COUNT', 'GIT_CONFIG_PARAMETERS', 'GIT_DIR', 'GIT_WORK_TREE',
+            'GIT_COMMON_DIR', 'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY',
+            'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_NAMESPACE', 'GIT_CEILING_DIRECTORIES',
+            'GIT_DEFAULT_HASH', 'GIT_DEFAULT_REF_FORMAT', 'GIT_AUTHOR_DATE', 'GIT_COMMITTER_DATE'
+        )) {
+            $removalEnvironment[$key] = [Environment]::GetEnvironmentVariable($key, 'Process')
+            Remove-Item -LiteralPath "Env:$key" -ErrorAction Ignore
+        }
+        $env:GIT_CONFIG_GLOBAL = Join-Path $removalRoot 'no-global-config'
+        $env:GIT_CONFIG_SYSTEM = Join-Path $removalRoot 'no-system-config'
+        $env:GIT_CONFIG_NOSYSTEM = '1'
+        $env:GIT_CONFIG_COUNT = '0'
+        $PSNativeCommandUseErrorActionPreference = $false
 
-        Push-Location $repo
-        try {
-            Remove-Worktree -BranchName 'feature/remove-whatif' -WhatIf -Confirm:$false
-            Test-Path -LiteralPath $worktree | Should -BeTrue
-            (@(Get-Worktrees) | Where-Object Branch -eq 'feature/remove-whatif') | Should -HaveCount 1
-        } finally {
-            Pop-Location
+        function Assert-RemovalFixturePath {
+            param([Parameter(Mandatory)][string]$Path)
+            $root = [IO.Path]::GetFullPath((Join-Path $TestDrive 'remove-worktree'))
+            $full = [IO.Path]::GetFullPath($Path)
+            if ($root -ne $removalRoot -or
+                -not $full.StartsWith($root + [IO.Path]::DirectorySeparatorChar, [StringComparison]::Ordinal) -or
+                -not (Test-Path -LiteralPath $full -PathType Container)) {
+                throw "Not an owned removal fixture: $Path"
+            }
+            $item = Get-Item -LiteralPath $full -ErrorAction Stop
+            while ($item.FullName -ne $root) {
+                if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Linked fixture: $Path" }
+                $item = $item.Parent
+            }
+            if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Linked fixture root: $root" }
+        }
+
+        function Invoke-RemovalGit {
+            param([Parameter(Mandatory)][string[]]$Arguments, [string]$Path = $removalRepo)
+            Assert-RemovalFixturePath $Path
+            Invoke-Git (@('-C', $Path) + $Arguments)
+        }
+
+        function Get-RemovalBranches {
+            @(Invoke-RemovalGit @('for-each-ref', '--format=%(refname)', 'refs/heads/'))
+        }
+
+        function Invoke-RemovalWithHost {
+            param([int[]]$Answers = @(), [hashtable]$Options = @{})
+            Assert-RemovalFixturePath $removalRepo
+            $hostStub = [WorktreeRemovalConfirmationHost]::new()
+            foreach ($answer in $Answers) { $hostStub.PromptUI.Answers.Enqueue($answer) }
+            $runspace = [runspacefactory]::CreateRunspace($hostStub)
+            $powershell = [powershell]::Create()
+            try {
+                $runspace.Open()
+                $powershell.Runspace = $runspace
+                $null = $powershell.AddScript({
+                    param($moduleRoot, $path, $target, $options)
+                    $ErrorActionPreference = 'Stop'
+                    $ConfirmPreference = 'High'
+                    Set-Location -LiteralPath $path -ErrorAction Stop
+                    if ((Get-Location).ProviderPath -ne $path) { throw 'Fixture location was not entered.' }
+                    Import-Module (Join-Path $moduleRoot 'modules' 'Shmuelie.Git' 'Shmuelie.Git.psd1')
+                    try {
+                        Remove-Worktree -Path $target @options
+                    } finally {
+                        Remove-Module Shmuelie.Git
+                    }
+                }.ToString()).AddArgument($repoRoot).AddArgument($removalRepo).
+                    AddArgument($removalTarget).AddArgument($Options)
+                $null = $powershell.Invoke()
+                $powershell.HadErrors | Should -BeFalse -Because ($powershell.Streams.Error -join "`n")
+                $hostStub
+            } finally {
+                $powershell.Dispose()
+                $runspace.Dispose()
+            }
+        }
+
+        if (-not ('WorktreeRemovalConfirmationHost' -as [type])) {
+            Add-Type -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.Collections.ObjectModel;
+using System.Globalization;
+using System.Management.Automation;
+using System.Management.Automation.Host;
+using System.Security;
+
+public sealed class WorktreeRemovalConfirmationHost : PSHost
+{
+    public readonly WorktreeRemovalConfirmationUI PromptUI = new WorktreeRemovalConfirmationUI();
+    public override Guid InstanceId { get; } = Guid.NewGuid();
+    public override string Name => "WorktreeRemovalConfirmationHost";
+    public override Version Version => new Version(1, 0);
+    public override PSHostUserInterface UI => PromptUI;
+    public override CultureInfo CurrentCulture => CultureInfo.InvariantCulture;
+    public override CultureInfo CurrentUICulture => CultureInfo.InvariantCulture;
+    public override void SetShouldExit(int exitCode) { }
+    public override void EnterNestedPrompt() => throw new NotSupportedException();
+    public override void ExitNestedPrompt() => throw new NotSupportedException();
+    public override void NotifyBeginApplication() { }
+    public override void NotifyEndApplication() { }
+}
+
+public sealed class WorktreeRemovalConfirmationUI : PSHostUserInterface
+{
+    public readonly Queue<int> Answers = new Queue<int>();
+    public readonly List<string> Prompts = new List<string>();
+    public readonly List<string> Messages = new List<string>();
+    public override PSHostRawUserInterface RawUI => null;
+    public override int PromptForChoice(string caption, string message, Collection<ChoiceDescription> choices, int defaultChoice)
+    {
+        Prompts.Add(message);
+        if (Answers.Count == 0) throw new InvalidOperationException("Unexpected confirmation prompt.");
+        return Answers.Dequeue();
+    }
+    public override string ReadLine() => throw new NotSupportedException();
+    public override SecureString ReadLineAsSecureString() => throw new NotSupportedException();
+    public override Dictionary<string, PSObject> Prompt(string caption, string message, Collection<FieldDescription> descriptions) => throw new NotSupportedException();
+    public override PSCredential PromptForCredential(string caption, string message, string userName, string targetName) => throw new NotSupportedException();
+    public override PSCredential PromptForCredential(string caption, string message, string userName, string targetName, PSCredentialTypes types, PSCredentialUIOptions options) => throw new NotSupportedException();
+    public override void Write(string value) => Messages.Add(value);
+    public override void Write(ConsoleColor foreground, ConsoleColor background, string value) => Messages.Add(value);
+    public override void WriteLine(string value) => Messages.Add(value);
+    public override void WriteErrorLine(string value) => Messages.Add(value);
+    public override void WriteDebugLine(string value) => Messages.Add(value);
+    public override void WriteVerboseLine(string value) => Messages.Add(value);
+    public override void WriteWarningLine(string value) => Messages.Add(value);
+    public override void WriteProgress(long sourceId, ProgressRecord record) { }
+}
+'@
         }
     }
 
-    It 'removes exactly the standard-layout target worktree by branch name' {
-        $repo = New-TestRepo -Path (Join-Path $TestDrive 'remove-worktree-main')
-        Invoke-Git @('-C', $repo, 'branch', 'feature/remove-target')
-        Invoke-Git @('-C', $repo, 'branch', 'feature/keep-target')
-        $target = Join-Path $TestDrive (Join-Path 'feature' 'remove-target')
-        $keeper = Join-Path $TestDrive (Join-Path 'feature' 'keep-target')
-        Invoke-Git @('-C', $repo, 'worktree', 'add', '--quiet', $target, 'feature/remove-target')
-        Invoke-Git @('-C', $repo, 'worktree', 'add', '--quiet', $keeper, 'feature/keep-target')
+    BeforeEach {
+        $removalSandbox = Join-Path $removalRoot 'case'
+        $null = New-Item -ItemType Directory -Path $removalSandbox -ErrorAction Stop
+        Assert-RemovalFixturePath $removalSandbox
+        $removalRepo = New-TestRepo -Path (Join-Path $removalSandbox 'main')
+        Assert-RemovalFixturePath $removalRepo
+        $gitDir = Get-Item -LiteralPath (Join-Path $removalRepo '.git') -Force -ErrorAction Stop
+        if (-not $gitDir.PSIsContainer -or $gitDir.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+            throw 'Fixture must own its git directory.'
+        }
+        $removalBranch = 'feature/remove-target'
+        $removalTarget = Join-Path $removalSandbox 'custom worktree [target]'
+        Invoke-RemovalGit @('worktree', 'add', '--quiet', '-b', $removalBranch, $removalTarget)
+        Set-Location -LiteralPath $removalRepo -ErrorAction Stop
+        if ((Get-Location).ProviderPath -ne $removalRepo) { throw 'Fixture location was not entered.' }
+    }
 
-        Push-Location $repo
-        try {
-            Remove-Worktree -BranchName 'feature/remove-target' -Confirm:$false
-            Test-Path -LiteralPath $target | Should -BeFalse
-            Test-Path -LiteralPath $keeper | Should -BeTrue
-            (@(Get-Worktrees) | Where-Object Branch -eq 'feature/remove-target') | Should -BeNullOrEmpty
-            (@(Get-Worktrees) | Where-Object Branch -eq 'feature/keep-target') | Should -HaveCount 1
-        } finally {
-            Pop-Location
+    AfterEach {
+        Set-Location -LiteralPath $removalRoot -ErrorAction Stop
+        if ($removalSandbox -and (Test-Path -LiteralPath $removalSandbox)) {
+            Assert-RemovalFixturePath $removalSandbox
+            Get-ChildItem -LiteralPath $removalSandbox -Recurse -Force -File -ErrorAction Stop |
+                ForEach-Object { $_.IsReadOnly = $false }
+            Remove-Item -LiteralPath $removalSandbox -Recurse -Force -ErrorAction Stop
         }
     }
 
-    It 'removes a non-standard worktree by branch name using its real path' {
-        $repo = New-TestRepo -Path (Join-Path $TestDrive 'remove-worktree-custom-branch-main')
-        $branch = 'feature/remove-custom-branch'
-        $actualPath = Join-Path $TestDrive 'custom-remove-branch-path'
-        Invoke-Git @('-C', $repo, 'branch', $branch)
-        Invoke-Git @('-C', $repo, 'worktree', 'add', '--quiet', $actualPath, $branch)
-
-        Push-Location $repo
+    AfterAll {
         try {
-            Remove-Worktree -BranchName $branch -Confirm:$false
-            Test-Path -LiteralPath $actualPath | Should -BeFalse
-            (@(Get-Worktrees) | Where-Object Branch -eq $branch) | Should -BeNullOrEmpty
+            Set-Location -LiteralPath $removalLocation.ProviderPath -ErrorAction Stop
         } finally {
-            Pop-Location
+            foreach ($key in $removalEnvironment.Keys) {
+                if ($null -eq $removalEnvironment[$key]) {
+                    Remove-Item -LiteralPath "Env:$key" -ErrorAction Ignore
+                } else {
+                    [Environment]::SetEnvironmentVariable($key, $removalEnvironment[$key], 'Process')
+                }
+            }
         }
     }
 
-    It 'removes a non-standard worktree by path from pipeline input' {
-        $repo = New-TestRepo -Path (Join-Path $TestDrive 'remove-worktree-custom-path-main')
-        $branch = 'feature/remove-custom-path'
-        $actualPath = Join-Path $TestDrive 'custom-remove-path'
-        Invoke-Git @('-C', $repo, 'branch', $branch)
-        Invoke-Git @('-C', $repo, 'worktree', 'add', '--quiet', $actualPath, $branch)
+    It 'declares high-impact confirmation and documents the cleanup switches' {
+        $command = Get-Command Remove-Worktree -Module Shmuelie.Git
+        $binding = $command.ScriptBlock.Attributes |
+            Where-Object { $_ -is [System.Management.Automation.CmdletBindingAttribute] }
+        $binding.SupportsShouldProcess | Should -BeTrue
+        $binding.ConfirmImpact | Should -Be 'High'
+        $command.Parameters.Keys | Should -Contain 'KeepBranch'
+        $command.Parameters.Keys | Should -Contain 'RemoveBranch'
+        (Get-Help Remove-Worktree).Description.Text | Should -Match 'unmerged'
+    }
 
-        Push-Location $repo
-        try {
-            Get-Worktrees | Where-Object Branch -eq $branch | Remove-Worktree -Confirm:$false
-            Test-Path -LiteralPath $actualPath | Should -BeFalse
-            (@(Get-Worktrees) | Where-Object Branch -eq $branch) | Should -BeNullOrEmpty
-        } finally {
-            Pop-Location
+    It 'removes only the target worktree and branch using <InputKind>' -ForEach @(
+        @{ InputKind = 'standard layout' }, @{ InputKind = 'branch' },
+        @{ InputKind = 'path' }, @{ InputKind = 'pipeline' }
+    ) {
+        if ($InputKind -eq 'standard layout') {
+            $standardPath = Join-Path $removalSandbox $removalBranch
+            $null = New-Item -ItemType Directory -Path (Split-Path $standardPath -Parent) -ErrorAction Stop
+            Invoke-RemovalGit @('worktree', 'move', $removalTarget, $standardPath)
+            $removalTarget = $standardPath
+        }
+        $keeper = Join-Path $removalSandbox 'keep'
+        Invoke-RemovalGit @('worktree', 'add', '--quiet', '-b', 'feature/keep', $keeper)
+        switch ($InputKind) {
+            'standard layout' { Remove-Worktree -BranchName $removalBranch -Confirm:$false }
+            branch { Remove-Worktree -BranchName $removalBranch -Confirm:$false }
+            path { Remove-Worktree -Path $removalTarget -Confirm:$false }
+            pipeline { Get-Worktrees | Where-Object Branch -eq $removalBranch | Remove-Worktree -Confirm:$false }
+        }
+        Test-Path -LiteralPath $removalTarget | Should -BeFalse
+        Test-Path -LiteralPath $keeper | Should -BeTrue
+        Get-RemovalBranches | Should -Not -Contain "refs/heads/$removalBranch"
+        Get-RemovalBranches | Should -Contain 'refs/heads/feature/keep'
+        Get-RemovalBranches | Should -Contain 'refs/heads/main'
+        @(Get-Worktrees | Where-Object Branch -eq $removalBranch) | Should -HaveCount 0
+        @(Get-Worktrees | Where-Object Branch -eq 'feature/keep') | Should -HaveCount 1
+    }
+
+    It 'honors <Mode> switch values' -ForEach @(
+        @{ Mode = 'KeepBranch'; Options = @{ KeepBranch = $true }; Keep = $true }
+        @{ Mode = 'legacy false'; Options = @{ RemoveBranch = $false }; Keep = $true }
+        @{ Mode = 'both keep requests'; Options = @{ KeepBranch = $true; RemoveBranch = $false }; Keep = $true }
+        @{ Mode = 'both false'; Options = @{ KeepBranch = $false; RemoveBranch = $false }; Keep = $true }
+        @{ Mode = 'legacy true'; Options = @{ RemoveBranch = $true }; Keep = $false }
+        @{ Mode = 'KeepBranch false'; Options = @{ KeepBranch = $false }; Keep = $false }
+        @{ Mode = 'both delete requests'; Options = @{ KeepBranch = $false; RemoveBranch = $true }; Keep = $false }
+    ) {
+        Remove-Worktree -Path $removalTarget @Options -Confirm:$false
+        Test-Path -LiteralPath $removalTarget | Should -BeFalse
+        ((Get-RemovalBranches) -contains "refs/heads/$removalBranch") | Should -Be $Keep
+    }
+
+    It 'rejects conflicting switches before removal even for WhatIf=<Preview>' -ForEach @(
+        @{ Preview = $false }, @{ Preview = $true }
+    ) {
+        { Remove-Worktree -Path $removalTarget -KeepBranch -RemoveBranch -WhatIf:$Preview -Confirm:$false } |
+            Should -Throw '*KeepBranch and RemoveBranch cannot both be enabled*'
+        Test-Path -LiteralPath $removalTarget | Should -BeTrue
+        Get-RemovalBranches | Should -Contain "refs/heads/$removalBranch"
+    }
+
+    It 'previews <Mode> without changing either resource' -ForEach @(
+        @{ Mode = 'default'; Options = @{ WhatIf = $true }; BranchPreview = $true }
+        @{ Mode = 'forced'; Options = @{ WhatIf = $true; Force = $true }; BranchPreview = $true }
+        @{ Mode = 'legacy'; Options = @{ WhatIf = $true; RemoveBranch = $true }; BranchPreview = $true }
+        @{ Mode = 'kept branch'; Options = @{ WhatIf = $true; KeepBranch = $true }; BranchPreview = $false }
+        @{ Mode = 'legacy false'; Options = @{ WhatIf = $true; RemoveBranch = $false }; BranchPreview = $false }
+    ) {
+        $hostStub = Invoke-RemovalWithHost -Options $Options
+        $hostStub.PromptUI.Prompts.Count | Should -Be 0
+        $messages = $hostStub.PromptUI.Messages -join "`n"
+        $messages | Should -Match 'Remove worktree'
+        $messages | Should -Match ([regex]::Escape($removalTarget))
+        ($messages -match 'Delete local branch') | Should -Be $BranchPreview
+        if ($BranchPreview) { $messages | Should -Match ([regex]::Escape($removalBranch)) }
+        Test-Path -LiteralPath $removalTarget | Should -BeTrue
+        Get-RemovalBranches | Should -Contain "refs/heads/$removalBranch"
+        @(Get-Worktrees | Where-Object Branch -eq $removalBranch) | Should -HaveCount 1
+    }
+
+    It 'handles <Mode> confirmation independently for each mutation' -ForEach @(
+        @{ Mode = 'implicit refusal'; Answers = @(2); Options = @{}; WorktreeRemains = $true; BranchRemains = $true }
+        @{ Mode = 'explicit refusal'; Answers = @(2); Options = @{ Confirm = $true }; WorktreeRemains = $true; BranchRemains = $true }
+        @{ Mode = 'forced refusal'; Answers = @(2); Options = @{ Force = $true }; WorktreeRemains = $true; BranchRemains = $true }
+        @{ Mode = 'declined branch deletion'; Answers = @(0, 2); Options = @{}; WorktreeRemains = $false; BranchRemains = $true }
+        @{ Mode = 'both approved'; Answers = @(0, 0); Options = @{}; WorktreeRemains = $false; BranchRemains = $false }
+        @{ Mode = 'kept branch approved'; Answers = @(0); Options = @{ KeepBranch = $true }; WorktreeRemains = $false; BranchRemains = $true }
+        @{ Mode = 'unattended'; Answers = @(); Options = @{ Confirm = $false }; WorktreeRemains = $false; BranchRemains = $false }
+    ) {
+        $hostStub = Invoke-RemovalWithHost -Answers $Answers -Options $Options
+        $hostStub.PromptUI.Prompts.Count | Should -Be $Answers.Count
+        if ($Answers.Count -gt 0) { $hostStub.PromptUI.Prompts[0] | Should -Match 'Remove worktree' }
+        if ($Answers.Count -gt 1) { $hostStub.PromptUI.Prompts[1] | Should -Match 'Delete local branch' }
+        (Test-Path -LiteralPath $removalTarget) | Should -Be $WorktreeRemains
+        ((Get-RemovalBranches) -contains "refs/heads/$removalBranch") | Should -Be $BranchRemains
+    }
+
+    It 'retains the existing deletion of unmerged branches with <Mode>' -ForEach @(
+        @{ Mode = 'default'; Options = @{} }, @{ Mode = 'legacy'; Options = @{ RemoveBranch = $true } }
+    ) {
+        Invoke-RemovalGit -Path $removalTarget @('commit', '--allow-empty', '--quiet', '-m', 'unmerged work')
+        Invoke-RemovalGit @('rev-list', '--count', "main..$removalBranch") | Should -Be '1'
+        Remove-Worktree -Path $removalTarget @Options -Confirm:$false
+        Test-Path -LiteralPath $removalTarget | Should -BeFalse
+        Get-RemovalBranches | Should -Not -Contain "refs/heads/$removalBranch"
+    }
+
+    It 'preserves the branch after a <Reason> removal failure' -ForEach @(
+        @{ Reason = 'dirty'; Locked = $false; UseForce = $false }
+        @{ Reason = 'locked'; Locked = $true; UseForce = $false }
+        @{ Reason = 'locked with one force'; Locked = $true; UseForce = $true }
+    ) {
+        if ($Locked) {
+            Invoke-RemovalGit @('worktree', 'lock', '--reason', 'fixture lock', $removalTarget)
+        } else {
+            Set-Content -LiteralPath (Join-Path $removalTarget 'README.md') -Value 'keep local changes'
+        }
+        $warnings = @()
+        Remove-Worktree -Path $removalTarget -Force:$UseForce -Confirm:$false -WarningVariable warnings -WarningAction SilentlyContinue 2>$null
+        Test-Path -LiteralPath $removalTarget | Should -BeTrue
+        Get-RemovalBranches | Should -Contain "refs/heads/$removalBranch"
+        ($warnings -join "`n") | Should -Match 'Worktree removal failed; leaving branch'
+        if (-not $Locked) {
+            Get-Content -LiteralPath (Join-Path $removalTarget 'README.md') | Should -Be 'keep local changes'
         }
     }
 
-    It 'removes a detached worktree by path without colliding with another detached worktree' {
-        $repo = New-TestRepo -Path (Join-Path $TestDrive 'remove-worktree-detached-main')
-        $first = Join-Path $TestDrive 'detached-keep'
-        $second = Join-Path $TestDrive 'detached-remove'
-        Invoke-Git @('-C', $repo, 'worktree', 'add', '--quiet', '--detach', $first, 'HEAD')
-        Invoke-Git @('-C', $repo, 'worktree', 'add', '--quiet', '--detach', $second, 'HEAD')
-        $secondResolved = (Resolve-Path -LiteralPath $second).Path
-
-        Push-Location $repo
-        try {
-            Get-Worktrees | Where-Object Path -eq $secondResolved | Remove-Worktree -Confirm:$false
-            Test-Path -LiteralPath $first | Should -BeTrue
-            Test-Path -LiteralPath $second | Should -BeFalse
-            (@(Get-Worktrees) | Where-Object Detached) | Should -HaveCount 1
-        } finally {
-            Pop-Location
-        }
+    It 'removes a dirty worktree only when explicitly forced, with KeepBranch=<Keep>' -ForEach @(
+        @{ Keep = $false }, @{ Keep = $true }
+    ) {
+        Set-Content -LiteralPath (Join-Path $removalTarget 'README.md') -Value 'discard local changes'
+        Remove-Worktree -Path $removalTarget -Force -KeepBranch:$Keep -Confirm:$false
+        Test-Path -LiteralPath $removalTarget | Should -BeFalse
+        ((Get-RemovalBranches) -contains "refs/heads/$removalBranch") | Should -Be $Keep
     }
 
-    It 'removes a prunable worktree entry by path' {
-        $repo = New-TestRepo -Path (Join-Path $TestDrive 'remove-worktree-prunable-main')
-        $gone = Join-Path $TestDrive 'prunable-remove'
-        Invoke-Git @('-C', $repo, 'worktree', 'add', '--quiet', '--detach', $gone, 'HEAD')
-        Remove-Item -LiteralPath $gone -Recurse -Force
+    It 'removes a detached worktree by pipeline path without deleting any branch, legacy=<Legacy>' -ForEach @(
+        @{ Legacy = $false }, @{ Legacy = $true }
+    ) {
+        Invoke-RemovalGit -Path $removalTarget @('switch', '--quiet', '--detach')
+        $keeper = Join-Path $removalSandbox 'detached-keep'
+        Invoke-RemovalGit @('worktree', 'add', '--quiet', '--detach', $keeper, 'HEAD')
+        $branches = Get-RemovalBranches
+        $options = if ($Legacy) { @{ RemoveBranch = $true } } else { @{} }
+        Get-Worktrees | Where-Object Path -eq $removalTarget |
+            Remove-Worktree @options -Confirm:$false -WarningAction SilentlyContinue
+        Test-Path -LiteralPath $removalTarget | Should -BeFalse
+        Test-Path -LiteralPath $keeper | Should -BeTrue
+        Get-RemovalBranches | Should -Be $branches
+        @(Get-Worktrees | Where-Object Detached) | Should -HaveCount 1
+    }
 
-        Push-Location $repo
-        try {
-            $entry = @(Get-Worktrees | Where-Object Prunable)
-            $entry | Should -HaveCount 1
-            Remove-Worktree -Path $entry[0].Path -Confirm:$false
-            @(Get-Worktrees | Where-Object Prunable) | Should -HaveCount 0
-        } finally {
-            Pop-Location
-        }
+    It 'previews only worktree removal for a detached target' {
+        Invoke-RemovalGit -Path $removalTarget @('switch', '--quiet', '--detach')
+        $hostStub = Invoke-RemovalWithHost -Options @{ WhatIf = $true }
+        ($hostStub.PromptUI.Messages -join "`n") | Should -Match 'Remove worktree'
+        ($hostStub.PromptUI.Messages -join "`n") | Should -Not -Match 'Delete local branch'
+        Test-Path -LiteralPath $removalTarget | Should -BeTrue
+        Get-RemovalBranches | Should -Contain "refs/heads/$removalBranch"
+    }
+
+    It 'removes a prunable worktree entry by path with Detached=<Detached>' -ForEach @(
+        @{ Detached = $false }, @{ Detached = $true }
+    ) {
+        if ($Detached) { Invoke-RemovalGit -Path $removalTarget @('switch', '--quiet', '--detach') }
+        Assert-RemovalFixturePath $removalTarget
+        Remove-Item -LiteralPath $removalTarget -Recurse -Force -ErrorAction Stop
+        $entry = @(Get-Worktrees | Where-Object Prunable)
+        $entry | Should -HaveCount 1
+        Remove-Worktree -Path $entry[0].Path -Confirm:$false
+        @(Get-Worktrees | Where-Object Prunable) | Should -HaveCount 0
+        ((Get-RemovalBranches) -contains "refs/heads/$removalBranch") | Should -Be $Detached
     }
 }
 

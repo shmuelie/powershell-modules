@@ -645,7 +645,17 @@ function Resolve-WorktreeTarget {
 function Remove-Worktree {
     <#
     .SYNOPSIS
-    Remove a worktree by branch name or path.
+    Remove a worktree and, by default, its backing local branch.
+    .DESCRIPTION
+    Resolves a worktree by branch name or path and deletes its backing local
+    branch only after worktree removal succeeds. Detached worktrees have no
+    branch to delete. Worktree removal and branch deletion are confirmed
+    separately; declining worktree removal also prevents branch deletion.
+
+    Branch cleanup retains the existing git branch -D behavior, including
+    deleting unmerged branches. Use -KeepBranch to preserve the branch and its
+    commits. No remote branch is deleted. -WhatIf previews both operations
+    without changing either resource. Use -Confirm:$false for unattended removal.
     .PARAMETER BranchName
     Name of the branch. The branch is resolved through `Get-Worktrees`, so
     non-standard worktree locations are supported. Detached worktrees must be
@@ -653,18 +663,31 @@ function Remove-Worktree {
     .PARAMETER Path
     The actual filesystem path of the worktree to remove. Accepts pipeline input
     by property name from `Get-Worktrees` and related objects.
+    .PARAMETER KeepBranch
+    Remove only the worktree, preserving its backing local branch. Cannot be
+    combined with an enabled -RemoveBranch switch.
     .PARAMETER RemoveBranch
-    Also remove the branch when the target worktree is backed by a branch.
+    Compatibility switch: branch cleanup is now the default. Existing
+    -RemoveBranch calls still work; explicitly passing -RemoveBranch:$false
+    preserves the branch, as before. Prefer -KeepBranch in new scripts.
     .PARAMETER Force
-    Force the removal of the worktree.
+    Pass a single --force to git worktree remove, allowing removal of a dirty
+    worktree. Does not bypass confirmation, retry with additional force, or
+    change the existing git branch -D cleanup behavior.
     .EXAMPLE
-    Remove-Worktree -BranchName feature/old -RemoveBranch
-    Removes the worktree for the branch and deletes the branch.
+    Remove-Worktree -BranchName feature/old
+    Confirms removal of the worktree and then deletion of its local branch.
+    .EXAMPLE
+    Remove-Worktree -BranchName feature/paused -KeepBranch
+    Removes the worktree but keeps the local branch for later use.
+    .EXAMPLE
+    Remove-Worktree -BranchName feature/old -WhatIf
+    Previews worktree removal and local branch deletion without changing either.
     .EXAMPLE
     Get-Worktrees | Where-Object Detached | Remove-Worktree -Force
     Removes detached worktrees by their real paths from pipeline input.
     #>
-    [CmdletBinding(SupportsShouldProcess, DefaultParameterSetName = 'Path')]
+    [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'High', DefaultParameterSetName = 'Path')]
     param(
         [Parameter(Mandatory, Position = 0, ParameterSetName = 'BranchName', ValueFromPipelineByPropertyName)]
         [ValidateSet([WorktreeSetValuesGenerator])]
@@ -676,8 +699,16 @@ function Remove-Worktree {
         [string]$Path,
 
         [switch]$RemoveBranch,
-        [switch]$Force = $false
+        [switch]$Force = $false,
+        [switch]$KeepBranch
     )
+    begin {
+        if ($KeepBranch -and $RemoveBranch) {
+            throw 'KeepBranch and RemoveBranch cannot both be enabled. Choose whether to keep or delete the local branch.'
+        }
+        $deleteBranch = -not $KeepBranch -and
+            (-not $PSBoundParameters.ContainsKey('RemoveBranch') -or $RemoveBranch)
+    }
     process {
         $target = if ($PSCmdlet.ParameterSetName -eq 'Path') {
             Resolve-WorktreeTarget -Path $Path
@@ -687,6 +718,8 @@ function Remove-Worktree {
         if (-not $target) { return }
 
         $worktreePath = $target.Path
+        $hasBranch = -not $target.Detached -and $target.Branch -and $target.Branch -ne '(detached)'
+        $worktreeRemoved = $false
         if ($PSCmdlet.ShouldProcess($worktreePath, 'Remove worktree')) {
             $removeArgs = @('worktree', 'remove')
             if ($Force) { $removeArgs += '--force' }
@@ -694,14 +727,17 @@ function Remove-Worktree {
             $removeArgs += $worktreePath
             git @removeArgs
             $worktreeRemoved = $LASTEXITCODE -eq 0
-            if ($RemoveBranch) {
-                if ($target.Detached -or $target.Branch -eq '(detached)' -or -not $target.Branch) {
-                    Write-Warning 'The target worktree is detached; no branch was removed.'
-                } elseif ($worktreeRemoved) {
-                    git branch -D -- $target.Branch
-                } else {
-                    Write-Warning "Worktree removal failed; leaving branch '$($target.Branch)' in place."
-                }
+            if ($RemoveBranch -and -not $hasBranch) {
+                Write-Warning 'The target worktree is detached; no branch was removed.'
+            } elseif ($deleteBranch -and $hasBranch -and -not $worktreeRemoved) {
+                Write-Warning "Worktree removal failed; leaving branch '$($target.Branch)' in place."
+            }
+        }
+
+        # Preview both stages, but never delete a branch after failed or declined removal.
+        if ($deleteBranch -and $hasBranch -and ($worktreeRemoved -or $WhatIfPreference)) {
+            if ($PSCmdlet.ShouldProcess($target.Branch, 'Delete local branch (allow unmerged)')) {
+                git branch -D -- $target.Branch
             }
         }
     }
