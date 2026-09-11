@@ -1,17 +1,32 @@
-#Requires -Modules @{ ModuleName = 'Pester'; ModuleVersion = '5.2.0' }
+#Requires -Modules @{ ModuleName = 'Pester'; ModuleVersion = '6.2.0' }
 
 BeforeAll {
     $script:repoRoot = Split-Path (Split-Path $PSCommandPath -Parent) -Parent
     $script:runnerPath = Join-Path $script:repoRoot 'build' 'Invoke-Tests.ps1'
 
     function New-RunnerTestPesterModule {
-        param([version]$Version)
+        param([version]$Version, [string]$Prerelease = '')
 
         [pscustomobject]@{
             Name = 'Pester'
             Version = $Version
             Path = Join-Path $script:repoRoot 'mock-modules' 'Pester' $Version.ToString() 'Pester.psd1'
+            PrivateData = @{ PSData = @{ Prerelease = $Prerelease } }
         }
+    }
+
+    # Keep bootstrap tests independent of installed package managers and feeds.
+    function Install-Module {
+        [CmdletBinding()]
+        param(
+            [string[]]$Name,
+            [version]$MinimumVersion,
+            [version]$MaximumVersion,
+            [string]$Scope,
+            [switch]$Force,
+            [switch]$AllowPrerelease
+        )
+        throw 'Unmocked module installation is forbidden.'
     }
 }
 
@@ -34,23 +49,23 @@ Describe 'Invoke-Tests runner policy' {
     It 'selects <ExpectedVersion> from <Scenario> without installing' -ForEach @(
         @{
             Scenario = 'mixed installed major versions in non-version order'
-            Versions = @('6.2.0', '5.9.0', '5.12.0', '4.10.1', '5.2.0', '5.10.0', '7.0.0')
-            ExpectedVersion = '5.12.0'
+            Versions = @('7.0.0', '6.9.0', '6.12.0', '5.12.0', '6.2.0', '6.10.0', '8.0.0')
+            ExpectedVersion = '6.12.0'
         }
         @{
             Scenario = 'the exact minimum with older and newer unsupported releases'
-            Versions = @('5.1.999', '6.0.0', '5.2.0')
-            ExpectedVersion = '5.2.0'
+            Versions = @('6.1.999', '7.0.0', '6.2.0')
+            ExpectedVersion = '6.2.0'
         }
         @{
             Scenario = 'four-component patch versions'
-            Versions = @('5.2.0', '5.2.0.1', '6.0.0')
-            ExpectedVersion = '5.2.0.1'
+            Versions = @('6.2.0', '6.2.0.1', '7.0.0')
+            ExpectedVersion = '6.2.0.1'
         }
         @{
             Scenario = 'the highest representable version in the supported major'
-            Versions = @('6.0.0', '5.2147483647.2147483647.2147483647', '5.9.0')
-            ExpectedVersion = '5.2147483647.2147483647.2147483647'
+            Versions = @('7.0.0', '6.2147483647.2147483647.2147483647', '6.9.0')
+            ExpectedVersion = '6.2147483647.2147483647.2147483647'
         }
     ) {
         $script:availableModules = @($Versions | ForEach-Object { New-RunnerTestPesterModule $_ })
@@ -73,18 +88,35 @@ Describe 'Invoke-Tests runner policy' {
         $script:runnerConfiguration.TestResult.Enabled.Value | Should -BeFalse
     }
 
+    It 'prefers a stable release over a newer prerelease' {
+        $script:availableModules = @(
+            New-RunnerTestPesterModule '6.3.0' -Prerelease 'beta.1'
+            New-RunnerTestPesterModule '6.2.0'
+        )
+        $script:expectedModulePath = (New-RunnerTestPesterModule '6.2.0').Path
+
+        . $script:runnerPath
+
+        Should -Invoke Install-Module -Times 0
+        Should -Invoke Import-Module -Exactly -Times 1 -ParameterFilter {
+            $Name -eq $script:expectedModulePath -and $Force
+        }
+    }
+
     It 'installs only the supported range when <Scenario>' -ForEach @(
-        @{ Scenario = 'no Pester is installed'; Versions = @() }
-        @{ Scenario = 'only versions below the minimum are installed'; Versions = @('3.4.0', '5.1.999') }
-        @{ Scenario = 'only unsupported newer majors are installed'; Versions = @('6.0.0', '6.2.0', '7.0.0') }
+        @{ Scenario = 'no Pester is installed'; Versions = @(); Prerelease = '' }
+        @{ Scenario = 'only versions below the minimum are installed'; Versions = @('3.4.0', '5.12.0', '6.1.999'); Prerelease = '' }
+        @{ Scenario = 'only unsupported newer majors are installed'; Versions = @('7.0.0', '7.2.0', '8.0.0'); Prerelease = '' }
+        @{ Scenario = 'only prereleases are installed'; Versions = @('6.2.0', '6.3.0'); Prerelease = 'beta.1' }
     ) {
-        $script:availableModules = @($Versions | ForEach-Object { New-RunnerTestPesterModule $_ })
-        $script:expectedModulePath = (New-RunnerTestPesterModule '5.9.0').Path
+        $script:availableModules = @($Versions | ForEach-Object { New-RunnerTestPesterModule $_ -Prerelease $Prerelease })
+        $script:expectedModulePath = (New-RunnerTestPesterModule '6.9.0').Path
         Mock Install-Module {
             $script:availableModules += @(
-                New-RunnerTestPesterModule '5.2.0'
-                New-RunnerTestPesterModule '5.9.0'
                 New-RunnerTestPesterModule '6.2.0'
+                New-RunnerTestPesterModule '6.9.0'
+                New-RunnerTestPesterModule '7.0.0'
+                New-RunnerTestPesterModule '6.10.0' -Prerelease 'beta.1'
             )
         }
 
@@ -93,9 +125,9 @@ Describe 'Invoke-Tests runner policy' {
         Should -Invoke Install-Module -Exactly -Times 1
         Should -Invoke Install-Module -Exactly -Times 1 -ParameterFilter {
             $Name -eq 'Pester' -and
-            [version]$MinimumVersion -eq [version]'5.2.0' -and
-            [version]$MaximumVersion -eq [version]'5.2147483647.2147483647.2147483647' -and
-            $Scope -eq 'CurrentUser' -and $Force
+            [version]$MinimumVersion -eq [version]'6.2.0' -and
+            [version]$MaximumVersion -eq [version]'6.2147483647.2147483647.2147483647' -and
+            $Scope -eq 'CurrentUser' -and $Force -and -not $AllowPrerelease
         }
         Should -Invoke Get-Module -Exactly -Times 2 -ParameterFilter {
             $ListAvailable -and $Name -eq 'Pester'
@@ -107,11 +139,11 @@ Describe 'Invoke-Tests runner policy' {
     }
 
     It 'fails rather than importing an unsupported version after installation' {
-        $script:availableModules = @(New-RunnerTestPesterModule '6.2.0')
+        $script:availableModules = @(New-RunnerTestPesterModule '7.0.0')
         Mock Install-Module {}
 
         { . $script:runnerPath } |
-            Should -Throw '*Unable to locate or install Pester >=5.2.0 and <6.0.0.*'
+            Should -Throw '*Unable to locate or install stable Pester >=6.2.0 and <7.0.0.*'
 
         Should -Invoke Install-Module -Exactly -Times 1
         Should -Invoke Import-Module -Times 0
@@ -128,7 +160,7 @@ Describe 'Invoke-Tests runner policy' {
     }
 
     It 'propagates import errors without running tests' {
-        $script:availableModules = @(New-RunnerTestPesterModule '5.9.0')
+        $script:availableModules = @(New-RunnerTestPesterModule '6.9.0')
         Mock Import-Module { throw 'Module import failed.' }
 
         { . $script:runnerPath } | Should -Throw '*Module import failed.*'
@@ -138,7 +170,7 @@ Describe 'Invoke-Tests runner policy' {
     }
 
     It 'defaults to the repository tests directory' {
-        $script:availableModules = @(New-RunnerTestPesterModule '5.9.0')
+        $script:availableModules = @(New-RunnerTestPesterModule '6.9.0')
 
         . $script:runnerPath
 
@@ -149,7 +181,7 @@ Describe 'Invoke-Tests runner policy' {
     }
 
     It 'propagates test failures to the caller' {
-        $script:availableModules = @(New-RunnerTestPesterModule '5.9.0')
+        $script:availableModules = @(New-RunnerTestPesterModule '6.9.0')
         Mock Invoke-Pester { throw 'Test run failed.' }
 
         { . $script:runnerPath } | Should -Throw '*Test run failed.*'

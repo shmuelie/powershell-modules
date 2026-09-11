@@ -1,4 +1,4 @@
-#Requires -Modules @{ ModuleName = 'Pester'; ModuleVersion = '5.2.0' }
+#Requires -Modules @{ ModuleName = 'Pester'; ModuleVersion = '6.2.0' }
 
 BeforeAll {
     $repoRoot = Split-Path (Split-Path $PSCommandPath -Parent) -Parent
@@ -603,6 +603,10 @@ Describe 'Get-CopilotLaunchPlan' {
 }
 
 Describe 'Copilot pluggable session selector' {
+    BeforeAll {
+        $script:SelectorLaunchPlanCommand = Get-Command 'Shmuelie.Copilot\Get-CopilotLaunchPlan' -ListImported -ErrorAction Stop
+    }
+
     BeforeEach {
         $testHome = Join-Path $TestDrive ([guid]::NewGuid().ToString())
         $workspace = Join-Path $testHome 'workspace'
@@ -612,6 +616,9 @@ Describe 'Copilot pluggable session selector' {
         Mock -ModuleName Shmuelie.Copilot Get-Command {
             [pscustomobject]@{ Source = 'unused-copilot' }
         } -ParameterFilter { $Name -eq 'copilot' }
+        Mock -ModuleName Shmuelie.Copilot Get-Command {
+            $script:SelectorLaunchPlanCommand
+        } -ParameterFilter { $Name.Count -eq 1 -and $Name[0] -eq 'Get-CopilotLaunchPlan' }
         Mock -ModuleName Shmuelie.Copilot git { 'test-branch' }
         $script:ExpectedConsoleReads = 0
         Mock -ModuleName Shmuelie.Copilot Assert-CopilotSessionPickerInteractive { throw 'No interactive console.' }
@@ -667,6 +674,9 @@ Describe 'Copilot pluggable session selector' {
         $plan = Start-Copilot -PassThru -SessionSelector { param($Sessions) $Sessions[1] } -Model 'gpt-5.4'
         $plan.Args[([array]::IndexOf($plan.Args, '--resume') + 1)] | Should -Be $olderId
         $plan.Args | Should -Contain 'gpt-5.4'
+        Should -Invoke -ModuleName Shmuelie.Copilot Get-Command -Times 1 -Exactly -ParameterFilter {
+            $Name.Count -eq 1 -and $Name[0] -eq 'Get-CopilotLaunchPlan'
+        }
     }
 
     It 'bypasses the callback with <Label>' -ForEach @(
