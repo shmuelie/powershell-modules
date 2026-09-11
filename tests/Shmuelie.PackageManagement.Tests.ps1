@@ -2591,6 +2591,368 @@ Describe 'VSCode package provider' {
             }
         }
 
+Describe 'WinGet package provider' {
+    InModuleScope Shmuelie.PackageManagement {
+        BeforeAll {
+            $script:WinGetTestStub = New-Module -Name Microsoft.WinGet.Client -ScriptBlock {
+                function Get-WinGetPackage {
+                    [CmdletBinding()]
+                    param($Id, $Source, $MatchOption)
+                    throw 'Unmocked WinGet discovery is forbidden.'
+                }
+                Export-ModuleMember -Function Get-WinGetPackage
+            }
+            Import-Module $script:WinGetTestStub
+            function script:Invoke-WinGetTest.exe {
+                param([Parameter(ValueFromRemainingArguments)][string[]]$ArgumentList)
+                throw 'Unmocked native WinGet is forbidden.'
+            }
+        }
+
+        AfterAll {
+            Remove-Module $script:WinGetTestStub -Force
+            Remove-Item Function:Invoke-WinGetTest.exe
+        }
+
+        BeforeEach {
+            $script:WinGetOldExit = Get-Variable LASTEXITCODE -Scope Global -ErrorAction Ignore
+            $script:WinGetOldExitValue = if ($script:WinGetOldExit) { $script:WinGetOldExit.Value } else { $null }
+            $script:WinGetNativeCalls = [System.Collections.Generic.List[object]]::new()
+            $script:WinGetNativeExit = 0
+            $script:WinGetVersion = 'v1.8.1911'
+            $script:WinGetNoExit = $false
+            $script:WinGetInstalledVersion = '2.0'
+            $script:WinGetPackages = @(
+                [pscustomobject]@{ Id = 'Example.One'; Source = 'winget'; InstalledVersion = '1.0'; IsUpdateAvailable = $true; AvailableVersions = @('99.0') }
+                [pscustomobject]@{ Id = 'Example.Two'; Source = 'winget'; InstalledVersion = '1.0'; IsUpdateAvailable = $true; AvailableVersions = @('99.0') }
+                [pscustomobject]@{ Id = 'Example.Current'; Source = 'winget'; InstalledVersion = '1.0'; IsUpdateAvailable = $false }
+            )
+            Mock Get-PackageProviderPlatform { 'Windows' }
+            Mock Get-Module {
+                [pscustomobject]@{ Version = [version]'1.8.1911'; Path = 'WinGetTestStub' }
+            } -ParameterFilter { $Name -eq 'Microsoft.WinGet.Client' }
+            Mock Import-Module { } -ParameterFilter { $Name -eq 'WinGetTestStub' }
+            Mock Get-Command {
+                [pscustomobject]@{ Path = 'Invoke-WinGetTest.exe' }
+            } -ParameterFilter { $Name -eq 'winget.exe' -and $CommandType -eq 'Application' }
+            Mock Invoke-WinGetTest.exe {
+                param($ArgumentList)
+                $script:WinGetNativeCalls.Add(@($ArgumentList))
+                if ($ArgumentList[0] -eq '--version') {
+                    $global:LASTEXITCODE = 0
+                    $script:WinGetVersion
+                } else {
+                    if (-not $script:WinGetNoExit) { $global:LASTEXITCODE = $script:WinGetNativeExit }
+                    'Native upgrade diagnostic.'
+                }
+            }
+            Mock 'Microsoft.WinGet.Client\Get-WinGetPackage' {
+                param($Id, $Source, $MatchOption)
+                if ($Id) {
+                    [pscustomobject]@{ Id = $Id; Source = $Source; InstalledVersion = $script:WinGetInstalledVersion; IsUpdateAvailable = $false }
+                } else {
+                    $script:WinGetPackages
+                }
+            }
+        }
+
+        AfterEach {
+            if ($script:WinGetOldExit) { $global:LASTEXITCODE = $script:WinGetOldExitValue }
+            else { Remove-Variable LASTEXITCODE -Scope Global -ErrorAction Ignore }
+        }
+
+        It 'keeps catalog ordered and WinGet discovery side-effect-free' {
+            Mock Get-Module { throw 'No dependency probing allowed.' }
+            $catalog = @(Get-PackageProvider)
+            $catalog.Name | Should -Be @('PSResourceGet', 'DotNet', 'Npm', 'Pip', 'Uv', 'VSCode', 'WinGet', 'AppInstaller')
+            ($catalog | Where-Object Name -EQ WinGet).OptionNames | Should -Be @('Source', 'Include', 'Exclude', 'AcceptPackageAgreements')
+            ($catalog | Where-Object Name -EQ WinGet).GetTargets | Should -BeOfType ([scriptblock])
+            ($catalog | Where-Object Name -EQ WinGet).Update | Should -BeOfType ([scriptblock])
+            $script:WinGetNativeCalls.Count | Should -Be 0
+        }
+
+        It 'gates <Platform> before import or CLI discovery' -ForEach @(
+            @{ Platform = 'Linux' }; @{ Platform = 'MacOS' }
+        ) {
+            Mock Get-PackageProviderPlatform { $Platform }
+            Mock Get-Module { throw 'No module discovery on unsupported platforms.' }
+            (Update-AllPackages -Provider WinGet).Status | Should -Be Skipped
+            Should -Invoke Import-Module -Times 0
+            $script:WinGetNativeCalls.Count | Should -Be 0
+        }
+
+        It 'skips missing or unsupported dependency <Dependency>' -ForEach @(
+            @{ Dependency = 'executable' }; @{ Dependency = 'module' }; @{ Dependency = 'old loaded module' }; @{ Dependency = 'command' }
+        ) {
+            switch ($Dependency) {
+                'executable' { Mock Get-Command { } -ParameterFilter { $Name -eq 'winget.exe' } }
+                'module' { Mock Get-Module { } -ParameterFilter { $Name -eq 'Microsoft.WinGet.Client' } }
+                'old loaded module' { Mock Get-Module { [pscustomobject]@{ Version = [version]'1.7.0' } } -ParameterFilter { $Name -eq 'Microsoft.WinGet.Client' } }
+                'command' { Mock Get-Command { } -ParameterFilter { $Name -eq 'Microsoft.WinGet.Client\Get-WinGetPackage' } }
+            }
+            $result = Update-AllPackages -Provider WinGet
+            $result.Status | Should -Be Skipped
+            $result.Reason | Should -Not -BeNullOrEmpty
+            Should -Invoke 'Microsoft.WinGet.Client\Get-WinGetPackage' -Times 0
+        }
+
+        It 'skips unsupported CLI version <Version>' -ForEach @(
+            @{ Version = 'v1.7.0' }; @{ Version = 'v1.8.1911-preview' }; @{ Version = 'localized output' }
+        ) {
+            $script:WinGetVersion = $Version
+            (Update-AllPackages -Provider WinGet).Status | Should -Be Skipped
+            Should -Invoke Import-Module -Times 0
+        }
+
+        It 'discovers an installed supported module lazily when none is loaded' {
+            Mock Get-Module { } -ParameterFilter { $Name -eq 'Microsoft.WinGet.Client' -and -not $ListAvailable }
+            $null = Update-AllPackages -Provider WinGet -WhatIf
+            Should -Invoke Get-Module -Times 1 -ParameterFilter { $Name -eq 'Microsoft.WinGet.Client' -and $ListAvailable }
+            Should -Invoke Import-Module -Times 1 -ParameterFilter { $Name -eq 'WinGetTestStub' }
+        }
+
+        It 'rejects batch-shim discovery and unsupported command parameter surfaces' -ForEach @(
+            @{ Kind = 'batch' }; @{ Kind = 'parameters' }
+        ) {
+            if ($Kind -eq 'batch') {
+                Mock Get-Command { [pscustomobject]@{ Path = 'winget.cmd' } } -ParameterFilter { $Name -eq 'winget.exe' }
+            } else {
+                Mock Get-Command { [pscustomobject]@{ Parameters = @{} } } -ParameterFilter { $Name -eq 'Microsoft.WinGet.Client\Get-WinGetPackage' }
+            }
+            (Update-AllPackages -Provider WinGet).Status | Should -Be Skipped
+            Should -Invoke 'Microsoft.WinGet.Client\Get-WinGetPackage' -Times 0
+        }
+
+        It 'reports version probe failure rather than false unavailability' {
+            Mock Invoke-WinGetTest.exe { $global:LASTEXITCODE = 5; 'Version probe failed.' }
+            $result = Update-AllPackages -Provider WinGet
+            $result.Status | Should -Be Failed
+            $result.Reason | Should -Match 'Version probe failed'
+            Should -Invoke Import-Module -Times 0
+        }
+
+        It 'reports dependency import failures' {
+            Mock Import-Module { throw 'Import failed.' } -ParameterFilter { $Name -eq 'WinGetTestStub' }
+            $result = Update-AllPackages -Provider WinGet
+            $result.Status | Should -Be Failed
+            $result.Reason | Should -Match 'Import failed'
+        }
+
+        It 'previews structured updates without package mutations or invented proposed versions' {
+            $result = @(Update-AllPackages -Provider WinGet -WhatIf)
+            $result.Count | Should -Be 2
+            $result.Status | Should -Be @('Planned', 'Planned')
+            $result.Target | Should -Be @('Example.One (source: winget)', 'Example.Two (source: winget)')
+            $result[0].PreviousVersion | Should -Be '1.0'
+            $result[0].ResultingVersion | Should -BeNullOrEmpty
+            $script:WinGetNativeCalls.Count | Should -Be 1
+            $script:WinGetNativeCalls[0] | Should -Be @('--version')
+            Should -Invoke 'Microsoft.WinGet.Client\Get-WinGetPackage' -Times 1 -ParameterFilter { -not $Id -and -not $Source }
+        }
+
+        It 'applies case-insensitive filters and selected source with exclusion winning' {
+            $result = @(Update-AllPackages -Provider winget -ProviderOptions @{
+                WINGET = @{ SOURCE = 'winget'; INCLUDE = @('example.*', 'Example.One'); EXCLUDE = '*.Two' }
+            } -WhatIf)
+            $result.Count | Should -Be 1
+            $result[0].Target | Should -Be 'Example.One (source: winget)'
+            Should -Invoke 'Microsoft.WinGet.Client\Get-WinGetPackage' -Times 1 -ParameterFilter { $Source -eq 'winget' -and -not $Id }
+        }
+
+        It 'reports no targets for empty <Kind>' -ForEach @(
+            @{ Kind = 'discovery' }; @{ Kind = 'include' }
+        ) {
+            $options = @{}
+            if ($Kind -eq 'discovery') { $script:WinGetPackages = @() }
+            else { $options.Include = @() }
+            (Update-AllPackages -Provider WinGet -ProviderOptions @{ WinGet = $options }).Status | Should -Be Unchanged
+            $script:WinGetNativeCalls.Count | Should -Be 1
+        }
+
+        It 'rejects invalid options before dependencies or mutations: <Label>' -ForEach @(
+            @{ Label = 'null source'; Options = @{ Source = $null } }
+            @{ Label = 'source option'; Options = @{ Source = '--all' } }
+            @{ Label = 'source metacharacter'; Options = @{ Source = 'public&other' } }
+            @{ Label = 'source array'; Options = @{ Source = @('winget', 'msstore') } }
+            @{ Label = 'null include'; Options = @{ Include = $null } }
+            @{ Label = 'bad exclude member'; Options = @{ Exclude = @('Example.*', 5) } }
+            @{ Label = 'invalid wildcard'; Options = @{ Include = '[abc' } }
+            @{ Label = 'string consent'; Options = @{ AcceptPackageAgreements = 'true' } }
+            @{ Label = 'numeric consent'; Options = @{ AcceptPackageAgreements = 1 } }
+            @{ Label = 'null consent'; Options = @{ AcceptPackageAgreements = $null } }
+            @{ Label = 'switch consent'; Options = @{ AcceptPackageAgreements = [switch]$true } }
+        ) {
+            (Update-AllPackages -Provider WinGet -ProviderOptions @{ WinGet = $Options }).Status | Should -Be Failed
+            $script:WinGetNativeCalls.Count | Should -Be 0
+            Should -Invoke Import-Module -Times 0
+        }
+
+        It 'does not expose a source agreement opt-out the structured API cannot honor' {
+            { Update-AllPackages -Provider WinGet -ProviderOptions @{ WinGet = @{ AcceptSourceAgreements = $false } } } | Should -Throw '*Unknown option*'
+            $script:WinGetNativeCalls.Count | Should -Be 0
+        }
+
+        It 'fails all discovery before updates for unsafe, ambiguous or mismatched identity: <Kind>' -ForEach @(
+            @{ Kind = 'unsafe ID' }; @{ Kind = 'missing source' }; @{ Kind = 'wrong source' }; @{ Kind = 'duplicate' }; @{ Kind = 'invalid Boolean' }
+        ) {
+            $options = @{}
+            switch ($Kind) {
+                'unsafe ID' { $script:WinGetPackages[1].Id = 'Example;malicious' }
+                'missing source' { $script:WinGetPackages[1].Source = $null }
+                'wrong source' { $options.Source = 'other' }
+                'duplicate' { $script:WinGetPackages += $script:WinGetPackages[0] }
+                'invalid Boolean' { $script:WinGetPackages[1].IsUpdateAvailable = 'true' }
+            }
+            (Update-AllPackages -Provider WinGet -ProviderOptions @{ WinGet = $options }).Status | Should -Be Failed
+            $script:WinGetNativeCalls.Count | Should -Be 1
+        }
+
+        It 'binds each upgrade and observation to its approved ID/source with consent <Consent>' -ForEach @(
+            @{ Consent = 'omitted' }; @{ Consent = 'false' }; @{ Consent = 'true' }
+        ) {
+            $options = @{ Include = 'Example.One' }
+            if ($Consent -ne 'omitted') { $options.AcceptPackageAgreements = $Consent -eq 'true' }
+            $results = @(Update-AllPackages -Provider WinGet -ProviderOptions @{ WinGet = $options } -Confirm:$false)
+            $results.Count | Should -Be 1
+            $results[0].PSTypeNames[0] | Should -Be 'Shmuelie.PackageManagement.UpdateResult'
+            $results[0].Provider | Should -BeExactly WinGet
+            $results[0].Target | Should -BeExactly 'Example.One (source: winget)'
+            $results[0].Status | Should -Be Updated
+            $results[0].ResultingVersion | Should -Be '2.0'
+            $expected = @('upgrade', '--id', 'Example.One', '--exact', '--source', 'winget',
+                '--silent', '--disable-interactivity', '--authentication-mode', 'silent', '--accept-source-agreements')
+            if ($Consent -eq 'true') { $expected += '--accept-package-agreements' }
+            $script:WinGetNativeCalls[1] | Should -Be $expected
+            Should -Invoke 'Microsoft.WinGet.Client\Get-WinGetPackage' -Times 1 -ParameterFilter {
+                $Id -ceq 'Example.One' -and $Source -ceq 'winget' -and $MatchOption -eq 'Equals'
+            }
+        }
+
+        It 'preserves discovered sources including spaces without a configured source override' {
+            $script:WinGetPackages[0].Source = 'Public Source'
+            $result = @(Update-AllPackages -Provider WinGet -Confirm:$false)
+            $result[0].Target | Should -Be 'Example.One (source: Public Source)'
+            $script:WinGetNativeCalls[1][5] | Should -BeExactly 'Public Source'
+            $script:WinGetNativeCalls[2][5] | Should -BeExactly 'winget'
+        }
+
+        It 'reports unchanged observed versions' {
+            $script:WinGetInstalledVersion = '1.0'
+            @(Update-AllPackages -Provider WinGet -Confirm:$false).Status | Should -Be @('Unchanged', 'Unchanged')
+        }
+
+        It 'keeps unknown installed versions null and never substitutes available versions' {
+            $script:WinGetPackages[0].InstalledVersion = 'Unknown'
+            $script:WinGetInstalledVersion = 'Unknown'
+            $results = @(Update-AllPackages -Provider WinGet -Confirm:$false)
+            $results[0].Status | Should -Be Updated
+            $results[0].PreviousVersion | Should -BeNullOrEmpty
+            $results[0].ResultingVersion | Should -BeNullOrEmpty
+            $results[0].Reason | Should -Match 'unknown installed versions'
+        }
+
+        It 'handles the authoritative no-update HRESULT separately' {
+            $script:WinGetNativeExit = -1978335189
+            $script:WinGetInstalledVersion = '1.0'
+            $results = @(Update-AllPackages -Provider WinGet -Confirm:$false)
+            $results.Status | Should -Be @('Unchanged', 'Unchanged')
+            $results[0].Reason | Should -Match '0x8A15002B'
+        }
+
+        It 'reports native failure without accepting output as success: <Code>' -ForEach @(
+            @{ Code = 1 }; @{ Code = -1978335167 }; @{ Code = -1978335212 }
+        ) {
+            $script:WinGetNativeExit = $Code
+            $results = @(Update-AllPackages -Provider WinGet -Confirm:$false)
+            $results.Status | Should -Be @('Failed', 'Failed')
+            $results[0].Reason | Should -Match 'Native upgrade diagnostic'
+            Should -Invoke 'Microsoft.WinGet.Client\Get-WinGetPackage' -Times 0 -ParameterFilter { $Id }
+        }
+
+        It 'rejects absent native evidence and restores global exit state' {
+            $global:LASTEXITCODE = 37
+            $script:WinGetNoExit = $true
+            $results = @(Update-AllPackages -Provider WinGet -Confirm:$false)
+            $results.Status | Should -Be @('Failed', 'Failed')
+            $results[0].Reason | Should -Match 'numeric native exit code'
+            $global:LASTEXITCODE | Should -Be 37
+        }
+
+        It 'restores absence of global LASTEXITCODE' {
+            Remove-Variable LASTEXITCODE -Scope Global -ErrorAction Ignore
+            $null = Update-AllPackages -Provider WinGet -Confirm:$false
+            Get-Variable LASTEXITCODE -Scope Global -ErrorAction Ignore | Should -BeNullOrEmpty
+        }
+
+        It 'restores absence of global LASTEXITCODE even during WhatIf' {
+            Remove-Variable LASTEXITCODE -Scope Global -ErrorAction Ignore
+            $null = Update-AllPackages -Provider WinGet -WhatIf
+            Get-Variable LASTEXITCODE -Scope Global -ErrorAction Ignore | Should -BeNullOrEmpty
+            $script:WinGetNativeCalls.Count | Should -Be 1
+        }
+
+        It 'restores native error preferences and exit state after successful calls' {
+            $global:LASTEXITCODE = 123
+            $PSNativeCommandUseErrorActionPreference = $true
+            $null = Update-AllPackages -Provider WinGet -Confirm:$false
+            $global:LASTEXITCODE | Should -Be 123
+            $PSNativeCommandUseErrorActionPreference | Should -BeTrue
+        }
+
+        It 'preserves a discovery ErrorRecord with fail-fast' {
+            $script:WinGetExpectedError = [System.Management.Automation.ErrorRecord]::new(
+                [InvalidOperationException]::new('Structured query failed.'), 'WinGetQueryFailure',
+                [System.Management.Automation.ErrorCategory]::ReadError, 'winget')
+            Mock 'Microsoft.WinGet.Client\Get-WinGetPackage' { $PSCmdlet.ThrowTerminatingError($script:WinGetExpectedError) }
+            $result = Update-AllPackages -Provider WinGet -StopOnFailure -Confirm:$false -ErrorAction Stop
+            $result.Status | Should -Be Failed
+            $result.Error.FullyQualifiedErrorId | Should -Match 'WinGetQueryFailure'
+            $script:WinGetNativeCalls.Count | Should -Be 1
+        }
+
+        It 'honors fail-fast between package updates' {
+            $script:WinGetNativeExit = 1
+            $results = @(Update-AllPackages -Provider WinGet -StopOnFailure -Confirm:$false)
+            $results.Count | Should -Be 1
+            $results[0].Status | Should -Be Failed
+            $script:WinGetNativeCalls.Count | Should -Be 2
+        }
+
+        It 'does not hide discovery errors even after valid objects' {
+            Mock 'Microsoft.WinGet.Client\Get-WinGetPackage' {
+                $script:WinGetPackages
+                Write-Error 'Catalog query failed.'
+            }
+            (Update-AllPackages -Provider WinGet -Confirm:$false).Status | Should -Be Failed
+            $script:WinGetNativeCalls.Count | Should -Be 1
+        }
+
+        It 'fails missing, ambiguous or wrong post-update observations: <Kind>' -ForEach @(
+            @{ Kind = 'empty' }; @{ Kind = 'duplicate' }; @{ Kind = 'wrong source' }; @{ Kind = 'wrong ID' }; @{ Kind = 'query error' }
+        ) {
+            Mock 'Microsoft.WinGet.Client\Get-WinGetPackage' {
+                param($Id, $Source)
+                switch ($Kind) {
+                    'empty' { }
+                    'duplicate' { @([pscustomobject]@{ Id = $Id; Source = $Source }) * 2 }
+                    'wrong source' { [pscustomobject]@{ Id = $Id; Source = 'other'; InstalledVersion = '2.0' } }
+                    'wrong ID' { [pscustomobject]@{ Id = "$Id.Other"; Source = $Source; InstalledVersion = '2.0' } }
+                    'query error' { throw 'Observation failed.' }
+                }
+            } -ParameterFilter { $Id }
+            @(Update-AllPackages -Provider WinGet -Confirm:$false).Status | Should -Be @('Failed', 'Failed')
+        }
+
+        It 'rejects mismatched callback targets before native invocation' {
+            $target = New-PackageUpdateTarget -Target 'different' -Data @{
+                Id = 'Example.One'; Source = 'winget'; FilePath = 'Invoke-WinGetTest.exe'
+            }
+            { Update-WinGetProviderTarget -Target $target -Options @{} } | Should -Throw '*identity*'
+            $script:WinGetNativeCalls.Count | Should -Be 0
+        }
+    }
+}
+
 Describe 'AppInstaller package provider' {
     InModuleScope Shmuelie.PackageManagement {
         BeforeAll {
