@@ -126,7 +126,7 @@ gh issue create --repo shmuelie/bash-scripts --label upstream-parity `
 
 ```powershell
 .\build\Test-Modules.ps1   # build, manifest validation, import/remove, forbidden-marker scan
-.\build\Invoke-Tests.ps1   # full Pester suite (installs Pester 5.2+ if needed)
+.\build\Invoke-Tests.ps1   # full suite (installs Pester >=5.2.0 and <6.0.0 if needed)
 ```
 
 Run the smallest relevant slice while iterating

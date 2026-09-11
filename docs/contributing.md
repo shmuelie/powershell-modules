@@ -143,9 +143,11 @@ Run the suite with the test runner:
 .\build\Invoke-Tests.ps1 -Path tests\Shmuelie.Git.Tests.ps1   # one file
 ```
 
-The runner ensures Pester 5.2+ is available (installing it if needed) and fails
-on any failing test. CI runs it on every pull request, and it gates publishing,
-so a change without passing tests cannot merge or ship.
+The runner selects the newest installed Pester in the supported range
+`>=5.2.0` and `<6.0.0`, installing within that same range if none is available.
+Pester 6 and later are ignored even when installed alongside Pester 5.
+The runner fails on any failing test. Local runs, CI, and publication all use
+this shared runner, so a change without passing tests cannot merge or ship.
 
 ## Validate
 
