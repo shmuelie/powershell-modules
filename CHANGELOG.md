@@ -7,6 +7,9 @@ between releases this file tracks catalog-level changes under `[Unreleased]`.
 ## [Unreleased]
 
 ### Fixed
+- `Invoke-Tests.ps1` bounds framework selection and fallback installation to
+  the supported major version, keeping local, CI, and publication policy
+  consistent even when newer major versions are installed. (Fixes #221.)
 - `Build-Module.ps1` now calls `GC.Collect` + `WaitForPendingFinalizers` after
   `Remove-Module` and wraps the stage-directory deletion in a targeted retry
   (catching only IO/access-denied errors), so calling it twice for
