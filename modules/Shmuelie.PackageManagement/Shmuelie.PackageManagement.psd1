@@ -1,11 +1,11 @@
 @{
     RootModule        = 'Shmuelie.PackageManagement.psm1'
-    ModuleVersion     = '0.2.0'
+    ModuleVersion     = '0.3.0'
     GUID              = 'b3318a61-5eba-4ad0-8b92-95a06df87b80'
     Author            = 'Shmueli Englard'
     CompanyName       = 'Shmuelie'
     Copyright         = '(c) Shmueli Englard. All rights reserved.'
-    Description       = 'Provider-neutral package update orchestration. Initial foundation; provider integrations ship separately.'
+    Description       = 'Provider-neutral package update orchestration with eight optional integrations, per-target confirmation, and typed outcomes.'
     PowerShellVersion = '7.4'
     CompatiblePSEditions = @('Core')
     FunctionsToExport = @('Update-AllPackages')
