@@ -5,6 +5,8 @@ under [Unreleased]; versions change only when a release is cut.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-11
+
 ### Added
 - Windows-only WinGet provider with optional structured Client discovery,
   source-bound per-package confirmation, ID include/exclude filters, observed
