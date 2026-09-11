@@ -5,6 +5,19 @@ under [Unreleased]; versions change only when a release is cut.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-11
+
+### Added
+- Windows-only WinGet provider with optional structured Client discovery,
+  source-bound per-package confirmation, ID include/exclude filters, observed
+  installed versions and explicit native error/no-update handling. Source
+  agreements are accepted by default, including discovery; package agreements
+  require an explicit Boolean opt-in. Missing supported dependencies skip.
+- Windows-only AppInstaller provider using optional compiled Shmuelie.Windows
+  cmdlets, lazy capability discovery, per-registration previews/confirmation,
+  and explicit update-check completion evidence. Results describe requests,
+  not installed-version changes; absent evidence and original errors fail.
+
 ## [0.2.0] - 2026-09-10
 
 ### Added

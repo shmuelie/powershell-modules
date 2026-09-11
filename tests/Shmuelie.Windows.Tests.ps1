@@ -588,3 +588,173 @@ Describe 'Update-AppInstallerApp' -Skip:(-not $IsWindows) {
         $nameParam.Attributes.ValueFromPipelineByPropertyName | Should -Contain $true
     }
 }
+
+Describe 'AppInstaller compiled request results (hermetic)' -Skip:(-not $IsWindows) {
+        BeforeAll {
+            if (-not ('AppInstallerTestRuntime' -as [type])) {
+                Add-Type -Path (Join-Path $PSScriptRoot 'fixtures' 'AppInstallerTestRuntime.cs') -ErrorAction Stop
+            }
+            $script:AppInstallerCommandType = [Shmuelie.Windows.Cmdlets.UpdateAppInstallerAppCommand]
+            $script:AppInstallerFlags = [Reflection.BindingFlags]'Instance,NonPublic'
+            $script:AppInstallerConstructor = $script:AppInstallerCommandType.GetConstructors($script:AppInstallerFlags) |
+                Where-Object { $_.GetParameters().Count -eq 2 }
+            if (-not $script:AppInstallerConstructor) { throw 'The injectable AppInstaller constructor is required; never use the live service.' }
+
+            function Invoke-AppInstallerTestPhase {
+                param([string]$Phase)
+                $method = $script:AppInstallerCommandType.GetMethod($Phase, $script:AppInstallerFlags)
+                if (-not $method) { throw "Unknown AppInstaller lifecycle phase '$Phase'." }
+                $null = $method.Invoke($script:AppInstallerCommand, $null)
+            }
+        }
+
+        BeforeEach {
+            $script:AppInstallerApps = [System.Collections.Generic.List[Shmuelie.Windows.Cmdlets.AppInstallerApplication]]::new()
+            $script:AppInstallerApps.Add([Shmuelie.Windows.Cmdlets.AppInstallerApplication]@{
+                Name = 'Example.App'
+                PackageFullName = 'Example.App_1.2.3.4_x64__publisher'
+                PackageFamilyName = 'Example.App_publisher'
+                Version = '1.2.3.4'
+                AppInstallerUri = 'https://example.com/app.appinstaller'
+            })
+            $script:AppInstallerRequests = [System.Collections.Generic.List[string]]::new()
+            $script:AppInstallerRuntime = [AppInstallerTestRuntime]::new()
+            $script:AppInstallerDiscoveryCount = 0
+            $script:AppInstallerFailure = $false
+            $script:AppInstallerFailureAfter = 0
+            $getApps = [Func[System.Collections.Generic.IReadOnlyList[Shmuelie.Windows.Cmdlets.AppInstallerApplication]]]{
+                $script:AppInstallerDiscoveryCount++
+                return ,$script:AppInstallerApps
+            }
+            $update = [Action[string]]{
+                param($uri)
+                # Completion must not be emitted before the service returns.
+                if ($script:AppInstallerRuntime.Output.Count -ge $script:AppInstallerRequests.Count + 1) {
+                    throw 'Premature request completion.'
+                }
+                $script:AppInstallerRequests.Add($uri)
+                if ($script:AppInstallerFailure -and $script:AppInstallerRequests.Count -gt $script:AppInstallerFailureAfter) {
+                    throw 'Synthetic AppInstaller service failure.'
+                }
+            }
+            $script:AppInstallerCommand = $script:AppInstallerConstructor.Invoke([object[]]@($getApps, $update))
+            $script:AppInstallerCommand.CommandRuntime = $script:AppInstallerRuntime
+            $script:AppInstallerCommand.PassThru.IsPresent | Should -BeFalse
+            $script:AppInstallerCommand.PassThru = $true
+            Invoke-AppInstallerTestPhase BeginProcessing
+        }
+
+        It 'advertises opt-in PassThru, ShouldProcess, and the request result type' {
+            $command = Get-Command 'Shmuelie.Windows\Update-AppInstallerApp' -ListImported
+            $command.CommandType | Should -Be Cmdlet
+            $command.Parameters.PassThru.ParameterType | Should -Be ([System.Management.Automation.SwitchParameter])
+            $command.Parameters.Keys | Should -Contain WhatIf
+            $command.Parameters.Keys | Should -Contain Confirm
+            $command.OutputType.Name | Should -Contain 'Shmuelie.Windows.Cmdlets.AppInstallerUpdateRequestResult'
+        }
+
+        It 'preserves property-name pipeline binding for Name and its identity aliases' {
+            $parameter = (Get-Command 'Shmuelie.Windows\Update-AppInstallerApp' -ListImported).Parameters.Name
+            $parameter.ParameterType | Should -Be ([string[]])
+            $parameter.Attributes.ValueFromPipelineByPropertyName | Should -Contain $true
+            foreach ($alias in 'PackageName', 'PackageFullName', 'PackageFamilyName') {
+                $parameter.Aliases | Should -Contain $alias
+            }
+        }
+
+        It 'matches <Field> and emits completion only after the synthetic service returns' -ForEach @(
+            @{ Field = 'Name' }; @{ Field = 'PackageFullName' }; @{ Field = 'PackageFamilyName' }
+        ) {
+            $script:AppInstallerCommand.Name = @($script:AppInstallerApps[0].$Field.ToUpperInvariant())
+            Invoke-AppInstallerTestPhase ProcessRecord
+            $script:AppInstallerDiscoveryCount | Should -Be 0
+            $script:AppInstallerRuntime.Output | Should -HaveCount 0
+            Invoke-AppInstallerTestPhase EndProcessing
+            $script:AppInstallerRequests | Should -Be @('https://example.com/app.appinstaller')
+            $script:AppInstallerRuntime.PromptCount | Should -Be 1
+            $script:AppInstallerRuntime.Output | Should -HaveCount 1
+            $result = $script:AppInstallerRuntime.Output[0]
+            $result.PSTypeNames[0] | Should -BeExactly 'Shmuelie.Windows.AppInstallerUpdateRequestResult'
+            $result.PackageFullName | Should -BeExactly $script:AppInstallerApps[0].PackageFullName
+            $result.PackageFamilyName | Should -BeExactly $script:AppInstallerApps[0].PackageFamilyName
+            $result.AppInstallerUri | Should -BeExactly 'https://example.com/app.appinstaller'
+            $result.Operation | Should -BeExactly UpdateCheck
+            $result.RequestCompleted | Should -BeTrue
+            $result.PSObject.Properties.Name | Should -Not -Contain ResultingVersion
+            $result.PSObject.Properties.Name | Should -Not -Contain Updated
+        }
+
+        It 'keeps default and explicit PassThru false calls void' {
+            $script:AppInstallerCommand.PassThru = $false
+            Invoke-AppInstallerTestPhase ProcessRecord
+            Invoke-AppInstallerTestPhase EndProcessing
+            $script:AppInstallerRequests | Should -HaveCount 1
+            $script:AppInstallerRuntime.Output | Should -HaveCount 0
+        }
+
+        It 'accumulates multiple requested identities across records and emits per request' {
+            $script:AppInstallerApps.Add([Shmuelie.Windows.Cmdlets.AppInstallerApplication]@{
+                Name = 'Other.App'
+                PackageFullName = 'Other.App_2.0.0.0_x64__publisher'
+                PackageFamilyName = 'Other.App_publisher'
+                AppInstallerUri = 'https://example.com/other.appinstaller'
+            })
+            foreach ($app in $script:AppInstallerApps) {
+                $script:AppInstallerCommand.Name = @($app.PackageFullName)
+                Invoke-AppInstallerTestPhase ProcessRecord
+            }
+            Invoke-AppInstallerTestPhase EndProcessing
+            $script:AppInstallerRuntime.Output | Should -HaveCount 2
+            $script:AppInstallerRequests | Should -HaveCount 2
+        }
+
+        It 'does not emit completion or call the service when ShouldProcess declines' {
+            $script:AppInstallerRuntime.Approve = $false
+            Invoke-AppInstallerTestPhase ProcessRecord
+            Invoke-AppInstallerTestPhase EndProcessing
+            $script:AppInstallerRuntime.PromptCount | Should -Be 1
+            $script:AppInstallerRequests | Should -HaveCount 0
+            $script:AppInstallerRuntime.Output | Should -HaveCount 0
+        }
+
+        It 'never reports an unmatched or disappeared application as completed' {
+            $script:AppInstallerCommand.Name = @('Missing.App')
+            Invoke-AppInstallerTestPhase ProcessRecord
+            Invoke-AppInstallerTestPhase EndProcessing
+            $script:AppInstallerRuntime.PromptCount | Should -Be 0
+            $script:AppInstallerRequests | Should -HaveCount 0
+            $script:AppInstallerRuntime.Output | Should -HaveCount 0
+        }
+
+        It 'never reports an application with a missing URI as completed' {
+            $script:AppInstallerApps.Clear()
+            $script:AppInstallerApps.Add([Shmuelie.Windows.Cmdlets.AppInstallerApplication]@{ Name = 'Example.App' })
+            Invoke-AppInstallerTestPhase ProcessRecord
+            Invoke-AppInstallerTestPhase EndProcessing
+            $script:AppInstallerRuntime.PromptCount | Should -Be 0
+            $script:AppInstallerRequests | Should -HaveCount 0
+            $script:AppInstallerRuntime.Output | Should -HaveCount 0
+        }
+
+        It 'propagates service failures without emitting a completion result' {
+            $script:AppInstallerFailure = $true
+            Invoke-AppInstallerTestPhase ProcessRecord
+            { Invoke-AppInstallerTestPhase EndProcessing } | Should -Throw '*Synthetic AppInstaller service failure*'
+            $script:AppInstallerRequests | Should -HaveCount 1
+            $script:AppInstallerRuntime.Output | Should -HaveCount 0
+        }
+
+        It 'retains earlier completed requests when a later request fails' {
+            $script:AppInstallerApps.Add([Shmuelie.Windows.Cmdlets.AppInstallerApplication]@{
+                Name = 'Other.App'
+                AppInstallerUri = 'https://example.com/other.appinstaller'
+            })
+            $script:AppInstallerFailure = $true
+            $script:AppInstallerFailureAfter = 1
+            Invoke-AppInstallerTestPhase ProcessRecord
+            { Invoke-AppInstallerTestPhase EndProcessing } | Should -Throw '*Synthetic AppInstaller service failure*'
+            $script:AppInstallerRequests | Should -HaveCount 2
+            $script:AppInstallerRuntime.Output | Should -HaveCount 1
+            $script:AppInstallerRuntime.Output[0].Name | Should -BeExactly 'Example.App'
+        }
+}

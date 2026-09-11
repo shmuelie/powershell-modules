@@ -125,7 +125,7 @@ Highlights:
 ## Shmuelie.Windows
 
 Windows-only developer utilities for installed applications, Windows Terminal,
-Windows Performance Recorder, and service host processes. **Version 0.1.2.**
+Windows Performance Recorder, and service host processes. **Version 0.2.0.**
 [README](https://github.com/shmuelie/powershell-modules/blob/main/modules/Shmuelie.Windows/README.md)
 
 Highlights:
@@ -170,7 +170,7 @@ Highlights:
 
 ## Shmuelie.PackageManagement
 
-Provider-neutral package update orchestration. **Version 0.2.0.**
+Provider-neutral package update orchestration. **Version 0.3.0.**
 [README](https://github.com/shmuelie/powershell-modules/blob/main/modules/Shmuelie.PackageManagement/README.md)
 
 `Update-AllPackages` provides provider selection/exclusion, provider-specific
@@ -178,5 +178,11 @@ option tables, lazy dependency discovery, per-target `ShouldProcess`, typed
 results, and optional fail-fast behavior.
 
 See the module README for provider availability and supported options.
-Unavailable or unimplemented integrations report `Skipped` with a reason.
+The Windows-only WinGet provider uses optional Microsoft.WinGet.Client and
+winget.exe 1.8.1911+ dependencies. It accepts source agreements by default,
+including preview discovery; package agreements require explicit Boolean opt-in.
+All eight providers are implemented; unavailable integrations report `Skipped` with a reason.
 Importing the core is portable and does not import optional provider modules.
+The Windows-only AppInstaller adapter lazily uses compiled Shmuelie.Windows
+commands with opt-in request results. Its operation-scoped outcomes report
+completed update-check requests, never inferred application version changes.
