@@ -25,7 +25,7 @@ Import-Module Shmuelie.Git
 | `Get-WorktreePath` | Compute the path a branch's worktree would use for the current or `-Path` repository |
 | `New-Worktree` | Create a branch from the current or `-Path` repository and enter its worktree; optional destination `-WorktreePath`, or `-NoSetLocation` to stay |
 | `Add-Worktree` | Check out an existing branch from the current or `-Path` repository and enter its worktree; optional destination `-WorktreePath`, or `-NoSetLocation` to stay |
-| `Remove-Worktree` | Remove a worktree by branch name or path (optionally deleting its branch) |
+| `Remove-Worktree` | Remove a worktree by branch name or path and delete its local branch by default (`-KeepBranch` opts out) |
 | `Move-Worktree` | Move a linked worktree by branch name or path to a new filesystem location |
 | `Set-Worktree` | Switch to a worktree by branch name or path |
 | `Remove-StaleWorktree` | Prune stale worktree administrative entries for deleted worktree directories |
@@ -87,6 +87,7 @@ Update-Worktrees -ChangedOnly
 Update-AllWorktrees -Organization shmuelie,microsoft -Exclude 'archive/*'
 Update-AllWorktrees -Organization shmuelie -ChangedOnly
 Find-StaleBranch | Remove-Worktree
+Remove-Worktree -BranchName feature/paused -KeepBranch
 Get-GitStatusSummary
 Get-Branch -Path ../project -Local
 Get-GitTag -Name 'v1.*', 'stable' -Path ../project
@@ -104,6 +105,30 @@ Restore-Items -Files 'src/main.ps1', 'notes with spaces.txt' -WhatIf
 Restore-Items 'src/main.ps1' -IncludeIndex -Confirm:$false
 Restore-Items -Files 'src' -Source HEAD~1 -Path ../project
 ```
+
+### Remove-Worktree migration
+
+`Remove-Worktree` now deletes the backing **local branch by default**, but only
+after the worktree is successfully removed. Branch deletion retains the previous
+`git branch -D` behavior: **unmerged branches are also deleted**, so preserve
+unfinished work with `-KeepBranch`. Detached worktrees never delete a branch,
+and no remote branch is changed.
+
+Scripts that previously omitted `-RemoveBranch` to keep branches must now add
+`-KeepBranch`. Existing `-RemoveBranch` calls remain valid and can omit that
+redundant switch. Explicit `-RemoveBranch:$false` still preserves the branch;
+prefer `-KeepBranch` for new code. Enabling both switches is an error before any
+removal. False-valued switches are not conflicting requests.
+
+High-impact confirmation protects worktree removal and branch deletion
+separately. Declining removal preserves both; accepting removal but declining
+branch deletion keeps the branch. `-WhatIf` previews both stages without mutation
+(only worktree removal when keeping the branch or targeting a detached worktree).
+Use `-Confirm:$false` explicitly for unattended execution. `-Force` still passes
+exactly one `--force` to `git worktree remove`; it does not suppress confirmation
+or retry a failure with additional force. A failed removal always keeps the branch.
+
+### Other command behavior
 
 `Remove-Branch` accepts an exact branch name or `refs/heads/<name>`, not wildcard
 patterns, revision expressions or remote-tracking refs. It uses Git's safe local

@@ -58,6 +58,22 @@ The temporary compatibility switch `-SetLocation` still works; explicit
 Do not combine the two switches, even when false. Failed creation and `-WhatIf`
 never change location.
 
+### Removing worktrees: migration
+
+`Remove-Worktree` now removes the backing local branch after successful worktree
+removal by default. This retains its previous `git branch -D` cleanup semantics,
+including deletion of unmerged branches. Add `-KeepBranch` to scripts that
+previously omitted `-RemoveBranch` in order to preserve unfinished work.
+Existing `-RemoveBranch` calls still work, and `-RemoveBranch:$false` still keeps
+the branch. Enabling both `-KeepBranch` and `-RemoveBranch` is rejected.
+
+Worktree removal and branch deletion have separate high-impact confirmations;
+`-Confirm:$false` is the explicit unattended opt-in. `-WhatIf` previews the planned
+operations and changes neither resource. Detached worktrees never delete branches,
+failed or declined worktree removal preserves the branch, and no remote branch
+is deleted. `-Force` keeps its existing single-`--force` worktree behavior without
+bypassing confirmation or escalating after a failure.
+
 ## Shmuelie.Copilot
 
 GitHub Copilot CLI sessions, plugins, marketplaces, MCP servers, and the
