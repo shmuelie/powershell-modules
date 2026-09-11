@@ -23,8 +23,8 @@ Import-Module Shmuelie.Git
 | `Set-Config` | Set one literal git configuration value with `-Location local` (default), `global` or `system`; supports `-Path`, `-WhatIf` and `-Confirm` |
 | `Get-CurrentWorktree` / `Get-RootWorktree` | Resolve the worktree for the current directory/`-Path` or the repository root |
 | `Get-WorktreePath` | Compute the path a branch's worktree would use for the current or `-Path` repository |
-| `New-Worktree` | Create a branch from the current or `-Path` repository and check it out to a worktree, optionally at destination `-WorktreePath` |
-| `Add-Worktree` | Check out an existing branch from the current or `-Path` repository to a worktree, optionally at destination `-WorktreePath` |
+| `New-Worktree` | Create a branch from the current or `-Path` repository and enter its worktree; optional destination `-WorktreePath`, or `-NoSetLocation` to stay |
+| `Add-Worktree` | Check out an existing branch from the current or `-Path` repository and enter its worktree; optional destination `-WorktreePath`, or `-NoSetLocation` to stay |
 | `Remove-Worktree` | Remove a worktree by branch name or path (optionally deleting its branch) |
 | `Move-Worktree` | Move a linked worktree by branch name or path to a new filesystem location |
 | `Set-Worktree` | Switch to a worktree by branch name or path |
@@ -58,11 +58,29 @@ Set-PSReadLineOption -PredictionSource HistoryAndPlugin -PredictionViewStyle Lis
 Suggestions use substring (not prefix) matching, so a middle fragment like `wim`
 surfaces `user/alex/wim-work`.
 
+## Worktree creation: navigation and migration
+
+**Breaking change:** `New-Worktree` and `Add-Worktree` now enter the successfully
+created worktree by default, matching `New-Repository`. This also applies when
+`-Path` selects a repository other than the caller's current directory.
+`-WorktreePath` accepts a literal destination; relative destinations are resolved
+from the source repository path. Failed creation, `-WhatIf` and declined
+confirmation leave the caller's location unchanged.
+
+Scripts that previously omitted `-SetLocation` to stay in their current directory
+must add `-NoSetLocation`. Existing `-SetLocation` callers continue to navigate
+during the temporary compatibility period and can simply remove that switch.
+Explicit `-SetLocation:$false` continues to preserve location; migrate those calls
+to `-NoSetLocation`. `-NoSetLocation:$false` uses the new navigation default.
+The two switches are mutually exclusive at parameter binding, even if either or
+both are explicitly false.
+
 ## Examples
 
 ```powershell
 New-Repository https://github.com/owner/repo
-New-Worktree -WorkName my-feature -SetLocation
+New-Worktree -WorkName my-feature
+New-Worktree -WorkName background-task -NoSetLocation
 Add-Worktree -BranchName feature/my-feature -WorktreePath ../custom-feature
 Move-Worktree -BranchName feature/my-feature -DestinationPath ../moved-feature
 Update-Worktrees -ChangedOnly
