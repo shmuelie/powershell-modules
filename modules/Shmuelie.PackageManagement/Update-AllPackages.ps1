@@ -13,9 +13,12 @@ function Update-AllPackages {
         PSResourceGet updates configured module roots using Shmuelie.Utilities;
         no configured roots produces Skipped instead of scanning PSModulePath.
 
-        Each integration discovers targets without mutation. ShouldProcess
+        Each integration discovers targets without updating packages. ShouldProcess
         gates each target's update callback. WhatIf runs only discovery and
         returns Planned results; it never invokes an update callback.
+        WinGet discovery implicitly accepts source agreements and may refresh
+        source caches under WinGet policy, including during WhatIf. Package
+        agreements require explicit AcceptPackageAgreements Boolean true.
 
         Provider failures, including nonterminating errors, are returned as
         typed Failed results rather than terminating independent providers.
@@ -37,6 +40,9 @@ function Update-AllPackages {
         Pip accepts Boolean User (default false) and TopLevelOnly (default
         true). User filters discovery and observation, not the installation
         destination; the existing updater has no user-install option.
+        WinGet accepts Source, Include and Exclude package-ID wildcards, and
+        Boolean AcceptPackageAgreements (default false). Source is one existing
+        source name, not a wildcard or URL.
     .PARAMETER StopOnFailure
         Stop after the first failing callback, before another target or
         provider starts. Preserve all results produced by that callback.

@@ -5,6 +5,13 @@ under [Unreleased]; versions change only when a release is cut.
 
 ## [Unreleased]
 
+### Added
+- Windows-only WinGet provider with optional structured Client discovery,
+  source-bound per-package confirmation, ID include/exclude filters, observed
+  installed versions and explicit native error/no-update handling. Source
+  agreements are accepted by default, including discovery; package agreements
+  require an explicit Boolean opt-in. Missing supported dependencies skip.
+
 ## [0.2.0] - 2026-09-10
 
 ### Added

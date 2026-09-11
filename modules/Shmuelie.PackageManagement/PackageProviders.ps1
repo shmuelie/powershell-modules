@@ -28,6 +28,10 @@ function Get-PackageProvider {
             Get-VSCodePackageProvider
             continue
         }
+        if ($name -eq 'WinGet') {
+            Get-WinGetPackageProvider
+            continue
+        }
         [pscustomobject]@{
             Name             = $name
             Platforms        = if ($name -in 'WinGet', 'AppInstaller') { @('Windows') } else { @('Windows', 'Linux', 'MacOS') }
