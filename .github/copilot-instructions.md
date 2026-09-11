@@ -28,7 +28,7 @@ modules/<Module>/
 └── CHANGELOG.md      # Keep a Changelog; [Unreleased] holds pending work
 modules/Shmuelie.Git/Predictor/   # C# source for the bundled predictor
 build/                            # Build-Module / Test-Modules / Invoke-Tests / Publish-Module
-tests/<Module>.Tests.ps1          # Pester v5, imports the module from source
+tests/<Module>.Tests.ps1          # Pester v6, imports the module from source
 docs/                             # Markdown docs site (contributing, modules, installation)
 ```
 
@@ -112,7 +112,7 @@ gh issue create --repo shmuelie/bash-scripts --label upstream-parity `
 
 ## Testing
 
-- One Pester v5 file per module: `tests/<Module>.Tests.ps1`. Each imports its
+- One Pester v6 file per module: `tests/<Module>.Tests.ps1`. Each imports its
   module directly from source (`modules/<Module>/<Module>.psd1`) — no build step.
 - **Every new cmdlet and every behavioral change ships with tests in the same
   PR.** Add a `Describe` for a new cmdlet or extend the existing one.
@@ -121,12 +121,19 @@ gh issue create --repo shmuelie/bash-scripts --label upstream-parity `
   `It ... -ForEach` cases for pure formatters/helpers. Only reach for real
   external tools (e.g. a temporary `git` repo) when behavior can't be exercised
   another way.
+- Use stable Pester 6.2 or later within major version 6. Parameter-filtered mocks
+  must cover every expected call; unmatched calls fail instead of invoking the
+  original command. Prefer explicit cases and fail-closed stubs. Never add a
+  fallback that runs real package, credential, or deployment operations.
+- For command discovery, capture required metadata from loaded source commands
+  before mocking and return it only for allowlisted names. Do not use a blanket
+  successful discovery mock to hide missing dependencies.
 
 ## Validate before opening a PR
 
 ```powershell
 .\build\Test-Modules.ps1   # build, manifest validation, import/remove, forbidden-marker scan
-.\build\Invoke-Tests.ps1   # full suite (installs Pester >=5.2.0 and <6.0.0 if needed)
+.\build\Invoke-Tests.ps1   # full Pester suite using the shared framework policy
 ```
 
 Run the smallest relevant slice while iterating

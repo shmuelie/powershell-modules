@@ -1,4 +1,4 @@
-#Requires -Modules @{ ModuleName = 'Pester'; ModuleVersion = '5.2.0' }
+#Requires -Modules @{ ModuleName = 'Pester'; ModuleVersion = '6.2.0' }
 
 BeforeDiscovery {
     $repoRoot = Split-Path (Split-Path $PSCommandPath -Parent) -Parent
@@ -78,6 +78,15 @@ Describe 'PSResourceGet package provider' {
             Export-ModuleMember -Function Find-PSResource, Save-PSResource, Get-PSResourceRepository
         }
         Import-Module $script:PSResourceStub -Global -Force
+        $script:PSResourceDependencyCommands = @{}
+        foreach ($name in 'Find-PSResource', 'Save-PSResource', 'Get-PSResourceRepository') {
+            $qualifiedName = "Microsoft.PowerShell.PSResourceGet\$name"
+            $script:PSResourceDependencyCommands[$qualifiedName] = Get-Command $qualifiedName -ListImported -ErrorAction Stop
+        }
+        $script:PSResourceDependencyModules = @{
+            'Microsoft.PowerShell.PSResourceGet' = $script:PSResourceStub
+            'Shmuelie.Utilities' = Get-Module Shmuelie.Utilities
+        }
 
         function New-PSResourceProviderTestLayout {
             param($Root, $Name, $Version = '1.0.0', $Repository = 'FeedA', $Prerelease = '', $RepositorySourceLocation = '')
@@ -120,6 +129,12 @@ Describe 'PSResourceGet package provider' {
         Mock Get-Command -ModuleName Shmuelie.PackageManagement { $script:CanonicalPSResourceCommand } -ParameterFilter {
             $Name -eq 'Shmuelie.Utilities\Update-InstalledPSResource'
         }
+        Mock Get-Command -ModuleName Shmuelie.PackageManagement {
+            $script:PSResourceDependencyCommands[$Name[0]]
+        } -ParameterFilter { $Name.Count -eq 1 -and $script:PSResourceDependencyCommands.ContainsKey($Name[0]) }
+        Mock Get-Module -ModuleName Shmuelie.PackageManagement {
+            $script:PSResourceDependencyModules[$Name[0]]
+        } -ParameterFilter { $Name.Count -eq 1 -and $script:PSResourceDependencyModules.ContainsKey($Name[0]) }
         Mock Find-PSResource -ModuleName Shmuelie.Utilities { [pscustomobject]@{ Version = '2.0.0' } }
         Mock Save-PSResource -ModuleName Shmuelie.Utilities {
             New-PSResourceProviderTestLayout -Root $Path -Name $Name -Version (($Version -split '-', 2)[0]) `
@@ -134,6 +149,8 @@ Describe 'PSResourceGet package provider' {
         $descriptor.OptionNames | Should -Be @('Path', 'Name', 'Exclude', 'Repository')
         $descriptor.RequiredModules | Should -Be @('Microsoft.PowerShell.PSResourceGet', 'Shmuelie.Utilities')
         Should -Invoke Import-Module -ModuleName Shmuelie.PackageManagement -Times 0 -Exactly
+        Should -Invoke Get-Command -ModuleName Shmuelie.PackageManagement -Times 0 -Exactly
+        Should -Invoke Get-Module -ModuleName Shmuelie.PackageManagement -Times 0 -Exactly
     }
 
     It 'skips missing <Dependency> without discovery or mutation' -ForEach @(
@@ -405,6 +422,10 @@ Describe 'DotNet package provider' {
             & $script:DotNetTestModule {
                 function script:dotnet { throw 'Real .NET tool operations are forbidden in these tests.' }
             }
+            $script:DotNetDependencyCommands = @{}
+            foreach ($name in 'dotnet', 'Shmuelie.DotNet\Get-DotNetTool', 'Shmuelie.DotNet\Update-DotNetTool') {
+                $script:DotNetDependencyCommands[$name] = Get-Command $name -ListImported -ErrorAction Stop
+            }
             function New-TestDotNetTool {
                 param([string]$Name = 'example.tool', [AllowNull()][string]$Version = '1.0.0')
                 [pscustomobject]@{ PSTypeName = 'DotNetTool'; PackageId = $Name; Version = $Version; Commands = 'example'; Global = $true }
@@ -425,6 +446,9 @@ Describe 'DotNet package provider' {
             $script:ToolVersion = '1.0.0'
             Mock Get-Module { [pscustomobject]@{ Name = 'Shmuelie.DotNet' } } -ParameterFilter { $Name -eq 'Shmuelie.DotNet' }
             Mock Import-Module { } -ParameterFilter { $Name -eq 'Shmuelie.DotNet' }
+            Mock Get-Command {
+                $script:DotNetDependencyCommands[$Name[0]]
+            } -ParameterFilter { $Name.Count -eq 1 -and $script:DotNetDependencyCommands.ContainsKey($Name[0]) }
             Mock dotnet { '8.0.412 [synthetic SDK]' }
             Mock Shmuelie.DotNet\Get-DotNetTool { New-TestDotNetTool -Version $script:ToolVersion }
             Mock Shmuelie.DotNet\Update-DotNetTool {
@@ -449,6 +473,8 @@ Describe 'DotNet package provider' {
             $catalog[1].Update | Should -BeOfType ([scriptblock])
             Should -Invoke dotnet -Times 0 -Exactly
             Should -Invoke Import-Module -Times 0 -Exactly
+            Should -Invoke Get-Command -Times 0 -Exactly
+            Should -Invoke Get-Module -Times 0 -Exactly
         }
 
         It 'skips a missing canonical module without calling native tools' {
@@ -2328,6 +2354,13 @@ Describe 'VSCode package provider' {
             }
 
             InModuleScope Shmuelie.PackageManagement {
+                BeforeAll {
+                    $script:VSCodeDependencyCommands = @{}
+                    foreach ($name in 'Shmuelie.Utilities\Get-VsCodeExtension', 'Shmuelie.Utilities\Update-VsCodeExtension') {
+                        $script:VSCodeDependencyCommands[$name] = Get-Command $name -ListImported -ErrorAction Stop
+                    }
+                }
+
                 BeforeEach {
                     $script:VSCodeOriginalExitCode = Get-Variable LASTEXITCODE -Scope Global -ErrorAction Ignore
                     $script:VSCodeOriginalExitCodeValue = if ($script:VSCodeOriginalExitCode) { $script:VSCodeOriginalExitCode.Value } else { $null }
@@ -2339,6 +2372,9 @@ Describe 'VSCode package provider' {
                     $script:VSCodeInventoryMode = 'Normal'
                     Mock Import-Module { } -ParameterFilter { $Name -eq 'Shmuelie.Utilities' }
                     Mock Get-Command { [pscustomobject]@{ Source = 'Invoke-VSCodeTestNative' } } -ParameterFilter { $Name -eq 'code' }
+                    Mock Get-Command {
+                        $script:VSCodeDependencyCommands[$Name[0]]
+                    } -ParameterFilter { $Name.Count -eq 1 -and $script:VSCodeDependencyCommands.ContainsKey($Name[0]) }
                     Mock Get-Command -ModuleName Shmuelie.Utilities { [pscustomobject]@{ Source = 'Invoke-VSCodeTestNative' } } -ParameterFilter { $Name -eq 'code' }
                     Mock Invoke-VSCodeTestNative -ModuleName Shmuelie.Utilities {
                         param($ArgumentList)
@@ -2379,6 +2415,7 @@ Describe 'VSCode package provider' {
                     $descriptor.RequiredModules | Should -Be @('Shmuelie.Utilities')
                     $descriptor.GetTargets | Should -BeOfType ([scriptblock])
                     Should -Invoke Get-Command -Times 0 -Exactly -ParameterFilter { $Name -eq 'code' }
+                    Should -Invoke Get-Command -Times 0 -Exactly
                     Should -Invoke Import-Module -Times 0 -Exactly
                 }
 
@@ -2603,6 +2640,7 @@ Describe 'WinGet package provider' {
                 Export-ModuleMember -Function Get-WinGetPackage
             }
             Import-Module $script:WinGetTestStub
+            $script:WinGetDiscoveryCommand = Get-Command 'Microsoft.WinGet.Client\Get-WinGetPackage' -ListImported -ErrorAction Stop
             function script:Invoke-WinGetTest.exe {
                 param([Parameter(ValueFromRemainingArguments)][string[]]$ArgumentList)
                 throw 'Unmocked native WinGet is forbidden.'
@@ -2635,6 +2673,9 @@ Describe 'WinGet package provider' {
             Mock Get-Command {
                 [pscustomobject]@{ Path = 'Invoke-WinGetTest.exe' }
             } -ParameterFilter { $Name -eq 'winget.exe' -and $CommandType -eq 'Application' }
+            Mock Get-Command {
+                $script:WinGetDiscoveryCommand
+            } -ParameterFilter { $Name.Count -eq 1 -and $Name[0] -eq 'Microsoft.WinGet.Client\Get-WinGetPackage' }
             Mock Invoke-WinGetTest.exe {
                 param($ArgumentList)
                 $script:WinGetNativeCalls.Add(@($ArgumentList))
@@ -2956,6 +2997,7 @@ Describe 'WinGet package provider' {
 Describe 'AppInstaller package provider' {
     InModuleScope Shmuelie.PackageManagement {
         BeforeAll {
+            $script:AppInstallerTestManifest = [IO.Path]::ChangeExtension((Get-Module Shmuelie.PackageManagement).Path, '.psd1')
             $script:AppInstallerOriginalModules = @(Get-Module Shmuelie.Windows)
             $script:AppInstallerStub = New-Module -Name Shmuelie.Windows -ScriptBlock {
                 function Get-AppInstallerApp {
@@ -3206,7 +3248,7 @@ Describe 'AppInstaller package provider' {
             @{ Answer = 'n'; Status = 'Skipped'; Count = 0 }
             @{ Answer = 'y'; Status = 'Updated'; Count = 1 }
         ) {
-            $manifest = [IO.Path]::ChangeExtension((Get-Module Shmuelie.PackageManagement).Path, '.psd1')
+            $manifest = $script:AppInstallerTestManifest
             $child = @'
 $ErrorActionPreference = 'Stop'
 $env:PSModulePath = Join-Path $PSHOME 'Modules'
