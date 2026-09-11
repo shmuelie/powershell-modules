@@ -7,10 +7,9 @@ Provider-neutral package update orchestration for PowerShell 7.4+.
 ## Provider availability
 
 The ordered catalog contains `PSResourceGet`, `DotNet`, `Npm`, `Pip`, `Uv`,
-`VSCode`, `WinGet`, and `AppInstaller`. The six portable providers and Windows-only
-**WinGet** are implemented. **AppInstaller** remains separate follow-up work and
-reports explicit `Skipped` results. Unavailable dependencies also skip, never
-report successful updates.
+`VSCode`, `WinGet`, and `AppInstaller`. All eight providers are implemented;
+**WinGet** and **AppInstaller** are Windows-only.
+Unavailable dependencies also skip, never report successful updates.
 
 No provider modules are required at import time. Windows-only providers are
 gated before dependency discovery on Linux and macOS.
@@ -369,6 +368,45 @@ or observed version produces `Failed` rather than assuming the version changed.
 Official uv references: [CLI flags](https://docs.astral.sh/uv/reference/cli/#uv-tool-list),
 [tool upgrade semantics](https://docs.astral.sh/uv/concepts/tools/#upgrading-tools),
 and [tool list output implementation](https://github.com/astral-sh/uv/blob/main/crates/uv/src/commands/tool/list.rs).
+
+## App Installer update-check requests
+
+AppInstaller requires Windows and the optional `Shmuelie.Windows` module with
+compiled `Get-AppInstallerApp` and `Update-AppInstallerApp -PassThru` cmdlets.
+Install the module separately; nothing is installed automatically. Unsupported
+platforms skip before dependency discovery or loading. Missing modules/compiled
+commands skip, and an older updater without `PassThru` skips with upgrade and
+new-session guidance before enumeration. Import failures remain failures.
+There are no provider options.
+
+```powershell
+Update-AllPackages -Provider AppInstaller -WhatIf
+Update-AllPackages -Provider AppInstaller -Confirm:$false
+```
+
+Discovery lists the current user's AppInstaller-managed registrations, not a
+proven outdated set. Targets are `update-check:<PackageFullName>`, preserving
+the exact versioned registration identity (including publisher/architecture),
+not a display name. The full name is piped through canonical property-name
+binding to avoid accidentally selecting other registrations with the same
+name. The canonical updater re-enumerates before processing each request.
+
+Aggregate confirmation is once per target, followed by the canonical command
+with `-PassThru -Confirm:$false`. **`Updated` means only that the App Installer
+update-check request operation completed without a service error**. It does
+not mean an application was installed, upgraded, or found current.
+`ResultingVersion` is always null; `PreviousVersion` is the discovery-time
+version, or null. Completed rows include `Operation = UpdateCheck`,
+`RequestCompleted = true`, `PackageFullName`, `PackageFamilyName`, and the
+actual `AppInstallerUri` used by the canonical request.
+
+Missing, malformed, or mismatched completion evidence returns `Failed`, including
+a registration that disappears between discovery and the request. An empty
+initial inventory returns provider-level `Unchanged`. Original errors remain
+failure records; independent applications continue unless `-StopOnFailure`
+is set. `-WhatIf` only enumerates and emits `Planned` operation targets: it never
+invokes the updater or initiates update checks. No post-update inventory is
+used to infer request completion or installed-version changes.
 
 ## Output
 

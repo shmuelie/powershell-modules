@@ -12,6 +12,10 @@ function Update-AllPackages {
         Unimplemented or unavailable integrations report Skipped.
         PSResourceGet updates configured module roots using Shmuelie.Utilities;
         no configured roots produces Skipped instead of scanning PSModulePath.
+        AppInstaller is Windows-only and requires the compiled Shmuelie.Windows
+        updater with PassThru. Its update-check targets report completed
+        requests, not application installation or version changes; resulting
+        versions remain null. It accepts no provider options.
 
         Each integration discovers targets without updating packages. ShouldProcess
         gates each target's update callback. WhatIf runs only discovery and

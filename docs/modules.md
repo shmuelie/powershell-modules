@@ -183,3 +183,6 @@ winget.exe 1.8.1911+ dependencies. It accepts source agreements by default,
 including preview discovery; package agreements require explicit Boolean opt-in.
 Unavailable or unimplemented integrations report `Skipped` with a reason.
 Importing the core is portable and does not import optional provider modules.
+The Windows-only AppInstaller adapter lazily uses compiled Shmuelie.Windows
+commands with opt-in request results. Its operation-scoped outcomes report
+completed update-check requests, never inferred application version changes.
