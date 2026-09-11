@@ -2591,6 +2591,350 @@ Describe 'VSCode package provider' {
             }
         }
 
+Describe 'AppInstaller package provider' {
+    InModuleScope Shmuelie.PackageManagement {
+        BeforeAll {
+            $script:AppInstallerOriginalModules = @(Get-Module Shmuelie.Windows)
+            $script:AppInstallerStub = New-Module -Name Shmuelie.Windows -ScriptBlock {
+                function Get-AppInstallerApp {
+                    [CmdletBinding()]
+                    param()
+                    throw 'Unmocked AppInstaller discovery is forbidden.'
+                }
+                function Update-AppInstallerApp {
+                    [CmdletBinding(SupportsShouldProcess)]
+                    param(
+                        [Parameter(ValueFromPipelineByPropertyName)]
+                        [Alias('PackageName', 'PackageFullName', 'PackageFamilyName')]
+                        [string[]]$Name,
+                        [switch]$PassThru
+                    )
+                    process { throw 'Unmocked AppInstaller mutation is forbidden.' }
+                }
+                Export-ModuleMember -Function Get-AppInstallerApp, Update-AppInstallerApp
+            }
+            # Install the fail-closed boundary in the same module scope in which
+            # the qualified Pester mocks are registered.
+            Import-Module $script:AppInstallerStub -Scope Local -Force -ErrorAction Stop
+
+            function New-AppInstallerTestApplication {
+                param([string]$Name = 'Example.App', [string]$Version = '1.2.3.4')
+                [pscustomobject]@{
+                    PSTypeName = 'Shmuelie.Windows.AppInstallerApplication'
+                    Name = $Name
+                    PackageFullName = "${Name}_1.2.3.4_x64__publisher"
+                    PackageFamilyName = "${Name}_publisher"
+                    AppInstallerUri = "https://example.com/$Name.appinstaller"
+                    Version = $Version
+                }
+            }
+
+            function New-AppInstallerTestRequest {
+                param($Application)
+                [pscustomobject]@{
+                    PSTypeName = 'Shmuelie.Windows.AppInstallerUpdateRequestResult'
+                    Name = $Application.Name
+                    PackageFullName = $Application.PackageFullName
+                    PackageFamilyName = $Application.PackageFamilyName
+                    AppInstallerUri = $Application.AppInstallerUri
+                    Operation = 'UpdateCheck'
+                    RequestCompleted = $true
+                }
+            }
+        }
+
+        AfterAll {
+            if ($script:AppInstallerStub) {
+                Remove-Module -ModuleInfo $script:AppInstallerStub -Force -ErrorAction Stop
+            }
+            foreach ($module in $script:AppInstallerOriginalModules) {
+                Import-Module $module -Scope Local -ErrorAction Stop
+            }
+        }
+
+        BeforeEach {
+            $script:AppInstallerApps = @(New-AppInstallerTestApplication)
+            $script:AppInstallerCalls = [System.Collections.Generic.List[string]]::new()
+            Mock Get-PackageProviderPlatform { 'Windows' }
+            Mock Import-Module {} -ParameterFilter { $Name -eq 'Shmuelie.Windows' }
+            Mock Get-Module { [pscustomobject]@{ Name = 'Shmuelie.Windows' } } -ParameterFilter { $Name -eq 'Shmuelie.Windows' }
+            Mock Get-Command {
+                [pscustomobject]@{ CommandType = 'Cmdlet'; Parameters = @{ PassThru = $true } }
+            } -ParameterFilter { $Name -like 'Shmuelie.Windows\*AppInstallerApp' }
+            Mock Shmuelie.Windows\Get-AppInstallerApp { $script:AppInstallerApps }
+            Mock Shmuelie.Windows\Update-AppInstallerApp {
+                param($Name)
+                $script:AppInstallerCalls.Add($Name[0])
+                New-AppInstallerTestRequest ($script:AppInstallerApps | Where-Object PackageFullName -EQ $Name[0])
+            }
+        }
+
+        It 'keeps the eight descriptors ordered and AppInstaller discovery side-effect-free' {
+            $catalog = @(Get-PackageProvider)
+            $catalog.Name | Should -Be @('PSResourceGet', 'DotNet', 'Npm', 'Pip', 'Uv', 'VSCode', 'WinGet', 'AppInstaller')
+            $descriptor = $catalog | Where-Object Name -EQ AppInstaller
+            $descriptor.Platforms | Should -Be @('Windows')
+            $descriptor.RequiredModules | Should -Be @('Shmuelie.Windows')
+            $descriptor.RequiredCommands | Should -Be @('Shmuelie.Windows\Get-AppInstallerApp', 'Shmuelie.Windows\Update-AppInstallerApp')
+            $descriptor.OptionNames | Should -HaveCount 0
+            $descriptor.GetTargets | Should -BeOfType ([scriptblock])
+            $descriptor.Update | Should -BeOfType ([scriptblock])
+            Should -Invoke Get-Module -Times 0 -Exactly
+            Should -Invoke Get-Command -Times 0 -Exactly
+            Should -Invoke Import-Module -Times 0 -Exactly
+        }
+
+        It 'reports only a completed request, preserving exact identity and unknown resulting version' {
+            $result = Update-AllPackages -Provider AppInstaller -Confirm:$false
+            if ($result.Error) { throw $result.Error }
+            $result.PSTypeNames[0] | Should -BeExactly 'Shmuelie.PackageManagement.UpdateResult'
+            $result.Provider | Should -BeExactly 'AppInstaller'
+            $result.Target | Should -BeExactly "update-check:$($script:AppInstallerApps[0].PackageFullName)"
+            $result.Status | Should -BeExactly Updated
+            $result.PreviousVersion | Should -BeExactly '1.2.3.4'
+            $result.ResultingVersion | Should -BeNullOrEmpty
+            $result.RequestCompleted | Should -BeTrue
+            $result.Operation | Should -BeExactly UpdateCheck
+            $result.PackageFamilyName | Should -BeExactly $script:AppInstallerApps[0].PackageFamilyName
+            $result.Reason | Should -Match 'does not establish an installation'
+            $script:AppInstallerCalls | Should -Be @($script:AppInstallerApps[0].PackageFullName)
+            Should -Invoke Shmuelie.Windows\Update-AppInstallerApp -Times 1 -Exactly -ParameterFilter {
+                $PassThru -and $PesterBoundParameters.ContainsKey('Confirm') -and -not $Confirm -and $ErrorAction -eq 'Stop'
+            }
+        }
+
+        It 'preserves absent previous versions as null' {
+            $script:AppInstallerApps[0].Version = $null
+            $result = Update-AllPackages -Provider AppInstaller -Confirm:$false
+            $result.Status | Should -BeExactly Updated
+            $result.PreviousVersion | Should -BeNullOrEmpty
+            $result.ResultingVersion | Should -BeNullOrEmpty
+        }
+
+        It 'discovers under WhatIf but never invokes a mutating boundary' {
+            Mock Shmuelie.Windows\Update-AppInstallerApp { throw 'Mutation under preview.' }
+            $result = Update-AllPackages -Provider AppInstaller -WhatIf
+            $result.Status | Should -BeExactly Planned
+            $result.Target | Should -BeExactly "update-check:$($script:AppInstallerApps[0].PackageFullName)"
+            $result.ResultingVersion | Should -BeNullOrEmpty
+            Should -Invoke Shmuelie.Windows\Get-AppInstallerApp -Times 1 -Exactly
+            Should -Invoke Shmuelie.Windows\Update-AppInstallerApp -Times 0 -Exactly
+        }
+
+        It 'skips <Platform> before dependency discovery or loading' -ForEach @(
+            @{ Platform = 'Linux' }; @{ Platform = 'MacOS' }
+        ) {
+            Mock Get-PackageProviderPlatform { $Platform }
+            $result = Update-AllPackages -Provider AppInstaller
+            $result.Status | Should -BeExactly Skipped
+            $result.Reason | Should -Match $Platform
+            Should -Invoke Get-Module -Times 0 -Exactly
+            Should -Invoke Import-Module -Times 0 -Exactly
+            Should -Invoke Get-Command -Times 0 -Exactly
+            Should -Invoke Shmuelie.Windows\Get-AppInstallerApp -Times 0 -Exactly
+            Should -Invoke Shmuelie.Windows\Update-AppInstallerApp -Times 0 -Exactly
+        }
+
+        It 'skips missing Windows modules without auto-installing anything' {
+            Mock Get-Module { $null } -ParameterFilter { $Name -eq 'Shmuelie.Windows' }
+            $result = Update-AllPackages -Provider AppInstaller
+            $result.Status | Should -BeExactly Skipped
+            $result.Reason | Should -Match 'Install.*Shmuelie.Windows'
+            Should -Invoke Import-Module -Times 0 -Exactly
+            Should -Invoke Shmuelie.Windows\Get-AppInstallerApp -Times 0 -Exactly
+        }
+
+        It 'skips missing compiled commands' {
+            Mock Get-Command { $null } -ParameterFilter { $Name -eq 'Shmuelie.Windows\Get-AppInstallerApp' }
+            $result = Update-AllPackages -Provider AppInstaller
+            $result.Status | Should -BeExactly Skipped
+            $result.Reason | Should -Match 'Get-AppInstallerApp'
+            Should -Invoke Shmuelie.Windows\Get-AppInstallerApp -Times 0 -Exactly
+        }
+
+        It 'skips script implementations rather than treating them as compiled cmdlets' {
+            Mock Get-Command {
+                [pscustomobject]@{ CommandType = 'Function'; Parameters = @{ PassThru = $true } }
+            } -ParameterFilter { $Name -eq 'Shmuelie.Windows\Update-AppInstallerApp' }
+            $result = Update-AllPackages -Provider AppInstaller
+            $result.Status | Should -BeExactly Skipped
+            $result.Reason | Should -Match 'compiled'
+            Should -Invoke Shmuelie.Windows\Get-AppInstallerApp -Times 0 -Exactly
+        }
+
+        It 'skips older loaded cmdlets before enumeration with upgrade guidance' {
+            Mock Get-Command {
+                [pscustomobject]@{ CommandType = 'Cmdlet'; Parameters = @{} }
+            } -ParameterFilter { $Name -eq 'Shmuelie.Windows\Update-AppInstallerApp' }
+            $result = Update-AllPackages -Provider AppInstaller
+            $result.Status | Should -BeExactly Skipped
+            $result.Reason | Should -Match 'Upgrade.*new PowerShell session.*PassThru'
+            Should -Invoke Shmuelie.Windows\Get-AppInstallerApp -Times 0 -Exactly
+            Should -Invoke Shmuelie.Windows\Update-AppInstallerApp -Times 0 -Exactly
+        }
+
+        It 'surfaces import failures rather than dependency skips' {
+            Mock Import-Module { throw 'Bad Windows assembly.' } -ParameterFilter { $Name -eq 'Shmuelie.Windows' }
+            $result = Update-AllPackages -Provider AppInstaller
+            $result.Status | Should -BeExactly Failed
+            $result.Error.Exception.Message | Should -Match 'Bad Windows assembly'
+        }
+
+        It 'reports an empty managed-app set without mutating' {
+            $script:AppInstallerApps = @()
+            $result = Update-AllPackages -Provider AppInstaller
+            $result.Status | Should -BeExactly Unchanged
+            Should -Invoke Shmuelie.Windows\Update-AppInstallerApp -Times 0 -Exactly
+        }
+
+        It 'rejects provider options before any discovery' {
+            { Update-AllPackages -Provider AppInstaller -ProviderOptions @{ AppInstaller = @{ Name = '*' } } } | Should -Throw '*Unknown option*'
+            Should -Invoke Get-Module -Times 0 -Exactly
+            Should -Invoke Shmuelie.Windows\Get-AppInstallerApp -Times 0 -Exactly
+        }
+
+        It 'rejects invalid or duplicate discovery before mutation (<Mode>)' -ForEach @(
+            @{ Mode = 'MissingIdentity' }; @{ Mode = 'MissingUri' }; @{ Mode = 'Version' }; @{ Mode = 'Duplicate' }
+        ) {
+            switch ($Mode) {
+                MissingIdentity { $script:AppInstallerApps[0].PackageFullName = '' }
+                MissingUri { $script:AppInstallerApps[0].AppInstallerUri = '' }
+                Version { $script:AppInstallerApps[0].Version = 42 }
+                Duplicate { $script:AppInstallerApps += $script:AppInstallerApps[0] }
+            }
+            (Update-AllPackages -Provider AppInstaller).Status | Should -BeExactly Failed
+            Should -Invoke Shmuelie.Windows\Update-AppInstallerApp -Times 0 -Exactly
+        }
+
+        It 'preserves original discovery error records and prevents mutation' {
+            $script:AppInstallerError = [System.Management.Automation.ErrorRecord]::new(
+                [InvalidOperationException]::new('Discovery failed.'), 'AppInventoryFailure', 'ReadError', 'inventory')
+            Mock Shmuelie.Windows\Get-AppInstallerApp { $PSCmdlet.WriteError($script:AppInstallerError) }
+            $result = Update-AllPackages -Provider AppInstaller -ErrorAction Stop
+            $result.Status | Should -BeExactly Failed
+            $result.Error.FullyQualifiedErrorId | Should -Match 'AppInventoryFailure'
+            [object]::ReferenceEquals($result.Error.Exception, $script:AppInstallerError.Exception) | Should -BeTrue
+            Should -Invoke Shmuelie.Windows\Update-AppInstallerApp -Times 0 -Exactly
+        }
+
+        It 'fails unknown, malformed, or mismatched request evidence (<Mode>)' -ForEach @(
+            @{ Mode = 'Void' }; @{ Mode = 'Untyped' }; @{ Mode = 'Incomplete' }; @{ Mode = 'WrongOperation' }
+            @{ Mode = 'WrongIdentity' }; @{ Mode = 'Duplicate' }; @{ Mode = 'StringBoolean' }
+        ) {
+            Mock Shmuelie.Windows\Update-AppInstallerApp {
+                $request = New-AppInstallerTestRequest $script:AppInstallerApps[0]
+                switch ($Mode) {
+                    Void { return }
+                    Untyped { $request.PSTypeNames.Clear() }
+                    Incomplete { $request.RequestCompleted = $false }
+                    WrongOperation { $request.Operation = 'Install' }
+                    WrongIdentity { $request.PackageFullName = 'Other.App_1.0.0.0_x64__publisher' }
+                    Duplicate { $request }
+                    StringBoolean { $request.RequestCompleted = 'true' }
+                }
+                $request
+            }
+            $result = Update-AllPackages -Provider AppInstaller -Confirm:$false
+            $result.Status | Should -BeExactly Failed
+            $result.Error | Should -BeOfType ([System.Management.Automation.ErrorRecord])
+            $result.ResultingVersion | Should -BeNullOrEmpty
+        }
+
+        It '<Answer> confirms the request with no inner prompt and produces <Status>' -ForEach @(
+            @{ Answer = 'n'; Status = 'Skipped'; Count = 0 }
+            @{ Answer = 'y'; Status = 'Updated'; Count = 1 }
+        ) {
+            $manifest = [IO.Path]::ChangeExtension((Get-Module Shmuelie.PackageManagement).Path, '.psd1')
+            $child = @'
+$ErrorActionPreference = 'Stop'
+$env:PSModulePath = Join-Path $PSHOME 'Modules'
+Import-Module '__MANIFEST__' -ErrorAction Stop
+New-Module -Name Shmuelie.Windows -ScriptBlock {
+    $script:Count = 0
+    function Get-AppInstallerApp {
+        [CmdletBinding()] param()
+        [pscustomobject]@{
+            PSTypeName = 'Shmuelie.Windows.AppInstallerApplication'
+            Name = 'Example.App'; PackageFullName = 'Example.App_1.0.0.0_x64__publisher'
+            PackageFamilyName = 'Example.App_publisher'; Version = $null
+            AppInstallerUri = 'https://example.com/app.appinstaller'
+        }
+    }
+    function Update-AppInstallerApp {
+        [CmdletBinding(SupportsShouldProcess)]
+        param(
+            [Parameter(ValueFromPipelineByPropertyName)][Alias('PackageFullName')][string[]]$Name,
+            [switch]$PassThru
+        )
+        process {
+            if (-not $PassThru -or -not $PSBoundParameters.ContainsKey('Confirm') -or $PSBoundParameters.Confirm) {
+                throw 'Expected explicit completion evidence and inner confirmation suppression.'
+            }
+            if ($PSCmdlet.ShouldProcess($Name[0], 'Synthetic request')) {
+                $script:Count++
+                $app = Get-AppInstallerApp
+                [pscustomobject]@{
+                    PSTypeName = 'Shmuelie.Windows.AppInstallerUpdateRequestResult'
+                    Name = $app.Name; PackageFullName = $app.PackageFullName
+                    PackageFamilyName = $app.PackageFamilyName; AppInstallerUri = $app.AppInstallerUri
+                    Operation = 'UpdateCheck'; RequestCompleted = $true
+                }
+            }
+        }
+    }
+    Export-ModuleMember -Function Get-AppInstallerApp, Update-AppInstallerApp
+} | Import-Module -Global -ErrorAction Stop
+& (Get-Module Shmuelie.PackageManagement) {
+    $script:TestAppInstallerDescriptor = Get-AppInstallerPackageProvider
+    # Only substitute dependency discovery; callbacks and both confirmation
+    # boundaries remain the real adapter/orchestrator path.
+    $script:TestAppInstallerDescriptor.RequiredModules = @()
+    $script:TestAppInstallerDescriptor.TestAvailable = { [pscustomobject]@{ Available = $true; Reason = $null } }
+    function script:Get-PackageProvider { $script:TestAppInstallerDescriptor }
+    function script:Get-PackageProviderPlatform { 'Windows' }
+}
+$ConfirmPreference = 'Low'
+$result = Update-AllPackages -Provider AppInstaller -Confirm
+$count = & (Get-Module Shmuelie.Windows) { $script:Count }
+'RESULT:' + (@{ Status = $result.Status; Count = $count; Reason = $result.Reason } | ConvertTo-Json -Compress)
+'@.Replace('__MANIFEST__', $manifest.Replace("'", "''"))
+            $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($child))
+            $output = $Answer | & (Get-Process -Id $PID).Path -NoProfile -EncodedCommand $encoded -OutputFormat Text 2>&1
+            $LASTEXITCODE | Should -Be 0
+            $line = @($output | Where-Object { "$_" -like 'RESULT:*' })
+            $line | Should -HaveCount 1
+            $actual = "$($line[0])".Substring(7) | ConvertFrom-Json
+            if ($actual.Status -eq 'Failed') { throw $actual.Reason }
+            $actual.Status | Should -BeExactly $Status
+            $actual.Count | Should -Be $Count
+        }
+
+        It 'preserves update errors and honors StopOnFailure=<Stop> between applications' -ForEach @(
+            @{ Stop = $false; Count = 2 }; @{ Stop = $true; Count = 1 }
+        ) {
+            $script:AppInstallerApps += New-AppInstallerTestApplication -Name 'Other.App'
+            $script:AppInstallerError = [System.Management.Automation.ErrorRecord]::new(
+                [InvalidOperationException]::new('Request failed.'), 'AppRequestFailure', 'InvalidOperation', 'request')
+            Mock Shmuelie.Windows\Update-AppInstallerApp {
+                param($Name)
+                $script:AppInstallerCalls.Add($Name[0])
+                if ($Name[0] -eq $script:AppInstallerApps[0].PackageFullName) {
+                    $PSCmdlet.WriteError($script:AppInstallerError)
+                } else {
+                    New-AppInstallerTestRequest $script:AppInstallerApps[1]
+                }
+            }
+            $results = @(Update-AllPackages -Provider AppInstaller -StopOnFailure:$Stop -Confirm:$false -ErrorAction Stop)
+            $results | Should -HaveCount $Count
+            $results[0].Status | Should -BeExactly Failed
+            $results[0].Target | Should -BeExactly "update-check:$($script:AppInstallerApps[0].PackageFullName)"
+            [object]::ReferenceEquals($results[0].Error.Exception, $script:AppInstallerError.Exception) | Should -BeTrue
+            $script:AppInstallerCalls | Should -HaveCount $Count
+            if (-not $Stop) { $results[1].Status | Should -BeExactly Updated }
+        }
+    }
+}
+
 Describe 'Update-AllPackages native confirmation' {
     It '<Answer> returns <Status> and invokes update <Count> times' -ForEach @(
         @{ Answer = 'n'; Status = 'Skipped'; Count = 0 }
