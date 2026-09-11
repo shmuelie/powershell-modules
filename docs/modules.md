@@ -180,3 +180,6 @@ results, and optional fail-fast behavior.
 See the module README for provider availability and supported options.
 Unavailable or unimplemented integrations report `Skipped` with a reason.
 Importing the core is portable and does not import optional provider modules.
+The Windows-only AppInstaller adapter lazily uses compiled Shmuelie.Windows
+commands with opt-in request results. Its operation-scoped outcomes report
+completed update-check requests, never inferred application version changes.
