@@ -36,6 +36,12 @@ between releases this file tracks catalog-level changes under `[Unreleased]`.
   `Shmuelie.Windows` on Windows) without DLL-lock failures.
 
 ### Changed
+- The test suite and shared runner target stable Pester 6.2+ within major version
+  6, superseding the temporary 5.x compatibility pin. Selection and installation
+  exclude prereleases and newer majors, and imports use the selected module's
+  exact path. Copilot selector and portable package-provider tests explicitly
+  model dependency discovery instead of relying on unmatched filtered mocks to
+  invoke the original command.
 - `Build-Module.ps1` now compiles the `Shmuelie.Windows` binary cmdlet project
   (`Shmuelie.Windows.Cmdlets.csproj`) into the staged `bin` folder, mirroring the
   existing `Shmuelie.Git` predictor build. This establishes the reusable

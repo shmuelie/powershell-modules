@@ -2,13 +2,13 @@
 .SYNOPSIS
     Run the repository's Pester unit test suite.
 .DESCRIPTION
-    Ensures Pester 5.2 (or newer) is available, discovers every *.Tests.ps1 under
-    tests/, runs them, and fails (non-zero exit / terminating error) if any test
-    fails. Complements build/Test-Modules.ps1, which covers build/import, docs,
-    changelog, and version-consistency validation.
+    Ensures stable Pester >=6.2.0 and <7.0.0 is available, discovers every
+    *.Tests.ps1 under tests/, runs them, and fails (non-zero exit / terminating
+    error) if any test fails. Complements build/Test-Modules.ps1, which covers
+    build/import, docs, changelog, and version-consistency validation.
 
-    Pester 5.2 is the floor because the runner relies on the Run.Throw
-    configuration option, which was introduced in that release.
+    The suite targets Pester 6.2's strict parameter-filtered mock behavior.
+    Prereleases and higher major versions are excluded until explicitly adopted.
 .PARAMETER Path
     Optional path to a specific test file or directory. Defaults to tests/.
 .EXAMPLE
@@ -31,22 +31,27 @@ if (-not $Path) {
 
 function Get-PesterModule {
     Get-Module -ListAvailable -Name Pester |
-        Where-Object { $_.Version -ge [version]'5.2.0' } |
+        Where-Object {
+            $_.Version -ge [version]'6.2.0' -and $_.Version -lt [version]'7.0.0' -and
+            -not $_.PrivateData.PSData.Prerelease
+        } |
         Sort-Object Version -Descending |
         Select-Object -First 1
 }
 
 $pester = Get-PesterModule
 if (-not $pester) {
-    Write-Information 'Pester 5.2+ not found; installing from PSGallery...' -InformationAction Continue
-    Install-Module Pester -MinimumVersion 5.2.0 -Scope CurrentUser -Force
+    Write-Information 'Stable Pester >=6.2.0 and <7.0.0 not found; installing from PSGallery...' -InformationAction Continue
+    # Install-Module has an inclusive upper bound; cover every valid 6.x version.
+    $maximumVersion = [version]::new(6, [int]::MaxValue, [int]::MaxValue, [int]::MaxValue)
+    Install-Module Pester -MinimumVersion 6.2.0 -MaximumVersion $maximumVersion -Scope CurrentUser -Force
     $pester = Get-PesterModule
 }
 if (-not $pester) {
-    throw 'Unable to locate or install Pester 5.2 or newer.'
+    throw 'Unable to locate or install stable Pester >=6.2.0 and <7.0.0.'
 }
 
-Import-Module $pester -Force
+Import-Module $pester.Path -Force
 Write-Information "Using Pester $($pester.Version)" -InformationAction Continue
 
 $config = New-PesterConfiguration
