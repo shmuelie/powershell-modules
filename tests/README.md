@@ -24,6 +24,9 @@ without a full build.
 - `Shmuelie.DotNet.Tests.ps1` - canonical .NET tool parsing, parameter and
   pipeline contracts, scope selection, typed results, failure reporting,
   `ShouldProcess`, isolated import, and publishable module layout.
+- `Invoke-Tests.Tests.ps1` - supported Pester version selection, bounded
+  installation fallback, runner configuration, and failure propagation.
+  Module discovery, installation, imports, and test execution are mocked.
 
 ## Running
 
@@ -32,6 +35,8 @@ without a full build.
 ./build/Invoke-Tests.ps1 -Path tests/Shmuelie.Git.Tests.ps1   # one file
 ```
 
-The runner ensures Pester 5.2+ is available (installing it if needed) and fails
-on any failing test. CI runs it in `.github/workflows/ci.yml`, and it gates
-publishing in `.github/workflows/publish-module.yml`.
+The runner selects the newest installed Pester `>=5.2.0` and `<6.0.0`,
+installing within that same range if needed. Pester 6 and later do not take
+precedence. The runner fails on any failing test. CI runs it in
+`.github/workflows/ci.yml`, and it gates publishing in
+`.github/workflows/publish-module.yml`.
