@@ -6,6 +6,8 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-11
+
 ### Added
 - Opt-in `Update-AppInstallerApp -PassThru` typed per-package update-check
   request completion. Default calls remain void, and unmatched, skipped, or
