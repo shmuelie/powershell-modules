@@ -6,6 +6,8 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-09-11
+
 ### Changed
 - **Breaking:** `Remove-Worktree` deletes its backing local branch by default after successful
   worktree removal, retaining the existing `git branch -D` behavior for unmerged
