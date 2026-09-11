@@ -7,9 +7,9 @@ Provider-neutral package update orchestration for PowerShell 7.4+.
 ## Provider availability
 
 The ordered catalog contains `PSResourceGet`, `DotNet`, `Npm`, `Pip`, `Uv`,
-`VSCode`, `WinGet`, and `AppInstaller`. The six portable providers are implemented;
-**WinGet** and **AppInstaller** remain separate follow-up work and report explicit
-`Skipped` results. Unavailable dependencies also skip, never report successful updates.
+`VSCode`, `WinGet`, and `AppInstaller`. All eight providers are implemented;
+**WinGet** and **AppInstaller** are Windows-only.
+Unavailable dependencies also skip, never report successful updates.
 
 No provider modules are required at import time. Windows-only providers are
 gated before dependency discovery on Linux and macOS.
@@ -54,6 +54,83 @@ outcomes already produced by that callback. Skips do not trigger fail-fast.
 Provider failures are result data even with `-ErrorAction Stop`; invalid
 arguments remain terminating errors. Read-only discovery errors prevent any
 updates for that provider. No results are invented for unstarted providers.
+
+## WinGet
+
+Windows only. Install **Microsoft.WinGet.Client 1.8.1911+** separately and expose
+a stable **winget.exe 1.8.1911+** on PATH. Unsupported platforms, missing/older
+dependencies, and missing structured discovery commands return `Skipped`.
+Import failures and native failures return `Failed`. The adapter never installs
+or repairs dependencies, changes PATH, or uses PowerShell aliases/batch shims
+instead of the native executable. An older loaded Client module requires a new
+session after it is upgraded.
+
+| Option | Type | Default | Behavior |
+|---|---|---|---|
+| `Source` | String | All configured sources | Select one existing source by name; no source is added or reconfigured |
+| `Include` | String or string array | `'*'` | Case-insensitive package-ID wildcards; an empty array selects nothing |
+| `Exclude` | String or string array | Empty | Case-insensitive package-ID wildcards; exclusion wins |
+| `AcceptPackageAgreements` | Boolean | `$false` | Explicitly authorize `--accept-package-agreements` |
+
+```powershell
+Update-AllPackages -Provider WinGet -ProviderOptions @{
+    WinGet = @{ Source = 'winget'; Include = 'Microsoft.*'; Exclude = '*.Preview' }
+} -WhatIf
+Update-AllPackages -Provider WinGet -ProviderOptions @{
+    WinGet = @{ AcceptPackageAgreements = $true }
+} -Confirm:$false
+```
+
+**Source agreements are implicitly accepted by default**, including during
+`-WhatIf` discovery. Microsoft.WinGet.Client's structured query API has that
+default and exposes no source-agreement opt-out; this provider does not offer an
+`AcceptSourceAgreements` option. Do not select WinGet if that default is not
+acceptable. Discovery can contact configured sources and refresh their caches
+under WinGet's own policies; previews are not offline or cache-write-free.
+The adapter never issues an explicit source refresh command.
+**Package agreements are different:** only literal Boolean `$true` authorizes
+their acceptance. `$false` or omission never adds the package-agreement flag;
+strings such as `'true'`, numbers, null and switches are invalid. Packages
+requiring unaccepted terms fail without an interactive fallback.
+
+Discovery uses module-qualified `Get-WinGetPackage` objects and
+`IsUpdateAvailable`, never localized CLI tables or guessed JSON switches.
+Filters are applied locally and never become CLI arguments. Empty discovery
+returns `Unchanged`. Each target is `<ID> (source: <source>)`; its source is
+retained even when all sources were queried. Missing sources, duplicate
+identities and unexpected source changes fail rather than selecting a different
+package. IDs must start with an ASCII letter/digit and contain only letters,
+digits, `.`, `_`, `+`, `-`. Source names allow letters, digits, `.`, `_`, `-`
+and interior spaces, start with a letter/digit, and cannot end in a space.
+Invalid options or selected identities fail before any WinGet package mutation.
+
+Core `ShouldProcess` confirms each package once. An approved update invokes
+`winget.exe upgrade --id <ID> --exact --source <source> --silent
+--disable-interactivity --authentication-mode silent --accept-source-agreements`,
+plus the package-agreement flag only when opted in. The minimum CLI version
+supports silent authentication. Structured discovery also defaults to silent
+authentication. There is no force, unknown-version override, interactive
+fallback, installer override, or reboot permission. The adapter does not
+elevate its PowerShell process. Installer behavior and dependency handling
+remain WinGet's responsibility.
+`Update-WinGetPackage` is deliberately not used because its underlying install
+options accept package agreements by default.
+
+After native completion, the adapter queries the exact ID and original source
+again. Only `InstalledVersion` is an observed version; unknown/empty versions
+remain null. Previews leave the proposed version null rather than treating the
+first available catalog version as the chosen installer. Equal observed
+versions return `Unchanged`, changed versions return `Updated`. With unknown
+versions, `Updated` means the native upgrade completed successfully, not that a
+version comparison proved a change. Missing/ambiguous post-update observations
+fail. Exit `0x8A15002B` (no applicable update) returns `Unchanged` with an explicit
+reason; all other nonzero exits, absent native exit codes, and query errors
+return `Failed`. Native diagnostics are retained in failure reasons. Independent
+packages continue unless `-StopOnFailure` is set.
+
+References: [structured discovery](https://github.com/microsoft/winget-cli/blob/v1.8.1911/src/PowerShell/Help/Microsoft.WinGet.Client/Get-WinGetPackage.md),
+[source-agreement defaults](https://github.com/microsoft/winget-cli/blob/v1.8.1911/src/Microsoft.Management.Deployment/PackageCatalogReference.h),
+[upgrade options](https://learn.microsoft.com/windows/package-manager/winget/upgrade).
 
 ## VS Code extension updates
 
@@ -291,6 +368,45 @@ or observed version produces `Failed` rather than assuming the version changed.
 Official uv references: [CLI flags](https://docs.astral.sh/uv/reference/cli/#uv-tool-list),
 [tool upgrade semantics](https://docs.astral.sh/uv/concepts/tools/#upgrading-tools),
 and [tool list output implementation](https://github.com/astral-sh/uv/blob/main/crates/uv/src/commands/tool/list.rs).
+
+## App Installer update-check requests
+
+AppInstaller requires Windows and the optional `Shmuelie.Windows` module with
+compiled `Get-AppInstallerApp` and `Update-AppInstallerApp -PassThru` cmdlets.
+Install the module separately; nothing is installed automatically. Unsupported
+platforms skip before dependency discovery or loading. Missing modules/compiled
+commands skip, and an older updater without `PassThru` skips with upgrade and
+new-session guidance before enumeration. Import failures remain failures.
+There are no provider options.
+
+```powershell
+Update-AllPackages -Provider AppInstaller -WhatIf
+Update-AllPackages -Provider AppInstaller -Confirm:$false
+```
+
+Discovery lists the current user's AppInstaller-managed registrations, not a
+proven outdated set. Targets are `update-check:<PackageFullName>`, preserving
+the exact versioned registration identity (including publisher/architecture),
+not a display name. The full name is piped through canonical property-name
+binding to avoid accidentally selecting other registrations with the same
+name. The canonical updater re-enumerates before processing each request.
+
+Aggregate confirmation is once per target, followed by the canonical command
+with `-PassThru -Confirm:$false`. **`Updated` means only that the App Installer
+update-check request operation completed without a service error**. It does
+not mean an application was installed, upgraded, or found current.
+`ResultingVersion` is always null; `PreviousVersion` is the discovery-time
+version, or null. Completed rows include `Operation = UpdateCheck`,
+`RequestCompleted = true`, `PackageFullName`, `PackageFamilyName`, and the
+actual `AppInstallerUri` used by the canonical request.
+
+Missing, malformed, or mismatched completion evidence returns `Failed`, including
+a registration that disappears between discovery and the request. An empty
+initial inventory returns provider-level `Unchanged`. Original errors remain
+failure records; independent applications continue unless `-StopOnFailure`
+is set. `-WhatIf` only enumerates and emits `Planned` operation targets: it never
+invokes the updater or initiates update checks. No post-update inventory is
+used to infer request completion or installed-version changes.
 
 ## Output
 
