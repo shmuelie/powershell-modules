@@ -117,7 +117,7 @@ contract, not command aliases.
 ## Testing
 
 Behavioral tests live in [`tests/`](https://github.com/shmuelie/powershell-modules/tree/main/tests),
-one [Pester](https://pester.dev/) v5 file per module (`tests/<Module>.Tests.ps1`).
+one [Pester](https://pester.dev/) v6 file per module (`tests/<Module>.Tests.ps1`).
 Each file imports its module directly from source
 (`modules/<Module>/<Module>.psd1`), so tests run without a full build.
 
@@ -135,6 +135,14 @@ pull request.** When you add or change a command:
   files, construct synthetic input objects where possible, and only reach for
   real external tools (e.g. temporary `git` repositories) when behavior can't be
   exercised any other way.
+- Pester 6 rejects calls that do not match any parameter-filtered mock. Cover
+  expected calls explicitly or supply a safe, intentional default. Keep
+  unexpected native operations behind throwing stubs; never fall back to real
+  package updates, credential operations, or deployments.
+- When mocking `Get-Command` or `Get-Module`, return only the required dependency
+  metadata. Capture source command metadata before installing mocks so parameter
+  contracts remain accurate. These commands accept arrays of names, so a
+  single-name lookup should validate the count and use `Name[0]`.
 
 Run the suite with the test runner:
 
@@ -143,11 +151,12 @@ Run the suite with the test runner:
 .\build\Invoke-Tests.ps1 -Path tests\Shmuelie.Git.Tests.ps1   # one file
 ```
 
-The runner selects the newest installed Pester in the supported range
-`>=5.2.0` and `<6.0.0`, installing within that same range if none is available.
-Pester 6 and later are ignored even when installed alongside Pester 5.
-The runner fails on any failing test. Local runs, CI, and publication all use
-this shared runner, so a change without passing tests cannot merge or ship.
+The shared runner selects the newest installed stable Pester version from 6.2.0
+up to, but not including, 7.0.0, installing within that range if needed. It
+imports the selected module by its exact path; prereleases and newer major
+versions do not take precedence. The runner fails on any failing test. CI and
+publication use that same runner rather than independent framework installation
+policies, so a change without passing tests cannot merge or ship.
 
 ## Validate
 
