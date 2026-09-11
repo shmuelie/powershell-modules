@@ -3651,9 +3651,10 @@ Describe 'Add-Worktree creation' -Skip:(-not (Get-Command git -ErrorAction Silen
         $customPath = Join-Path $TestDrive 'custom-add-explicit'
         Invoke-Git @('-C', $repo, 'branch', $branch)
 
-        Push-Location $repo
+        Push-Location -LiteralPath $repo -ErrorAction Stop
         try {
             Add-Worktree -BranchName $branch -WorktreePath $customPath -Confirm:$false
+            (Get-Location).Path | Should -BeExactly (Resolve-Path -LiteralPath $customPath).Path
             Test-Path -LiteralPath $customPath | Should -BeTrue
             (@(Get-Worktrees) | Where-Object Branch -eq $branch).Path |
                 Should -BeExactly (Resolve-Path -LiteralPath $customPath).Path
@@ -3668,9 +3669,10 @@ Describe 'Add-Worktree creation' -Skip:(-not (Get-Command git -ErrorAction Silen
         $expectedPath = Join-Path (Split-Path $repo -Parent) $branch
         Invoke-Git @('-C', $repo, 'branch', $branch)
 
-        Push-Location $repo
+        Push-Location -LiteralPath $repo -ErrorAction Stop
         try {
             Add-Worktree -BranchName $branch -Confirm:$false
+            (Get-Location).Path | Should -BeExactly (Resolve-Path -LiteralPath $expectedPath).Path
             Test-Path -LiteralPath $expectedPath | Should -BeTrue
             (@(Get-Worktrees) | Where-Object Branch -eq $branch).Path |
                 Should -BeExactly (Resolve-Path -LiteralPath $expectedPath).Path
@@ -3685,7 +3687,7 @@ Describe 'Add-Worktree creation' -Skip:(-not (Get-Command git -ErrorAction Silen
         $customPath = Join-Path $TestDrive 'custom-add-setlocation'
         Invoke-Git @('-C', $repo, 'branch', $branch)
 
-        Push-Location $repo
+        Push-Location -LiteralPath $repo -ErrorAction Stop
         try {
             Add-Worktree -BranchName $branch -WorktreePath $customPath -SetLocation -Confirm:$false
             (Get-Location).Path | Should -BeExactly (Resolve-Path -LiteralPath $customPath).Path
@@ -3702,12 +3704,178 @@ Describe 'Add-Worktree creation' -Skip:(-not (Get-Command git -ErrorAction Silen
         Set-Content -Path (Join-Path $existingPath 'already-here.txt') -Value 'content'
         Invoke-Git @('-C', $repo, 'branch', $branch)
 
-        Push-Location $repo
+        Push-Location -LiteralPath $repo -ErrorAction Stop
         try {
             { Add-Worktree -BranchName $branch -WorktreePath $existingPath -Confirm:$false -ErrorAction Stop } |
                 Should -Throw -ExpectedMessage '*git worktree add failed*already exists*'
+            (Get-Location).Path | Should -BeExactly (Resolve-Path -LiteralPath $repo).Path
         } finally {
             Pop-Location
+        }
+    }
+}
+
+Describe 'Worktree creation navigation' -Skip:(-not (Get-Command git -ErrorAction SilentlyContinue)) {
+    BeforeAll {
+        $navigationEnvironment = @{}
+        foreach ($key in @(
+            'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_SYSTEM', 'GIT_CONFIG_NOSYSTEM',
+            'GIT_CONFIG_COUNT', 'GIT_CONFIG_PARAMETERS', 'GIT_DIR', 'GIT_WORK_TREE',
+            'GIT_COMMON_DIR', 'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY',
+            'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_NAMESPACE', 'GIT_CEILING_DIRECTORIES'
+        )) {
+            $navigationEnvironment[$key] = [Environment]::GetEnvironmentVariable($key, 'Process')
+            Remove-Item -LiteralPath "Env:$key" -ErrorAction Ignore
+        }
+        $env:GIT_CONFIG_GLOBAL = Join-Path $TestDrive 'no-global-config'
+        $env:GIT_CONFIG_SYSTEM = Join-Path $TestDrive 'no-system-config'
+        $env:GIT_CONFIG_NOSYSTEM = '1'
+        $env:GIT_CONFIG_COUNT = '0'
+    }
+
+    AfterAll {
+        foreach ($key in $navigationEnvironment.Keys) {
+            if ($null -eq $navigationEnvironment[$key]) {
+                Remove-Item -LiteralPath "Env:$key" -ErrorAction Ignore
+            } else {
+                [Environment]::SetEnvironmentVariable($key, $navigationEnvironment[$key], 'Process')
+            }
+        }
+    }
+
+    Context '<CommandName>' -ForEach @(
+        @{ CommandName = 'Add-Worktree'; CommandParameters = @{ BranchName = 'navigation-test' } }
+        @{ CommandName = 'New-Worktree'; CommandParameters = @{ WorkName = 'navigation-test'; NoPrefix = $true } }
+    ) {
+        BeforeEach {
+            $navigationLocationPushed = $false
+            $navigationRoot = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
+            $navigationRepo = New-TestRepo -Path (Join-Path $navigationRoot 'main')
+            $navigationCaller = Join-Path $navigationRoot 'caller'
+            New-Item -ItemType Directory -Path $navigationCaller -ErrorAction Stop | Out-Null
+            $navigationDestination = Join-Path $navigationRoot 'created [literal] tree'
+            $navigationParameters = $CommandParameters.Clone()
+            $navigationParameters.Path = $navigationRepo
+            $navigationParameters.WorktreePath = $navigationDestination
+            $navigationParameters.Confirm = $false
+            if ($CommandName -eq 'Add-Worktree') {
+                Invoke-Git @('-C', $navigationRepo, 'branch', 'navigation-test')
+            }
+            Push-Location -LiteralPath $navigationCaller -ErrorAction Stop
+            $navigationLocationPushed = $true
+            $navigationCaller = (Get-Location).Path
+        }
+
+        AfterEach {
+            if ($navigationLocationPushed) {
+                Pop-Location -ErrorAction Stop
+            }
+        }
+
+        It 'uses <Mode> navigation after successful creation' -ForEach @(
+            @{ Mode = 'default'; Switches = @{}; Navigate = $true }
+            @{ Mode = 'NoSetLocation'; Switches = @{ NoSetLocation = $true }; Navigate = $false }
+            @{ Mode = 'NoSetLocation false'; Switches = @{ NoSetLocation = $false }; Navigate = $true }
+            @{ Mode = 'SetLocation compatibility'; Switches = @{ SetLocation = $true }; Navigate = $true }
+            @{ Mode = 'SetLocation false compatibility'; Switches = @{ SetLocation = $false }; Navigate = $false }
+        ) {
+            & $CommandName @navigationParameters @Switches -ErrorAction Stop
+
+            Test-Path -LiteralPath $navigationDestination -PathType Container | Should -BeTrue
+            $resolvedDestination = (Resolve-Path -LiteralPath $navigationDestination).Path
+            (Get-Worktrees -Path $navigationRepo).Path | Should -Contain $resolvedDestination
+            $expectedLocation = if ($Navigate) { $resolvedDestination } else { $navigationCaller }
+            (Get-Location).Path | Should -BeExactly $expectedLocation
+        }
+
+        It 'resolves a relative destination against the explicit source, not the caller' {
+            $navigationParameters.WorktreePath = Join-Path '..' (Split-Path $navigationDestination -Leaf)
+
+            & $CommandName @navigationParameters -ErrorAction Stop
+
+            (Get-Location).Path | Should -BeExactly (Resolve-Path -LiteralPath $navigationDestination).Path
+        }
+
+        It 'leaves location and worktrees unchanged under WhatIf with <Mode>' -ForEach @(
+            @{ Mode = 'default'; Switches = @{} }
+            @{ Mode = 'SetLocation'; Switches = @{ SetLocation = $true } }
+            @{ Mode = 'NoSetLocation'; Switches = @{ NoSetLocation = $true } }
+        ) {
+            $branchesBefore = @(Invoke-Git @('-C', $navigationRepo, 'branch', '--list'))
+
+            & $CommandName @navigationParameters @Switches -WhatIf -ErrorAction Stop
+
+            (Get-Location).Path | Should -BeExactly $navigationCaller
+            Test-Path -LiteralPath $navigationDestination | Should -BeFalse
+            @(Get-Worktrees -Path $navigationRepo) | Should -HaveCount 1
+            @(Invoke-Git @('-C', $navigationRepo, 'branch', '--list')) | Should -Be $branchesBefore
+        }
+
+        It 'rejects both switches before creation (SetLocation=<Set>, NoSetLocation=<NoSet>)' -ForEach @(
+            @{ Set = $true; NoSet = $true }
+            @{ Set = $false; NoSet = $true }
+            @{ Set = $true; NoSet = $false }
+            @{ Set = $false; NoSet = $false }
+        ) {
+            $branchesBefore = @(Invoke-Git @('-C', $navigationRepo, 'branch', '--list'))
+
+            { & $CommandName @navigationParameters -SetLocation:$Set -NoSetLocation:$NoSet -ErrorAction Stop } |
+                Should -Throw -ErrorId 'AmbiguousParameterSet*'
+
+            (Get-Location).Path | Should -BeExactly $navigationCaller
+            Test-Path -LiteralPath $navigationDestination | Should -BeFalse
+            @(Get-Worktrees -Path $navigationRepo) | Should -HaveCount 1
+            @(Invoke-Git @('-C', $navigationRepo, 'branch', '--list')) | Should -Be $branchesBefore
+        }
+
+        It 'preserves caller location after a nonterminating git creation error' {
+            New-Item -ItemType Directory -Path $navigationDestination -ErrorAction Stop | Out-Null
+            Set-Content -LiteralPath (Join-Path $navigationDestination 'occupied.txt') -Value 'keep' -ErrorAction Stop
+
+            & $CommandName @navigationParameters -ErrorAction SilentlyContinue -ErrorVariable creationErrors
+
+            $creationErrors | Should -Not -BeNullOrEmpty
+            $creationErrors[-1].Exception.Message | Should -Match 'git worktree add failed'
+            (Get-Location).Path | Should -BeExactly $navigationCaller
+            @(Get-Worktrees -Path $navigationRepo) | Should -HaveCount 1
+            Get-Content -LiteralPath (Join-Path $navigationDestination 'occupied.txt') | Should -BeExactly 'keep'
+        }
+
+        It 'preserves caller location after a terminating git creation error' {
+            New-Item -ItemType Directory -Path $navigationDestination -ErrorAction Stop | Out-Null
+            Set-Content -LiteralPath (Join-Path $navigationDestination 'occupied.txt') -Value 'keep' -ErrorAction Stop
+
+            { & $CommandName @navigationParameters -ErrorAction Stop } |
+                Should -Throw -ExpectedMessage '*git worktree add failed*'
+
+            (Get-Location).Path | Should -BeExactly $navigationCaller
+            @(Get-Worktrees -Path $navigationRepo) | Should -HaveCount 1
+        }
+
+        It 'does not fall back to the current repository when source resolution fails' {
+            Set-Location -LiteralPath $navigationRepo -ErrorAction Stop
+            $navigationParameters.Path = Join-Path $navigationRoot 'missing-source'
+
+            & $CommandName @navigationParameters -ErrorAction SilentlyContinue -ErrorVariable sourceErrors
+
+            $sourceErrors | Should -Not -BeNullOrEmpty
+            (Get-Location).Path | Should -BeExactly (Resolve-Path -LiteralPath $navigationRepo).Path
+            Test-Path -LiteralPath $navigationDestination | Should -BeFalse
+            @(Get-Worktrees -Path $navigationRepo) | Should -HaveCount 1
+        }
+
+        It 'surfaces navigation failure without moving the caller or removing the created worktree' {
+            Mock -ModuleName Shmuelie.Git Set-Location { throw 'Navigation unavailable.' }
+
+            { & $CommandName @navigationParameters -ErrorAction Stop } |
+                Should -Throw -ExpectedMessage '*Navigation unavailable*'
+
+            (Get-Location).Path | Should -BeExactly $navigationCaller
+            Test-Path -LiteralPath $navigationDestination -PathType Container | Should -BeTrue
+            @(Get-Worktrees -Path $navigationRepo) | Should -HaveCount 2
+            Should -Invoke -ModuleName Shmuelie.Git Set-Location -Times 1 -Exactly -ParameterFilter {
+                $LiteralPath -like '*created [[]literal] tree'
+            }
         }
     }
 }
@@ -3771,20 +3939,20 @@ Describe 'Git repository -Path parameters' {
         $errors[0].Exception.Message | Should -Match 'not inside a git working tree'
     }
 
-    It 'uses explicit source -Path with destination -WorktreePath for worktree creation without changing caller location' {
+    It 'uses explicit source -Path with destination -WorktreePath and NoSetLocation to preserve caller location' {
         Invoke-Git @('-C', $script:pathTargetRepo, 'branch', 'existing-work')
         $existingPath = Join-Path $TestDrive 'explicit-existing-worktree'
         $newPath = Join-Path $TestDrive 'explicit-new-worktree'
         $callerLocation = $null
 
-        Push-Location $script:pathCallerRepo
+        Push-Location -LiteralPath $script:pathCallerRepo -ErrorAction Stop
         try {
             $callerLocation = (Get-Location).Path
-            Add-Worktree -Path $script:pathTargetRepo -BranchName existing-work -WorktreePath $existingPath
+            Add-Worktree -Path $script:pathTargetRepo -BranchName existing-work -WorktreePath $existingPath -NoSetLocation
             Test-Path -LiteralPath $existingPath -PathType Container | Should -BeTrue
             (Get-Worktrees -Path $script:pathTargetRepo).Path | Should -Contain (Resolve-Path -LiteralPath $existingPath).Path
 
-            New-Worktree -Path $script:pathTargetRepo -WorkName explicit-new -NoPrefix -WorktreePath $newPath
+            New-Worktree -Path $script:pathTargetRepo -WorkName explicit-new -NoPrefix -WorktreePath $newPath -NoSetLocation
             Test-Path -LiteralPath $newPath -PathType Container | Should -BeTrue
             (Get-Worktrees -Path $script:pathTargetRepo).Path | Should -Contain (Resolve-Path -LiteralPath $newPath).Path
 
@@ -6158,7 +6326,7 @@ Describe 'New-Worktree' -Skip:(-not (Get-Command git -ErrorAction SilentlyContin
         $branchName = 'user/tester/dry-run'
         $expectedPath = Join-Path (Split-Path $repo -Parent) $branchName
 
-        Push-Location $repo
+        Push-Location -LiteralPath $repo -ErrorAction Stop
         try {
             $transcriptPath = Join-Path $TestDrive 'new-worktree-auto-whatif.txt'
             Start-Transcript -Path $transcriptPath -Force | Out-Null
@@ -6170,6 +6338,7 @@ Describe 'New-Worktree' -Skip:(-not (Get-Command git -ErrorAction SilentlyContin
             (Get-Content -LiteralPath $transcriptPath -Raw) | Should -Match ([regex]::Escape($expectedPath))
             Test-Path -LiteralPath $expectedPath | Should -BeFalse
             Invoke-Git @('-C', $repo, 'branch', '--list', $branchName) | Should -BeNullOrEmpty
+            (Get-Location).Path | Should -BeExactly (Resolve-Path -LiteralPath $repo).Path
         } finally {
             Pop-Location
         }
@@ -6180,9 +6349,10 @@ Describe 'New-Worktree' -Skip:(-not (Get-Command git -ErrorAction SilentlyContin
         $branchName = 'user/tester/happy-path'
         $expectedPath = Join-Path (Split-Path $repo -Parent) $branchName
 
-        Push-Location $repo
+        Push-Location -LiteralPath $repo -ErrorAction Stop
         try {
             New-Worktree -WorkName 'happy-path' -UserName 'tester' -Confirm:$false
+            (Get-Location).Path | Should -BeExactly (Resolve-Path -LiteralPath $expectedPath).Path
             Test-Path -LiteralPath $expectedPath | Should -BeTrue
             Invoke-Git @('-C', $repo, 'rev-parse', '--verify', $branchName) | Should -Not -BeNullOrEmpty
             (@(Get-Worktrees) | Where-Object Branch -eq $branchName).Path | Should -BeExactly (Resolve-Path -LiteralPath $expectedPath).Path
@@ -6196,9 +6366,10 @@ Describe 'New-Worktree' -Skip:(-not (Get-Command git -ErrorAction SilentlyContin
         $branchName = 'user/tester/explicit-path'
         $customPath = Join-Path $TestDrive 'custom-new-explicit'
 
-        Push-Location $repo
+        Push-Location -LiteralPath $repo -ErrorAction Stop
         try {
             New-Worktree -WorkName 'explicit-path' -UserName 'tester' -WorktreePath $customPath -Confirm:$false
+            (Get-Location).Path | Should -BeExactly (Resolve-Path -LiteralPath $customPath).Path
             Test-Path -LiteralPath $customPath | Should -BeTrue
             Invoke-Git @('-C', $repo, 'rev-parse', '--verify', $branchName) | Should -Not -BeNullOrEmpty
             (@(Get-Worktrees) | Where-Object Branch -eq $branchName).Path |
@@ -6212,7 +6383,7 @@ Describe 'New-Worktree' -Skip:(-not (Get-Command git -ErrorAction SilentlyContin
         $repo = New-TestRepo -Path (Join-Path $TestDrive 'new-worktree-setlocation-main')
         $customPath = Join-Path $TestDrive 'custom-new-setlocation'
 
-        Push-Location $repo
+        Push-Location -LiteralPath $repo -ErrorAction Stop
         try {
             New-Worktree -WorkName 'setlocation-path' -UserName 'tester' -WorktreePath $customPath -SetLocation -Confirm:$false
             (Get-Location).Path | Should -BeExactly (Resolve-Path -LiteralPath $customPath).Path
@@ -6226,7 +6397,7 @@ Describe 'New-Worktree' -Skip:(-not (Get-Command git -ErrorAction SilentlyContin
         $branchName = 'user/tester/explicit-dry-run'
         $customPath = Join-Path $TestDrive 'custom-new-explicit-whatif'
 
-        Push-Location $repo
+        Push-Location -LiteralPath $repo -ErrorAction Stop
         try {
             $transcriptPath = Join-Path $TestDrive 'new-worktree-explicit-whatif.txt'
             Start-Transcript -Path $transcriptPath -Force | Out-Null
@@ -6238,6 +6409,7 @@ Describe 'New-Worktree' -Skip:(-not (Get-Command git -ErrorAction SilentlyContin
             (Get-Content -LiteralPath $transcriptPath -Raw) | Should -Match ([regex]::Escape($customPath))
             Test-Path -LiteralPath $customPath | Should -BeFalse
             Invoke-Git @('-C', $repo, 'branch', '--list', $branchName) | Should -BeNullOrEmpty
+            (Get-Location).Path | Should -BeExactly (Resolve-Path -LiteralPath $repo).Path
         } finally {
             Pop-Location
         }
@@ -6248,9 +6420,10 @@ Describe 'New-Worktree' -Skip:(-not (Get-Command git -ErrorAction SilentlyContin
         $branchName = 'plain-work'
         $expectedPath = Join-Path (Split-Path $repo -Parent) $branchName
 
-        Push-Location $repo
+        Push-Location -LiteralPath $repo -ErrorAction Stop
         try {
             New-Worktree -WorkName $branchName -NoPrefix -Confirm:$false
+            (Get-Location).Path | Should -BeExactly (Resolve-Path -LiteralPath $expectedPath).Path
             Test-Path -LiteralPath $expectedPath | Should -BeTrue
             Invoke-Git @('-C', $repo, 'rev-parse', '--verify', $branchName) | Should -Not -BeNullOrEmpty
             (@(Get-Worktrees) | Where-Object Branch -eq $branchName).Path | Should -BeExactly (Resolve-Path -LiteralPath $expectedPath).Path
