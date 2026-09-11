@@ -7,6 +7,9 @@ between releases this file tracks catalog-level changes under `[Unreleased]`.
 ## [Unreleased]
 
 ### Fixed
+- `Invoke-Tests.ps1` selects and installs only supported Pester versions
+  `>=5.2.0` and `<6.0.0`, keeping local, CI, and publication test runs on
+  Pester 5 even when newer major versions are installed. (Fixes #221.)
 - `Build-Module.ps1` now calls `GC.Collect` + `WaitForPendingFinalizers` after
   `Remove-Module` and wraps the stage-directory deletion in a targeted retry
   (catching only IO/access-denied errors), so calling it twice for
