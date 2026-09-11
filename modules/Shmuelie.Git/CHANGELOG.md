@@ -14,6 +14,13 @@ Versions change only when a release is cut; unreleased work stays under
   is rejected. High-impact confirmation gates worktree removal and branch deletion
   separately, and `-WhatIf` previews both without mutation. Detached worktrees and
   failed removals never delete a branch; `-Force` retains its existing Git semantics.
+- **Breaking:** `New-Worktree` and `Add-Worktree` now enter the successfully
+  created worktree by default, including with an explicit source `-Path`.
+  Add `-NoSetLocation` to scripts that need to preserve the caller's directory.
+  `-SetLocation` remains temporarily supported, and explicit
+  `-SetLocation:$false` still opts out. The two switches cannot be combined,
+  even when explicitly false. Failed creation, `-WhatIf` and declined
+  confirmation do not change location. (#167)
 
 ## [0.9.0] - 2026-09-10
 

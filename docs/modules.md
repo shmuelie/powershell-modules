@@ -50,6 +50,14 @@ Highlights:
 - `Update-Worktrees -ChangedOnly` limits output to actionable worktree results.
 - A bundled `WorktreePredictor.dll` suggests branch names for worktree commands.
 
+**Worktree navigation change:** `New-Worktree` and `Add-Worktree` now enter the
+created worktree by default, like `New-Repository`, even with an explicit `-Path`.
+Add `-NoSetLocation` to scripts that must stay in the caller's directory.
+The temporary compatibility switch `-SetLocation` still works; explicit
+`-SetLocation:$false` still stays put and can be replaced with `-NoSetLocation`.
+Do not combine the two switches, even when false. Failed creation and `-WhatIf`
+never change location.
+
 ### Removing worktrees: migration
 
 `Remove-Worktree` now removes the backing local branch after successful worktree

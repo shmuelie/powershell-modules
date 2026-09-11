@@ -378,7 +378,11 @@ function Resolve-CreatedWorktreePath {
 function Add-Worktree {
     <#
     .SYNOPSIS
-    Checkout an existing branch to a worktree
+    Check out an existing branch to a worktree and navigate to it.
+    .DESCRIPTION
+    Checks out an existing branch to a worktree and changes location after
+    successful creation, like New-Repository. Use -NoSetLocation to keep the
+    caller's current directory. Failed creation and -WhatIf never change location.
     .PARAMETER BranchName
     Name of the branch.
     .PARAMETER Path
@@ -387,15 +391,24 @@ function Add-Worktree {
     Optional destination path for the new worktree. When omitted, the path is
     derived from the repository container and branch name.
     .PARAMETER SetLocation
-    Whether to change the current directory to the new worktree.
+    Temporary compatibility switch. -SetLocation still navigates to the new
+    worktree; -SetLocation:$false preserves the current directory. Prefer omitting
+    this switch to navigate, or use -NoSetLocation to stay. Cannot be combined
+    with -NoSetLocation, even when either switch is explicitly false.
+    .PARAMETER NoSetLocation
+    Do not change to the created worktree. Cannot be combined with -SetLocation.
     .EXAMPLE
-    Add-Worktree -BranchName feature/my-feature -SetLocation
+    Add-Worktree -BranchName feature/my-feature
     Checks out the existing branch to a new worktree and navigates to it.
     .EXAMPLE
+    Add-Worktree -BranchName feature/my-feature -NoSetLocation
+    Checks out the existing branch without changing the current directory.
+    .EXAMPLE
     Add-Worktree -Path C:\repos\project -BranchName feature/my-feature -WorktreePath ../custom-feature
-    Checks out the existing branch from the specified repository to the supplied worktree path.
+    Checks out the existing branch from the specified repository to the supplied
+    worktree path and navigates there. Relative destinations are resolved from -Path.
     #>
-    [CmdletBinding(SupportsShouldProcess)]
+    [CmdletBinding(SupportsShouldProcess, DefaultParameterSetName = 'Default')]
     param(
         [Parameter(Mandatory)]
         [ValidateNotNullOrEmpty()]
@@ -408,7 +421,11 @@ function Add-Worktree {
         [ValidateNotNullOrEmpty()]
         [string]$WorktreePath,
 
-        [switch]$SetLocation = $false
+        [Parameter(ParameterSetName = 'SetLocation')]
+        [switch]$SetLocation,
+
+        [Parameter(ParameterSetName = 'Default')]
+        [switch]$NoSetLocation
     )
     process {
         $repoPath = Resolve-GitRepositoryPath -Path $Path
@@ -426,7 +443,9 @@ function Add-Worktree {
                 -RepositoryPath $repoPath `
                 -Arguments @('worktree', 'add', $resolvedWorktreePath, $BranchName) `
                 -FailureContext "branch '$BranchName' at '$resolvedWorktreePath'"
-            if ($created -and $SetLocation) {
+            $changeLocation = -not $NoSetLocation -and
+                (-not $PSBoundParameters.ContainsKey('SetLocation') -or $SetLocation)
+            if ($created -and $changeLocation) {
                 Set-Location -LiteralPath (Resolve-CreatedWorktreePath -Path $resolvedWorktreePath -BasePath $repoPath)
             }
         }
@@ -465,11 +484,14 @@ function Get-GitBranchUser {
 function New-Worktree {
     <#
     .SYNOPSIS
-    Create a new branch, checked out to a worktree.
+    Create a new branch, check it out to a worktree and navigate to it.
     .DESCRIPTION
     Creates a new branch with a conventional prefix and checks it out to a worktree.
     The default kind is 'user', which produces user/<user>/<name>. The user
     segment comes from -UserName, GITHUB_USER, git user.email, or the OS user.
+    Changes location after successful creation, like New-Repository. Use
+    -NoSetLocation to keep the caller's current directory. Failed creation
+    and -WhatIf never change location.
     .PARAMETER WorkName
     Name of the branch, without the kind prefix.
     .PARAMETER Kind
@@ -478,31 +500,37 @@ function New-Worktree {
     User segment for user branches. Defaults to the current Git or OS identity.
     .PARAMETER NoPrefix
     Use WorkName as the branch name verbatim, without the kind prefix
-    (e.g. checking out an existing branch like 'main' or 'master').
+    (e.g. creating a branch named 'plain-work').
     .PARAMETER Path
     Directory inside the git working tree to create the worktree from. Defaults to the current location.
     .PARAMETER WorktreePath
     Optional destination path for the new worktree. When omitted, the path is
     derived from the repository container and branch name.
     .PARAMETER SetLocation
-    Whether to change the current directory to the new worktree.
+    Temporary compatibility switch. -SetLocation still navigates to the new
+    worktree; -SetLocation:$false preserves the current directory. Prefer omitting
+    this switch to navigate, or use -NoSetLocation to stay. Cannot be combined
+    with -NoSetLocation, even when either switch is explicitly false.
+    .PARAMETER NoSetLocation
+    Do not change to the created worktree. Cannot be combined with -SetLocation.
     .EXAMPLE
-    New-Worktree -WorkName my-feature -SetLocation
+    New-Worktree -WorkName my-feature
     Creates branch user/<user>/my-feature in a worktree and navigates to it.
     .EXAMPLE
-    New-Worktree -WorkName search-improvements -Kind feature
-    Creates branch feature/search-improvements in a worktree.
+    New-Worktree -WorkName search-improvements -Kind feature -NoSetLocation
+    Creates branch feature/search-improvements without changing the current directory.
     .EXAMPLE
-    New-Worktree -WorkName 2025.04 -Kind release -SetLocation
+    New-Worktree -WorkName 2025.04 -Kind release
     Creates branch release/2025.04 in a worktree and navigates to it.
     .EXAMPLE
-    New-Worktree -WorkName main -NoPrefix -SetLocation
-    Creates a worktree for a branch named exactly 'main' with no kind prefix.
+    New-Worktree -WorkName plain-work -NoPrefix
+    Creates a worktree for a new branch named exactly 'plain-work' and navigates to it.
     .EXAMPLE
     New-Worktree -Path C:\repos\project -WorkName my-feature -WorktreePath ../custom-feature
-    Creates branch user/<user>/my-feature from the specified repository in the supplied worktree path.
+    Creates branch user/<user>/my-feature from the specified repository in the supplied
+    worktree path and navigates there. Relative destinations are resolved from -Path.
     #>
-    [CmdletBinding(SupportsShouldProcess)]
+    [CmdletBinding(SupportsShouldProcess, DefaultParameterSetName = 'Default')]
     param(
         [Parameter(Mandatory, Position = 0)]
         [ValidateNotNullOrEmpty()]
@@ -523,7 +551,11 @@ function New-Worktree {
         [ValidateNotNullOrEmpty()]
         [string]$WorktreePath,
 
-        [switch]$SetLocation = $false
+        [Parameter(ParameterSetName = 'SetLocation')]
+        [switch]$SetLocation,
+
+        [Parameter(ParameterSetName = 'Default')]
+        [switch]$NoSetLocation
     )
     process {
         $repoPath = Resolve-GitRepositoryPath -Path $Path
@@ -553,7 +585,9 @@ function New-Worktree {
                 -RepositoryPath $repoPath `
                 -Arguments @('worktree', 'add', '-b', $branchName, $resolvedWorktreePath) `
                 -FailureContext "new branch '$branchName' at '$resolvedWorktreePath'"
-            if ($created -and $SetLocation) {
+            $changeLocation = -not $NoSetLocation -and
+                (-not $PSBoundParameters.ContainsKey('SetLocation') -or $SetLocation)
+            if ($created -and $changeLocation) {
                 Set-Location -LiteralPath (Resolve-CreatedWorktreePath -Path $resolvedWorktreePath -BasePath $repoPath)
             }
         }
