@@ -32,7 +32,7 @@ Import-Module Shmuelie.Git
 | `Repair-Worktree` | Repair worktree links after a repository or worktree move |
 | `Lock-Worktree` / `Unlock-Worktree` | Lock or unlock a worktree by branch name |
 | `Update-Worktrees` | Fast-forward every worktree for the current or `-Path` repository from upstream (`-ChangedOnly` emits only actionable results; forwards the `Sync-GitRemote` GitHub-account options to the fetch) |
-| `Update-AllWorktrees` | Discover repositories under `$env:SOURCE_REPOS` or a supplied `-Path` root and update each repository in parallel (`-ChangedOnly` emits compact actionable worktree rows) |
+| `Update-AllWorktrees` | Discover repositories under `$env:SOURCE_REPOS` or a supplied `-Path` root and update each repository in parallel (`-ChangedOnly` displays actionable results as wrapping multiline details) |
 | `Find-StaleBranch` | Find local branches in the current or `-Path` repository whose upstream branch is gone (`-IncludeNeverPushed` also includes local-only branches) |
 | `Remove-Branch` | Delete an exact local branch (`-Force` permits unmerged deletion) or a remote branch with `-Remote -RemoteName origin`; high-impact confirmation and `-WhatIf` protect every deletion |
 | `Get-GitStatusSummary` | Parse `git status` for the current or `-Path` repository into a typed object (branch, ahead/behind, conflicts, stash, operation) |
@@ -306,6 +306,28 @@ switch (or with `-ChangedOnly:$false`), every result is returned as before.
 Warnings and errors remain visible even when there is no result object.
 `-WhatIf` still displays the standard fetch and fast-forward previews without
 performing either operation or reporting a preview as a completed update.
+
+### Changed-only display across repositories
+
+`Update-AllWorktrees -ChangedOnly` displays each `AllWorktreesChangedResult` as
+compact multiline details. Status and behind-count share a line; organization,
+repository, branch, path and nonempty error text wrap instead of losing suffixes
+or disappearing in a narrow table. Empty error lines are omitted; multiline
+diagnostics are retained.
+
+For a wide-terminal overview, the original named table remains available. Its
+columns can still truncate at narrow widths, so use the default details view when
+you need the complete diagnostic. For results already captured in a variable:
+
+```powershell
+$results | Format-Table -View AllWorktreesChangedResult
+$results | Format-List Organization,Repository,Branch,Status,BehindBy,Path,Error
+```
+
+The default view changes only formatting. Results keep the same properties and
+values for filtering and CSV/JSON export, and continue streaming as ordinary
+objects. Update behavior, status filtering, warnings, errors and `-WhatIf` are
+unchanged. Other commands' default views are unaffected.
 
 ## Requirements
 
