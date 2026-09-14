@@ -254,10 +254,17 @@ function Update-AllWorktrees {
     with the organization, repository name, selected path, overall status, and
     the underlying WorktreeUpdateResult objects.
 
-    Use -ChangedOnly to emit one compact AllWorktreesChangedResult row per
+    Use -ChangedOnly to emit one AllWorktreesChangedResult object per
     updated, removed, or failed worktree. Repository context is retained on
     every row. The default repository-level result objects are unchanged when
     -ChangedOnly is omitted.
+
+    Changed-only results display as wrapping multiline details by default, with
+    status and behind-count together and no empty error line. For a wide-terminal
+    overview, pipe to Format-Table -View AllWorktreesChangedResult. For captured
+    results, Format-List Organization,Repository,Branch,Status,BehindBy,Path,Error
+    shows the full details. These are display choices; the output objects and
+    update behavior do not change.
 
     The default root is `$env:SOURCE_REPOS` when it is set; otherwise the current
     directory is used. A missing root produces a clear non-terminating error and
@@ -310,7 +317,7 @@ function Update-AllWorktrees {
     Shows which repositories would be updated without fetching or merging.
     .EXAMPLE
     Update-AllWorktrees -Organization example -ChangedOnly
-    Shows a compact row for each updated, removed, or failed worktree.
+    Shows multiline details for each updated, removed, or failed worktree.
     #>
     [OutputType('AllWorktreesUpdateResult', 'AllWorktreesChangedResult')]
     [CmdletBinding(SupportsShouldProcess)]

@@ -112,6 +112,45 @@
 
     <!-- AllWorktreesChangedResult: Update-AllWorktrees -ChangedOnly -->
     <View>
+      <Name>AllWorktreesChangedResultDetails</Name>
+      <ViewSelectedBy>
+        <TypeName>AllWorktreesChangedResult</TypeName>
+      </ViewSelectedBy>
+      <CustomControl>
+        <CustomEntries>
+          <CustomEntry>
+            <CustomItem>
+              <Text>Status: </Text>
+              <ExpressionBinding><PropertyName>Status</PropertyName></ExpressionBinding>
+              <Text> (Behind: </Text>
+              <ExpressionBinding><PropertyName>BehindBy</PropertyName></ExpressionBinding>
+              <Text>)</Text>
+              <NewLine/>
+              <Text>Organization: </Text>
+              <ExpressionBinding><PropertyName>Organization</PropertyName></ExpressionBinding>
+              <NewLine/>
+              <Text>Repository: </Text>
+              <ExpressionBinding><PropertyName>Repository</PropertyName></ExpressionBinding>
+              <NewLine/>
+              <Text>Branch: </Text>
+              <ExpressionBinding><PropertyName>Branch</PropertyName></ExpressionBinding>
+              <NewLine/>
+              <Text>Path: </Text>
+              <ExpressionBinding><PropertyName>Path</PropertyName></ExpressionBinding>
+              <NewLine/>
+              <ExpressionBinding>
+                <ItemSelectionCondition><ScriptBlock>-not [string]::IsNullOrEmpty($_.Error)</ScriptBlock></ItemSelectionCondition>
+                <ScriptBlock>"Error: $($_.Error)`n"</ScriptBlock>
+              </ExpressionBinding>
+              <NewLine/>
+            </CustomItem>
+          </CustomEntry>
+        </CustomEntries>
+      </CustomControl>
+    </View>
+
+    <!-- Retained for explicit Format-Table -View AllWorktreesChangedResult. -->
+    <View>
       <Name>AllWorktreesChangedResult</Name>
       <ViewSelectedBy>
         <TypeName>AllWorktreesChangedResult</TypeName>
