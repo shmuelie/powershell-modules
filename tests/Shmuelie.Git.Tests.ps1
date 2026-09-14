@@ -4441,6 +4441,138 @@ Describe 'Find-StaleBranch' {
     }
 }
 
+Describe 'AllWorktreesChangedResult formatting' {
+    BeforeAll {
+        function New-ChangedResultFixture {
+            param([switch]$Long, [string]$Status = 'Updated')
+            [pscustomobject][ordered]@{
+                PSTypeName = 'AllWorktreesChangedResult'
+                Organization = if ($Long) { 'organization-' + ('abcdef0123456789' * 18) + '-org-end' } else { 'example' }
+                Repository = if ($Long) { 'repository-' + ('9876543210fedcba' * 19) + '-repo-end' } else { 'short' }
+                Branch = if ($Long) { 'feature/' + ('long-branch-' * 28) + 'branch-end' } else { '' }
+                Status = $Status
+                BehindBy = if ($Long) { [int]::MaxValue } else { 0 }
+                Path = if ($Long) { '/repos/' + ('unbroken-path-' * 30) + 'path-end' } else { '/repos/short' }
+                Error = if ($Long) {
+                    ('Failed to update the selected worktree; retain all local changes. ' * 7) +
+                    "`r`n`r`nRecovery: " + ('diagnostic-' * 24) + "error-end`nFinal instruction: retry only after resolving the conflict."
+                } else { $null }
+            }
+        }
+    }
+
+    It 'keeps the multiline default and the explicitly selectable legacy table' {
+        $views = (Get-FormatData -TypeName AllWorktreesChangedResult).FormatViewDefinition
+        $views[0].Name | Should -BeExactly 'AllWorktreesChangedResultDetails'
+        $views[0].Control | Should -BeOfType ([System.Management.Automation.CustomControl])
+        $table = @($views | Where-Object Name -EQ AllWorktreesChangedResult)
+        $table | Should -HaveCount 1
+        $table[0].Control | Should -BeOfType ([System.Management.Automation.TableControl])
+        $table[0].Control.Headers.Label | Should -Be @('Organization', 'Repository', 'Branch', 'Status', 'Behind', 'Path', 'Error')
+    }
+
+    It 'preserves every value at <Width> columns after a short success' -ForEach @(
+        @{ Width = 80 }; @{ Width = 100 }; @{ Width = 120 }; @{ Width = 160 }
+    ) {
+        $rows = @(
+            New-ChangedResultFixture
+            New-ChangedResultFixture -Long -Status Failed
+            New-ChangedResultFixture -Long -Status StashFailed
+        )
+        $before = ConvertTo-Json -InputObject $rows -Depth 4 -Compress
+        $rendered = $rows | Out-String -Width $Width
+        $expected = foreach ($row in $rows) {
+            "Status: $($row.Status) (Behind: $($row.BehindBy))"
+            "Organization: $($row.Organization)"
+            "Repository: $($row.Repository)"
+            "Branch: $($row.Branch)"
+            "Path: $($row.Path)"
+            if ($row.Error) { "Error: $($row.Error)" }
+        }
+        # Ignore only whitespace introduced by wrapping; compare every field's
+        # complete content and order, so a missing column or suffix still fails.
+        ($rendered -replace '\s', '') | Should -BeExactly (($expected -join "`n") -replace '\s', '')
+        @($rendered -split '\r?\n' | Where-Object { $_.Length -gt $Width }) | Should -HaveCount 0
+        @([regex]::Matches($rendered, '(?m)^Status: (Updated|Failed|StashFailed) \(Behind: \d+\)\r?$')) | Should -HaveCount 3
+        @([regex]::Matches($rendered, '(?m)^Error: ')) | Should -HaveCount 2
+        $rendered | Should -Match '\r?\n\r?\nRecovery: '
+        (ConvertTo-Json -InputObject $rows -Depth 4 -Compress) | Should -BeExactly $before
+    }
+
+    It 'omits the error label for <Kind> errors while retaining empty branch and zero behind' -ForEach @(
+        @{ Kind = 'null'; Value = $null }; @{ Kind = 'empty'; Value = '' }
+    ) {
+        $row = New-ChangedResultFixture
+        $row.Error = $Value
+        $rendered = $row | Out-String -Width 80
+        $rendered | Should -Not -Match '(?m)^Error:'
+        $rendered | Should -Match '(?m)^Branch: *\r?$'
+        $rendered | Should -Match '(?m)^Status: Updated \(Behind: 0\)\r?$'
+    }
+
+    It 'preserves whitespace-only errors rather than silently treating them as absent' {
+        $row = New-ChangedResultFixture
+        $row.Error = '   '
+        ($row | Out-String -Width 80) | Should -Match '(?m)^Error:'
+    }
+
+    It 'renders a table only when explicitly requested' {
+        $row = New-ChangedResultFixture
+        $row.Branch = 'main'
+        $row.Error = 'example diagnostic'
+        $rendered = $row | Format-Table -View AllWorktreesChangedResult | Out-String -Width 160
+        $rendered | Should -Match 'Organization\s+Repository\s+Branch\s+Status\s+Behind\s+Path\s+Error'
+        foreach ($value in 'example', 'short', 'main', 'Updated', '0', '/repos/short', 'example diagnostic') {
+            $rendered | Should -Match ([regex]::Escape($value))
+        }
+        $rendered | Should -Not -Match '(?m)^Status:'
+    }
+
+    It 'does not change the repository summary or single-repository worktree default' {
+        foreach ($name in 'AllWorktreesUpdateResult', 'WorktreeUpdateResult') {
+            (Get-FormatData -TypeName $name).FormatViewDefinition[0].Control |
+                Should -BeOfType ([System.Management.Automation.TableControl])
+        }
+    }
+
+    It 'keeps typed results streamable, filterable and exportable without format records' {
+        InModuleScope Shmuelie.Git {
+            $events = [System.Collections.Generic.List[string]]::new()
+            $rows = @(
+                & {
+                    foreach ($name in 'first', 'second') {
+                        $events.Add("input:$name")
+                        [pscustomobject]@{
+                            Organization = 'example'; Repository = $name; Path = "/repos/$name"
+                            Status = 'Completed'; Error = $null
+                            WorktreeResults = @(
+                                [pscustomobject]@{ Branch = 'main'; Status = 'Updated'; BehindBy = 2; Path = "/repos/$name/main" }
+                                [pscustomobject]@{ Branch = 'current'; Status = 'Current'; BehindBy = 0; Path = "/repos/$name/current" }
+                            )
+                        }
+                    }
+                } | ConvertTo-UpdateAllWorktreesOutput -ChangedOnly | ForEach-Object {
+                    $events.Add("output:$($_.Repository)")
+                    $_
+                }
+            )
+            $events | Should -Be @('input:first', 'output:first', 'input:second', 'output:second')
+            $rows | Should -HaveCount 2
+            foreach ($row in $rows) {
+                $row.PSTypeNames[0] | Should -BeExactly 'AllWorktreesChangedResult'
+                @($row.PSObject.Properties.Name) | Should -Be @('Organization', 'Repository', 'Branch', 'Status', 'BehindBy', 'Path', 'Error')
+            }
+            @($rows | Where-Object Status -EQ Updated) | Should -HaveCount 2
+            $jsonRows = @($rows | ConvertTo-Json -Depth 4 | ConvertFrom-Json)
+            $csvRows = @($rows | ConvertTo-Csv -NoTypeInformation | ConvertFrom-Csv)
+            $jsonRows.Repository | Should -Be @('first', 'second')
+            $csvRows.Path | Should -Be @('/repos/first/main', '/repos/second/main')
+            $jsonRows.BehindBy | Should -Be @(2, 2)
+            $csvRows.BehindBy | Should -Be @('2', '2')
+        }
+    }
+}
+
 Describe 'Update-AllWorktrees' -Skip:(-not (Get-Command git -ErrorAction SilentlyContinue)) {
     BeforeAll {
         function New-LayoutRepo {

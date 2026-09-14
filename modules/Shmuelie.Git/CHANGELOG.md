@@ -6,6 +6,12 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+### Fixed
+- `Update-AllWorktrees -ChangedOnly` defaults to wrapping multiline details,
+  preserving full identities, paths and diagnostics at narrow terminal widths.
+  The original `AllWorktreesChangedResult` table remains explicitly selectable;
+  output objects and update behavior are unchanged. (#203)
+
 ## [0.10.0] - 2026-09-11
 
 ### Changed
