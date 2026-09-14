@@ -40,14 +40,75 @@ internal static class AppInstallOperationWaiter
 {
     internal static T Wait<T>(IAppInstallAsyncOperation<T> operation, CancellationToken stopWaiting)
     {
+        var phase = AppInstallErrorPhase.LocalWait;
+        AppInstallAsyncState? state = null;
+        return WaitCore(operation, stopWaiting, ref phase, ref state);
+    }
+
+    internal static T WaitAndDispose<T>(string sourceOperation, IAppInstallAsyncOperation<T> operation,
+        CancellationToken stopWaiting)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(sourceOperation);
+        ArgumentNullException.ThrowIfNull(operation);
+        var phase = AppInstallErrorPhase.LocalWait;
+        AppInstallAsyncState? state = null;
+        Exception? primary = null;
+        AppInstallError? translatedPrimary = null;
+        try
+        {
+            return WaitCore(operation, stopWaiting, ref phase, ref state);
+        }
+        catch (Exception error)
+        {
+            // Preserve every failure across cleanup; translation is a separate policy.
+            primary = error;
+            if (AppInstallError.IsOperational(error))
+            {
+                translatedPrimary = AppInstallError.Capture(sourceOperation, phase, error, state == AppInstallAsyncState.Canceled);
+                throw new AppInstallOperationException(translatedPrimary);
+            }
+            throw;
+        }
+        finally
+        {
+            try { operation.Dispose(); }
+            catch (Exception cleanup)
+            {
+                if (translatedPrimary is not null)
+                {
+                    var secondary = AppInstallError.Capture(sourceOperation, AppInstallErrorPhase.Cleanup, cleanup);
+                    throw new AppInstallOperationException(translatedPrimary.WithCleanup(secondary));
+                }
+                if (primary is not null)
+                    throw new AppInstallCleanupException(sourceOperation, phase, primary, cleanup);
+                if (AppInstallError.IsOperational(cleanup))
+                    throw new AppInstallOperationException(
+                        AppInstallError.Capture(sourceOperation, AppInstallErrorPhase.Cleanup, cleanup));
+                throw;
+            }
+        }
+    }
+
+    private static T WaitCore<T>(IAppInstallAsyncOperation<T> operation, CancellationToken stopWaiting,
+        ref AppInstallErrorPhase phase, ref AppInstallAsyncState? state)
+    {
         ArgumentNullException.ThrowIfNull(operation);
         // Poll only native completion state on the execution thread. No worker,
         // WinRT Completed handler, or task is left behind when waiting stops.
         while (true)
         {
+            phase = AppInstallErrorPhase.LocalWait;
             stopWaiting.ThrowIfCancellationRequested();
-            if (operation.State != AppInstallAsyncState.Started)
-                return operation.GetResult();
+            phase = AppInstallErrorPhase.AsyncStatus;
+            state = operation.State;
+            if (state != AppInstallAsyncState.Started)
+            {
+                phase = AppInstallErrorPhase.AsyncResult;
+                T result = operation.GetResult();
+                if (state != AppInstallAsyncState.Completed)
+                    throw new InvalidOperationException("A non-completed native operation returned a result.");
+                return result;
+            }
             stopWaiting.WaitHandle.WaitOne(50);
         }
     }

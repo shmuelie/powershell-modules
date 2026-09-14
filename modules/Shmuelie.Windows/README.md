@@ -56,6 +56,14 @@ This foundation is separate from the `.appinstaller` helpers below. No queue
 inventory, settings, search, install, entitlement, control, or `ForUser` cmdlets
 are exported. See [the context contract](../../docs/appinstall.md).
 
+The foundation also defines immutable identity/group, status, request,
+entitlement and error snapshots for later commands. Unknown and unavailable
+values are not empty/false successes. Local correlation IDs are not native IDs
+or account/SID mappings. Request acceptance, native async completion,
+installation terminal state, staging and launch readiness remain distinct.
+See [snapshot contracts and the API/options matrix](../../docs/appinstall.md#immutable-snapshot-contracts)
+for the cleared future subset and the still-gated families.
+
 ## App Installer request results
 
 `Update-AppInstallerApp` still emits nothing by default. Opt in to typed

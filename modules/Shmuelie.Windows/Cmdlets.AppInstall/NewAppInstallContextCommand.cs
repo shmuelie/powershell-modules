@@ -23,9 +23,9 @@ public sealed class NewAppInstallContextCommand : PSCmdlet
     {
         if (!availability.IsSupportedPlatform)
         {
-            ThrowTerminatingError(new ErrorRecord(
+            ThrowTerminatingError(AppInstallError.Capture("New-AppInstallContext", AppInstallErrorPhase.Availability,
                 new PlatformNotSupportedException("New-AppInstallContext requires Windows 10 build 19041 or later."),
-                "AppInstallPlatformUnavailable", ErrorCategory.NotImplemented, null));
+                nativeCanceled: false).ToErrorRecord());
         }
 
         if (!ShouldProcess("Current runspace", "Create a lazy AppInstall context (no native activation)"))

@@ -531,8 +531,27 @@ Describe 'AppInstall foundation (hermetic)' -Tag AppInstallFoundation -Skip:(-no
         'LazyCreation', 'Reuse', 'IndependentContexts', 'PlatformGate', 'TypeGate', 'MemberGate',
         'AccessDenied', 'WrongRunspace', 'Dispose', 'RunspaceClose',
         'AsyncSuccess', 'AsyncFailure', 'NativeCancellation', 'StopWaiting', 'EventCleanup'
+        'DisposeBeforeActivation', 'ClosedRunspace', 'ClosingRunspace', 'MemberGateAfterActivation',
+        'FailedActivationDispose', 'ActivatedContextSurvivesModuleRemoval'
     ) {
         { [Shmuelie.Windows.AppInstall.Tests.ContextScenarios]::Run($_) } | Should -Not -Throw
+    }
+
+    It 'preserves the immutable snapshot/native error contract: <_>' -ForEach @(
+        'ObservationStates', 'ObservationValidation', 'Identity', 'IdentityValidation', 'ImmutableProperties',
+        'DeepCollectionCopy', 'GroupValidation', 'IndependentCompletionStates', 'StatusValidation',
+        'RequestAvailability', 'EntitlementObservation', 'SnapshotSerialization', 'ErrorRecord',
+        'ErrorCollectionCopy', 'ErrorSerialization', 'GateErrorKinds', 'ProjectedAsyncSuccess',
+        'CapturedErrorMetadata',
+        'ProjectedAsyncPendingCompletion', 'ProjectedArgumentAndCloseFailure',
+        'MappedInvalidCastAndCleanup', 'MappedNullReferenceAndCleanup',
+        'OperationalPrimaryAndUnclassifiedCleanup', 'UnclassifiedPrimaryAndCleanup', 'BothFailuresUnclassified',
+        'UnclassifiedFailureWithoutCleanup', 'UnclassifiedCleanupOnly', 'OperationalFailureWithoutCleanup',
+        'UnclassifiedStatusAndCleanup',
+        'ProjectedNativeCancellation', 'ProjectedResultAndCloseFailure', 'ProjectedStatusAndCleanupFailure',
+        'ProjectedCleanupOnlyFailure', 'ProjectedLocalCancellation'
+    ) {
+        { [Shmuelie.Windows.AppInstall.Tests.ContractScenarios]::Run($_) } | Should -Not -Throw
     }
 
     It 'exports only the context factory from the new assembly' {
@@ -566,6 +585,38 @@ Describe 'AppInstall foundation (hermetic)' -Tag AppInstallFoundation -Skip:(-no
         ($help.description.Text -join ' ') | Should -Match 'does not check or grant native authorization'
     }
 
+    It 'documents the complete <Section> matrix without treating plans as exports' -ForEach @(
+        @{ Section = 'Manager properties \(5\)'; Names = @(
+            'AppInstallItems', 'AppInstallItemsWithGroupSupport', 'AcquisitionIdentity', 'AutoUpdateSetting', 'CanInstallForAllUsers'
+        ) }
+        @{ Section = 'Manager methods \(23 families\)'; Names = @(
+            'Cancel', 'GetFreeDeviceEntitlementAsync', 'GetFreeUserEntitlementAsync', 'GetFreeUserEntitlementForUserAsync',
+            'GetIsAppAllowedToInstallAsync', 'GetIsAppAllowedToInstallForUserAsync', 'GetIsApplicableAsync',
+            'GetIsApplicableForUserAsync', 'GetIsPackageIdentityAllowedToInstallAsync',
+            'GetIsPackageIdentityAllowedToInstallForUserAsync', 'IsStoreBlockedByPolicyAsync',
+            'MoveToFrontOfDownloadQueue', 'Pause', 'Restart', 'SearchForAllUpdatesAsync',
+            'SearchForAllUpdatesForUserAsync', 'SearchForUpdatesAsync', 'SearchForUpdatesForUserAsync',
+            'StartAppInstallAsync', 'StartProductInstallAsync', 'StartProductInstallForUserAsync',
+            'UpdateAppByPackageFamilyNameAsync', 'UpdateAppByPackageFamilyNameForUserAsync'
+        ) }
+        @{ Section = 'Manager events \(2\)'; Names = @('ItemCompleted', 'ItemStatusChanged') }
+        @{ Section = 'AppUpdateOptions \(3\)'; Names = @(
+            'AutomaticallyDownloadAndInstallUpdateIfFound', 'AllowForcedAppRestart', 'CatalogId'
+        ) }
+        @{ Section = 'AppInstallOptions \(15\)'; Names = @(
+            'AllowForcedAppRestart', 'CampaignId', 'CatalogId', 'CompletedInstallToastNotificationMode',
+            'ExtendedCampaignId', 'ForceUseOfNonRemovableStorage', 'InstallForAllUsers',
+            'InstallInProgressToastNotificationMode', 'LaunchAfterInstall', 'PinToDesktopAfterInstall',
+            'PinToStartAfterInstall', 'PinToTaskbarAfterInstall', 'Repair', 'StageButDoNotInstall', 'TargetVolume'
+        ) }
+    ) {
+        $document = Get-Content (Join-Path $repoRoot 'docs' 'appinstall.md') -Raw
+        $table = [regex]::Match($document, "(?ms)^### $Section\r?`n(.*?)(?=^##|\z)").Groups[1].Value
+        $actual = @([regex]::Matches($table, '(?m)^\| `(\w+)` \|') |
+            ForEach-Object { $_.Groups[1].Value } | Sort-Object)
+        $actual | Should -Be @($Names | Sort-Object)
+    }
+
     It 'loads <Layout> safely in a fresh process (simulated non-Windows: <Portable>)' -ForEach @(
         @{ Layout = 'Source'; Portable = $false }
         @{ Layout = 'Packaged'; Portable = $false }
@@ -585,7 +636,20 @@ Describe 'AppInstall foundation (hermetic)' -Tag AppInstallFoundation -Skip:(-no
             $result.CommandCount | Should -Be 1
             $result.IsActivated | Should -BeFalse
             $result.HelpAvailable | Should -BeTrue
+            $result.SurvivesModuleRemoval | Should -BeTrue
         }
+    }
+
+    It 'fails explicitly when shipped projection dependency <_> is missing' -ForEach @(
+        'Microsoft.Windows.SDK.NET.dll', 'WinRT.Runtime.dll'
+    ) {
+        $broken = Join-Path $TestDrive "missing-$_"
+        Copy-Item $packagedDirectory[0].FullName $broken -Recurse
+        Remove-Item -LiteralPath (Join-Path $broken 'bin' $_) -Force
+        $output = & pwsh -NoProfile -NonInteractive -File (Join-Path $repoRoot 'tests' 'fixtures' 'Test-AppInstallModuleImport.ps1') `
+            -ManifestPath (Join-Path $broken 'Shmuelie.Windows.psd1') -ExpectedMissingDependency $_
+        $LASTEXITCODE | Should -Be 0
+        ($output | ConvertFrom-Json).MissingDependency | Should -BeExactly $_
     }
 }
 

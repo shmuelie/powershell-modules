@@ -12,6 +12,12 @@ Versions change only when a release is cut; unreleased work stays under
   disposal. Creating a context performs no native activation or search. The
   documented private-capability restriction remains applicable; observed
   runtime access is not an official third-party support guarantee.
+- Immutable AppInstall identity/group, status, request, entitlement and error
+  contracts with explicit unknown/unavailable observations. Native HRESULTs,
+  original exceptions, local/native cancellation and secondary cleanup errors
+  remain distinct; no install completion is inferred from request completion.
+- A complete AppInstallManager API/options matrix documenting the deferred,
+  gated and retired families without exporting their commands.
 
 ## [0.2.0] - 2026-09-11
 

@@ -42,7 +42,9 @@ public sealed class AppInstallContext : IDisposable
     public bool IsDisposed { get { lock (sync) return disposed; } }
 
     // Integration seam for later cmdlets: require this explicit context, check
-    // every member before activation/invocation, and return only snapshots.
+    // every member before activation/invocation. Keep the callback to a short
+    // native invocation; wait for returned operations outside this lifecycle
+    // lock. A synchronous native call cannot be forcibly canceled by Dispose.
     internal T Use<T>(AppInstallMember member, Func<IAppInstallManagerAdapter, T> operation)
     {
         ArgumentNullException.ThrowIfNull(member);

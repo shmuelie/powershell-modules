@@ -90,6 +90,62 @@ public static class ContextScenarios
                 owner.Close();
                 Check(context.IsDisposed && owned.DisposeCount == 1, name);
                 break;
+            case "DisposeBeforeActivation":
+                context.Dispose();
+                Expect<ObjectDisposedException>(() => context.Use(Getter, _ => true));
+                Check(activation.Count == 0 && availability.NativeChecks == 0, name);
+                break;
+            case "ClosedRunspace":
+                owner.Close();
+                Expect<InvalidOperationException>(() => new AppInstallContext(owner, availability, activation));
+                Expect<ObjectDisposedException>(() => context.Use(Getter, _ => true));
+                Check(activation.Count == 0, name);
+                break;
+            case "ClosingRunspace":
+                bool rejectedWhileClosing = false;
+                EventHandler<RunspaceStateEventArgs> onClosing = (_, args) =>
+                {
+                    if (args.RunspaceStateInfo.State == RunspaceState.Closing)
+                    {
+                        Expect<InvalidOperationException>(() => new AppInstallContext(owner, availability, activation));
+                        rejectedWhileClosing = true;
+                    }
+                };
+                owner.StateChanged += onClosing;
+                try { owner.Close(); }
+                finally { owner.StateChanged -= onClosing; }
+                Check(rejectedWhileClosing && context.IsDisposed && activation.Count == 0, name);
+                break;
+            case "MemberGateAfterActivation":
+                context.Use(Getter, _ => true);
+                availability.MemberPresent = false;
+                Expect<MissingMemberException>(() => context.Use(Getter, _ => true));
+                Check(activation.Count == 1, name);
+                break;
+            case "FailedActivationDispose":
+                activation.Failure = new COMException("Synthetic activation failure.");
+                Expect<COMException>(() => context.Use(Getter, _ => true));
+                context.Dispose();
+                Check(context.IsDisposed && !context.IsActivated && activation.Count == 1, name);
+                break;
+            case "ActivatedContextSurvivesModuleRemoval":
+                var retained = (FakeManager)context.Use(Getter, manager => manager);
+                using (var pipeline = System.Management.Automation.PowerShell.Create())
+                {
+                    pipeline.Runspace = owner;
+                    pipeline.AddCommand("Import-Module").AddParameter("Name", typeof(AppInstallContext).Assembly.Location);
+                    pipeline.Invoke();
+                    Check(!pipeline.HadErrors, name);
+                    pipeline.Commands.Clear();
+                    pipeline.AddCommand("Remove-Module").AddParameter("Name", "Shmuelie.Windows.AppInstall").AddParameter("Force");
+                    pipeline.Invoke();
+                    Check(!pipeline.HadErrors, name);
+                    Check(!context.IsDisposed && ReferenceEquals(retained, context.Use(Getter, manager => manager)) &&
+                        retained.DisposeCount == 0, name);
+                }
+                owner.Close();
+                Check(context.IsDisposed && retained.DisposeCount == 1, name);
+                break;
             case "AsyncSuccess":
                 using (var operation = new FakeOperation(AppInstallAsyncState.Completed))
                     Check(AppInstallOperationWaiter.Wait(operation, CancellationToken.None) == "synthetic result", name);
