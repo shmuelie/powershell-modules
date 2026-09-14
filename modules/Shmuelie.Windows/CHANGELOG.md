@@ -6,6 +6,13 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+### Added
+- Experimental compiled `New-AppInstallContext` factory with explicit lazy
+  manager ownership, caller scope, runspace-bound lifetime and deterministic
+  disposal. Creating a context performs no native activation or search. The
+  documented private-capability restriction remains applicable; observed
+  runtime access is not an official third-party support guarantee.
+
 ## [0.2.0] - 2026-09-11
 
 ### Added

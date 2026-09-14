@@ -95,6 +95,7 @@ if ($Module -eq 'Shmuelie.Windows') {
     dotnet build (Join-Path $source 'Cmdlets' 'Shmuelie.Windows.Cmdlets.csproj') `
         --configuration Release `
         --output $cmdletsBuild `
+        "-bl:$(Join-Path $OutputPath "windows-cmdlets-$([guid]::NewGuid()).binlog")" `
         --nologo
     if ($LASTEXITCODE -ne 0) {
         throw 'Shmuelie.Windows.Cmdlets build failed.'
@@ -113,6 +114,7 @@ if ($Module -eq 'Shmuelie.Windows') {
     dotnet publish (Join-Path $source 'Cmdlets.AppInstaller' 'Shmuelie.Windows.AppInstaller.csproj') `
         --configuration Release `
         --output $appInstallerBuild `
+        "-bl:$(Join-Path $OutputPath "windows-appinstaller-$([guid]::NewGuid()).binlog")" `
         --nologo
     if ($LASTEXITCODE -ne 0) {
         throw 'Shmuelie.Windows.AppInstaller publish failed.'
@@ -121,6 +123,28 @@ if ($Module -eq 'Shmuelie.Windows') {
         Copy-Item (Join-Path $appInstallerBuild $dll) $bin
     }
     Remove-Item $appInstallerBuild -Recurse -Force
+
+    $appInstallBuild = Join-Path $OutputPath '.windows-appinstall-build'
+    if (Test-Path $appInstallBuild) {
+        Remove-Item $appInstallBuild -Recurse -Force
+    }
+    dotnet publish (Join-Path $source 'Cmdlets.AppInstall' 'Shmuelie.Windows.AppInstall.csproj') `
+        --configuration Release `
+        --output $appInstallBuild `
+        "-bl:$(Join-Path $OutputPath "windows-appinstall-$([guid]::NewGuid()).binlog")" `
+        --nologo
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Shmuelie.Windows.AppInstall publish failed.'
+    }
+    foreach ($dependency in 'Microsoft.Windows.SDK.NET.dll', 'WinRT.Runtime.dll') {
+        if ((Get-FileHash (Join-Path $appInstallBuild $dependency)).Hash -ne
+            (Get-FileHash (Join-Path $bin $dependency)).Hash) {
+            throw "The Windows assemblies require different copies of $dependency."
+        }
+    }
+    Copy-Item (Join-Path $appInstallBuild 'Shmuelie.Windows.AppInstall.dll') $bin
+    Copy-Item (Join-Path $appInstallBuild 'en-US') $bin -Recurse
+    Remove-Item $appInstallBuild -Recurse -Force
 }
 
 # Validate the staged module in a short-lived child pwsh process so that every

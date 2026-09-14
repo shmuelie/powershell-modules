@@ -156,6 +156,8 @@ Highlights:
 
 - `Get-InstalledApplications` queries Windows uninstall registry state.
 - `Get-ServiceProcess` resolves a Windows service to its hosting process.
+- [`New-AppInstallContext`](appinstall.md) creates an experimental lazy context;
+  it does not activate the manager or perform installation or search.
 - `Get-WindowsTerminalSettings` and `Get-WindowsTerminalProfile` inspect Windows Terminal configuration.
 - `Start-WindowsPerformanceRecorder` and `Stop-WindowsPerformanceRecorder` wrap WPR tracing.
 

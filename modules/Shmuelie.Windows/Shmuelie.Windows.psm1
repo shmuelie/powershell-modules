@@ -18,6 +18,11 @@ if ($IsWindows) {
         Import-Module $appInstallerModule -Force -ErrorAction Stop
         $exportedCmdlets += 'Get-AppInstallerApp', 'Update-AppInstallerApp'
     }
+    $appInstallModule = Join-Path $PSScriptRoot 'bin' 'Shmuelie.Windows.AppInstall.dll'
+    if (Test-Path $appInstallModule) {
+        Import-Module $appInstallModule -Force -ErrorAction Stop
+        $exportedCmdlets += 'New-AppInstallContext'
+    }
 }
 
 $exportParams = @{

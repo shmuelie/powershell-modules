@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<helpItems xmlns="http://msh" schema="maml">
+  <command:command xmlns:maml="http://schemas.microsoft.com/maml/2004/10" xmlns:command="http://schemas.microsoft.com/maml/dev/command/2004/10" xmlns:dev="http://schemas.microsoft.com/maml/dev/2004/10">
+    <command:details>
+      <command:name>New-AppInstallContext</command:name>
+      <command:verb>New</command:verb>
+      <command:noun>AppInstallContext</command:noun>
+      <maml:description><maml:para>Creates an experimental, runspace-owned AppInstall context without activating the native manager.</maml:para></maml:description>
+    </command:details>
+    <maml:description>
+      <maml:para>Returns a caller-owned IDisposable context. Creation performs no search, installation, native activation, account lookup, or settings operation. Dispose the context in finally. It is also disposed when its owning runspace closes. Later operations must reuse this explicit context in the same runspace; it cannot be used from another runspace or remoting session. Removing the module does not dispose caller-owned contexts.</maml:para>
+      <maml:para>Windows 10 build 19041 or later and PowerShell 7.4 or later are required. Microsoft documents AppInstallManager access as protected by a private capability restricted to Microsoft-developed apps. Observed runtime access is not an official third-party support guarantee. Creating a context does not check or grant native authorization.</maml:para>
+    </maml:description>
+    <command:syntax><command:syntaxItem><maml:name>New-AppInstallContext</maml:name></command:syntaxItem></command:syntax>
+    <command:parameters />
+    <command:inputTypes><command:inputType><dev:type><maml:name>None</maml:name></dev:type></command:inputType></command:inputTypes>
+    <command:returnValues><command:returnValue><dev:type><maml:name>Shmuelie.Windows.AppInstall.AppInstallContext</maml:name></dev:type></command:returnValue></command:returnValues>
+    <maml:alertSet><maml:alert><maml:para>No inventory, search, settings, control, entitlement, or ForUser command is provided by this foundation.</maml:para></maml:alert></maml:alertSet>
+    <command:examples><command:example>
+      <maml:title>Example 1: Create and dispose a context</maml:title>
+      <dev:code>$context = New-AppInstallContext
+try { $context.ContextId } finally { $context.Dispose() }</dev:code>
+      <dev:remarks><maml:para>The context ID is local correlation, not an account or native installation ID.</maml:para></dev:remarks>
+    </command:example></command:examples>
+    <command:relatedLinks><maml:navigationLink>
+      <maml:linkText>AppInstallManager reference and access restriction</maml:linkText>
+      <maml:uri>https://learn.microsoft.com/uwp/api/windows.applicationmodel.store.preview.installcontrol.appinstallmanager</maml:uri>
+    </maml:navigationLink></command:relatedLinks>
+  </command:command>
+</helpItems>

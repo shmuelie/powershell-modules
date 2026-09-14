@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>Shmuelie.Windows.AppInstall</RootNamespace>
+    <AssemblyName>Shmuelie.Windows.AppInstall</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.PowerShell.SDK" Version="7.4.0" PrivateAssets="all" />
+    <InternalsVisibleTo Include="Shmuelie.Windows.AppInstall.Tests" />
+    <None Include="..\en-US\Shmuelie.Windows.AppInstall.dll-Help.xml"
+          Link="en-US\Shmuelie.Windows.AppInstall.dll-Help.xml"
+          CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>
