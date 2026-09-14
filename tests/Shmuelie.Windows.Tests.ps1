@@ -2,9 +2,11 @@
 
 BeforeAll {
     $repoRoot = Split-Path (Split-Path $PSCommandPath -Parent) -Parent
+    $binlogRoot = Join-Path $repoRoot 'artifacts' 'windows-tests'
+    New-Item -ItemType Directory -Path $binlogRoot -Force | Out-Null
     $cmdletsProject = Join-Path $repoRoot 'modules' 'Shmuelie.Windows' 'Cmdlets' 'Shmuelie.Windows.Cmdlets.csproj'
     $cmdletsBin = Join-Path $repoRoot 'modules' 'Shmuelie.Windows' 'bin'
-    dotnet build $cmdletsProject --configuration Release --output $cmdletsBin --nologo
+    dotnet build $cmdletsProject --configuration Release --output $cmdletsBin --nologo "-bl:$(Join-Path $binlogRoot "windows-cmdlets-$([guid]::NewGuid()).binlog")"
     if ($LASTEXITCODE -ne 0) {
         throw 'Shmuelie.Windows.Cmdlets build failed; cannot run Shmuelie.Windows tests.'
     }
@@ -12,9 +14,14 @@ BeforeAll {
         $appInstallerProject = Join-Path $repoRoot 'modules' 'Shmuelie.Windows' 'Cmdlets.AppInstaller' 'Shmuelie.Windows.AppInstaller.csproj'
         # Publish so the WinRT projection runtime assemblies land next to the
         # cmdlet DLL in the shared source bin; a plain build omits them.
-        dotnet publish $appInstallerProject --configuration Release --output $cmdletsBin --nologo
+        dotnet publish $appInstallerProject --configuration Release --output $cmdletsBin --nologo "-bl:$(Join-Path $binlogRoot "windows-appinstaller-$([guid]::NewGuid()).binlog")"
         if ($LASTEXITCODE -ne 0) {
             throw 'Shmuelie.Windows.AppInstaller publish failed; cannot run Shmuelie.Windows tests.'
+        }
+        $appInstallProject = Join-Path $repoRoot 'modules' 'Shmuelie.Windows' 'Cmdlets.AppInstall' 'Shmuelie.Windows.AppInstall.csproj'
+        dotnet publish $appInstallProject --configuration Release --output $cmdletsBin --nologo "-bl:$(Join-Path $binlogRoot "windows-appinstall-$([guid]::NewGuid()).binlog")"
+        if ($LASTEXITCODE -ne 0) {
+            throw 'Shmuelie.Windows.AppInstall publish failed; cannot run Shmuelie.Windows tests.'
         }
     }
     Import-Module (Join-Path $repoRoot 'modules' 'Shmuelie.Windows' 'Shmuelie.Windows.psd1') -Force
@@ -302,7 +309,7 @@ Describe 'Get-InstalledApplications hive-cleanup regression' -Skip:(-not $IsWind
         # InternalsVisibleTo("Shmuelie.Windows.Tests.Helpers") attribute in the
         # cmdlets assembly, granting access to internal types.
         $helpersProject = Join-Path $repoRoot 'tests' 'TestHelpers' 'TestHelpers.csproj'
-        dotnet build $helpersProject --configuration Release --output $cmdletsBin --nologo
+        dotnet build $helpersProject --configuration Release --output $cmdletsBin --nologo "-bl:$(Join-Path $binlogRoot "windows-testhelpers-$([guid]::NewGuid()).binlog")"
         if ($LASTEXITCODE -ne 0) {
             throw 'TestHelpers build failed; cannot run hive-cleanup regression tests.'
         }
@@ -497,6 +504,152 @@ Describe 'Get-ServiceProcess' -Skip:(-not $IsWindows) {
         if (-not $script:runningService) { Set-ItResult -Skipped -Because 'no running service is available' }
         { Get-ServiceProcess -Name $script:runningService.Name -PerService -WhatIf } |
             Should -Not -Throw
+    }
+}
+
+Describe 'AppInstall foundation (hermetic)' -Tag AppInstallFoundation -Skip:(-not $IsWindows) {
+    BeforeAll {
+        $helperProject = Join-Path $repoRoot 'tests' 'AppInstall.TestHelpers' 'AppInstall.TestHelpers.csproj'
+        $helperOutput = Join-Path $repoRoot 'tests' 'AppInstall.TestHelpers' 'bin' 'testhelpers'
+        dotnet build $helperProject --configuration Release --output $helperOutput --nologo "-bl:$(Join-Path $binlogRoot "appinstall-testhelpers-$([guid]::NewGuid()).binlog")"
+        if ($LASTEXITCODE -ne 0) {
+            throw 'AppInstall.TestHelpers build failed; no live adapter fallback is allowed.'
+        }
+        [System.Reflection.Assembly]::LoadFrom(
+            (Join-Path $helperOutput 'Shmuelie.Windows.AppInstall.Tests.dll')) | Out-Null
+        $packaged = & (Join-Path $repoRoot 'build' 'Build-Module.ps1') `
+            -Module Shmuelie.Windows -OutputPath (Join-Path $TestDrive 'packaged')
+        $packagedDirectory = @($packaged | Where-Object { $_ -is [System.IO.DirectoryInfo] })
+        if ($packagedDirectory.Count -ne 1) { throw 'Expected one staged module directory.' }
+        $importManifests = @{
+            Source = Join-Path $repoRoot 'modules' 'Shmuelie.Windows' 'Shmuelie.Windows.psd1'
+            Packaged = Join-Path $packagedDirectory[0].FullName 'Shmuelie.Windows.psd1'
+        }
+    }
+
+    It 'satisfies the fake-adapter contract: <_>' -ForEach @(
+        'LazyCreation', 'Reuse', 'IndependentContexts', 'PlatformGate', 'TypeGate', 'MemberGate',
+        'AccessDenied', 'WrongRunspace', 'Dispose', 'RunspaceClose',
+        'AsyncSuccess', 'AsyncFailure', 'NativeCancellation', 'StopWaiting', 'EventCleanup'
+        'DisposeBeforeActivation', 'ClosedRunspace', 'ClosingRunspace', 'MemberGateAfterActivation',
+        'FailedActivationDispose', 'ActivatedContextSurvivesModuleRemoval'
+    ) {
+        { [Shmuelie.Windows.AppInstall.Tests.ContextScenarios]::Run($_) } | Should -Not -Throw
+    }
+
+    It 'preserves the immutable snapshot/native error contract: <_>' -ForEach @(
+        'ObservationStates', 'ObservationValidation', 'Identity', 'IdentityValidation', 'ImmutableProperties',
+        'DeepCollectionCopy', 'GroupValidation', 'IndependentCompletionStates', 'StatusValidation',
+        'RequestAvailability', 'EntitlementObservation', 'SnapshotSerialization', 'ErrorRecord',
+        'ErrorCollectionCopy', 'ErrorSerialization', 'GateErrorKinds', 'ProjectedAsyncSuccess',
+        'CapturedErrorMetadata',
+        'ProjectedAsyncPendingCompletion', 'ProjectedArgumentAndCloseFailure',
+        'MappedInvalidCastAndCleanup', 'MappedNullReferenceAndCleanup',
+        'OperationalPrimaryAndUnclassifiedCleanup', 'UnclassifiedPrimaryAndCleanup', 'BothFailuresUnclassified',
+        'UnclassifiedFailureWithoutCleanup', 'UnclassifiedCleanupOnly', 'OperationalFailureWithoutCleanup',
+        'UnclassifiedStatusAndCleanup',
+        'ProjectedNativeCancellation', 'ProjectedResultAndCloseFailure', 'ProjectedStatusAndCleanupFailure',
+        'ProjectedCleanupOnlyFailure', 'ProjectedLocalCancellation'
+    ) {
+        { [Shmuelie.Windows.AppInstall.Tests.ContractScenarios]::Run($_) } | Should -Not -Throw
+    }
+
+    It 'exports only the context factory from the new assembly' {
+        $commands = @(Get-Command -Module Shmuelie.Windows -CommandType Cmdlet |
+            Where-Object { $_.ImplementingType.Assembly.GetName().Name -eq 'Shmuelie.Windows.AppInstall' })
+        $commands.Name | Should -Be @('New-AppInstallContext')
+        $commands[0].OutputType.Name | Should -Contain 'Shmuelie.Windows.AppInstall.AppInstallContext'
+        $commands[0].Parameters.ContainsKey('WhatIf') | Should -BeTrue
+    }
+
+    It 'returns a typed lazy context without native activation' {
+        $context = New-AppInstallContext
+        try {
+            $context.GetType().FullName | Should -BeExactly 'Shmuelie.Windows.AppInstall.AppInstallContext'
+            $context.IsActivated | Should -BeFalse
+            $context.IsDisposed | Should -BeFalse
+            $context.UserScope.ToString() | Should -BeExactly 'Caller'
+            $context.RunspaceId | Should -Be ([System.Management.Automation.Runspaces.Runspace]::DefaultRunspace.InstanceId)
+        }
+        finally { $context.Dispose() }
+        $context.IsDisposed | Should -BeTrue
+    }
+
+    It 'creates no context under WhatIf' {
+        New-AppInstallContext -WhatIf | Should -BeNullOrEmpty
+    }
+
+    It 'loads compiled command help with the documented support restriction' {
+        $help = Get-Help New-AppInstallContext -Full
+        ($help.description.Text -join ' ') | Should -Match 'private capability restricted to Microsoft-developed apps'
+        ($help.description.Text -join ' ') | Should -Match 'does not check or grant native authorization'
+    }
+
+    It 'documents the complete <Section> matrix without treating plans as exports' -ForEach @(
+        @{ Section = 'Manager properties \(5\)'; Names = @(
+            'AppInstallItems', 'AppInstallItemsWithGroupSupport', 'AcquisitionIdentity', 'AutoUpdateSetting', 'CanInstallForAllUsers'
+        ) }
+        @{ Section = 'Manager methods \(23 families\)'; Names = @(
+            'Cancel', 'GetFreeDeviceEntitlementAsync', 'GetFreeUserEntitlementAsync', 'GetFreeUserEntitlementForUserAsync',
+            'GetIsAppAllowedToInstallAsync', 'GetIsAppAllowedToInstallForUserAsync', 'GetIsApplicableAsync',
+            'GetIsApplicableForUserAsync', 'GetIsPackageIdentityAllowedToInstallAsync',
+            'GetIsPackageIdentityAllowedToInstallForUserAsync', 'IsStoreBlockedByPolicyAsync',
+            'MoveToFrontOfDownloadQueue', 'Pause', 'Restart', 'SearchForAllUpdatesAsync',
+            'SearchForAllUpdatesForUserAsync', 'SearchForUpdatesAsync', 'SearchForUpdatesForUserAsync',
+            'StartAppInstallAsync', 'StartProductInstallAsync', 'StartProductInstallForUserAsync',
+            'UpdateAppByPackageFamilyNameAsync', 'UpdateAppByPackageFamilyNameForUserAsync'
+        ) }
+        @{ Section = 'Manager events \(2\)'; Names = @('ItemCompleted', 'ItemStatusChanged') }
+        @{ Section = 'AppUpdateOptions \(3\)'; Names = @(
+            'AutomaticallyDownloadAndInstallUpdateIfFound', 'AllowForcedAppRestart', 'CatalogId'
+        ) }
+        @{ Section = 'AppInstallOptions \(15\)'; Names = @(
+            'AllowForcedAppRestart', 'CampaignId', 'CatalogId', 'CompletedInstallToastNotificationMode',
+            'ExtendedCampaignId', 'ForceUseOfNonRemovableStorage', 'InstallForAllUsers',
+            'InstallInProgressToastNotificationMode', 'LaunchAfterInstall', 'PinToDesktopAfterInstall',
+            'PinToStartAfterInstall', 'PinToTaskbarAfterInstall', 'Repair', 'StageButDoNotInstall', 'TargetVolume'
+        ) }
+    ) {
+        $document = Get-Content (Join-Path $repoRoot 'docs' 'appinstall.md') -Raw
+        $table = [regex]::Match($document, "(?ms)^### $Section\r?`n(.*?)(?=^##|\z)").Groups[1].Value
+        $actual = @([regex]::Matches($table, '(?m)^\| `(\w+)` \|') |
+            ForEach-Object { $_.Groups[1].Value } | Sort-Object)
+        $actual | Should -Be @($Names | Sort-Object)
+    }
+
+    It 'loads <Layout> safely in a fresh process (simulated non-Windows: <Portable>)' -ForEach @(
+        @{ Layout = 'Source'; Portable = $false }
+        @{ Layout = 'Packaged'; Portable = $false }
+        @{ Layout = 'Source'; Portable = $true }
+        @{ Layout = 'Packaged'; Portable = $true }
+    ) {
+        $fixture = Join-Path $repoRoot 'tests' 'fixtures' 'Test-AppInstallModuleImport.ps1'
+        $output = & pwsh -NoProfile -NonInteractive -File $fixture `
+            -ManifestPath $importManifests[$Layout] -SimulateNonWindows:$Portable
+        $LASTEXITCODE | Should -Be 0
+        $result = $output | ConvertFrom-Json
+        $result.SimulatedPlatform | Should -Be $Portable
+        $result.AssemblyLoaded | Should -Be (-not $Portable)
+        if ($Portable) {
+            $result.CommandCount | Should -Be 0
+        } else {
+            $result.CommandCount | Should -Be 1
+            $result.IsActivated | Should -BeFalse
+            $result.HelpAvailable | Should -BeTrue
+            $result.SurvivesModuleRemoval | Should -BeTrue
+        }
+    }
+
+    It 'fails explicitly when shipped projection dependency <_> is missing' -ForEach @(
+        'Microsoft.Windows.SDK.NET.dll', 'WinRT.Runtime.dll'
+    ) {
+        $broken = Join-Path $TestDrive "missing-$_"
+        Copy-Item $packagedDirectory[0].FullName $broken -Recurse
+        Remove-Item -LiteralPath (Join-Path $broken 'bin' $_) -Force
+        $output = & pwsh -NoProfile -NonInteractive -File (Join-Path $repoRoot 'tests' 'fixtures' 'Test-AppInstallModuleImport.ps1') `
+            -ManifestPath (Join-Path $broken 'Shmuelie.Windows.psd1') -ExpectedMissingDependency $_
+        $LASTEXITCODE | Should -Be 0
+        ($output | ConvertFrom-Json).MissingDependency | Should -BeExactly $_
     }
 }
 
