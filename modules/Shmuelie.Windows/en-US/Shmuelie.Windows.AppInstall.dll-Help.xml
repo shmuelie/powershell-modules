@@ -15,7 +15,7 @@
     <command:parameters />
     <command:inputTypes><command:inputType><dev:type><maml:name>None</maml:name></dev:type></command:inputType></command:inputTypes>
     <command:returnValues><command:returnValue><dev:type><maml:name>Shmuelie.Windows.AppInstall.AppInstallContext</maml:name></dev:type></command:returnValue></command:returnValues>
-    <maml:alertSet><maml:alert><maml:para>No inventory, search, settings, control, entitlement, or ForUser command is provided by this foundation.</maml:para></maml:alert></maml:alertSet>
+    <maml:alertSet><maml:alert><maml:para>Get-AppInstallSettings reads the approved caller-context settings through this explicit context. No inventory, search, settings mutation, control, entitlement, or ForUser command is provided.</maml:para></maml:alert></maml:alertSet>
     <command:examples><command:example>
       <maml:title>Example 1: Create and dispose a context</maml:title>
       <dev:code>$context = New-AppInstallContext
@@ -25,6 +25,61 @@ try { $context.ContextId } finally { $context.Dispose() }</dev:code>
     <command:relatedLinks><maml:navigationLink>
       <maml:linkText>AppInstallManager reference and access restriction</maml:linkText>
       <maml:uri>https://learn.microsoft.com/uwp/api/windows.applicationmodel.store.preview.installcontrol.appinstallmanager</maml:uri>
+    </maml:navigationLink></command:relatedLinks>
+  </command:command>
+  <command:command xmlns:maml="http://schemas.microsoft.com/maml/2004/10" xmlns:command="http://schemas.microsoft.com/maml/dev/command/2004/10" xmlns:dev="http://schemas.microsoft.com/maml/dev/2004/10">
+    <command:details>
+      <command:name>Get-AppInstallSettings</command:name>
+      <command:verb>Get</command:verb>
+      <command:noun>AppInstallSettings</command:noun>
+      <maml:description><maml:para>Reads selected experimental AppInstallManager settings through an explicit caller-owned context.</maml:para></maml:description>
+    </command:details>
+    <maml:description>
+      <maml:para>Requires an explicit AppInstallContext created in the current runspace. Reuses its single lazy manager; never creates a hidden context or process-global manager. Creation of the context does not activate native code. This reader activates it only after the selected member passes availability checks. Dispose the context in finally; module removal does not dispose it. These getters are synchronous, sequential observations, not an atomic device-settings snapshot.</maml:para>
+      <maml:para>By default only AutoUpdateSetting and CanInstallForAllUsers are read. AcquisitionIdentity is not read by default. Select it explicitly with -Property AcquisitionIdentity; -Property replaces the default selection and accepts only the three exact names, not numeric aliases, wildcards or All. Repeated names are read once. An unselected identity remains null and Unknown, without even a metadata probe for that property. Nothing logs an identity value to verbose, debug or information output.</maml:para>
+      <maml:para>AcquisitionIdentity is an observation of the supplied manager context, not a verified account/SID or evidence of persistence across managers. AutoUpdateSetting is the documented device setting, not an isolated per-context or per-user preference. Independent contexts do not isolate device-wide policy. Its integer value preserves the native enum, including future codes: Disabled = 0, Enabled = 1, DisabledByPolicy = 2, EnabledByPolicy = 3. CanInstallForAllUsers is a read-only calling-process privilege observation, not a privilege grant, private-capability check, or guarantee that installation is available or will succeed.</maml:para>
+      <maml:para>The immutable snapshot includes ContextId (local correlation, not a SID or native install ID), Caller user scope, per-property scope, RequestedProperties and ReadProperties. Unselected values are Unknown. Missing types or members are Unavailable and are not invoked. Available false, zero and an explicitly requested empty identity are retained as observed values. Operational errors terminate without a partial snapshot. ErrorRecord retains the original exception, HRESULT and typed phase metadata; the default error message does not render raw native diagnostics, which can contain sensitive data.</maml:para>
+      <maml:para>Windows 10 build 19041 or later and PowerShell 7.4 or later are required; every selected member is checked before each read. Microsoft documents AppInstallManager access as protected by a private capability restricted to Microsoft-developed apps. Observed getter access is not an official third-party support guarantee. Administrator access, runFullTrust, successful activation and CanInstallForAllUsers are not substitutes for that restriction. No settings writes, identity changes, ForUser, installation, entitlement, search or queue-control actions are performed.</maml:para>
+    </maml:description>
+    <command:syntax><command:syntaxItem>
+      <maml:name>Get-AppInstallSettings</maml:name>
+      <command:parameter required="true" position="named" pipelineInput="true (ByValue)"><maml:name>Context</maml:name><command:parameterValue required="true">AppInstallContext</command:parameterValue></command:parameter>
+      <command:parameter required="false" position="named" pipelineInput="false"><maml:name>Property</maml:name><command:parameterValue required="true">String[]</command:parameterValue></command:parameter>
+    </command:syntaxItem></command:syntax>
+    <command:parameters>
+      <command:parameter required="true" position="named" pipelineInput="true (ByValue)" globbing="false">
+        <maml:name>Context</maml:name>
+        <maml:description><maml:para>An explicit, live AppInstallContext owned by the current runspace. Reuse it across reads and dispose it in finally. A detached JSON object, another runspace's context or a disposed context cannot be used.</maml:para></maml:description>
+        <command:parameterValue required="true">AppInstallContext</command:parameterValue>
+        <dev:type><maml:name>Shmuelie.Windows.AppInstall.AppInstallContext</maml:name></dev:type>
+      </command:parameter>
+      <command:parameter required="false" position="named" pipelineInput="false" globbing="false">
+        <maml:name>Property</maml:name>
+        <maml:description><maml:para>The exact properties to read: AcquisitionIdentity, AutoUpdateSetting and CanInstallForAllUsers. Defaults to AutoUpdateSetting and CanInstallForAllUsers. An explicit list replaces these defaults. AcquisitionIdentity is sensitive and is read only when explicitly selected; no All or wildcard selector is accepted.</maml:para></maml:description>
+        <command:parameterValue required="true">String[]</command:parameterValue>
+        <dev:type><maml:name>System.String[]</maml:name></dev:type>
+        <dev:defaultValue>AutoUpdateSetting, CanInstallForAllUsers</dev:defaultValue>
+      </command:parameter>
+    </command:parameters>
+    <command:inputTypes><command:inputType><dev:type><maml:name>Shmuelie.Windows.AppInstall.AppInstallContext</maml:name></dev:type></command:inputType></command:inputTypes>
+    <command:returnValues><command:returnValue><dev:type><maml:name>Shmuelie.Windows.AppInstall.AppInstallSettingsSnapshot</maml:name></dev:type></command:returnValue></command:returnValues>
+    <command:examples>
+      <command:example>
+        <maml:title>Example 1: Read without acquisition identity</maml:title>
+        <dev:code>$context = New-AppInstallContext
+try { Get-AppInstallSettings -Context $context } finally { $context.Dispose() }</dev:code>
+        <dev:remarks><maml:para>Reads only the device auto-update setting and calling-process privilege observation. Does not change either value.</maml:para></dev:remarks>
+      </command:example>
+      <command:example>
+        <maml:title>Example 2: Explicitly request acquisition identity</maml:title>
+        <dev:code>$context = New-AppInstallContext
+try { $settings = Get-AppInstallSettings -Context $context -Property AcquisitionIdentity } finally { $context.Dispose() }</dev:code>
+        <dev:remarks><maml:para>Reads only acquisition identity. Treat the returned value as sensitive; no account/SID mapping or persistent-user-setting semantics are inferred.</maml:para></dev:remarks>
+      </command:example>
+    </command:examples>
+    <command:relatedLinks><maml:navigationLink>
+      <maml:linkText>AppInstall settings contract and API matrix</maml:linkText>
+      <maml:uri>https://github.com/shmuelie/powershell-modules/blob/main/docs/appinstall.md</maml:uri>
     </maml:navigationLink></command:relatedLinks>
   </command:command>
 </helpItems>

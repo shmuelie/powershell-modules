@@ -46,14 +46,19 @@ public sealed class AppInstallContext : IDisposable
     // native invocation; wait for returned operations outside this lifecycle
     // lock. A synchronous native call cannot be forcibly canceled by Dispose.
     internal T Use<T>(AppInstallMember member, Func<IAppInstallManagerAdapter, T> operation)
+        => Use(member, operation, out _);
+
+    internal T Use<T>(AppInstallMember member, Func<IAppInstallManagerAdapter, T> operation,
+        out AppInstallErrorPhase phase)
     {
+        phase = AppInstallErrorPhase.Availability;
         ArgumentNullException.ThrowIfNull(member);
         ArgumentNullException.ThrowIfNull(operation);
         lock (sync)
         {
             ObjectDisposedException.ThrowIf(disposed, this);
             if (!ReferenceEquals(Runspace.DefaultRunspace, owner))
-                throw new InvalidOperationException("An AppInstall context can only be used in its creating runspace.");
+                throw new AppInstallContextUnavailableException("An AppInstall context can only be used in its creating runspace.");
             if (!availability.IsSupportedPlatform)
                 throw new PlatformNotSupportedException("AppInstall contexts require Windows 10 build 19041 or later.");
             if (!availability.IsTypePresent(AppInstallMember.ManagerType) ||
@@ -61,7 +66,10 @@ public sealed class AppInstallContext : IDisposable
                 !availability.IsMemberPresent(member))
                 throw new MissingMemberException(member.TypeName, member.Name);
 
-            return operation(manager.Value);
+            phase = AppInstallErrorPhase.Activation;
+            var activated = manager.Value;
+            phase = AppInstallErrorPhase.Invocation;
+            return operation(activated);
         }
     }
 
@@ -85,3 +93,7 @@ public sealed class AppInstallContext : IDisposable
 
 /// <summary>Caller scope does not assert a SID, account identity, or queue visibility.</summary>
 public enum AppInstallUserScope { Unknown, Caller }
+
+internal sealed class AppInstallContextUnavailableException(string message) : InvalidOperationException(message)
+{
+}

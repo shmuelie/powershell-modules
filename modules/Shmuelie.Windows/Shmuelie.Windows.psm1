@@ -30,7 +30,7 @@ if ($IsWindows) {
             [System.Reflection.Assembly]::LoadFrom($dependencyPath) | Out-Null
         }
         Import-Module $appInstallModule -Force -ErrorAction Stop
-        $exportedCmdlets += 'New-AppInstallContext'
+        $exportedCmdlets += 'New-AppInstallContext', 'Get-AppInstallSettings'
     }
 }
 
