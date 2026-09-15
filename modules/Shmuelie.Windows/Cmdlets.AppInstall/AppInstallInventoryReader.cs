@@ -17,6 +17,18 @@ internal sealed class AppInstallInventoryReader(AppInstallContext context, Actio
         var provider = Invoke(collection, manager => manager as IAppInstallInventoryManager ??
             throw new NotSupportedException("This manager adapter does not provide caller-scoped inventory."));
         var roots = Invoke(collection, _ => provider.GetItems(includeChildren));
+        return Capture(provider.InventoryTracker, roots, includeChildren, productIds, packageFamilies, collection, false);
+    }
+
+    internal IReadOnlyList<AppInstallItemSnapshot> CaptureSearchResults(AppInstallInventoryTracker tracker,
+        IReadOnlyList<IAppInstallInventoryItem> roots, AppInstallMember searchMember) =>
+        Capture(tracker, roots, true, null, null, searchMember, true);
+
+    private IReadOnlyList<AppInstallItemSnapshot> Capture(AppInstallInventoryTracker tracker,
+        IReadOnlyList<IAppInstallInventoryItem> roots, bool includeChildren,
+        IReadOnlyList<string>? productIds, IReadOnlyList<string>? packageFamilies,
+        AppInstallMember accessMember, bool merge)
+    {
         CheckCollection(roots);
         var nodes = new Dictionary<object, Node>();
         var initialRoots = new List<Node>();
@@ -113,9 +125,11 @@ internal sealed class AppInstallInventoryReader(AppInstallContext context, Actio
             else
                 foreach (var child in node.Children.AsEnumerable().Reverse()) select.Push(child);
         }
-        Invoke(collection, _ =>
+        Invoke(accessMember, _ =>
         {
-            provider.InventoryTracker.Commit(nodes.ToDictionary(pair => pair.Key, pair => pair.Value.LocalId));
+            var identities = nodes.ToDictionary(pair => pair.Key, pair => pair.Value.LocalId);
+            if (merge) tracker.Merge(identities);
+            else tracker.Commit(identities);
             return true;
         });
         return output.AsReadOnly();
@@ -129,7 +143,7 @@ internal sealed class AppInstallInventoryReader(AppInstallContext context, Actio
             if (nodes.TryGetValue(key, out var existing)) return existing;
             if (nodes.Count == MaximumItems)
                 throw new InvalidDataException("The inventory exceeds the bounded item limit.");
-            var added = new Node(item, provider.InventoryTracker.GetLocalId(key));
+            var added = new Node(item, tracker.GetLocalId(key));
             nodes.Add(key, added);
             pending.Enqueue(added);
             return added;

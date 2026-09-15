@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace Shmuelie.Windows.AppInstall;
 
 /// <summary>Request/async/wait observations; completion does not assert installation success.</summary>
@@ -7,7 +9,20 @@ public sealed record AppInstallRequestSnapshot
         AppInstallRequestAcceptance acceptance, AppInstallOperationState operationState,
         AppInstallWaitState waitState, AppInstallValueAvailability itemsAvailability,
         IReadOnlyList<AppInstallItemSnapshot> items, AppInstallError? error)
+        : this(contextId, sourceOperation, userScope, acceptance, operationState, waitState,
+            itemsAvailability, items, error, null, null, null) { }
+
+    [JsonConstructor]
+    public AppInstallRequestSnapshot(Guid contextId, string sourceOperation, AppInstallUserScope userScope,
+        AppInstallRequestAcceptance acceptance, AppInstallOperationState operationState,
+        AppInstallWaitState waitState, AppInstallValueAvailability itemsAvailability,
+        IReadOnlyList<AppInstallItemSnapshot> items, AppInstallError? error,
+        Guid? requestId, string? correlationVector, string? clientId)
     {
+        if (requestId is Guid id) AppInstallModelGuard.Id(id);
+        RequestId = requestId;
+        CorrelationVector = correlationVector;
+        ClientId = clientId;
         ContextId = AppInstallModelGuard.Id(contextId);
         ArgumentException.ThrowIfNullOrWhiteSpace(sourceOperation);
         AppInstallModelGuard.Defined(userScope);
@@ -38,4 +53,7 @@ public sealed record AppInstallRequestSnapshot
     public AppInstallValueAvailability ItemsAvailability { get; }
     public IReadOnlyList<AppInstallItemSnapshot> Items { get; }
     public AppInstallError? Error { get; }
+    public Guid? RequestId { get; }
+    public string? CorrelationVector { get; }
+    public string? ClientId { get; }
 }

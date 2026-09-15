@@ -18,7 +18,9 @@ The separately approved caller-context reads in
 [#236](https://github.com/shmuelie/powershell-modules/issues/236) and
 [#238](https://github.com/shmuelie/powershell-modules/issues/238) are implemented;
 #233 no longer blocks this read-only subset, but does not authorize setters or
-broader operations.
+broader operations. The approved caller-scoped all-app paused search in
+[#244](https://github.com/shmuelie/powershell-modules/issues/244) is also implemented
+with explicit confirmation. Other #244 variants remain gated.
 
 ## Context contract
 
@@ -56,8 +58,9 @@ No settings writes are implemented.
 Later cmdlets must accept this explicit context rather than create an
 undocumented manager per invocation or share mutable global settings. The
 internal manager adapter provides caller-scoped queue and settings reads through
-`Get-AppInstallItem` and `Get-AppInstallSettings`. No search, mutation or `ForUser`
-operation is included.
+`Get-AppInstallItem` and `Get-AppInstallSettings`, and only the approved paused
+search through `Request-AppInstallUpdateSearch`. No settings writes, queue
+controls or `ForUser` operation is included.
 
 ## Read-only settings
 
@@ -107,8 +110,82 @@ the short getter runs under the context lock. The returned snapshot is a
 sequential, detached observation, not an atomic settings transaction. Reusing
 the context rereads the values rather than caching observations. Dispose the
 context in `finally`; module removal does not end its caller-owned lifetime.
-No setter, identity change, user override, entitlement, installation, search or
-queue-control operation is implemented.
+The settings reader performs no setter, identity change, user override,
+entitlement, installation, search or queue-control operation.
+
+## Caller-scoped paused update search
+
+`Request-AppInstallUpdateSearch -Context $context -CorrelationVector $correlationVector -ClientId $clientId`
+implements only `SearchForAllUpdatesAsync(string correlationVector, string clientId, AppUpdateOptions)`.
+All three parameters are mandatory; correlation/client strings must be nonempty
+and non-whitespace and are forwarded unchanged. No client identity, acquisition
+identity, catalog, account or user override is invented. These inputs are not
+authorization or a way to bypass capability restrictions.
+
+**This is a queue mutation.** Both writable safety properties are explicitly set
+false: `AutomaticallyDownloadAndInstallUpdateIfFound` and `AllowForcedAppRestart`.
+The documented false value still adds discovered updates to the install queue
+paused. High-impact `ShouldProcess` confirmation describes that side effect.
+`-WhatIf` and declined confirmation perform no native metadata probes, activation,
+options construction or search, and return no success result. There is no
+read-only-search switch, per-app selection, `ForUser`, custom catalog,
+automatic-action switch or alternate-overload fallback.
+
+After confirmation the coordinator checks required types, method arity, writable
+safety properties and required item/status members before activation, constructs
+and configures options, then submits through the context's short-call lifecycle
+boundary. Waiting stays outside the context lock on the execution thread.
+Optional item/status fields keep inventory's per-member availability semantics.
+The same live owning context is required; it is not disposed by this command.
+
+One immutable `AppInstallRequestSnapshot` is emitted only after the search,
+operation cleanup and complete item capture succeed, including an available
+empty result. `Acceptance = Accepted` means an async handle was returned;
+`OperationState = Completed` means search completion, **not installation
+completion**. Returned items can be paused/nonterminal or have unknown status.
+Native item state, percentage, staging and launch readiness do not redefine
+request acceptance or search completion.
+
+`RequestId` is a per-invocation local GUID, separate from `ContextId`, projected
+item/parent identities and the caller's native `CorrelationVector`/`ClientId`.
+No value is a synthesized native installation ID or verified SID. These three
+new request fields are nullable for older snapshots; the prior constructor and
+older JSON remain compatible. Default request formatting (including PowerShell
+deserialized requests while the module's view is loaded) displays local IDs,
+API/scope/outcome fields and item count, not `CorrelationVector`, `ClientId`,
+item payloads or raw errors. Direct property access, `Format-List *` and JSON
+retain the original values for explicit inspection. Hiding fields in a default
+view is not redaction, secret storage or a security boundary.
+
+Children are captured when available, de-duplicated
+by projection identity and retain parent/context/caller scope. Partial search
+results merge into the bounded 4096-entry identity cache, preserving unrelated
+items and existing local IDs. Overflow fails atomically without pruning; full
+inventory scans retain their existing pruning behavior.
+
+Failure produces a terminating `ErrorRecord` whose `TargetObject` is the typed
+request (not a successful pipeline result). It retains acceptance, last observed
+native state, local wait state, original error/HRESULT/source/phase and secondary
+cleanup errors. Pre-submission failures are `NotSubmitted`; an exception during
+submission is `Unknown`, since remote rejection/rollback cannot be proved.
+Errors or failed capture retain `ItemsAvailability = Unknown` with no partial
+list. Raw native messages and caller correlation values are not rendered by
+default; deliberate inspection of error records/snapshots can expose them.
+
+`StopProcessing` cancels only the per-command local wait token. There is no
+native `Cancel`, pause/resume/control call or rollback. The adapter closes
+terminal operations and releases pending ones without canceling them. Waiting
+can end as `StoppedLocally` while acceptance is `Accepted` and native state is
+`Started` or unknown. PowerShell may suppress all result/error writes once a
+pipeline is stopped, so absence of output is never evidence of no submission.
+There is no hard timeout for synchronous WinRT calls.
+
+Only prior empty native-search evidence supports the scoped development
+decision; grouped/nonempty capture, confirmation and cancellation are tested
+with fail-closed fakes. No live Store actions are exercised by these tests.
+[#233](https://github.com/shmuelie/powershell-modules/issues/233) remains open:
+private-capability restrictions still apply, and this does not deliver the
+broader #244 family or guarantee third-party support.
 
 ## Async and event integration seams
 
@@ -166,7 +243,7 @@ operations.
 | `AppInstallItemIdentity` | Observed `ProductId`/`PackageFamilyName`, explicit caller/unknown user scope, and local `ContextId`/`LocalItemId`/`ParentLocalItemId` correlation. |
 | `AppInstallItemSnapshot` | Identity, status, and copied children with their own availability. Available empty children are distinct from children not observed or unavailable. |
 | `AppInstallStatusSnapshot` | Observed native state code, byte counts, percentage, `IsStaged`, `ReadyForLaunch`, explicit terminal observation and error. |
-| `AppInstallRequestSnapshot` | Separate request acceptance, native operation state, local wait state and returned-item availability. No installed-success shortcut. |
+| `AppInstallRequestSnapshot` | Separate request acceptance, native operation state, local wait state and returned-item availability, with nullable local RequestId and caller-provided native correlation strings. No installed-success shortcut. |
 | `AppInstallEntitlementSnapshot` | Explicit caller/device/unknown entitlement scope, observed native status and grant observation. No grant is inferred from native code zero or object construction. |
 | `AppInstallError` | Source operation, failure phase/kind, original HRESULT, exception type/message, and copied cleanup failures. |
 | `AppInstallSettingsSnapshot` | Caller context correlation, property scopes, copied requested/read property lists and only the selected settings observations; acquisition identity is opt-in. |
@@ -178,8 +255,9 @@ codes are preserved even when newer than the module's knowledge. Future adapters
 must map a terminal state from actual installation evidence, not from percentage,
 request completion, staging, launch readiness or an entitlement result.
 
-Local item IDs remain stable while the same projected identity stays in the last
-successful inventory. They are **not native IDs**, are not derived from a
+Local item IDs remain stable while the same projected identity stays in the
+bounded cache, refreshed by full inventory scans and augmented by partial search
+results. They are **not native IDs**, are not derived from a
 product/account/SID, and must not be reused to target a different item. The
 inventory adapter owns that bounded projection-identity-to-local-ID mapping. Serialized snapshots are detached
 observations, not native handles or authorization to perform later queue actions.
@@ -204,7 +282,8 @@ the original. Nothing automatically logs identities, snapshots or native message
 ## API and options matrix
 
 `New-AppInstallContext` (#234), `Get-AppInstallItem` (#236) and
-`Get-AppInstallSettings` (#238) ship here.
+`Get-AppInstallSettings` (#238) and only the caller all-app paused
+`Request-AppInstallUpdateSearch` (#244 subset) ship here.
 Names below for other work items
 are **proposed naming conventions**, not commands available to invoke. Later
 commands use an explicit `-Context`, singular nouns and approved PowerShell verbs.
@@ -246,7 +325,7 @@ method-parameter-count checks are still required before invocation.
 | `MoveToFrontOfDownloadQueue` | `Move-AppInstallItem -Context` | Gated #243; exact target, queue mutation. |
 | `Pause` | `Suspend-AppInstallItem -Context`; product, optional telemetry overload | Gated #241; group impact must be explicit. |
 | `Restart` | `Resume-AppInstallItem -Context`; product, optional telemetry overload | Gated #242; resume/restart request is not installation completion. |
-| `SearchForAllUpdatesAsync` | `Request-AppInstallUpdateSearch -Context`; no-argument, telemetry-only, and options overloads | Only caller-scoped **options overload** with both safety flags false is observed/cleared later in #244 after #234/#236. Other overloads and automatic-update variants remain gated. |
+| `SearchForAllUpdatesAsync` | `Request-AppInstallUpdateSearch -Context -CorrelationVector -ClientId`; no-argument, telemetry-only, and options overloads are distinct | Only caller-scoped three-argument **options overload** with both safety flags explicitly false is implemented (#244 subset). High-impact ShouldProcess; found updates can be queued paused. Other overloads and automatic-update variants remain gated. |
 | `SearchForAllUpdatesForUserAsync` | Future explicit-user all-app search; telemetry/options overloads | Gated #244 and user-scope validation, including false-flag variants. |
 | `SearchForUpdatesAsync` | Future per-app update search; basic/telemetry/options overloads | Gated #244; caller all-app evidence does not authorize per-app variants. |
 | `SearchForUpdatesForUserAsync` | Future explicit-user per-app update search | Gated #244 and user-scope validation. |
@@ -267,12 +346,12 @@ method-parameter-count checks are still required before invocation.
 
 | Member | Planned binding / safety contract | Delivery scope |
 |---|---|---|
-| `AutomaticallyDownloadAndInstallUpdateIfFound` | Fixed `false` in the cleared caller all-app path; not an opt-in true switch in that subset | Added in build 17763. **False still adds found updates to the install queue in a paused state.** It is not a read-only search. Only #244's cleared path after dependencies; broader behavior gated. |
+| `AutomaticallyDownloadAndInstallUpdateIfFound` | Fixed `false` in the implemented caller all-app path; no true switch | Added in build 17763. **False still adds found updates to the install queue in a paused state.** It is not a read-only search. Only #244's approved subset; broader behavior gated. |
 | `AllowForcedAppRestart` | Fixed `false` in the cleared caller all-app path | Added with options in build 17134. No implicit forced-restart consent. True and broader variants remain gated. |
 | `CatalogId` | Future explicit catalog option where applicable | No implicit catalog override in the cleared subset; per-app/custom catalog behavior requires its own validation. |
 
 No real update search is run by foundation tests, including false-flag searches.
-Future #244 must still use `ShouldProcess` because finding updates can queue work.
+The #244 subset uses `ShouldProcess` because finding updates can queue work.
 The options object must be fully configured before submitting the approved call;
 omitting an option is not equivalent to explicitly setting it false.
 

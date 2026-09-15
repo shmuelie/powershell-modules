@@ -20,6 +20,7 @@ Import-Module Shmuelie.Windows
 | App install foundation | `New-AppInstallContext` (compiled, experimental; lazy caller-owned context, no installation or search) |
 | App install queue | `Get-AppInstallItem` (compiled, experimental; explicit context, caller-scoped read-only snapshots) |
 | App install settings | `Get-AppInstallSettings` (compiled, experimental; explicit context, read-only, acquisition identity opt-in) |
+| App update search | `Request-AppInstallUpdateSearch` (compiled, experimental; explicit context and correlation inputs, confirmed caller all-app paused-queue mutation) |
 | Inventory | `Get-InstalledApplications` (compiled binary cmdlet) |
 | Services | `Get-ServiceProcess` (compiled binary cmdlet) |
 | Virtual drives | `Get-SubstDrive`, `New-SubstDrive`, `Remove-SubstDrive` (compiled binary cmdlets) |
@@ -41,7 +42,7 @@ try {
 }
 ```
 
-The same context owns the same lazily activated manager for queue and settings reads;
+The same context owns the same lazily activated manager for queue/settings reads and approved searches;
 there is no process-global manager or implicit per-command context. Do not pass
 it to another runspace, a job, or a remoting session. Closing its owning runspace
 also disposes it; removing the module alone does not dispose caller-owned
@@ -56,7 +57,8 @@ verified account/SID mapping or a claim about queue visibility.
 
 This surface is separate from the `.appinstaller` helpers below. Caller-scoped
 queue and settings reads use `Get-AppInstallItem` and `Get-AppInstallSettings`.
-No settings mutation, search, install, entitlement, control, or `ForUser` cmdlets
+`Request-AppInstallUpdateSearch` adds only the approved caller all-app paused
+search. No settings mutation, install, entitlement, control, or `ForUser` cmdlets
 are exported. See [the context contract](../../docs/appinstall.md).
 
 ### Read-only settings
@@ -135,8 +137,8 @@ An empty successful queue or unmatched filter emits no objects. Reading is not
 an atomic native transaction, and a captured item can disappear afterward.
 
 Local IDs follow projected item identity, not product/family strings. At most
-4096 distinct items from the last successful capture are retained; removed
-identities are pruned on the next successful capture and context disposal clears
+4096 distinct items from the last successful inventory plus partial search results
+are retained; removed identities are pruned on the next successful inventory scan and context disposal clears
 the cache. More than 4096 items, depth beyond 128 levels, cycles, or conflicting
 parents cause errors rather than truncation. Detached snapshots are not handles
 or permission to control an item. See [inventory details](../../docs/appinstall.md#caller-scoped-inventory).
@@ -144,6 +146,62 @@ or permission to control an item. See [inventory details](../../docs/appinstall.
 The prior runtime evidence covers collection getters/counts only. Nonempty
 item/status/group coverage for this implementation uses deterministic fakes,
 not a new claim of supported third-party native access.
+
+## Caller-scoped paused update search
+
+`Request-AppInstallUpdateSearch` is a **queue mutation**, not a read-only
+query: discovered updates can be added to the queue paused. The only native
+call is `SearchForAllUpdatesAsync(correlationVector, clientId, AppUpdateOptions)`,
+with `AutomaticallyDownloadAndInstallUpdateIfFound = false` and
+`AllowForcedAppRestart = false` explicitly fixed before submission.
+
+Supply your own legitimate correlation vector and client identifier; the module
+does not invent a caller identity or alter acquisition settings. Preview safely:
+
+```powershell
+$context = New-AppInstallContext
+try {
+    Request-AppInstallUpdateSearch -Context $context `
+        -CorrelationVector $correlationVector -ClientId $clientId -WhatIf
+} finally {
+    $context.Dispose()
+}
+```
+
+All three parameters are mandatory. The context must belong to the current
+runspace. `-WhatIf` and declined confirmation perform **zero native calls**:
+no metadata probes, activation, options construction or search, and no output.
+An authorized invocation without `-WhatIf` uses high-impact `ShouldProcess`
+confirmation. Per-app, `ForUser`, custom catalog, automatic download/install,
+forced restart and alternate overloads remain unavailable, with no fallback.
+
+A successful call emits one immutable `AppInstallRequestSnapshot`, even when
+`Items` is empty. `Acceptance = Accepted` means the API returned an async handle;
+`OperationState = Completed` means **search completion, not installation
+completion**. Returned item/group identities and status observations remain
+separate. Local `RequestId`, context and item IDs are correlation only, not
+native install IDs. Caller-provided `CorrelationVector` and `ClientId` are
+retained unchanged; keep snapshots and original native diagnostics private.
+The default request view shows local IDs, API/scope/outcome fields and item
+count, but omits native correlation strings, item payloads and raw errors.
+All public properties remain available: `Format-List *`, direct property access
+and JSON serialization expose the original values. This display choice is not
+redaction, secret storage or a security boundary.
+Search results merge into the bounded identity cache without pruning unrelated
+items. A subsequent successful inventory scan still prunes normally.
+
+Failures emit no success or partial items. The terminating error's `TargetObject`
+retains the typed request, original exception/HRESULT and cleanup diagnostics.
+A throwing submission has `Unknown` acceptance, not proof of rejection.
+Stopping the pipeline ends only local waiting, never native work or queued
+items; a stopped pipeline may suppress output/errors entirely. Missing output
+therefore does not prove that nothing was submitted.
+
+The private-capability restriction and open support clarification still apply.
+Only empty native-search evidence was previously observed; nonempty/grouped
+results and cancellation here use fail-closed fakes, not live Store actions or
+a third-party support guarantee. Broader #244 API families remain gated.
+See [the search contract](../../docs/appinstall.md#caller-scoped-paused-update-search).
 
 ## App Installer request results
 

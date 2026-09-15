@@ -19,4 +19,16 @@ internal sealed class AppInstallInventoryTracker
     }
 
     internal void Clear() { lock (sync) active.Clear(); }
+
+    internal void Merge(IReadOnlyDictionary<object, Guid> observed)
+    {
+        lock (sync)
+        {
+            var combined = new Dictionary<object, Guid>(active);
+            foreach (var pair in observed) combined[pair.Key] = pair.Value;
+            if (combined.Count > AppInstallInventoryReader.MaximumItems)
+                throw new InvalidDataException("Search results exceed the bounded identity cache; no unrelated identities were pruned.");
+            active = combined;
+        }
+    }
 }
