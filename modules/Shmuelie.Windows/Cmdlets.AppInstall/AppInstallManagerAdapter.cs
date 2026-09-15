@@ -16,7 +16,7 @@ internal sealed class AppInstallActivation : IAppInstallActivation
     public IAppInstallManagerAdapter Activate() => new AppInstallManagerAdapter(new AppInstallManager());
 }
 
-internal sealed class AppInstallManagerAdapter(AppInstallManager manager) : IAppInstallManagerAdapter
+internal sealed partial class AppInstallManagerAdapter(AppInstallManager manager) : IAppInstallManagerAdapter
 {
     private AppInstallManager? manager = manager;
 
@@ -26,6 +26,7 @@ internal sealed class AppInstallManagerAdapter(AppInstallManager manager) : IApp
 
     public void Dispose()
     {
+        InventoryTracker.Clear();
         // AppInstallManager is not IClosable. Drop our projection reference;
         // do not force-release COM objects shared by the WinRT projection.
         manager = null;

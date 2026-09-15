@@ -18,6 +18,7 @@ Import-Module Shmuelie.Windows
 |---|---|
 | App Installer | `Get-AppInstallerApp`, `Update-AppInstallerApp` (compiled, Windows-only; opt-in `-PassThru` request outcomes) |
 | App install foundation | `New-AppInstallContext` (compiled, experimental; lazy caller-owned context, no installation or search) |
+| App install queue | `Get-AppInstallItem` (compiled, experimental; explicit context, caller-scoped read-only snapshots) |
 | Inventory | `Get-InstalledApplications` (compiled binary cmdlet) |
 | Services | `Get-ServiceProcess` (compiled binary cmdlet) |
 | Virtual drives | `Get-SubstDrive`, `New-SubstDrive`, `Remove-SubstDrive` (compiled binary cmdlets) |
@@ -52,9 +53,9 @@ Neither elevation nor `runFullTrust` alone establishes authorization. Creating a
 context does not claim, grant, or bypass a capability. Caller scope is not a
 verified account/SID mapping or a claim about queue visibility.
 
-This foundation is separate from the `.appinstaller` helpers below. No queue
-inventory, settings, search, install, entitlement, control, or `ForUser` cmdlets
-are exported. See [the context contract](../../docs/appinstall.md).
+This foundation is separate from the `.appinstaller` helpers below. Caller-scoped
+queue reads use `Get-AppInstallItem`; no settings, search, install, entitlement,
+control, or `ForUser` cmdlets are exported. See [the context contract](../../docs/appinstall.md).
 
 The foundation also defines immutable identity/group, status, request,
 entitlement and error snapshots for later commands. Unknown and unavailable
@@ -63,6 +64,47 @@ or account/SID mappings. Request acceptance, native async completion,
 installation terminal state, staging and launch readiness remain distinct.
 See [snapshot contracts and the API/options matrix](../../docs/appinstall.md#immutable-snapshot-contracts)
 for the cleared future subset and the still-gated families.
+
+## Caller-scoped AppInstall inventory
+
+```powershell
+$context = New-AppInstallContext
+try {
+    Get-AppInstallItem -Context $context -IncludeChildren
+} finally {
+    $context.Dispose()
+}
+```
+
+The first read activates the context's manager. `-ProductId` and
+`-PackageFamilyName` accept arrays of exact, ordinal case-insensitive values:
+no wildcard expansion, OR within a filter, AND between filters. These are
+post-capture filters, not authorization or unique control-target selection.
+The command never searches for updates or queues work.
+
+`-IncludeChildren` reads the group-aware collection and preserves complete
+subtrees for matching parents. A matching descendant of an unmatched parent is
+returned with its `ParentLocalItemId`; descendants already included under a
+matching parent are not emitted twice. Without this switch, children are
+`Unknown`, not assumed absent.
+
+The immutable output retains product/family identity, install type, initiation
+and group-impact flags, native state codes, bytes, percentage, HRESULT, staging
+and launch readiness. Unsupported optional members are `Unavailable`; access
+errors and disappearing-item reads fail the capture without partial results.
+An empty successful queue or unmatched filter emits no objects. Reading is not
+an atomic native transaction, and a captured item can disappear afterward.
+
+Local IDs follow projected item identity, not product/family strings. At most
+4096 distinct items from the last successful capture are retained; removed
+identities are pruned on the next successful capture and context disposal clears
+the cache. More than 4096 items, depth beyond 128 levels, cycles, or conflicting
+parents cause errors rather than truncation. Detached snapshots are not handles
+or permission to control an item. See [inventory details](../../docs/appinstall.md#caller-scoped-inventory).
+
+The prior runtime evidence covers collection getters/counts only. Nonempty
+item/status/group coverage for this implementation uses deterministic fakes,
+not a new claim of supported third-party native access.
 
 ## App Installer request results
 

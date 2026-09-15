@@ -50,8 +50,8 @@ No settings writes are implemented.
 
 Later cmdlets must accept this explicit context rather than create an
 undocumented manager per invocation or share mutable global settings. The
-internal manager adapter is where the approved caller-scoped reads can be added.
-No such read, search, settings, mutation or `ForUser` operation is exposed here.
+internal manager adapter provides caller-scoped queue reads through
+`Get-AppInstallItem`. No search, settings, mutation or `ForUser` operation is exposed here.
 
 ## Async and event integration seams
 
@@ -120,10 +120,10 @@ codes are preserved even when newer than the module's knowledge. Future adapters
 must map a terminal state from actual installation evidence, not from percentage,
 request completion, staging, launch readiness or an entitlement result.
 
-Local item IDs must remain stable for the same tracked item during its context
-lifetime. They are **not native IDs**, are not derived from a product/account/SID,
-and must not be reused to target a different item. The future inventory adapter
-owns that native-reference-to-local-ID mapping. Serialized snapshots are detached
+Local item IDs remain stable while the same projected identity stays in the last
+successful inventory. They are **not native IDs**, are not derived from a
+product/account/SID, and must not be reused to target a different item. The
+inventory adapter owns that bounded projection-identity-to-local-ID mapping. Serialized snapshots are detached
 observations, not native handles or authorization to perform later queue actions.
 Product/family identifiers are preserved verbatim, not fabricated from context
 IDs. `AppInstallStatus.User` is not projected into a SID or account name; that
@@ -145,7 +145,7 @@ the original. Nothing automatically logs identities, snapshots or native message
 
 ## API and options matrix
 
-Only `New-AppInstallContext` ships here (#234). Names below for other work items
+`New-AppInstallContext` (#234) and `Get-AppInstallItem` (#236) ship here. Names below for other work items
 are **proposed naming conventions**, not commands available to invoke. Later
 commands use an explicit `-Context`, singular nouns and approved PowerShell verbs.
 Mutating commands must use `ShouldProcess`; `-WhatIf` must submit no request.
@@ -162,8 +162,8 @@ method-parameter-count checks are still required before invocation.
 
 | Member | Planned surface | Evidence / delivery scope |
 |---|---|---|
-| `AppInstallItems` | `Get-AppInstallItem -Context` | Getter/count observed; caller-scoped reads cleared later in #236 after #234. Individual nonempty item/status behavior is not established by the count probe. |
-| `AppInstallItemsWithGroupSupport` | `Get-AppInstallItem -Context -IncludeChildren` | Getter/count observed; grouped snapshots in #236. Added in build 15063; child/group semantics still need deterministic coverage and authorized evidence. |
+| `AppInstallItems` | `Get-AppInstallItem -Context` | Caller-scoped inventory implemented in #236. Getter/count observed previously; nonempty item/status paths are covered by deterministic fakes, not live support claims. |
+| `AppInstallItemsWithGroupSupport` | `Get-AppInstallItem -Context -IncludeChildren` | Grouped inventory implemented in #236. Getter/count observed previously; group/child paths have fake coverage only. Added in build 15063. |
 | `AcquisitionIdentity` | `Get-AppInstallSetting -Context`; future `Set-AppInstallSetting` | Getter observed, cleared later in #238. Setter remains gated in #240; no identity spoofing or implicit account/SID interpretation. |
 | `AutoUpdateSetting` | `Get-AppInstallSetting -Context`; future `Set-AppInstallSetting` | Getter observed, cleared later in #238. Device-setting write gated in #240; independent contexts do not isolate device settings. |
 | `CanInstallForAllUsers` | `Get-AppInstallSetting -Context` | Getter observed, cleared later in #238. Read-only in the C# signature (despite the reference summary saying "gets or sets"), added in build 17763. Not a private-capability authorization check. |
@@ -243,7 +243,7 @@ in build 17134; later members still require availability checks.
 
 `AppInstallItem.ProductId`, `PackageFamilyName`, `InstallType`, `IsUserInitiated`,
 `Children`, `ItemOperationsMightAffectOtherItems` and `GetCurrentStatus` feed #236's
-future immutable snapshots. `AppInstallStatus.InstallState`, `BytesDownloaded`,
+immutable snapshots. `AppInstallStatus.InstallState`, `BytesDownloaded`,
 `DownloadSizeInBytes`, `PercentComplete`, `ErrorCode`, `IsStaged` and
 `ReadyForLaunch` must retain independent observations and member availability.
 The `User` object remains unexposed until its identity/scope semantics are
@@ -253,8 +253,84 @@ Item `Completed`/`StatusChanged` events belong to gated #239. Item
 `Cancel`/`Pause`/`Restart` overloads remain gated along with the corresponding
 manager controls. `LaunchAfterInstall`, notification and pinning properties do
 not authorize implicit setting writes; they stay in the separately reviewed
-install/settings families. This foundation does not materialize or invoke those
-native members.
+install/settings families. Inventory does not materialize or invoke those
+mutating native members.
+
+## Caller-scoped inventory
+
+```powershell
+Get-AppInstallItem -Context $context [-ProductId <string[]>] [-PackageFamilyName <string[]>] [-IncludeChildren]
+```
+
+The context must be live and belong to the current runspace. Inventory activates
+its manager lazily, then reads one of the two caller-scoped collections. Each
+native member read is a short `Use` invocation with an exact availability check;
+there is no subscription, user override, search, update, entitlement, or control
+request. Native getter failures preserve the original exception, HRESULT, phase
+and source member in the PowerShell error record.
+
+Identity getters and `GetCurrentStatus` are required. Optional item/status
+properties absent from metadata are `Unavailable` and are not called. A native
+getter that throws, including access denial or a disappeared item, is an error,
+not `Unknown`/`Unavailable`. Results are buffered: a failed capture emits none.
+A successful empty queue or unmatched filter emits no objects. Earlier results
+from a separate pipeline context/capture remain valid historical observations.
+Native reads are not a single atomic transaction and state may change afterward.
+
+`AppInstallItemSnapshot` additionally exposes availability-qualified `InstallType`,
+`IsUserInitiated`, and `ItemOperationsMightAffectOtherItems`. Status exposes
+availability-qualified `HResult`, alongside the existing independent fields.
+`ErrorCode` returned as an exception is installation-status data, distinct from
+a getter throwing. The supported C#/WinRT projection uses null for a successful
+HRESULT; inventory represents that as zero. Non-failing HRESULT distinctions
+not retained by that projection are not reconstructed through raw ABI calls.
+
+Known native `Completed` with an observed non-failure HRESULT is terminal
+`Succeeded`; native `Error` and `Canceled` have their own terminal observations.
+Other known states remain `NotTerminal`, and future unknown state codes remain
+`Unknown` while the integer code is preserved. Completed without an observed
+non-failure HRESULT remains conservatively `Unknown`. PercentComplete,
+IsStaged, ReadyForLaunch and presence in the queue do not imply success.
+
+Filters are ordinal case-insensitive exact matches. Alternatives within one
+filter use OR; different filters use AND; wildcard characters are literal.
+Filtering occurs after the full read/validation, so an unrelated unreadable
+item is not silently hidden by a filter. Distinct projected identities with the
+same product/family still return distinct local IDs rather than choosing an
+ambiguous control target.
+
+Grouped mode reads Children, deduplicates repeated references under the same
+parent, and removes top-level aliases of a known child. Conflicting parents or
+cycles fail explicitly. Matching parents retain complete subtrees; matching
+descendants of unmatched parents retain their parent-local ID. The default
+ungrouped view leaves child availability Unknown and does not invent parents.
+No status User/account/SID getter is called. Caller scope describes the chosen
+API context, not a verified account identity for every returned item.
+
+The context's manager owns a cache keyed by supported projection equality, which
+AppInstallItem implements. Strong references are retained only for the last
+successful captured graph, bounded to 4096 distinct items and 128 group levels.
+A successful later capture prunes missing identities; failed captures do not
+grow or replace the cache. Context disposal clears it. Switching views can
+prune items not visible in the chosen view; an item returning after pruning gets
+a fresh local ID. This is neither a universal native install ID nor permission
+to use a deserialized snapshot for controls.
+
+Snapshots are ordinary immutable CLR values. JSON retains their nested structure;
+CSV consumers can select scalar fields explicitly, for example:
+
+```powershell
+Get-AppInstallItem -Context $context |
+    Select-Object @{n='ProductId';e={$_.Identity.ProductId}},
+                  @{n='PackageFamilyName';e={$_.Identity.PackageFamilyName}},
+                  @{n='NativeState';e={$_.Status.NativeInstallState.Value}},
+                  @{n='HResult';e={$_.Status.HResult.Value}}
+```
+
+No native nonempty item/status/group calls were executed during implementation.
+Those paths, source/packaged command execution, duplicate/cycle/error behavior
+and serialization are validated with fail-closed injected adapters. The official
+private-capability restriction and limited native evidence remain unchanged.
 
 ## Sources
 

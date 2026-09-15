@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace Shmuelie.Windows.AppInstall;
 
 /// <summary>Observed native identifiers plus explicitly local, context-scoped correlation.</summary>
@@ -40,9 +42,21 @@ public sealed record AppInstallItemSnapshot
 {
     public AppInstallItemSnapshot(AppInstallItemIdentity identity, AppInstallStatusSnapshot status,
         AppInstallValueAvailability childrenAvailability, IReadOnlyList<AppInstallItemSnapshot> children)
+        : this(identity, status, childrenAvailability, children,
+            AppInstallValue<int>.Unknown, AppInstallValue<bool>.Unknown, AppInstallValue<bool>.Unknown) { }
+
+    [JsonConstructor]
+    public AppInstallItemSnapshot(AppInstallItemIdentity identity, AppInstallStatusSnapshot status,
+        AppInstallValueAvailability childrenAvailability, IReadOnlyList<AppInstallItemSnapshot> children,
+        AppInstallValue<int>? installType, AppInstallValue<bool>? isUserInitiated,
+        AppInstallValue<bool>? itemOperationsMightAffectOtherItems)
     {
         ArgumentNullException.ThrowIfNull(identity);
         ArgumentNullException.ThrowIfNull(status);
+        // Older foundation snapshots did not contain these observations.
+        InstallType = installType ?? AppInstallValue<int>.Unknown;
+        IsUserInitiated = isUserInitiated ?? AppInstallValue<bool>.Unknown;
+        ItemOperationsMightAffectOtherItems = itemOperationsMightAffectOtherItems ?? AppInstallValue<bool>.Unknown;
         AppInstallModelGuard.Defined(childrenAvailability);
         Identity = identity;
         Status = status;
@@ -71,4 +85,7 @@ public sealed record AppInstallItemSnapshot
     public AppInstallStatusSnapshot Status { get; }
     public AppInstallValueAvailability ChildrenAvailability { get; }
     public IReadOnlyList<AppInstallItemSnapshot> Children { get; }
+    public AppInstallValue<int> InstallType { get; }
+    public AppInstallValue<bool> IsUserInitiated { get; }
+    public AppInstallValue<bool> ItemOperationsMightAffectOtherItems { get; }
 }
