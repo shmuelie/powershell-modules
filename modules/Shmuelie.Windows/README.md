@@ -19,6 +19,7 @@ Import-Module Shmuelie.Windows
 | App Installer | `Get-AppInstallerApp`, `Update-AppInstallerApp` (compiled, Windows-only; opt-in `-PassThru` request outcomes) |
 | App install foundation | `New-AppInstallContext` (compiled, experimental; lazy caller-owned context, no installation or search) |
 | App install queue | `Get-AppInstallItem` (compiled, experimental; explicit context, caller-scoped read-only snapshots) |
+| App install settings | `Get-AppInstallSettings` (compiled, experimental; explicit context, read-only, acquisition identity opt-in) |
 | Inventory | `Get-InstalledApplications` (compiled binary cmdlet) |
 | Services | `Get-ServiceProcess` (compiled binary cmdlet) |
 | Virtual drives | `Get-SubstDrive`, `New-SubstDrive`, `Remove-SubstDrive` (compiled binary cmdlets) |
@@ -40,7 +41,7 @@ try {
 }
 ```
 
-The same context will own the same lazily activated manager for later commands;
+The same context owns the same lazily activated manager for queue and settings reads;
 there is no process-global manager or implicit per-command context. Do not pass
 it to another runspace, a job, or a remoting session. Closing its owning runspace
 also disposes it; removing the module alone does not dispose caller-owned
@@ -53,9 +54,47 @@ Neither elevation nor `runFullTrust` alone establishes authorization. Creating a
 context does not claim, grant, or bypass a capability. Caller scope is not a
 verified account/SID mapping or a claim about queue visibility.
 
-This foundation is separate from the `.appinstaller` helpers below. Caller-scoped
-queue reads use `Get-AppInstallItem`; no settings, search, install, entitlement,
-control, or `ForUser` cmdlets are exported. See [the context contract](../../docs/appinstall.md).
+This surface is separate from the `.appinstaller` helpers below. Caller-scoped
+queue and settings reads use `Get-AppInstallItem` and `Get-AppInstallSettings`.
+No settings mutation, search, install, entitlement, control, or `ForUser` cmdlets
+are exported. See [the context contract](../../docs/appinstall.md).
+
+### Read-only settings
+
+```powershell
+$context = New-AppInstallContext
+try {
+    Get-AppInstallSettings -Context $context
+    # Only this explicit selector reads acquisition identity; keep its output private.
+    $identitySnapshot = Get-AppInstallSettings -Context $context -Property AcquisitionIdentity
+} finally {
+    $context.Dispose()
+}
+```
+
+The default reads only `AutoUpdateSetting` and `CanInstallForAllUsers`.
+`-Property` replaces the defaults with an exact list of the three allowed names;
+numeric aliases, wildcards and `All` are rejected. Repeated names are read once. Acquisition
+identity is neither probed nor read unless explicitly selected, and is never
+written to verbose/debug/information logs. Its value is a manager-context
+observation, not a verified account/SID or evidence of cross-manager persistence.
+
+`AutoUpdateSetting` is the documented **device** setting: independent managers
+do not isolate device-wide settings or policy. Its typed `AppInstallValue<int>`
+preserves the raw native enum (`0` Disabled, `1` Enabled, `2` DisabledByPolicy,
+`3` EnabledByPolicy), including future codes. `CanInstallForAllUsers` is
+**get-only** and reflects the calling process's privilege observation, not a
+privilege grant, private-capability authorization or proof that an all-user
+installation is available or will succeed.
+
+The immutable `AppInstallSettingsSnapshot` records `ContextId`, caller scope,
+each property's scope, `RequestedProperties` and successfully `ReadProperties`.
+Unselected values are `Unknown`; missing members/types are `Unavailable` without
+invocation. Available false/zero (and explicitly requested empty identity) remain
+distinct from unknown/unavailable. Reads are sequential, not atomic. Operational
+failures terminate without a partial snapshot and retain the original exception,
+HRESULT and typed failure phase in the error record. Default error rendering
+omits raw native diagnostics because they can contain sensitive data.
 
 The foundation also defines immutable identity/group, status, request,
 entitlement and error snapshots for later commands. Unknown and unavailable
@@ -147,7 +186,7 @@ for `net8.0-windows10.0.19041.0`) because they call the WinRT
 loaded only on Windows, so those two cmdlets are unavailable on other platforms;
 the rest of the module still imports everywhere PowerShell 7 runs.
 
-The experimental context factory uses a separate `Shmuelie.Windows.AppInstall.dll`
+The experimental context factory and read-only commands use a separate `Shmuelie.Windows.AppInstall.dll`
 with the same Windows target and projection dependencies. It requires Windows 10
 build 19041 or later and is exported only on Windows. Development builds publish
 the compiled assemblies and their projection dependencies; importing a source or

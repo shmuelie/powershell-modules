@@ -47,7 +47,12 @@ public sealed partial class AppInstallContext : IDisposable
     // lock. A synchronous native call cannot be forcibly canceled by Dispose.
     internal T Use<T>(AppInstallMember member, Func<IAppInstallManagerAdapter, T> operation,
         Action<AppInstallErrorPhase>? enteringPhase = null)
+        => Use(member, operation, out _, enteringPhase);
+
+    internal T Use<T>(AppInstallMember member, Func<IAppInstallManagerAdapter, T> operation,
+        out AppInstallErrorPhase phase, Action<AppInstallErrorPhase>? enteringPhase = null)
     {
+        phase = AppInstallErrorPhase.Availability;
         ArgumentNullException.ThrowIfNull(member);
         ArgumentNullException.ThrowIfNull(operation);
         lock (sync)
@@ -59,9 +64,12 @@ public sealed partial class AppInstallContext : IDisposable
                 !availability.IsMemberPresent(member))
                 throw new MissingMemberException(member.TypeName, member.Name);
 
-            enteringPhase?.Invoke(AppInstallErrorPhase.Activation);
+            // Exception filters inspect this value before finally blocks run.
+            phase = AppInstallErrorPhase.Activation;
+            enteringPhase?.Invoke(phase);
             var instance = manager.Value;
-            enteringPhase?.Invoke(AppInstallErrorPhase.Invocation);
+            phase = AppInstallErrorPhase.Invocation;
+            enteringPhase?.Invoke(phase);
             return operation(instance);
         }
     }
@@ -70,7 +78,7 @@ public sealed partial class AppInstallContext : IDisposable
     {
         ObjectDisposedException.ThrowIf(disposed, this);
         if (!ReferenceEquals(Runspace.DefaultRunspace, owner))
-            throw new InvalidOperationException("An AppInstall context can only be used in its creating runspace.");
+            throw new AppInstallContextUnavailableException("An AppInstall context can only be used in its creating runspace.");
         if (!availability.IsSupportedPlatform)
             throw new PlatformNotSupportedException("AppInstall contexts require Windows 10 build 19041 or later.");
     }
@@ -95,3 +103,7 @@ public sealed partial class AppInstallContext : IDisposable
 
 /// <summary>Caller scope does not assert a SID, account identity, or queue visibility.</summary>
 public enum AppInstallUserScope { Unknown, Caller }
+
+internal sealed class AppInstallContextUnavailableException(string message) : InvalidOperationException(message)
+{
+}

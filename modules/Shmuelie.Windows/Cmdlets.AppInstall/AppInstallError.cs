@@ -70,7 +70,7 @@ public sealed record AppInstallError
                 MissingMemberException => AppInstallErrorKind.MemberUnavailable,
                 UnauthorizedAccessException => AppInstallErrorKind.AccessDenied,
                 COMException { HResult: unchecked((int)0x80070005) } => AppInstallErrorKind.AccessDenied,
-                ObjectDisposedException => AppInstallErrorKind.ContextUnavailable,
+                ObjectDisposedException or AppInstallContextUnavailableException => AppInstallErrorKind.ContextUnavailable,
                 _ => IsOperational(error) ? AppInstallErrorKind.NativeFailure : AppInstallErrorKind.UnclassifiedFailure
             }, error, []);
 

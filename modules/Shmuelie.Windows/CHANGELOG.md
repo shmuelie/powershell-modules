@@ -12,6 +12,14 @@ Versions change only when a release is cut; unreleased work stays under
   optional grouped children, bounded local identity tracking, explicit member
   availability and preserved native errors. No search, install, settings,
   entitlement, queue-control or ForUser operation is performed.
+- Experimental compiled `Get-AppInstallSettings` for the three approved
+  caller-context getters, using an explicit lazy context. The default reads
+  only device auto-update and calling-process all-user privilege observations;
+  acquisition identity requires an exact opt-in property selector. Immutable
+  snapshots retain scope, requested/read properties, raw enum codes and
+  unknown/unavailable/false distinctions. Failures preserve original errors
+  without rendering raw native diagnostics or returning a partial snapshot.
+  No settings mutation, identity change or installation action is provided.
 - Experimental compiled `New-AppInstallContext` factory with explicit lazy
   manager ownership, caller scope, runspace-bound lifetime and deterministic
   disposal. Creating a context performs no native activation or search. The

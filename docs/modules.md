@@ -158,6 +158,8 @@ Highlights:
 - `Get-ServiceProcess` resolves a Windows service to its hosting process.
 - [`New-AppInstallContext`](appinstall.md) creates an experimental lazy context;
   it does not activate the manager or perform installation or search.
+- [`Get-AppInstallSettings`](appinstall.md#read-only-settings) reads the approved
+  settings through an explicit context; acquisition identity requires opt-in.
 - `Get-WindowsTerminalSettings` and `Get-WindowsTerminalProfile` inspect Windows Terminal configuration.
 - `Start-WindowsPerformanceRecorder` and `Stop-WindowsPerformanceRecorder` wrap WPR tracing.
 

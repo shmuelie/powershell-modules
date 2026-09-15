@@ -554,19 +554,6 @@ Describe 'AppInstall foundation (hermetic)' -Tag AppInstallFoundation -Skip:(-no
         { [Shmuelie.Windows.AppInstall.Tests.ContractScenarios]::Run($_) } | Should -Not -Throw
     }
 
-    It 'exports only the context factory and caller inventory from the assembly' {
-        $commands = @(Get-Command -Module Shmuelie.Windows -CommandType Cmdlet |
-            Where-Object { $_.ImplementingType.Assembly.GetName().Name -eq 'Shmuelie.Windows.AppInstall' })
-        @($commands.Name | Sort-Object) | Should -Be @('Get-AppInstallItem', 'New-AppInstallContext')
-        $factory = $commands | Where-Object Name -EQ 'New-AppInstallContext'
-        $factory.OutputType.Name | Should -Contain 'Shmuelie.Windows.AppInstall.AppInstallContext'
-        $factory.Parameters.ContainsKey('WhatIf') | Should -BeTrue
-        $inventory = $commands | Where-Object Name -EQ 'Get-AppInstallItem'
-        $inventory.OutputType.Name | Should -Contain 'Shmuelie.Windows.AppInstall.AppInstallItemSnapshot'
-        $inventory.Parameters.ContainsKey('WhatIf') | Should -BeFalse
-        $inventory.Parameters.ContainsKey('User') | Should -BeFalse
-    }
-
     It 'reads caller inventory through fail-closed adapters: <_>' -ForEach @(
         'Empty', 'ObservedFields', 'ExactFilters', 'ProjectionIdentity', 'DuplicateReferences', 'DuplicateNativeNames',
         'GroupsAndAliases', 'DeepGroup', 'Cycle', 'ConflictingParents', 'ScopeMismatch', 'BoundedDepth', 'BoundedItems',
@@ -592,6 +579,42 @@ Describe 'AppInstall foundation (hermetic)' -Tag AppInstallFoundation -Skip:(-no
         ($help.parameters.parameter | Where-Object Name -EQ 'Context').required | Should -BeTrue
     }
 
+    It 'reads only approved settings through the explicit fake context: <_>' -ForEach @(
+        'DefaultPrivacy', 'ExplicitIdentityOnly', 'ExplicitAll', 'DuplicateSelection',
+        'FalseAndZero', 'FutureEnum', 'ReuseAndRefresh', 'IndependentScopes',
+        'MemberUnavailable', 'IdentityUnavailable', 'TypeUnavailable', 'RecheckAvailability',
+        'DisposedBeforeRead', 'DisposedAfterRead', 'WrongRunspace', 'PlatformFailure',
+        'ActivationDenied', 'ActivationMissingMember', 'GetterDenied', 'GetterComFailure',
+        'GetterMissingMember', 'PartialReadFailure', 'IdentityFailurePrivacy',
+        'MappedNullReferenceFailure', 'MappedInvalidCastFailure',
+        'NullIdentityFailure', 'EmptyIdentityAvailable', 'UnclassifiedFailure',
+        'ImmutableJson', 'SchemaValidation', 'SdkSignatures', 'InvalidSelector', 'PipelineContext'
+    ) {
+        { [Shmuelie.Windows.AppInstall.Tests.SettingsScenarios]::Run($_) } | Should -Not -Throw
+    }
+
+    It 'exports only the context factory and approved readers from the assembly' {
+        $commands = @(Get-Command -Module Shmuelie.Windows -CommandType Cmdlet |
+            Where-Object { $_.ImplementingType.Assembly.GetName().Name -eq 'Shmuelie.Windows.AppInstall' })
+        @($commands.Name | Sort-Object) | Should -Be @('Get-AppInstallItem', 'Get-AppInstallSettings', 'New-AppInstallContext')
+        $factory = $commands | Where-Object Name -EQ 'New-AppInstallContext'
+        $factory.OutputType.Name | Should -Contain 'Shmuelie.Windows.AppInstall.AppInstallContext'
+        $factory.Parameters.ContainsKey('WhatIf') | Should -BeTrue
+        $reader = $commands | Where-Object Name -EQ 'Get-AppInstallSettings'
+        $reader.OutputType.Name | Should -Contain 'Shmuelie.Windows.AppInstall.AppInstallSettingsSnapshot'
+        $reader.Parameters['Context'].ParameterType.FullName | Should -BeExactly 'Shmuelie.Windows.AppInstall.AppInstallContext'
+        $reader.Parameters['Context'].Attributes.Mandatory | Should -Contain $true
+        $reader.Parameters['Property'].ParameterType | Should -Be ([string[]])
+        $reader.Parameters.ContainsKey('WhatIf') | Should -BeFalse
+        $reader.Parameters.ContainsKey('ForUser') | Should -BeFalse
+        ([Shmuelie.Windows.AppInstall.GetAppInstallSettingsCommand]::new().Property | ForEach-Object ToString) |
+            Should -Be @('AutoUpdateSetting', 'CanInstallForAllUsers')
+        $inventory = $commands | Where-Object Name -EQ 'Get-AppInstallItem'
+        $inventory.OutputType.Name | Should -Contain 'Shmuelie.Windows.AppInstall.AppInstallItemSnapshot'
+        $inventory.Parameters.ContainsKey('WhatIf') | Should -BeFalse
+        $inventory.Parameters.ContainsKey('User') | Should -BeFalse
+    }
+
     It 'returns a typed lazy context without native activation' {
         $context = New-AppInstallContext
         try {
@@ -613,6 +636,11 @@ Describe 'AppInstall foundation (hermetic)' -Tag AppInstallFoundation -Skip:(-no
         $help = Get-Help New-AppInstallContext -Full
         ($help.description.Text -join ' ') | Should -Match 'private capability restricted to Microsoft-developed apps'
         ($help.description.Text -join ' ') | Should -Match 'does not check or grant native authorization'
+        $settingsHelp = Get-Help Get-AppInstallSettings -Full
+        ($settingsHelp.description.Text -join ' ') | Should -Match 'private capability restricted to Microsoft-developed apps'
+        ($settingsHelp.description.Text -join ' ') | Should -Match 'AcquisitionIdentity is not read by default'
+        ($settingsHelp.parameters.parameter | Where-Object Name -EQ 'Property').description.Text -join ' ' |
+            Should -Match 'AutoUpdateSetting and CanInstallForAllUsers'
     }
 
     It 'documents the complete <Section> matrix without treating plans as exports' -ForEach @(
@@ -663,7 +691,8 @@ Describe 'AppInstall foundation (hermetic)' -Tag AppInstallFoundation -Skip:(-no
         if ($Portable) {
             $result.CommandCount | Should -Be 0
         } else {
-            $result.CommandCount | Should -Be 1
+            $result.CommandCount | Should -Be 3
+            $result.SettingsHelpAvailable | Should -BeTrue
             $result.IsActivated | Should -BeFalse
             $result.HelpAvailable | Should -BeTrue
             $result.SurvivesModuleRemoval | Should -BeTrue
