@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace Shmuelie.Windows.AppInstall;
 
 /// <summary>A point-in-time observation, not a live native item or an inferred installation result.</summary>
@@ -8,7 +10,17 @@ public sealed record AppInstallStatusSnapshot
         AppInstallValue<double> percentComplete, AppInstallValue<bool> isStaged,
         AppInstallValue<bool> readyForLaunch, AppInstallTerminalState terminalState,
         AppInstallError? error)
+        : this(nativeInstallState, bytesDownloaded, downloadSizeInBytes, percentComplete, isStaged,
+            readyForLaunch, terminalState, error, AppInstallValue<int>.Unknown) { }
+
+    [JsonConstructor]
+    public AppInstallStatusSnapshot(AppInstallValue<int> nativeInstallState,
+        AppInstallValue<ulong> bytesDownloaded, AppInstallValue<ulong> downloadSizeInBytes,
+        AppInstallValue<double> percentComplete, AppInstallValue<bool> isStaged,
+        AppInstallValue<bool> readyForLaunch, AppInstallTerminalState terminalState,
+        AppInstallError? error, AppInstallValue<int>? hResult)
     {
+        HResult = hResult ?? AppInstallValue<int>.Unknown;
         ArgumentNullException.ThrowIfNull(nativeInstallState);
         ArgumentNullException.ThrowIfNull(bytesDownloaded);
         ArgumentNullException.ThrowIfNull(downloadSizeInBytes);
@@ -37,4 +49,5 @@ public sealed record AppInstallStatusSnapshot
     public AppInstallValue<bool> ReadyForLaunch { get; }
     public AppInstallTerminalState TerminalState { get; }
     public AppInstallError? Error { get; }
+    public AppInstallValue<int> HResult { get; }
 }

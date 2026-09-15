@@ -7,6 +7,11 @@ Versions change only when a release is cut; unreleased work stays under
 ## [Unreleased]
 
 ### Added
+- Experimental compiled `Get-AppInstallItem` for caller-scoped queue/current
+  status snapshots through an explicit AppInstall context, with exact filters,
+  optional grouped children, bounded local identity tracking, explicit member
+  availability and preserved native errors. No search, install, settings,
+  entitlement, queue-control or ForUser operation is performed.
 - Experimental compiled `Get-AppInstallSettings` for the three approved
   caller-context getters, using an explicit lazy context. The default reads
   only device auto-update and calling-process all-user privilege observations;

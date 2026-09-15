@@ -21,7 +21,7 @@ if ($ExpectedMissingDependency) {
 }
 Import-Module $ManifestPath -Force -ErrorAction Stop
 $command = @(Get-Command -Module Shmuelie.Windows -CommandType Cmdlet |
-    Where-Object Name -In 'New-AppInstallContext', 'Get-AppInstallSettings')
+    Where-Object Name -In 'New-AppInstallContext', 'Get-AppInstallItem', 'Get-AppInstallSettings')
 $assemblyLoaded = @([AppDomain]::CurrentDomain.GetAssemblies() |
     Where-Object { $_.GetName().Name -eq 'Shmuelie.Windows.AppInstall' }).Count -ne 0
 $projectionLoaded = @([AppDomain]::CurrentDomain.GetAssemblies() |
@@ -36,7 +36,7 @@ if ($SimulateNonWindows) {
     return
 }
 
-if ($command.Count -ne 2) { throw 'The compiled context factory and settings reader were not exported.' }
+if ($command.Count -ne 3) { throw 'The compiled context factory and both readers were not exported.' }
 if ($projectionLoaded -ne 2) { throw 'The shipped WinRT projection dependencies were not loaded.' }
 $context = New-AppInstallContext
 try {

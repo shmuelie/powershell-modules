@@ -554,6 +554,31 @@ Describe 'AppInstall foundation (hermetic)' -Tag AppInstallFoundation -Skip:(-no
         { [Shmuelie.Windows.AppInstall.Tests.ContractScenarios]::Run($_) } | Should -Not -Throw
     }
 
+    It 'reads caller inventory through fail-closed adapters: <_>' -ForEach @(
+        'Empty', 'ObservedFields', 'ExactFilters', 'ProjectionIdentity', 'DuplicateReferences', 'DuplicateNativeNames',
+        'GroupsAndAliases', 'DeepGroup', 'Cycle', 'ConflictingParents', 'ScopeMismatch', 'BoundedDepth', 'BoundedItems',
+        'CachePruning', 'UnavailableFields', 'MissingCollection', 'ActivationDenied', 'CollectionDenied',
+        'ItemDisappeared', 'StatusDenied', 'FieldDenied', 'InstallFailureIsData', 'TerminalStates',
+        'Serialization', 'DisposedContext'
+        'FailedCapturePreservesCache', 'UnavailableCompletionEvidence', 'GetterMissingMemberIsError',
+        'OlderSnapshotSerialization', 'WrongRunspace'
+    ) {
+        { [Shmuelie.Windows.AppInstall.Tests.InventoryScenarios]::Run($_) } | Should -Not -Throw
+    }
+
+    It 'executes compiled fake inventory from <_> in a fresh process' -ForEach @('Source', 'Packaged') {
+        $output = & pwsh -NoProfile -NonInteractive -File (Join-Path $repoRoot 'tests' 'fixtures' 'Test-AppInstallInventory.ps1') `
+            -ManifestPath $importManifests[$_] -HelperPath (Join-Path $helperOutput 'Shmuelie.Windows.AppInstall.Tests.dll')
+        $LASTEXITCODE | Should -Be 0
+        $output | Should -Contain 'Fake inventory command passed.'
+    }
+
+    It 'loads inventory help without executing the queue command' {
+        $help = Get-Help Get-AppInstallItem -Full
+        ($help.description.Text -join ' ') | Should -Match 'private capability restricted to Microsoft-developed apps'
+        ($help.parameters.parameter | Where-Object Name -EQ 'Context').required | Should -BeTrue
+    }
+
     It 'reads only approved settings through the explicit fake context: <_>' -ForEach @(
         'DefaultPrivacy', 'ExplicitIdentityOnly', 'ExplicitAll', 'DuplicateSelection',
         'FalseAndZero', 'FutureEnum', 'ReuseAndRefresh', 'IndependentScopes',
@@ -568,10 +593,10 @@ Describe 'AppInstall foundation (hermetic)' -Tag AppInstallFoundation -Skip:(-no
         { [Shmuelie.Windows.AppInstall.Tests.SettingsScenarios]::Run($_) } | Should -Not -Throw
     }
 
-    It 'exports only the context factory and approved settings reader from the new assembly' {
+    It 'exports only the context factory and approved readers from the assembly' {
         $commands = @(Get-Command -Module Shmuelie.Windows -CommandType Cmdlet |
             Where-Object { $_.ImplementingType.Assembly.GetName().Name -eq 'Shmuelie.Windows.AppInstall' })
-        @($commands.Name | Sort-Object) | Should -Be @('Get-AppInstallSettings', 'New-AppInstallContext')
+        @($commands.Name | Sort-Object) | Should -Be @('Get-AppInstallItem', 'Get-AppInstallSettings', 'New-AppInstallContext')
         $factory = $commands | Where-Object Name -EQ 'New-AppInstallContext'
         $factory.OutputType.Name | Should -Contain 'Shmuelie.Windows.AppInstall.AppInstallContext'
         $factory.Parameters.ContainsKey('WhatIf') | Should -BeTrue
@@ -584,6 +609,10 @@ Describe 'AppInstall foundation (hermetic)' -Tag AppInstallFoundation -Skip:(-no
         $reader.Parameters.ContainsKey('ForUser') | Should -BeFalse
         ([Shmuelie.Windows.AppInstall.GetAppInstallSettingsCommand]::new().Property | ForEach-Object ToString) |
             Should -Be @('AutoUpdateSetting', 'CanInstallForAllUsers')
+        $inventory = $commands | Where-Object Name -EQ 'Get-AppInstallItem'
+        $inventory.OutputType.Name | Should -Contain 'Shmuelie.Windows.AppInstall.AppInstallItemSnapshot'
+        $inventory.Parameters.ContainsKey('WhatIf') | Should -BeFalse
+        $inventory.Parameters.ContainsKey('User') | Should -BeFalse
     }
 
     It 'returns a typed lazy context without native activation' {
@@ -662,7 +691,7 @@ Describe 'AppInstall foundation (hermetic)' -Tag AppInstallFoundation -Skip:(-no
         if ($Portable) {
             $result.CommandCount | Should -Be 0
         } else {
-            $result.CommandCount | Should -Be 2
+            $result.CommandCount | Should -Be 3
             $result.SettingsHelpAvailable | Should -BeTrue
             $result.IsActivated | Should -BeFalse
             $result.HelpAvailable | Should -BeTrue

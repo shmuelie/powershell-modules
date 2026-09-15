@@ -18,6 +18,7 @@ Import-Module Shmuelie.Windows
 |---|---|
 | App Installer | `Get-AppInstallerApp`, `Update-AppInstallerApp` (compiled, Windows-only; opt-in `-PassThru` request outcomes) |
 | App install foundation | `New-AppInstallContext` (compiled, experimental; lazy caller-owned context, no installation or search) |
+| App install queue | `Get-AppInstallItem` (compiled, experimental; explicit context, caller-scoped read-only snapshots) |
 | App install settings | `Get-AppInstallSettings` (compiled, experimental; explicit context, read-only, acquisition identity opt-in) |
 | Inventory | `Get-InstalledApplications` (compiled binary cmdlet) |
 | Services | `Get-ServiceProcess` (compiled binary cmdlet) |
@@ -40,7 +41,7 @@ try {
 }
 ```
 
-The same context owns the same lazily activated manager for settings reads;
+The same context owns the same lazily activated manager for queue and settings reads;
 there is no process-global manager or implicit per-command context. Do not pass
 it to another runspace, a job, or a remoting session. Closing its owning runspace
 also disposes it; removing the module alone does not dispose caller-owned
@@ -53,9 +54,10 @@ Neither elevation nor `runFullTrust` alone establishes authorization. Creating a
 context does not claim, grant, or bypass a capability. Caller scope is not a
 verified account/SID mapping or a claim about queue visibility.
 
-This surface is separate from the `.appinstaller` helpers below. No queue
-inventory, settings mutation, search, install, entitlement, control, or `ForUser`
-cmdlets are exported. See [the context contract](../../docs/appinstall.md).
+This surface is separate from the `.appinstaller` helpers below. Caller-scoped
+queue and settings reads use `Get-AppInstallItem` and `Get-AppInstallSettings`.
+No settings mutation, search, install, entitlement, control, or `ForUser` cmdlets
+are exported. See [the context contract](../../docs/appinstall.md).
 
 ### Read-only settings
 
@@ -102,6 +104,47 @@ installation terminal state, staging and launch readiness remain distinct.
 See [snapshot contracts and the API/options matrix](../../docs/appinstall.md#immutable-snapshot-contracts)
 for the cleared future subset and the still-gated families.
 
+## Caller-scoped AppInstall inventory
+
+```powershell
+$context = New-AppInstallContext
+try {
+    Get-AppInstallItem -Context $context -IncludeChildren
+} finally {
+    $context.Dispose()
+}
+```
+
+The first read activates the context's manager. `-ProductId` and
+`-PackageFamilyName` accept arrays of exact, ordinal case-insensitive values:
+no wildcard expansion, OR within a filter, AND between filters. These are
+post-capture filters, not authorization or unique control-target selection.
+The command never searches for updates or queues work.
+
+`-IncludeChildren` reads the group-aware collection and preserves complete
+subtrees for matching parents. A matching descendant of an unmatched parent is
+returned with its `ParentLocalItemId`; descendants already included under a
+matching parent are not emitted twice. Without this switch, children are
+`Unknown`, not assumed absent.
+
+The immutable output retains product/family identity, install type, initiation
+and group-impact flags, native state codes, bytes, percentage, HRESULT, staging
+and launch readiness. Unsupported optional members are `Unavailable`; access
+errors and disappearing-item reads fail the capture without partial results.
+An empty successful queue or unmatched filter emits no objects. Reading is not
+an atomic native transaction, and a captured item can disappear afterward.
+
+Local IDs follow projected item identity, not product/family strings. At most
+4096 distinct items from the last successful capture are retained; removed
+identities are pruned on the next successful capture and context disposal clears
+the cache. More than 4096 items, depth beyond 128 levels, cycles, or conflicting
+parents cause errors rather than truncation. Detached snapshots are not handles
+or permission to control an item. See [inventory details](../../docs/appinstall.md#caller-scoped-inventory).
+
+The prior runtime evidence covers collection getters/counts only. Nonempty
+item/status/group coverage for this implementation uses deterministic fakes,
+not a new claim of supported third-party native access.
+
 ## App Installer request results
 
 `Update-AppInstallerApp` still emits nothing by default. Opt in to typed
@@ -143,7 +186,7 @@ for `net8.0-windows10.0.19041.0`) because they call the WinRT
 loaded only on Windows, so those two cmdlets are unavailable on other platforms;
 the rest of the module still imports everywhere PowerShell 7 runs.
 
-The experimental context factory and settings reader use a separate `Shmuelie.Windows.AppInstall.dll`
+The experimental context factory and read-only commands use a separate `Shmuelie.Windows.AppInstall.dll`
 with the same Windows target and projection dependencies. It requires Windows 10
 build 19041 or later and is exported only on Windows. Development builds publish
 the compiled assemblies and their projection dependencies; importing a source or

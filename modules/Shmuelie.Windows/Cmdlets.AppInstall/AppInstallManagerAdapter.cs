@@ -26,6 +26,7 @@ internal sealed partial class AppInstallManagerAdapter(AppInstallManager manager
 
     public void Dispose()
     {
+        InventoryTracker.Clear();
         // AppInstallManager is not IClosable. Drop our projection reference;
         // do not force-release COM objects shared by the WinRT projection.
         manager = null;

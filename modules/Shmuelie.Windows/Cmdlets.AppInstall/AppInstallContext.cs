@@ -6,7 +6,7 @@ namespace Shmuelie.Windows.AppInstall;
 /// Owns one lazily activated AppInstallManager in its creating runspace.
 /// Creation is not an access check or an installation request.
 /// </summary>
-public sealed class AppInstallContext : IDisposable
+public sealed partial class AppInstallContext : IDisposable
 {
     private readonly object sync = new();
     private readonly Runspace owner;
@@ -45,32 +45,42 @@ public sealed class AppInstallContext : IDisposable
     // every member before activation/invocation. Keep the callback to a short
     // native invocation; wait for returned operations outside this lifecycle
     // lock. A synchronous native call cannot be forcibly canceled by Dispose.
-    internal T Use<T>(AppInstallMember member, Func<IAppInstallManagerAdapter, T> operation)
-        => Use(member, operation, out _);
+    internal T Use<T>(AppInstallMember member, Func<IAppInstallManagerAdapter, T> operation,
+        Action<AppInstallErrorPhase>? enteringPhase = null)
+        => Use(member, operation, out _, enteringPhase);
 
     internal T Use<T>(AppInstallMember member, Func<IAppInstallManagerAdapter, T> operation,
-        out AppInstallErrorPhase phase)
+        out AppInstallErrorPhase phase, Action<AppInstallErrorPhase>? enteringPhase = null)
     {
         phase = AppInstallErrorPhase.Availability;
         ArgumentNullException.ThrowIfNull(member);
         ArgumentNullException.ThrowIfNull(operation);
         lock (sync)
         {
-            ObjectDisposedException.ThrowIf(disposed, this);
-            if (!ReferenceEquals(Runspace.DefaultRunspace, owner))
-                throw new AppInstallContextUnavailableException("An AppInstall context can only be used in its creating runspace.");
-            if (!availability.IsSupportedPlatform)
-                throw new PlatformNotSupportedException("AppInstall contexts require Windows 10 build 19041 or later.");
+            enteringPhase?.Invoke(AppInstallErrorPhase.Availability);
+            EnsureUsable();
             if (!availability.IsTypePresent(AppInstallMember.ManagerType) ||
                 !availability.IsTypePresent(member.TypeName) ||
                 !availability.IsMemberPresent(member))
                 throw new MissingMemberException(member.TypeName, member.Name);
 
+            // Exception filters inspect this value before finally blocks run.
             phase = AppInstallErrorPhase.Activation;
-            var activated = manager.Value;
+            enteringPhase?.Invoke(phase);
+            var instance = manager.Value;
             phase = AppInstallErrorPhase.Invocation;
-            return operation(activated);
+            enteringPhase?.Invoke(phase);
+            return operation(instance);
         }
+    }
+
+    private void EnsureUsable()
+    {
+        ObjectDisposedException.ThrowIf(disposed, this);
+        if (!ReferenceEquals(Runspace.DefaultRunspace, owner))
+            throw new AppInstallContextUnavailableException("An AppInstall context can only be used in its creating runspace.");
+        if (!availability.IsSupportedPlatform)
+            throw new PlatformNotSupportedException("AppInstall contexts require Windows 10 build 19041 or later.");
     }
 
     private void OnRunspaceStateChanged(object? sender, RunspaceStateEventArgs args)

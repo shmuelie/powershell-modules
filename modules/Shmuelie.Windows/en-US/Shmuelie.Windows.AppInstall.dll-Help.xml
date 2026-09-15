@@ -15,7 +15,7 @@
     <command:parameters />
     <command:inputTypes><command:inputType><dev:type><maml:name>None</maml:name></dev:type></command:inputType></command:inputTypes>
     <command:returnValues><command:returnValue><dev:type><maml:name>Shmuelie.Windows.AppInstall.AppInstallContext</maml:name></dev:type></command:returnValue></command:returnValues>
-    <maml:alertSet><maml:alert><maml:para>Get-AppInstallSettings reads the approved caller-context settings through this explicit context. No inventory, search, settings mutation, control, entitlement, or ForUser command is provided.</maml:para></maml:alert></maml:alertSet>
+    <maml:alertSet><maml:alert><maml:para>Get-AppInstallItem and Get-AppInstallSettings read caller-scoped inventory and approved settings through this explicit context. No search, settings mutation, control, entitlement, or ForUser command is provided.</maml:para></maml:alert></maml:alertSet>
     <command:examples><command:example>
       <maml:title>Example 1: Create and dispose a context</maml:title>
       <dev:code>$context = New-AppInstallContext
@@ -26,6 +26,42 @@ try { $context.ContextId } finally { $context.Dispose() }</dev:code>
       <maml:linkText>AppInstallManager reference and access restriction</maml:linkText>
       <maml:uri>https://learn.microsoft.com/uwp/api/windows.applicationmodel.store.preview.installcontrol.appinstallmanager</maml:uri>
     </maml:navigationLink></command:relatedLinks>
+  </command:command>
+  <command:command xmlns:maml="http://schemas.microsoft.com/maml/2004/10" xmlns:command="http://schemas.microsoft.com/maml/dev/command/2004/10" xmlns:dev="http://schemas.microsoft.com/maml/dev/2004/10">
+    <command:details>
+      <command:name>Get-AppInstallItem</command:name>
+      <command:verb>Get</command:verb>
+      <command:noun>AppInstallItem</command:noun>
+      <maml:description><maml:para>Reads immutable caller-scoped AppInstall queue and current-status snapshots.</maml:para></maml:description>
+    </command:details>
+    <maml:description>
+      <maml:para>Requires an explicit context from New-AppInstallContext in the same runspace. The first read lazily activates the native manager. This command reads AppInstallItems, or AppInstallItemsWithGroupSupport and Children when IncludeChildren is set. It never searches for updates, submits requests, changes settings, or invokes controls or ForUser APIs.</maml:para>
+      <maml:para>ProductId and PackageFamilyName use exact ordinal case-insensitive matching, not wildcards. Values within each filter are alternatives; both filters must match when both are supplied. Filters apply after a complete capture. A matched parent includes its complete subtree; a matching descendant of an unmatched parent is emitted with its ParentLocalItemId. Matching descendants are not emitted again beneath a matching ancestor.</maml:para>
+      <maml:para>Failed reads, disappearing items, conflicting parents, cycles, or inventory limits produce errors and no results for that capture. Unsupported optional members are explicitly Unavailable, never silent false or zero values. Installation errors returned by the status ErrorCode property remain data. A returned item, percentage, IsStaged or ReadyForLaunch is not proof of installation completion.</maml:para>
+      <maml:para>Local IDs are correlation for projected item identities retained in the last successful capture, not native IDs or control authorization. Removed identities are pruned on a successful scan and all retained references are released when the context is disposed. Captures are bounded to 4096 distinct items and 128 group levels; exceeding a limit errors rather than truncates. Caller scope does not identify an account, SID, or the owner of every visible queue item.</maml:para>
+      <maml:para>Microsoft documents AppInstallManager access as protected by a private capability restricted to Microsoft-developed apps. Observed runtime access is not an official third-party support guarantee. Nonempty item/status/group paths have deterministic fake-adapter coverage, not a claim of live support in every host.</maml:para>
+    </maml:description>
+    <command:syntax><command:syntaxItem>
+      <maml:name>Get-AppInstallItem</maml:name>
+      <command:parameter required="true" position="0" pipelineInput="true (ByValue)" globbing="false"><maml:name>Context</maml:name><command:parameterValue required="true">AppInstallContext</command:parameterValue></command:parameter>
+      <command:parameter required="false" position="named" pipelineInput="false" globbing="false"><maml:name>ProductId</maml:name><command:parameterValue required="true">String[]</command:parameterValue></command:parameter>
+      <command:parameter required="false" position="named" pipelineInput="false" globbing="false"><maml:name>PackageFamilyName</maml:name><command:parameterValue required="true">String[]</command:parameterValue></command:parameter>
+      <command:parameter required="false" position="named" pipelineInput="false" globbing="false"><maml:name>IncludeChildren</maml:name></command:parameter>
+    </command:syntaxItem></command:syntax>
+    <command:parameters>
+      <command:parameter required="true" position="0" pipelineInput="true (ByValue)" globbing="false"><maml:name>Context</maml:name><maml:description><maml:para>The live, caller-owned context from the same runspace. Dispose it explicitly when finished.</maml:para></maml:description><dev:type><maml:name>AppInstallContext</maml:name></dev:type></command:parameter>
+      <command:parameter required="false" position="named" pipelineInput="false" globbing="false"><maml:name>ProductId</maml:name><maml:description><maml:para>One or more exact product IDs. Ambiguous native names can match multiple distinct local identities; no control target is inferred.</maml:para></maml:description><dev:type><maml:name>String[]</maml:name></dev:type></command:parameter>
+      <command:parameter required="false" position="named" pipelineInput="false" globbing="false"><maml:name>PackageFamilyName</maml:name><maml:description><maml:para>One or more exact package family names, combined with the product filter when supplied.</maml:para></maml:description><dev:type><maml:name>String[]</maml:name></dev:type></command:parameter>
+      <command:parameter required="false" position="named" pipelineInput="false" globbing="false"><maml:name>IncludeChildren</maml:name><maml:description><maml:para>Read the grouped collection and child relationships. Without this switch children are Unknown rather than assumed absent.</maml:para></maml:description><dev:type><maml:name>SwitchParameter</maml:name></dev:type></command:parameter>
+    </command:parameters>
+    <command:inputTypes><command:inputType><dev:type><maml:name>Shmuelie.Windows.AppInstall.AppInstallContext</maml:name></dev:type></command:inputType></command:inputTypes>
+    <command:returnValues><command:returnValue><dev:type><maml:name>Shmuelie.Windows.AppInstall.AppInstallItemSnapshot</maml:name></dev:type></command:returnValue></command:returnValues>
+    <command:examples><command:example>
+      <maml:title>Example 1: Read grouped caller inventory</maml:title>
+      <dev:code>$context = New-AppInstallContext
+try { Get-AppInstallItem -Context $context -IncludeChildren } finally { $context.Dispose() }</dev:code>
+      <dev:remarks><maml:para>Access is subject to the native private-capability restriction. No updates are searched for or queued.</maml:para></dev:remarks>
+    </command:example></command:examples>
   </command:command>
   <command:command xmlns:maml="http://schemas.microsoft.com/maml/2004/10" xmlns:command="http://schemas.microsoft.com/maml/dev/command/2004/10" xmlns:dev="http://schemas.microsoft.com/maml/dev/2004/10">
     <command:details>
