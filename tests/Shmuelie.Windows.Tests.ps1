@@ -593,10 +593,10 @@ Describe 'AppInstall foundation (hermetic)' -Tag AppInstallFoundation -Skip:(-no
         { [Shmuelie.Windows.AppInstall.Tests.SettingsScenarios]::Run($_) } | Should -Not -Throw
     }
 
-    It 'exports only the context factory and approved readers from the assembly' {
+    It 'exports only the context factory, approved readers and paused search from the assembly' {
         $commands = @(Get-Command -Module Shmuelie.Windows -CommandType Cmdlet |
             Where-Object { $_.ImplementingType.Assembly.GetName().Name -eq 'Shmuelie.Windows.AppInstall' })
-        @($commands.Name | Sort-Object) | Should -Be @('Get-AppInstallItem', 'Get-AppInstallSettings', 'New-AppInstallContext')
+        @($commands.Name | Sort-Object) | Should -Be @('Get-AppInstallItem', 'Get-AppInstallSettings', 'New-AppInstallContext', 'Request-AppInstallUpdateSearch')
         $factory = $commands | Where-Object Name -EQ 'New-AppInstallContext'
         $factory.OutputType.Name | Should -Contain 'Shmuelie.Windows.AppInstall.AppInstallContext'
         $factory.Parameters.ContainsKey('WhatIf') | Should -BeTrue
@@ -613,6 +613,74 @@ Describe 'AppInstall foundation (hermetic)' -Tag AppInstallFoundation -Skip:(-no
         $inventory.OutputType.Name | Should -Contain 'Shmuelie.Windows.AppInstall.AppInstallItemSnapshot'
         $inventory.Parameters.ContainsKey('WhatIf') | Should -BeFalse
         $inventory.Parameters.ContainsKey('User') | Should -BeFalse
+        $search = $commands | Where-Object Name -EQ 'Request-AppInstallUpdateSearch'
+        $search.OutputType.Name | Should -Contain 'Shmuelie.Windows.AppInstall.AppInstallRequestSnapshot'
+        foreach ($parameter in 'Context', 'CorrelationVector', 'ClientId') {
+            $search.Parameters[$parameter].Attributes.Mandatory | Should -Contain $true
+        }
+        $search.Parameters.ContainsKey('WhatIf') | Should -BeTrue
+        $search.Parameters.ContainsKey('Confirm') | Should -BeTrue
+        foreach ($parameter in 'User', 'ForUser', 'ProductId', 'PackageFamilyName', 'CatalogId', 'AutomaticallyDownloadAndInstallUpdateIfFound', 'AllowForcedAppRestart') {
+            $search.Parameters.ContainsKey($parameter) | Should -BeFalse
+        }
+    }
+
+    It 'preserves paused search request semantics through fakes: <_>' -ForEach @(
+        'EmptyPausedSearch', 'UnsupportedFixedOption', 'WrongRunspaceBeforeSubmission',
+        'SubmissionFailureIsUnknown', 'AcceptedResultFailure', 'LocalCancelDoesNotCancelNative',
+        'EmptySearchDoesNotPrune', 'CorrelationSerialization', 'OlderRequestSerialization'
+        'GroupedMultipleAndIdentityMerge', 'MergeCapacityRollback', 'CaptureFailurePreservesCache', 'CaptureCancellation'
+        'DisposedBeforeSearch', 'DisposedAfterAcceptance', 'ActivationFailure',
+        'OptionsConstructorFailure', 'DownloadSetterFailure', 'RestartSetterFailure',
+        'NativeCancellation', 'NativeFailure', 'StatusAndCleanupFailure', 'CleanupOnlyFailure',
+        'CanceledBeforeSubmission', 'SdkSignature'
+        'Missing:AppInstallManager', 'Missing:AppUpdateOptions', 'Missing:AppInstallItem', 'Missing:AppInstallStatus'
+        'Missing:SearchForAllUpdatesAsync', 'Missing:AutomaticallyDownloadAndInstallUpdateIfFound',
+        'Missing:AllowForcedAppRestart', 'Missing:ProductId', 'Missing:PackageFamilyName', 'Missing:GetCurrentStatus'
+        'CommandSuccess', 'CommandGrouped', 'CommandPipelineContext', 'CommandWhatIf', 'CommandDecline', 'CommandStopProcessing'
+        'CommandFailure', 'CommandDisposed', 'CommandWrongRunspace', 'CommandInvalidInput'
+    ) {
+        { [Shmuelie.Windows.AppInstall.Tests.UpdateSearchScenarios]::Run($_) } | Should -Not -Throw
+    }
+
+    It 'executes compiled fake update search from <_> in a fresh process' -ForEach @('Source', 'Packaged') {
+        $output = & pwsh -NoProfile -NonInteractive -File (Join-Path $repoRoot 'tests' 'fixtures' 'Test-AppInstallUpdateSearch.ps1') `
+            -ManifestPath $importManifests[$_] -HelperPath (Join-Path $helperOutput 'Shmuelie.Windows.AppInstall.Tests.dll')
+        $LASTEXITCODE | Should -Be 0
+        $output | Should -Contain 'Fake update search command passed.'
+    }
+
+    It 'documents the mutating search and its required caller inputs in compiled help' {
+        $help = Get-Help Request-AppInstallUpdateSearch -Full
+        ($help.description.Text -join ' ') | Should -Match 'private capability restricted to Microsoft-developed apps'
+        ($help.description.Text -join ' ') | Should -Match 'queue mutation'
+        ($help.description.Text -join ' ') | Should -Match 'not installation completion'
+        foreach ($parameter in 'Context', 'CorrelationVector', 'ClientId') {
+            ($help.parameters.parameter | Where-Object Name -EQ $parameter).required | Should -BeTrue
+        }
+    }
+
+    It 'hides request correlation only in default formatting from <_>' -ForEach @('Source', 'Packaged') {
+        $output = & pwsh -NoProfile -NonInteractive -File (Join-Path $repoRoot 'tests' 'fixtures' 'Test-AppInstallUpdateSearch.ps1') `
+            -ManifestPath $importManifests[$_] -HelperPath (Join-Path $helperOutput 'Shmuelie.Windows.AppInstall.Tests.dll') -ReportFormatting
+        $LASTEXITCODE | Should -Be 0
+        $display = $output | ConvertFrom-Json
+        $display.CorrelationVector | Should -BeExactly 'SYNTHETIC-PRIVATE-VECTOR-244-7F3A'
+        $display.ClientId | Should -BeExactly 'SYNTHETIC-PRIVATE-CLIENT-244-9C2B'
+        foreach ($marker in $display.CorrelationVector, $display.ClientId) {
+            $display.DefaultOutput | Should -Not -Match ([regex]::Escape($marker))
+            $display.DeserializedDefaultOutput | Should -Not -Match ([regex]::Escape($marker))
+            $display.ExplicitOutput | Should -Match ([regex]::Escape($marker))
+        }
+        $display.DefaultOutput | Should -Not -Match 'CorrelationVector|ClientId'
+        $display.DefaultOutput | Should -Match 'Acceptance\s*:\s*Accepted'
+        $display.DefaultOutput | Should -Match 'OperationState\s*:\s*Completed'
+        $display.DefaultOutput | Should -Match 'ItemsAvailability\s*:\s*Available'
+        $display.DefaultOutput | Should -Match 'ItemCount\s*:\s*0'
+        $display.DeserializedDefaultOutput | Should -Match 'ItemCount\s*:\s*0'
+        $json = $display.Json | ConvertFrom-Json
+        $json.CorrelationVector | Should -BeExactly $display.CorrelationVector
+        $json.ClientId | Should -BeExactly $display.ClientId
     }
 
     It 'returns a typed lazy context without native activation' {
@@ -691,7 +759,8 @@ Describe 'AppInstall foundation (hermetic)' -Tag AppInstallFoundation -Skip:(-no
         if ($Portable) {
             $result.CommandCount | Should -Be 0
         } else {
-            $result.CommandCount | Should -Be 3
+            $result.CommandCount | Should -Be 4
+            $result.SearchHelpAvailable | Should -BeTrue
             $result.SettingsHelpAvailable | Should -BeTrue
             $result.IsActivated | Should -BeFalse
             $result.HelpAvailable | Should -BeTrue

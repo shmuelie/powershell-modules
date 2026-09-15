@@ -7,6 +7,18 @@ Versions change only when a release is cut; unreleased work stays under
 ## [Unreleased]
 
 ### Added
+- Experimental compiled `Request-AppInstallUpdateSearch` for only caller-scoped
+  all-app searches through an explicit context and caller-provided correlation
+  inputs. Both automatic download/install and forced restart are fixed false;
+  discovered updates can still be queued paused, so high-impact `ShouldProcess`
+  protects every submission and `-WhatIf` performs no native calls. Immutable
+  request/item identities distinguish acceptance, search completion and install
+  status; failures preserve original errors and stopping only ends local waiting.
+  Default request display omits native correlation strings and raw payloads;
+  explicit property inspection and JSON retain the original values.
+  Search identities merge without pruning unrelated inventory. Per-app, ForUser,
+  custom catalog and automatic-action variants remain gated; empirical access
+  is not an official third-party support guarantee.
 - Experimental compiled `Get-AppInstallItem` for caller-scoped queue/current
   status snapshots through an explicit AppInstall context, with exact filters,
   optional grouped children, bounded local identity tracking, explicit member

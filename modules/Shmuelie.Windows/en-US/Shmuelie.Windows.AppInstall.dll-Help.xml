@@ -15,7 +15,7 @@
     <command:parameters />
     <command:inputTypes><command:inputType><dev:type><maml:name>None</maml:name></dev:type></command:inputType></command:inputTypes>
     <command:returnValues><command:returnValue><dev:type><maml:name>Shmuelie.Windows.AppInstall.AppInstallContext</maml:name></dev:type></command:returnValue></command:returnValues>
-    <maml:alertSet><maml:alert><maml:para>Get-AppInstallItem and Get-AppInstallSettings read caller-scoped inventory and approved settings through this explicit context. No search, settings mutation, control, entitlement, or ForUser command is provided.</maml:para></maml:alert></maml:alertSet>
+    <maml:alertSet><maml:alert><maml:para>Get-AppInstallItem and Get-AppInstallSettings read caller-scoped inventory and approved settings through this explicit context. Request-AppInstallUpdateSearch is a separately confirmed caller-scoped paused-queue mutation. No settings mutation, control, entitlement, or ForUser command is provided.</maml:para></maml:alert></maml:alertSet>
     <command:examples><command:example>
       <maml:title>Example 1: Create and dispose a context</maml:title>
       <dev:code>$context = New-AppInstallContext
@@ -117,5 +117,60 @@ try { $settings = Get-AppInstallSettings -Context $context -Property Acquisition
       <maml:linkText>AppInstall settings contract and API matrix</maml:linkText>
       <maml:uri>https://github.com/shmuelie/powershell-modules/blob/main/docs/appinstall.md</maml:uri>
     </maml:navigationLink></command:relatedLinks>
+  </command:command>
+  <command:command xmlns:maml="http://schemas.microsoft.com/maml/2004/10" xmlns:command="http://schemas.microsoft.com/maml/dev/command/2004/10" xmlns:dev="http://schemas.microsoft.com/maml/dev/2004/10">
+    <command:details>
+      <command:name>Request-AppInstallUpdateSearch</command:name>
+      <command:verb>Request</command:verb>
+      <command:noun>AppInstallUpdateSearch</command:noun>
+      <maml:description><maml:para>Requests an experimental caller-scoped all-app update search that can queue discovered updates paused.</maml:para></maml:description>
+    </command:details>
+    <maml:description>
+      <maml:para>This is a queue mutation, not a read-only search. Uses only SearchForAllUpdatesAsync(correlationVector, clientId, AppUpdateOptions). AutomaticallyDownloadAndInstallUpdateIfFound and AllowForcedAppRestart are both explicitly fixed false before submission. False still adds discovered updates to the install queue in a paused state; no automatic download/install or forced restart is requested. ShouldProcess protects the call with high-impact confirmation. WhatIf and declined confirmation emit nothing and perform no native activation, metadata probe, options construction or search.</maml:para>
+      <maml:para>Requires an explicit live context owned by the current runspace, plus caller-supplied nonempty, non-whitespace CorrelationVector and ClientId strings. They are forwarded unchanged with no generated or hardcoded client identity, account lookup, acquisition identity write or catalog override. No per-app, ForUser, alternate overload or broader-scope fallback is available. Dispose the context in finally; this command never disposes caller-owned contexts.</maml:para>
+      <maml:para>Emits one immutable AppInstallRequestSnapshot only after the native search operation, operation cleanup and item capture succeed, including a successful empty search. Acceptance=Accepted means an async handle was returned. OperationState=Completed is search completion, not installation completion. ItemsAvailability=Available with zero items is an observed empty result, not a failure or proof that no updates exist in other scopes. Returned items retain their own status and child availability; paused, staged or launch-ready items do not imply installation success.</maml:para>
+      <maml:para>RequestId is local per-request correlation, not a native install ID. ContextId, local item/parent IDs, product/family identities, Caller scope and the supplied native correlation strings are preserved. Search capture merges a bounded identity cache without pruning unrelated inventory identities; exceeding 4096 retained items fails instead of evicting or truncating. The next successful inventory scan retains its normal pruning behavior. Serialized snapshots are detached observations, not native handles or control authorization.</maml:para>
+      <maml:para>The default request view shows local IDs, API/scope/outcome fields and item count; it omits CorrelationVector, ClientId, item payloads and raw errors. The raw public properties and JSON are unchanged, and explicit inspection such as Format-List * displays their values. Default formatting is not redaction, secret storage or a security boundary.</maml:para>
+      <maml:para>Failures terminate without a success result or partial item list. ErrorRecord.TargetObject contains the typed request with original error/HRESULT and failure phase, including cleanup errors. A submission that throws has Unknown acceptance, not proof of rejection or rollback. Stopping the pipeline stops only local waiting and releases the async adapter; it never calls native Cancel or changes queued items. A stopped pipeline can suppress output and errors, so missing output is not evidence that submission did not occur. No hard timeout can forcibly interrupt a synchronous native call.</maml:para>
+      <maml:para>Windows 10 build 19041 or later and PowerShell 7.4 or later are required; required types, the three-argument method and writable safety properties are preflighted before activation. Microsoft documents AppInstallManager access as protected by a private capability restricted to Microsoft-developed apps. Observed runtime access is not an official third-party support guarantee. Administrator access and runFullTrust alone do not grant that capability. Nonempty/grouped results are covered by deterministic fakes, not new live support evidence.</maml:para>
+    </maml:description>
+    <command:syntax><command:syntaxItem>
+      <maml:name>Request-AppInstallUpdateSearch</maml:name>
+      <command:parameter required="true" position="named" pipelineInput="true (ByValue)" globbing="false"><maml:name>Context</maml:name><command:parameterValue required="true">AppInstallContext</command:parameterValue></command:parameter>
+      <command:parameter required="true" position="named" pipelineInput="false" globbing="false"><maml:name>CorrelationVector</maml:name><command:parameterValue required="true">String</command:parameterValue></command:parameter>
+      <command:parameter required="true" position="named" pipelineInput="false" globbing="false"><maml:name>ClientId</maml:name><command:parameterValue required="true">String</command:parameterValue></command:parameter>
+      <command:parameter required="false" position="named" pipelineInput="false"><maml:name>WhatIf</maml:name></command:parameter>
+      <command:parameter required="false" position="named" pipelineInput="false"><maml:name>Confirm</maml:name></command:parameter>
+    </command:syntaxItem></command:syntax>
+    <command:parameters>
+      <command:parameter required="true" position="named" pipelineInput="true (ByValue)" globbing="false">
+        <maml:name>Context</maml:name><maml:description><maml:para>An explicit live AppInstallContext created in this runspace. No hidden context is created. Dispose it in finally.</maml:para></maml:description>
+        <dev:type><maml:name>Shmuelie.Windows.AppInstall.AppInstallContext</maml:name></dev:type>
+      </command:parameter>
+      <command:parameter required="true" position="named" pipelineInput="false" globbing="false">
+        <maml:name>CorrelationVector</maml:name><maml:description><maml:para>The caller-provided correlation vector passed unchanged to the documented overload. No default or account-derived value is generated. Retained in the request; treat correlation data as potentially sensitive.</maml:para></maml:description>
+        <dev:type><maml:name>System.String</maml:name></dev:type>
+      </command:parameter>
+      <command:parameter required="true" position="named" pipelineInput="false" globbing="false">
+        <maml:name>ClientId</maml:name><maml:description><maml:para>The caller's client identifier passed unchanged to the documented overload. No fabricated identity or authorization is supplied by the module. Retained in the request but omitted from confirmation messages.</maml:para></maml:description>
+        <dev:type><maml:name>System.String</maml:name></dev:type>
+      </command:parameter>
+      <command:parameter required="false" position="named" pipelineInput="false"><maml:name>WhatIf</maml:name><maml:description><maml:para>Preview the queue mutation without any native API call or success output.</maml:para></maml:description><dev:type><maml:name>SwitchParameter</maml:name></dev:type></command:parameter>
+      <command:parameter required="false" position="named" pipelineInput="false"><maml:name>Confirm</maml:name><maml:description><maml:para>Confirm the caller-scoped all-app search and paused-queue side effect. Declining invokes no native API.</maml:para></maml:description><dev:type><maml:name>SwitchParameter</maml:name></dev:type></command:parameter>
+    </command:parameters>
+    <command:inputTypes><command:inputType><dev:type><maml:name>Shmuelie.Windows.AppInstall.AppInstallContext</maml:name></dev:type></command:inputType></command:inputTypes>
+    <command:returnValues><command:returnValue><dev:type><maml:name>Shmuelie.Windows.AppInstall.AppInstallRequestSnapshot</maml:name></dev:type></command:returnValue></command:returnValues>
+    <command:examples><command:example>
+      <maml:title>Example 1: Preview the queue mutation with caller-supplied correlation</maml:title>
+      <dev:code>$context = New-AppInstallContext
+try {
+    Request-AppInstallUpdateSearch -Context $context -CorrelationVector $correlationVector -ClientId $clientId -WhatIf
+} finally { $context.Dispose() }</dev:code>
+      <dev:remarks><maml:para>Supply your own legitimate correlation vector and client ID in the variables before invoking. WhatIf makes no native calls. An authorized invocation without WhatIf can queue updates paused and requires confirmation; it does not complete their installation.</maml:para></dev:remarks>
+    </command:example></command:examples>
+    <command:relatedLinks>
+      <maml:navigationLink><maml:linkText>SearchForAllUpdatesAsync</maml:linkText><maml:uri>https://learn.microsoft.com/uwp/api/windows.applicationmodel.store.preview.installcontrol.appinstallmanager.searchforallupdatesasync</maml:uri></maml:navigationLink>
+      <maml:navigationLink><maml:linkText>AutomaticallyDownloadAndInstallUpdateIfFound queue side effect</maml:linkText><maml:uri>https://learn.microsoft.com/uwp/api/windows.applicationmodel.store.preview.installcontrol.appupdateoptions.automaticallydownloadandinstallupdateiffound</maml:uri></maml:navigationLink>
+    </command:relatedLinks>
   </command:command>
 </helpItems>

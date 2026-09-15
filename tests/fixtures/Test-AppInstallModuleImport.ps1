@@ -21,7 +21,7 @@ if ($ExpectedMissingDependency) {
 }
 Import-Module $ManifestPath -Force -ErrorAction Stop
 $command = @(Get-Command -Module Shmuelie.Windows -CommandType Cmdlet |
-    Where-Object Name -In 'New-AppInstallContext', 'Get-AppInstallItem', 'Get-AppInstallSettings')
+    Where-Object Name -In 'New-AppInstallContext', 'Get-AppInstallItem', 'Get-AppInstallSettings', 'Request-AppInstallUpdateSearch')
 $assemblyLoaded = @([AppDomain]::CurrentDomain.GetAssemblies() |
     Where-Object { $_.GetName().Name -eq 'Shmuelie.Windows.AppInstall' }).Count -ne 0
 $projectionLoaded = @([AppDomain]::CurrentDomain.GetAssemblies() |
@@ -36,7 +36,7 @@ if ($SimulateNonWindows) {
     return
 }
 
-if ($command.Count -ne 3) { throw 'The compiled context factory and both readers were not exported.' }
+if ($command.Count -ne 4) { throw 'The compiled context factory, both readers and paused search were not exported.' }
 if ($projectionLoaded -ne 2) { throw 'The shipped WinRT projection dependencies were not loaded.' }
 $context = New-AppInstallContext
 try {
@@ -51,6 +51,11 @@ try {
         ($settingsHelp.parameters.parameter | Where-Object Name -EQ 'Context').required -ne 'true') {
         throw 'Settings reader help must document explicit context, privacy and native access restrictions.'
     }
+    $searchHelp = Get-Help Request-AppInstallUpdateSearch -Full
+    if (($searchHelp.description.Text -join ' ') -notmatch 'queue mutation' -or
+        ($searchHelp.parameters.parameter | Where-Object Name -EQ 'Context').required -ne 'true') {
+        throw 'Update search help must document the queue mutation and explicit context.'
+    }
     Remove-Module Shmuelie.Windows -Force -ErrorAction Stop
     if ($context.IsDisposed -or $context.IsActivated) {
         throw 'Removing the module changed caller-owned lazy context lifetime.'
@@ -61,6 +66,7 @@ try {
         IsActivated = $context.IsActivated
         HelpAvailable = $true
         SettingsHelpAvailable = $true
+        SearchHelpAvailable = $true
         SurvivesModuleRemoval = $true
         SimulatedPlatform = $false
     } | ConvertTo-Json -Compress

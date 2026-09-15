@@ -160,6 +160,9 @@ Highlights:
   it does not activate the manager or perform installation or search.
 - [`Get-AppInstallSettings`](appinstall.md#read-only-settings) reads the approved
   settings through an explicit context; acquisition identity requires opt-in.
+- [`Request-AppInstallUpdateSearch`](appinstall.md#caller-scoped-paused-update-search)
+  confirms the experimental caller all-app paused-queue mutation; explicit context
+  and caller correlation are required, with automatic download/install and forced restart fixed false.
 - `Get-WindowsTerminalSettings` and `Get-WindowsTerminalProfile` inspect Windows Terminal configuration.
 - `Start-WindowsPerformanceRecorder` and `Stop-WindowsPerformanceRecorder` wrap WPR tracing.
 
