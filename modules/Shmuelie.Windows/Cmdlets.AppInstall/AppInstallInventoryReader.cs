@@ -24,10 +24,14 @@ internal sealed class AppInstallInventoryReader(AppInstallContext context, Actio
         IReadOnlyList<IAppInstallInventoryItem> roots, AppInstallMember searchMember) =>
         Capture(tracker, roots, true, null, null, searchMember, true);
 
+    internal AppInstallItemSnapshot ReadObservedItem(AppInstallInventoryTracker tracker, AppInstallTrackedItem item) =>
+        Capture(tracker, [item.Item], false, null, null,
+            new(ItemType, "GetCurrentStatus", AppInstallMemberKind.Method), false, item).Single();
+
     private IReadOnlyList<AppInstallItemSnapshot> Capture(AppInstallInventoryTracker tracker,
         IReadOnlyList<IAppInstallInventoryItem> roots, bool includeChildren,
         IReadOnlyList<string>? productIds, IReadOnlyList<string>? packageFamilies,
-        AppInstallMember accessMember, bool merge)
+        AppInstallMember accessMember, bool merge, AppInstallTrackedItem? exact = null)
     {
         CheckCollection(roots);
         var nodes = new Dictionary<object, Node>();
@@ -82,7 +86,8 @@ internal sealed class AppInstallInventoryReader(AppInstallContext context, Actio
                 throw new InvalidDataException("The ProductId getter returned null."));
             var family = Required(Property(ItemType, "PackageFamilyName"), () => node.Item.PackageFamilyName ??
                 throw new InvalidDataException("The PackageFamilyName getter returned null."));
-            var identity = new AppInstallItemIdentity(context.ContextId, node.LocalId, node.Parent?.LocalId,
+            var identity = new AppInstallItemIdentity(context.ContextId, node.LocalId,
+                exact?.Identity.ParentLocalItemId ?? node.Parent?.LocalId,
                 context.UserScope, AppInstallValueAvailability.Available, product, family);
             var status = Required(new(ItemType, "GetCurrentStatus", AppInstallMemberKind.Method),
                 () => node.Item.GetCurrentStatus() ??
@@ -125,11 +130,14 @@ internal sealed class AppInstallInventoryReader(AppInstallContext context, Actio
             else
                 foreach (var child in node.Children.AsEnumerable().Reverse()) select.Push(child);
         }
-        Invoke(accessMember, _ =>
+        if (exact is null) Invoke(accessMember, _ =>
         {
             var identities = nodes.ToDictionary(pair => pair.Key, pair => pair.Value.LocalId);
-            if (merge) tracker.Merge(identities);
-            else tracker.Commit(identities);
+            var retained = nodes.ToDictionary(pair => pair.Key, pair =>
+                new AppInstallTrackedItem(pair.Value.Item, (pair.Value.Snapshot ??
+                    throw new InvalidDataException("An item snapshot was not captured.")).Identity));
+            if (merge) tracker.Merge(identities, retained);
+            else tracker.Commit(identities, retained);
             return true;
         });
         return output.AsReadOnly();
@@ -143,7 +151,7 @@ internal sealed class AppInstallInventoryReader(AppInstallContext context, Actio
             if (nodes.TryGetValue(key, out var existing)) return existing;
             if (nodes.Count == MaximumItems)
                 throw new InvalidDataException("The inventory exceeds the bounded item limit.");
-            var added = new Node(item, tracker.GetLocalId(key));
+            var added = new Node(item, exact?.Identity.LocalItemId ?? tracker.GetLocalId(key));
             nodes.Add(key, added);
             pending.Enqueue(added);
             return added;

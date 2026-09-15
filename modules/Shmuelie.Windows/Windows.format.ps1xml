@@ -1,6 +1,23 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Configuration xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="https://raw.githubusercontent.com/PowerShell/PowerShell/master/src/Schemas/Format.xsd">
   <ViewDefinitions>
+    <View>
+      <Name>AppInstallMonitor</Name>
+      <ViewSelectedBy>
+        <TypeName>Shmuelie.Windows.AppInstall.AppInstallMonitorResult</TypeName>
+        <TypeName>Deserialized.Shmuelie.Windows.AppInstall.AppInstallMonitorResult</TypeName>
+      </ViewSelectedBy>
+      <ListControl>
+        <ListEntries><ListEntry><ListItems>
+          <ListItem><PropertyName>ContextId</PropertyName></ListItem>
+          <ListItem><PropertyName>LocalItemId</PropertyName></ListItem>
+          <ListItem><PropertyName>UserScope</PropertyName></ListItem>
+          <ListItem><PropertyName>Outcome</PropertyName></ListItem>
+          <ListItem><PropertyName>GroupOutcome</PropertyName></ListItem>
+          <ListItem><Label>ObservationCount</Label><ScriptBlock>$_.Observations.Count</ScriptBlock></ListItem>
+        </ListItems></ListEntry></ListEntries>
+      </ListControl>
+    </View>
 
     <!-- ServiceProcess: Get-ServiceProcess -->
     <View>

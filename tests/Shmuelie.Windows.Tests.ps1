@@ -527,6 +527,55 @@ Describe 'AppInstall foundation (hermetic)' -Tag AppInstallFoundation -Skip:(-no
         }
     }
 
+    It 'observes exactly one caller item through compiled fail-closed fakes: <_>' -ForEach @(
+        'AlreadyTerminal', 'FailedTerminal', 'CanceledTerminal', 'Timeout', 'Unknown',
+        'CompletedMissingHResult', 'CompletionEventNotSuccess', 'SubscribeRace', 'InitialSnapshotRace',
+        'DuplicateBound', 'GenerationOverflow', 'PartialAddFailure', 'PartialAddCleanupFailure',
+        'ObservationLimit', 'OutOfOrderInvalidation',
+        'DirtyLoopDeadline', 'SynchronousOverrun', 'Stale', 'WrongItem', 'MissingEvent',
+        'LeaseSurvivesPruning', 'OneLeasePerContext', 'ContextShutdownLease', 'RunspaceShutdownLease',
+        'GroupNotEvaluated', 'FirstSubscribeFailure', 'SecondSubscribeFailure', 'GetterAndCleanupFailure',
+        'DisappearedGetter', 'CleanupOnly', 'LateCallback', 'CancelBefore', 'CancelDuringRead',
+        'DisposeDuringRead', 'Json', 'CommandSuccess', 'CommandFailure', 'CommandCleanupOnly',
+        'CommandInvalidTimeout', 'CommandWrongRunspace', 'CommandStopProcessing', 'CommandContextDispose'
+    ) {
+        { [Shmuelie.Windows.AppInstall.Tests.MonitoringScenarios]::Run($_) } | Should -Not -Throw
+    }
+
+    It 'documents bounded passive monitoring and mandatory exact selectors' {
+        $help = Get-Help Wait-AppInstallItem -Full
+        ($help.description.Text -join ' ') | Should -Match 'private capability restricted to Microsoft-developed apps'
+        ($help.description.Text -join ' ') | Should -Match 'Other-item notifications'
+        ($help.description.Text -join ' ') | Should -Match 'never cancel installation'
+        $command = Get-Command Wait-AppInstallItem
+        foreach ($name in 'Context', 'LocalItemId', 'TimeoutSeconds') {
+            $command.Parameters[$name].Attributes.Mandatory | Should -Contain $true
+            ($help.parameters.parameter | Where-Object Name -EQ $name).required | Should -BeTrue
+        }
+        foreach ($name in 'ForUser', 'ProductId', 'PackageFamilyName', 'IncludeChildren', 'WhatIf') {
+            $command.Parameters.ContainsKey($name) | Should -BeFalse
+        }
+        $command.OutputType.Name | Should -Contain 'Shmuelie.Windows.AppInstall.AppInstallMonitorResult'
+    }
+
+    It 'executes exported fake monitoring and protects default output from <_>' -ForEach @('Source', 'Packaged') {
+        $result = [Shmuelie.Windows.AppInstall.Tests.MonitoringScenarios]::VerifyCommand($importManifests[$_])
+        $result.GetType().FullName | Should -Be 'Shmuelie.Windows.AppInstall.AppInstallMonitorResult'
+        $result.Outcome.ToString() | Should -Be 'TargetTerminal'
+        $result.Observations[0].Snapshot.Status.TerminalState.ToString() | Should -Be 'Failed'
+        $default = $result | Out-String
+        $copy = [System.Management.Automation.PSSerializer]::Deserialize(
+            [System.Management.Automation.PSSerializer]::Serialize($result))
+        foreach ($display in $default, ($copy | Out-String)) {
+            $display | Should -Not -Match 'synthetic-private|Observations\s*:'
+            $display | Should -Match 'ObservationCount\s*:\s*1'
+            $display | Should -Match 'GroupOutcome\s*:\s*NotEvaluated'
+        }
+        $json = [System.Text.Json.JsonSerializer]::Serialize($result, $result.GetType(), [System.Text.Json.JsonSerializerOptions]$null)
+        $json | Should -Match 'synthetic-private-product'
+        $json | Should -Match 'synthetic-private-native-error'
+    }
+
     It 'satisfies the fake-adapter contract: <_>' -ForEach @(
         'LazyCreation', 'Reuse', 'IndependentContexts', 'PlatformGate', 'TypeGate', 'MemberGate',
         'AccessDenied', 'WrongRunspace', 'Dispose', 'RunspaceClose',
@@ -593,10 +642,10 @@ Describe 'AppInstall foundation (hermetic)' -Tag AppInstallFoundation -Skip:(-no
         { [Shmuelie.Windows.AppInstall.Tests.SettingsScenarios]::Run($_) } | Should -Not -Throw
     }
 
-    It 'exports only the context factory, approved readers and paused search from the assembly' {
+    It 'exports only the context factory, approved readers, paused search and bounded observation from the assembly' {
         $commands = @(Get-Command -Module Shmuelie.Windows -CommandType Cmdlet |
             Where-Object { $_.ImplementingType.Assembly.GetName().Name -eq 'Shmuelie.Windows.AppInstall' })
-        @($commands.Name | Sort-Object) | Should -Be @('Get-AppInstallItem', 'Get-AppInstallSettings', 'New-AppInstallContext', 'Request-AppInstallUpdateSearch')
+        @($commands.Name | Sort-Object) | Should -Be @('Get-AppInstallItem', 'Get-AppInstallSettings', 'New-AppInstallContext', 'Request-AppInstallUpdateSearch', 'Wait-AppInstallItem')
         $factory = $commands | Where-Object Name -EQ 'New-AppInstallContext'
         $factory.OutputType.Name | Should -Contain 'Shmuelie.Windows.AppInstall.AppInstallContext'
         $factory.Parameters.ContainsKey('WhatIf') | Should -BeTrue
@@ -759,7 +808,7 @@ Describe 'AppInstall foundation (hermetic)' -Tag AppInstallFoundation -Skip:(-no
         if ($Portable) {
             $result.CommandCount | Should -Be 0
         } else {
-            $result.CommandCount | Should -Be 4
+            $result.CommandCount | Should -Be 5
             $result.SearchHelpAvailable | Should -BeTrue
             $result.SettingsHelpAvailable | Should -BeTrue
             $result.IsActivated | Should -BeFalse

@@ -7,6 +7,15 @@ Versions change only when a release is cut; unreleased work stays under
 ## [Unreleased]
 
 ### Added
+- Experimental compiled `Wait-AppInstallItem` for one exact retained caller item,
+  using only payload-free manager-event invalidation, an explicit context and a
+  mandatory 1-30 second local budget. Captures are execution-thread-only, bounded
+  to 64 observations and returned after cleanup; local cancellation never cancels
+  installation. Observation leases preserve exact identities without altering
+  inventory pruning/search merging and defer disposed-context manager release
+  until unsubscribe completes. Primary and cleanup failures remain explicit;
+  group completion, individual-item events, broader scope and release remain
+  gated. The private-capability restriction and #233 support hold remain in force.
 - Experimental compiled `Request-AppInstallUpdateSearch` for only caller-scoped
   all-app searches through an explicit context and caller-provided correlation
   inputs. Both automatic download/install and forced restart are fixed false;
