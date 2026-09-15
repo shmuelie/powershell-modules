@@ -21,7 +21,7 @@ if ($ExpectedMissingDependency) {
 }
 Import-Module $ManifestPath -Force -ErrorAction Stop
 $command = @(Get-Command -Module Shmuelie.Windows -CommandType Cmdlet |
-    Where-Object Name -EQ 'New-AppInstallContext')
+    Where-Object Name -In 'New-AppInstallContext', 'Get-AppInstallSettings')
 $assemblyLoaded = @([AppDomain]::CurrentDomain.GetAssemblies() |
     Where-Object { $_.GetName().Name -eq 'Shmuelie.Windows.AppInstall' }).Count -ne 0
 $projectionLoaded = @([AppDomain]::CurrentDomain.GetAssemblies() |
@@ -36,7 +36,7 @@ if ($SimulateNonWindows) {
     return
 }
 
-if ($command.Count -ne 1) { throw 'The compiled context factory was not exported.' }
+if ($command.Count -ne 2) { throw 'The compiled context factory and settings reader were not exported.' }
 if ($projectionLoaded -ne 2) { throw 'The shipped WinRT projection dependencies were not loaded.' }
 $context = New-AppInstallContext
 try {
@@ -44,6 +44,12 @@ try {
     $help = Get-Help New-AppInstallContext -Full
     if (($help.description.Text -join ' ') -notmatch 'private capability restricted to Microsoft-developed apps') {
         throw 'The native access restriction is missing from compiled command help.'
+    }
+    $settingsHelp = Get-Help Get-AppInstallSettings -Full
+    if (($settingsHelp.description.Text -join ' ') -notmatch 'AcquisitionIdentity is not read by default' -or
+        ($settingsHelp.description.Text -join ' ') -notmatch 'private capability restricted to Microsoft-developed apps' -or
+        ($settingsHelp.parameters.parameter | Where-Object Name -EQ 'Context').required -ne 'true') {
+        throw 'Settings reader help must document explicit context, privacy and native access restrictions.'
     }
     Remove-Module Shmuelie.Windows -Force -ErrorAction Stop
     if ($context.IsDisposed -or $context.IsActivated) {
@@ -54,6 +60,7 @@ try {
         AssemblyLoaded = $assemblyLoaded
         IsActivated = $context.IsActivated
         HelpAvailable = $true
+        SettingsHelpAvailable = $true
         SurvivesModuleRemoval = $true
         SimulatedPlatform = $false
     } | ConvertTo-Json -Compress

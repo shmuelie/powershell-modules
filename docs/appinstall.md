@@ -14,6 +14,10 @@ The scope decision in [#232](https://github.com/shmuelie/powershell-modules/issu
 permits this foundation while
 [#233](https://github.com/shmuelie/powershell-modules/issues/233) remains open for
 support clarification. Other API families retain their approval prerequisites.
+The separately approved caller-context getters in
+[#238](https://github.com/shmuelie/powershell-modules/issues/238) are implemented;
+#233 no longer blocks this read-only subset, but does not authorize setters or
+broader operations.
 
 ## Context contract
 
@@ -51,7 +55,59 @@ No settings writes are implemented.
 Later cmdlets must accept this explicit context rather than create an
 undocumented manager per invocation or share mutable global settings. The
 internal manager adapter is where the approved caller-scoped reads can be added.
-No such read, search, settings, mutation or `ForUser` operation is exposed here.
+Only the three settings getters below are exposed here; no inventory, search,
+mutation or `ForUser` operation is included.
+
+## Read-only settings
+
+`Get-AppInstallSettings -Context $context [-Property <exact names>]` requires
+the explicit, live, current-runspace context from `New-AppInstallContext`. It
+never allocates a hidden manager. The default selection is `AutoUpdateSetting`
+and `CanInstallForAllUsers`. `-Property` replaces that selection and accepts only
+`AcquisitionIdentity`, `AutoUpdateSetting` and `CanInstallForAllUsers` (duplicates
+are read once, in first-selection order). Numeric aliases, wildcards and `All`
+are rejected before any getter is invoked.
+
+**Privacy:** `AcquisitionIdentity` is neither probed nor read by default. It is
+returned only with an explicit `-Property AcquisitionIdentity` selection, alone
+or in a list. Nothing writes its value to verbose, debug or information output.
+The null unselected identity is omitted by System.Text.Json; its availability
+remains `Unknown`. Default error rendering omits raw native messages, while the
+original diagnostic exception and typed metadata remain available in the
+`ErrorRecord` for deliberate inspection. Treat explicitly requested identity
+and native diagnostic messages as sensitive.
+
+| Property | Scope and interpretation |
+|---|---|
+| `AcquisitionIdentity` | `ManagerContext`: identity associated with installs on the supplied manager. No verified account/SID mapping or persistent user/global setting is inferred. Cross-manager persistence is not established. |
+| `AutoUpdateSetting` | `Device`: documented device-wide app auto-update setting, including policy-controlled values. Independent context/manager objects do not isolate device settings or establish a persistent per-user preference. |
+| `CanInstallForAllUsers` | `CallingProcess`: get-only privilege observation, not a privilege grant, capability authorization, proof that installation is available or guarantee of success. |
+
+An `AppInstallSettingsSnapshot` contains `ContextId` (local correlation, never a
+SID or native install ID), `UserScope = Caller`, per-property scope,
+`RequestedProperties`, and successfully `ReadProperties`. Acquisition identity
+has a separate availability and nullable string. `AutoUpdateSetting` uses
+`AppInstallValue<int>` to retain the native enum code, including unknown future
+codes: `0` Disabled, `1` Enabled, `2` DisabledByPolicy, `3` EnabledByPolicy.
+`CanInstallForAllUsers` uses `AppInstallValue<bool>`.
+
+Unselected values are `Unknown`; selected members absent from runtime metadata
+are `Unavailable` without activation or invocation for that member. Available
+false/zero and an explicitly requested empty identity remain real observations.
+A missing member may coexist with other successfully read values. Platform,
+lifetime, runspace, activation and getter errors terminate without a partial
+snapshot; access denial is never false/empty/unavailable success. Original
+exceptions, HRESULTs, source getter and availability/activation/invocation phase
+are retained. Activation failure is still cached by the context.
+
+Each selected getter uses the existing availability/lifecycle boundary. These
+three getters are synchronous: no async operation or wait is created, and only
+the short getter runs under the context lock. The returned snapshot is a
+sequential, detached observation, not an atomic settings transaction. Reusing
+the context rereads the values rather than caching observations. Dispose the
+context in `finally`; module removal does not end its caller-owned lifetime.
+No setter, identity change, user override, entitlement, installation, search or
+queue-control operation is implemented.
 
 ## Async and event integration seams
 
@@ -112,6 +168,7 @@ operations.
 | `AppInstallRequestSnapshot` | Separate request acceptance, native operation state, local wait state and returned-item availability. No installed-success shortcut. |
 | `AppInstallEntitlementSnapshot` | Explicit caller/device/unknown entitlement scope, observed native status and grant observation. No grant is inferred from native code zero or object construction. |
 | `AppInstallError` | Source operation, failure phase/kind, original HRESULT, exception type/message, and copied cleanup failures. |
+| `AppInstallSettingsSnapshot` | Caller context correlation, property scopes, copied requested/read property lists and only the selected settings observations; acquisition identity is opt-in. |
 
 `Unknown` means not observed; `Unavailable` means the caller established that the
 value cannot be obtained in this context/version. A missing member must not be
@@ -145,7 +202,8 @@ the original. Nothing automatically logs identities, snapshots or native message
 
 ## API and options matrix
 
-Only `New-AppInstallContext` ships here (#234). Names below for other work items
+`New-AppInstallContext` (#234) and `Get-AppInstallSettings` (#238) ship here.
+Names below for other work items
 are **proposed naming conventions**, not commands available to invoke. Later
 commands use an explicit `-Context`, singular nouns and approved PowerShell verbs.
 Mutating commands must use `ShouldProcess`; `-WhatIf` must submit no request.
@@ -164,9 +222,9 @@ method-parameter-count checks are still required before invocation.
 |---|---|---|
 | `AppInstallItems` | `Get-AppInstallItem -Context` | Getter/count observed; caller-scoped reads cleared later in #236 after #234. Individual nonempty item/status behavior is not established by the count probe. |
 | `AppInstallItemsWithGroupSupport` | `Get-AppInstallItem -Context -IncludeChildren` | Getter/count observed; grouped snapshots in #236. Added in build 15063; child/group semantics still need deterministic coverage and authorized evidence. |
-| `AcquisitionIdentity` | `Get-AppInstallSetting -Context`; future `Set-AppInstallSetting` | Getter observed, cleared later in #238. Setter remains gated in #240; no identity spoofing or implicit account/SID interpretation. |
-| `AutoUpdateSetting` | `Get-AppInstallSetting -Context`; future `Set-AppInstallSetting` | Getter observed, cleared later in #238. Device-setting write gated in #240; independent contexts do not isolate device settings. |
-| `CanInstallForAllUsers` | `Get-AppInstallSetting -Context` | Getter observed, cleared later in #238. Read-only in the C# signature (despite the reference summary saying "gets or sets"), added in build 17763. Not a private-capability authorization check. |
+| `AcquisitionIdentity` | `Get-AppInstallSettings -Context -Property AcquisitionIdentity`; future `Set-AppInstallSetting` | Getter implemented in #238, exact opt-in only; omitted by default. Setter remains gated in #240; no identity spoofing or implicit account/SID interpretation. |
+| `AutoUpdateSetting` | `Get-AppInstallSettings -Context`; future `Set-AppInstallSetting` | Getter implemented in #238 and selected by default. Device-setting write gated in #240; independent contexts do not isolate device settings. |
+| `CanInstallForAllUsers` | `Get-AppInstallSettings -Context` | Getter implemented in #238 and selected by default. Read-only in the C# signature (despite the reference summary saying "gets or sets"), added in build 17763. Not an authorization grant or guarantee of installation availability/success. |
 
 ### Manager methods (23 families)
 

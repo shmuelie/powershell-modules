@@ -16,7 +16,7 @@ internal sealed class AppInstallActivation : IAppInstallActivation
     public IAppInstallManagerAdapter Activate() => new AppInstallManagerAdapter(new AppInstallManager());
 }
 
-internal sealed class AppInstallManagerAdapter(AppInstallManager manager) : IAppInstallManagerAdapter
+internal sealed partial class AppInstallManagerAdapter(AppInstallManager manager) : IAppInstallManagerAdapter
 {
     private AppInstallManager? manager = manager;
 
