@@ -919,6 +919,18 @@ Describe 'Update-AppInstallerApp' -Skip:(-not $IsWindows) {
     }
 }
 
+Describe 'AppInstaller compiled selection binding (hermetic)' -Skip:(-not $IsWindows) {
+    It 'preserves explicit selection across real parameter binding and lifecycle' {
+        $fixture = Join-Path $PSScriptRoot 'fixtures' 'Test-AppInstallerSelection.ps1'
+        $output = & pwsh -NoProfile -NonInteractive -File $fixture
+        $LASTEXITCODE | Should -Be 0 -Because ($output -join "`n")
+        $result = ($output -join "`n") | ConvertFrom-Json -ErrorAction Stop
+        $result.Failed | Should -Be 0
+        $result.Passed | Should -BeGreaterOrEqual 47
+        @($result.Cases | Where-Object { -not $_.Passed }) | Should -HaveCount 0
+    }
+}
+
 Describe 'AppInstaller compiled request results (hermetic)' -Skip:(-not $IsWindows) {
         BeforeAll {
             if (-not ('AppInstallerTestRuntime' -as [type])) {

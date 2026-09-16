@@ -6,6 +6,13 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+### Fixed
+- `Update-AppInstallerApp` no longer turns empty pipelines or failed identity
+  binding into updates for every application. Null, empty, and whitespace-only
+  identities are rejected. Standalone unfiltered calls retain update-all
+  behavior, while valid selections, confirmation, and opt-in request-completion
+  results are unchanged.
+
 ### Added
 - Experimental compiled `Wait-AppInstallItem` for one exact retained caller item,
   using only payload-free manager-event invalidation, an explicit context and a
