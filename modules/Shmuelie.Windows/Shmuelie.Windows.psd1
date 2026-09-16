@@ -12,7 +12,7 @@
         'Get-WindowsTerminalSettings', 'Get-WindowsTerminalProfile',
         'Start-WindowsPerformanceRecorder', 'Stop-WindowsPerformanceRecorder'
     )
-    CmdletsToExport      = @('Get-AppInstallItem', 'Get-AppInstallerApp', 'Get-AppInstallSettings', 'Get-InstalledApplications', 'Get-ServiceProcess', 'Get-SubstDrive', 'New-AppInstallContext', 'New-SubstDrive', 'Remove-SubstDrive', 'Request-AppInstallUpdateSearch', 'Update-AppInstallerApp')
+    CmdletsToExport      = @('Get-AppInstallItem', 'Get-AppInstallerApp', 'Get-AppInstallSettings', 'Get-InstalledApplications', 'Get-ServiceProcess', 'Get-SubstDrive', 'New-AppInstallContext', 'New-SubstDrive', 'Remove-SubstDrive', 'Request-AppInstallUpdateSearch', 'Update-AppInstallerApp', 'Wait-AppInstallItem')
     VariablesToExport    = @()
     AliasesToExport      = @()
     FormatsToProcess  = @('Windows.format.ps1xml')

@@ -187,6 +187,71 @@ with fail-closed fakes. No live Store actions are exercised by these tests.
 private-capability restrictions still apply, and this does not deliver the
 broader #244 family or guarantee third-party support.
 
+## Bounded exact-item observation
+
+`Wait-AppInstallItem -Context $context -LocalItemId $localItemId -TimeoutSeconds 10`
+requires one live creating-runspace caller context and one exact local ID retained
+by its successful inventory/search capture. Stale/unresolvable IDs, wrong runspaces,
+disposed contexts and overlapping observations fail before subscription. No
+ProductId/PackageFamilyName fallback, per-item events, group wait, multiple-target
+selection, hidden manager, manager-wide following or `ForUser` is provided.
+
+Only manager `ItemStatusChanged` and `ItemCompleted` are subscribed, after both
+members pass availability gates. Callbacks only set bounded invalidation flags;
+they never inspect sender/event payload properties, read native state or call
+PowerShell. A notification for **another item** can cause a selected-item reread;
+reason flags name manager invalidation, not selected-item events. Duplicate
+notifications coalesce into one pending slot, not a lossless event queue. A
+generation overflow errors rather than silently losing invalidation.
+
+Subscriptions precede the initial snapshot. Every detached capture runs on the
+cmdlet execution thread using inventory's existing status/availability/HRESULT
+policy. A delivered-generation fence discards captures invalidated during reading;
+terminal capture closes callback acceptance at that local fence. This is not a
+native atomicity, ordering, notification-latency/loss or terminal-state permanence
+guarantee. Local observation sequence reflects captures, never native event order.
+
+The command emits one immutable `AppInstallMonitorResult` only after successful
+cleanup. It contains ContextId, LocalItemId, Caller scope, local Outcome and up to
+64 observations (sequence, elapsed time, reason flags and detached item snapshot).
+There is no progress output or intermediate success stream. The mandatory
+`TimeoutSeconds` range is 1-30, measured monotonically from before lease acquisition;
+synchronous getters/add/remove calls can exceed it. Too many snapshots fail rather
+than truncate. `TimedOut` does not mean failure/cancellation of installation.
+`TargetTerminal` requires the existing observed native state/HRESULT policy, and
+can mean success, failure or native cancellation. Mere completion notification,
+100 percent, staging, launch readiness and async search completion do not suffice.
+Unknown states/unavailable evidence remain unknown.
+
+An already-terminal target is still subscribed/captured/cleaned up. Children are
+not enumerated; `GroupOutcome = NotEvaluated`, including when a parent succeeds.
+The lease pins one observed projection, not queue membership: disappearance is
+not inferred from manager events or a missing callback. A getter that fails after
+removal preserves its source/error/HRESULT, never an empty/success fallback.
+Monitoring performs no additional collection scan or cache commit, so full
+inventory pruning and bounded partial-search union semantics are preserved.
+An active lease can retain its exact projection after cache pruning; a subsequent
+new observation of the old ID cannot resolve it.
+
+Cancellation, Ctrl+C and context shutdown stop observation only, never queue
+Cancel/pause/restart/search or automatic actions. Cleanup closes callback acceptance,
+unsubscribes every acquired token in reverse order outside context/callback locks,
+and releases the observation lease last. Context disposal prevents further use and
+signals the active lease without waiting; actual manager release is deferred until
+the last lease exits. The command never disposes its caller context. An unsubscribe
+exception means native detachment is unproven; all remaining cleanup is attempted.
+Primary HRESULT and every secondary cleanup failure are retained, and cleanup-only
+failure is not a successful result. Stopped pipelines may suppress error/output.
+Default formatting omits item/error payloads and raw native diagnostics; explicit
+inspection and JSON retain them and must be treated as sensitive.
+
+Limited manager-event access was observed separately; individual-item event access,
+nonempty exact-item native status/lifetime behavior, groups, callback ordering and
+support guarantees remain unverified. This implementation is validated with
+fail-closed fakes, not additional live Store operations. **AppInstall stays
+unreleased while #233 official support is unresolved.** No privilege/capability
+workaround is provided.
+
 ## Async and event integration seams
 
 The internal async adapter accepts an already-created WinRT operation; it does
@@ -222,8 +287,8 @@ invalid-cast failure came from native code rather than a managed bug.
 The injectable event subscription owns its unsubscribe resource. Callbacks only
 signal invalidation; future monitoring must read snapshots and call PowerShell
 pipeline writers on the cmdlet execution thread. Repeated notifications can
-coalesce. Native event subscription and public monitoring belong to #239 and are
-not implemented here.
+coalesce. `Wait-AppInstallItem` implements only manager-event invalidation; individual-item
+event subscriptions remain unverified and are not implemented.
 
 Request acceptance, async-operation completion, successful installation,
 `IsStaged`, and `ReadyForLaunch` are different observations. None is inferred
@@ -283,7 +348,8 @@ the original. Nothing automatically logs identities, snapshots or native message
 
 `New-AppInstallContext` (#234), `Get-AppInstallItem` (#236) and
 `Get-AppInstallSettings` (#238) and only the caller all-app paused
-`Request-AppInstallUpdateSearch` (#244 subset) ship here.
+`Request-AppInstallUpdateSearch` (#244 subset), plus bounded `Wait-AppInstallItem`
+(#239), are implemented here but remain unreleased.
 Names below for other work items
 are **proposed naming conventions**, not commands available to invoke. Later
 commands use an explicit `-Context`, singular nouns and approved PowerShell verbs.
@@ -339,8 +405,8 @@ method-parameter-count checks are still required before invocation.
 
 | Member | Planned surface | Evidence / delivery scope |
 |---|---|---|
-| `ItemCompleted` | `Wait-AppInstallItem -Context` | Metadata observed, subscription unverified/gated #239. Must reread a final status; not a callback-thread pipeline writer. |
-| `ItemStatusChanged` | `Wait-AppInstallItem -Context` | Metadata observed, subscription unverified/gated #239. Owned subscription, bounded waiting, coalesced invalidation and explicit local cancellation. |
+| `ItemCompleted` | `Wait-AppInstallItem -Context -LocalItemId -TimeoutSeconds` | Limited manager-event access observed; implemented as payload-free invalidation only. Not selected-item identity or terminal-success evidence. |
+| `ItemStatusChanged` | `Wait-AppInstallItem -Context -LocalItemId -TimeoutSeconds` | Owned manager subscription with bounded coalescing, execution-thread exact-item snapshots and local cancellation only. Individual-item events and group waiting remain gated. |
 
 ### AppUpdateOptions (3)
 

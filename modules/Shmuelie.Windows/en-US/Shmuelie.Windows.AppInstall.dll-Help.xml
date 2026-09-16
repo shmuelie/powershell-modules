@@ -173,4 +173,38 @@ try {
       <maml:navigationLink><maml:linkText>AutomaticallyDownloadAndInstallUpdateIfFound queue side effect</maml:linkText><maml:uri>https://learn.microsoft.com/uwp/api/windows.applicationmodel.store.preview.installcontrol.appupdateoptions.automaticallydownloadandinstallupdateiffound</maml:uri></maml:navigationLink>
     </command:relatedLinks>
   </command:command>
+  <command:command xmlns:maml="http://schemas.microsoft.com/maml/2004/10" xmlns:command="http://schemas.microsoft.com/maml/dev/command/2004/10" xmlns:dev="http://schemas.microsoft.com/maml/dev/2004/10">
+    <command:details>
+      <command:name>Wait-AppInstallItem</command:name>
+      <command:verb>Wait</command:verb>
+      <command:noun>AppInstallItem</command:noun>
+      <maml:description><maml:para>Passively observes one exact retained caller item with a bounded local wait and manager-event invalidation.</maml:para></maml:description>
+    </command:details>
+    <maml:description>
+      <maml:para>Requires an explicit live AppInstallContext in its creating runspace, one LocalItemId retained by successful inventory/search capture, and mandatory TimeoutSeconds from 1 through 30. Rejects stale/unresolvable IDs and concurrent observations on the same context. ProductId and PackageFamilyName are never fallback selectors. No hidden manager, multiple targets, group wait, manager-wide queue following, per-item events or ForUser operation is provided.</maml:para>
+      <maml:para>Uses only manager ItemStatusChanged and ItemCompleted. Callbacks read no native payloads/properties and call no PowerShell APIs. Other-item notifications can invalidate the selected item's snapshot; they are not claimed to belong to that item. One pending invalidation slot coalesces reasons. Snapshot reads run only on the cmdlet execution thread. Subscribes before the initial capture and retries captures invalidated by delivered callbacks. Local sequence/generation fences do not guarantee native atomicity, losslessness or event ordering.</maml:para>
+      <maml:para>Returns one immutable AppInstallMonitorResult after successful cleanup, with at most 64 observations. There is no streaming progress or intermediate success output. Outcome is TimedOut or TargetTerminal; inspect the last snapshot for observed success, failure or native cancellation. GroupOutcome is always NotEvaluated. Completion notifications, percentage, staging and launch readiness do not prove successful installation. Unknown state/HRESULT availability remains unknown. Already-terminal targets still subscribe, capture and clean up without requiring an event.</maml:para>
+      <maml:para>The retained exact projection is not a queue-membership probe. No collection or child scan is performed and disappearance is not inferred; getter failure preserves its original error/HRESULT rather than returning empty or completed success. The lease does not change inventory pruning or partial-search merging. A pruned old ID cannot resolve for a new observation.</maml:para>
+      <maml:para>TimeoutSeconds bounds local waiting, not synchronous native getter/add/remove calls. Ctrl+C and StopProcessing stop observation only and never cancel installation or change queued work. Context/runspace disposal signals observation and defers manager release until subscriptions unwind. The command never disposes its caller context. Every acquired unsubscribe resource is attempted outside context/callback locks; primary errors and secondary cleanup failures are preserved. Cleanup-only failure emits no optimistic result. Stopped pipelines may suppress errors and output.</maml:para>
+      <maml:para>Default result formatting omits item payloads and raw native diagnostics; explicit property inspection and JSON retain them. Windows 10 build 19041 or later and PowerShell 7.4 or later are required. Microsoft documents AppInstallManager access as protected by a private capability restricted to Microsoft-developed apps. Limited manager-event access does not establish per-item behavior or official third-party support. AppInstall remains unreleased pending support clarification; no privilege or capability workaround is provided.</maml:para>
+    </maml:description>
+    <command:syntax><command:syntaxItem>
+      <maml:name>Wait-AppInstallItem</maml:name>
+      <command:parameter required="true" position="named" pipelineInput="false" globbing="false"><maml:name>Context</maml:name><command:parameterValue required="true">AppInstallContext</command:parameterValue></command:parameter>
+      <command:parameter required="true" position="named" pipelineInput="false" globbing="false"><maml:name>LocalItemId</maml:name><command:parameterValue required="true">Guid</command:parameterValue></command:parameter>
+      <command:parameter required="true" position="named" pipelineInput="false" globbing="false"><maml:name>TimeoutSeconds</maml:name><command:parameterValue required="true">Int32</command:parameterValue></command:parameter>
+    </command:syntaxItem></command:syntax>
+    <command:parameters>
+      <command:parameter required="true" position="named" pipelineInput="false" globbing="false"><maml:name>Context</maml:name><maml:description><maml:para>The explicit live caller context in its creating runspace. The command does not dispose it.</maml:para></maml:description><dev:type><maml:name>Shmuelie.Windows.AppInstall.AppInstallContext</maml:name></dev:type></command:parameter>
+      <command:parameter required="true" position="named" pipelineInput="false" globbing="false"><maml:name>LocalItemId</maml:name><maml:description><maml:para>Exactly one local ID from a retained item captured by this same context. This is not a native install ID or ProductId selector.</maml:para></maml:description><dev:type><maml:name>System.Guid</maml:name></dev:type></command:parameter>
+      <command:parameter required="true" position="named" pipelineInput="false" globbing="false"><maml:name>TimeoutSeconds</maml:name><maml:description><maml:para>Mandatory local observation budget from 1 through 30 seconds. Does not forcibly interrupt blocking native calls.</maml:para></maml:description><dev:type><maml:name>System.Int32</maml:name></dev:type></command:parameter>
+    </command:parameters>
+    <command:inputTypes><command:inputType><dev:type><maml:name>None</maml:name></dev:type></command:inputType></command:inputTypes>
+    <command:returnValues><command:returnValue><dev:type><maml:name>Shmuelie.Windows.AppInstall.AppInstallMonitorResult</maml:name></dev:type></command:returnValue></command:returnValues>
+    <command:examples><command:example>
+      <maml:title>Example 1: Observe an explicitly selected retained item</maml:title>
+      <dev:code>Wait-AppInstallItem -Context $context -LocalItemId $item.Identity.LocalItemId -TimeoutSeconds 10</dev:code>
+      <dev:remarks><maml:para>The caller has already selected one captured item belonging to this context. No identity fallback, search or installation action is performed. Access remains subject to the native restriction.</maml:para></dev:remarks>
+    </command:example></command:examples>
+  </command:command>
 </helpItems>

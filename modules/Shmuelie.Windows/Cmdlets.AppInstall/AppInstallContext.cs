@@ -91,13 +91,20 @@ public sealed partial class AppInstallContext : IDisposable
 
     public void Dispose()
     {
+        AppInstallObservationLease[] active;
+        IAppInstallManagerAdapter? release;
         lock (sync)
         {
             if (disposed) return;
             disposed = true;
             owner.StateChanged -= OnRunspaceStateChanged;
-            if (manager.IsValueCreated) manager.Value.Dispose();
+            active = observations.ToArray();
+            release = TakeManagerForRelease();
         }
+        // Never unsubscribe or wait under the context lock. Active observers
+        // unwind their subscriptions before the last lease releases the manager.
+        foreach (var observation in active) observation.RequestStop();
+        release?.Dispose();
     }
 }
 

@@ -19,6 +19,7 @@ Import-Module Shmuelie.Windows
 | App Installer | `Get-AppInstallerApp`, `Update-AppInstallerApp` (compiled, Windows-only; opt-in `-PassThru` request outcomes) |
 | App install foundation | `New-AppInstallContext` (compiled, experimental; lazy caller-owned context, no installation or search) |
 | App install queue | `Get-AppInstallItem` (compiled, experimental; explicit context, caller-scoped read-only snapshots) |
+| App install observation | `Wait-AppInstallItem` (compiled, experimental; one retained local item, explicit context, mandatory 1-30 second observation budget) |
 | App install settings | `Get-AppInstallSettings` (compiled, experimental; explicit context, read-only, acquisition identity opt-in) |
 | App update search | `Request-AppInstallUpdateSearch` (compiled, experimental; explicit context and correlation inputs, confirmed caller all-app paused-queue mutation) |
 | Inventory | `Get-InstalledApplications` (compiled binary cmdlet) |
@@ -60,6 +61,46 @@ queue and settings reads use `Get-AppInstallItem` and `Get-AppInstallSettings`.
 `Request-AppInstallUpdateSearch` adds only the approved caller all-app paused
 search. No settings mutation, install, entitlement, control, or `ForUser` cmdlets
 are exported. See [the context contract](../../docs/appinstall.md).
+
+### Bounded exact-item observation
+
+`Wait-AppInstallItem -Context $context -LocalItemId $item.Identity.LocalItemId -TimeoutSeconds 10`
+observes one previously captured item in its creating caller context. Use the exact
+local ID from inventory or a paused-search result; product/family names are not
+unique identities and are never used as a fallback. Stale IDs fail. One observation
+per context is allowed. There is no implicit context, pipeline fan-out, group wait,
+manager-wide queue following, individual-item event subscription or `ForUser`.
+
+Only manager `ItemStatusChanged`/`ItemCompleted` are subscribed. Callbacks read no
+native payloads or properties and call no PowerShell APIs. Any manager notification
+may trigger a selected-item reread; it is **not** claimed to belong to that item.
+One pending invalidation slot coalesces reasons. Reads run on the cmdlet execution
+thread, subscribe before the initial snapshot, and retry when a delivered callback
+invalidates a capture. Local ordering is not lossless native event order or an atomic
+native snapshot guarantee.
+
+One immutable `AppInstallMonitorResult` is emitted **after cleanup**, containing at
+most 64 locally ordered observations. There is no streaming progress output.
+`Outcome` is `TimedOut` or `TargetTerminal`; inspect the final snapshot to distinguish
+observed success, failure and native cancellation. `GroupOutcome` is always
+`NotEvaluated`. Completion notifications, percent, staging and launch readiness
+never prove success. Unknown native state or unavailable HRESULT stays unknown.
+An already-terminal item needs no notification. Retained items are not membership
+probes: removal from the queue is not inferred, and a disappearing-item getter
+failure preserves its error rather than being treated as completion.
+
+The mandatory 1-30 second budget bounds local waiting, not blocking native calls.
+Stopping/Ctrl+C cancels only observation. Every acquired subscription is removed
+before the observation lease releases the manager, including error/timeout/stop
+paths. Caller contexts are not disposed by the command; context/runspace shutdown
+signals observers and defers manager release until their leases unwind, without
+waiting or unsubscribing under the context lock. Cleanup failures terminate without
+an optimistic result and preserve primary HRESULT plus secondary failures. Default
+formatting omits item/error payloads; explicit properties/JSON retain them.
+
+AppInstall remains **unreleased pending #233 support clarification**. Limited
+manager-event observations do not verify per-item events, group semantics or
+official third-party support. See [the monitoring contract](../../docs/appinstall.md#bounded-exact-item-observation).
 
 ### Read-only settings
 

@@ -5,8 +5,8 @@ internal interface IAppInstallEvents
     IDisposable Subscribe(Action changed);
 }
 
-// Monitoring adapters will subscribe to version-gated native events and signal
-// invalidation only. Snapshots and pipeline writes belong on the cmdlet thread.
+// Generic invalidation seam. Bounded exact-item monitoring uses its generation
+// signal; neither callback path reads native properties or writes to a pipeline.
 internal sealed class AppInstallChangeSignal : IDisposable
 {
     private readonly object sync = new();
