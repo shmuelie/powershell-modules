@@ -52,7 +52,7 @@ BeforeAll {
         Invoke-Git @('-C', $Path, '-c', 'init.templateDir=', 'init', '-b', 'main', '--quiet')
         Set-TestRepoConfig $Path
         if (-not $NoCommit) {
-            Set-Content -Path (Join-Path $Path 'README.md') -Value 'initial'
+            Set-Content -LiteralPath (Join-Path $Path 'README.md') -Value 'initial'
             Invoke-Git @('-C', $Path, 'add', 'README.md')
             Invoke-Git @('-C', $Path, 'commit', '-m', 'init', '--quiet')
         }
@@ -5837,6 +5837,261 @@ Describe 'Format-GitStatusSegment' {
         $out = Format-GitStatusSegment -Status (New-Summary @{ IndexAdded = 5 }) -ShowChangeCounts:$false
         $out | Should -Match 'main'
         $out | Should -Not -Match ([regex]::Escape('+5'))
+    }
+}
+
+Describe 'Git explicit Path context' {
+    BeforeAll {
+        $pathContextLocation = Get-Location
+        $pathContextRoot = Join-Path $TestDrive 'path-context'
+        $null = New-Item -ItemType Directory -Path $pathContextRoot -ErrorAction Stop
+        $pathContextEnvironment = @{}
+        foreach ($key in @('GIT_CONFIG_GLOBAL', 'GIT_CONFIG_SYSTEM', 'GIT_CONFIG_NOSYSTEM',
+            'GIT_CONFIG_COUNT', 'GIT_CONFIG_PARAMETERS', 'GIT_DIR', 'GIT_WORK_TREE',
+            'GIT_COMMON_DIR', 'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY', 'GIT_ALTERNATE_OBJECT_DIRECTORIES')) {
+            $pathContextEnvironment[$key] = [Environment]::GetEnvironmentVariable($key, 'Process')
+            Remove-Item -LiteralPath "Env:$key" -ErrorAction Ignore
+        }
+        $env:GIT_CONFIG_GLOBAL = Join-Path $pathContextRoot 'no-global'
+        $env:GIT_CONFIG_SYSTEM = Join-Path $pathContextRoot 'no-system'
+        $env:GIT_CONFIG_NOSYSTEM = '1'
+        $env:GIT_CONFIG_COUNT = '0'
+        $contextA = New-TestRepo -Path (Join-Path $pathContextRoot 'a')
+        $contextB = New-TestRepo -Path (Join-Path $pathContextRoot 'b [literal]')
+        $contextOutside = Join-Path $pathContextRoot 'outside'
+        $null = New-Item -ItemType Directory -Path $contextOutside -ErrorAction Stop
+        Invoke-Git @('-C', $contextA, 'branch', 'feature/a-only')
+        Invoke-Git @('-C', $contextB, 'branch', 'feature/b-only')
+        Invoke-Git @('-C', $contextB, 'branch', 'feature/price$tag')
+        Invoke-Git @('-C', $contextB, 'branch', "feature/quote'branch")
+        $contextLinked = Join-Path $pathContextRoot 'linked [b]'
+        Invoke-Git @('-C', $contextB, 'worktree', 'add', '--quiet', '-b', 'feature/b-tree', $contextLinked)
+        $contextDetached = Join-Path $pathContextRoot 'detached'
+        Invoke-Git @('-C', $contextB, 'worktree', 'add', '--quiet', '--detach', $contextDetached, 'HEAD')
+
+        function Get-ContextCompletions {
+            param([string]$Line)
+            $cursor = $Line.IndexOf('feature/') + 'feature/'.Length
+            @((TabExpansion2 -InputScript $Line -CursorColumn $cursor).CompletionMatches |
+                Where-Object ResultType -EQ ParameterValue)
+        }
+
+        function New-ContextTarget {
+            $branch = 'target-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+            $path = Join-Path $pathContextRoot $branch
+            Invoke-Git @('-C', $contextA, 'branch', $branch)
+            Invoke-Git @('-C', $contextB, 'worktree', 'add', '--quiet', '-b', $branch, $path)
+            [pscustomobject]@{ Path = $path; Branch = $branch }
+        }
+    }
+    BeforeEach {
+        Set-Location -LiteralPath $contextA -ErrorAction Stop
+    }
+    AfterEach {
+        Set-Location -LiteralPath $contextA -ErrorAction Stop
+    }
+    AfterAll {
+        Set-Location -LiteralPath $pathContextLocation.ProviderPath -ErrorAction Stop
+        foreach ($key in $pathContextEnvironment.Keys) {
+            if ($null -eq $pathContextEnvironment[$key]) {
+                Remove-Item -LiteralPath "Env:$key" -ErrorAction Ignore
+            } else {
+                [Environment]::SetEnvironmentVariable($key, $pathContextEnvironment[$key], 'Process')
+            }
+        }
+    }
+
+    It 'completes the selected repository via <Parameter> with Path after branch=<After>' -ForEach @(
+        @{ Parameter = 'Path'; After = $false }; @{ Parameter = 'Path'; After = $true }
+        @{ Parameter = 'RepositoryPath'; After = $false }; @{ Parameter = 'RepoPath'; After = $true }
+        @{ Parameter = 'pa'; After = $false }
+    ) {
+        $pathArgument = "-$Parameter '$($contextB.Replace("'", "''"))'"
+        $line = if ($After) { "Add-Worktree -BranchName feature/ $pathArgument" }
+            else { "Add-Worktree $pathArgument -BranchName feature/" }
+        $beforeIndex = Get-FileHash -LiteralPath (Join-Path $contextB '.git' 'index')
+        $branches = @(Invoke-Git @('-C', $contextB, 'for-each-ref', '--format=%(refname)', 'refs/heads/'))
+        $names = @(Get-ContextCompletions $line).ListItemText
+        $names | Should -Contain 'feature/b-only'
+        $names | Should -Not -Contain 'feature/a-only'
+        $names | Should -Not -Contain 'feature/b-tree'
+        $names | Should -Not -Contain '(detached)'
+        (Get-Location).ProviderPath | Should -BeExactly $contextA
+        (Get-FileHash -LiteralPath (Join-Path $contextB '.git' 'index')).Hash | Should -Be $beforeIndex.Hash
+        @(Invoke-Git @('-C', $contextB, 'for-each-ref', '--format=%(refname)', 'refs/heads/')) | Should -Be $branches
+        @(Get-Worktrees -Path $contextB) | Should -HaveCount 3
+    }
+
+    It 'completes relative paths from a non-repository directory' {
+        Set-Location -LiteralPath $contextOutside -ErrorAction Stop
+        $relative = Join-Path '..' 'b [literal]'
+        @(Get-ContextCompletions "Add-Worktree -BranchName feature/ -Path '$relative'").ListItemText |
+            Should -Contain 'feature/b-only'
+        @(Get-ContextCompletions "Add-Worktree -RepoPath '$relative' -BranchName feature/").ListItemText |
+            Should -Not -Contain 'feature/a-only'
+        (Get-Location).ProviderPath | Should -BeExactly $contextOutside
+    }
+
+    It 'uses bound variables without evaluating path expressions' {
+        $contextCompletionPath = $contextB
+        @(Get-ContextCompletions 'Add-Worktree -Path $contextCompletionPath -BranchName feature/').ListItemText |
+            Should -Contain 'feature/b-only'
+        $global:PathCompletionExpressionRan = $false
+        try {
+            @(Get-ContextCompletions 'Add-Worktree -Path $( $global:PathCompletionExpressionRan = $true; ''missing'' ) -BranchName feature/') |
+                Should -HaveCount 0
+            $global:PathCompletionExpressionRan | Should -BeFalse
+        } finally {
+            Remove-Variable PathCompletionExpressionRan -Scope Global -ErrorAction Ignore
+        }
+    }
+
+    It 'never falls back to caller branches for <Kind> explicit paths' -ForEach @(
+        @{ Kind = 'missing' }; @{ Kind = 'file' }; @{ Kind = 'outside' }
+        @{ Kind = 'empty' }; @{ Kind = 'null variable' }; @{ Kind = 'unresolved positional expression' }
+    ) {
+        $line = switch ($Kind) {
+            missing { "Add-Worktree -Path '$pathContextRoot/missing' -BranchName feature/" }
+            file { "Add-Worktree -Path '$(Join-Path $contextB 'README.md')' -BranchName feature/" }
+            outside { "Add-Worktree -Path '$contextOutside' -BranchName feature/" }
+            empty { "Add-Worktree -Path '' -BranchName feature/" }
+            'null variable' { 'Add-Worktree -Path $null -BranchName feature/' }
+            'unresolved positional expression' { 'Add-Worktree feature/ (Join-Path $contextOutside ''missing'')' }
+        }
+        @(Get-ContextCompletions $line) | Should -HaveCount 0
+    }
+
+    It 'retains current-repository completion and safely quotes shell-sensitive branches' {
+        @(Get-ContextCompletions 'Add-Worktree -BranchName feature/').ListItemText |
+            Should -Be @('feature/a-only')
+        $items = @(Get-ContextCompletions "Add-Worktree -Path '$contextB' -BranchName feature/")
+        ($items | Where-Object ListItemText -EQ 'feature/price$tag').CompletionText | Should -BeExactly "'feature/price`$tag'"
+        ($items | Where-Object ListItemText -EQ "feature/quote'branch").CompletionText | Should -BeExactly "'feature/quote''branch'"
+    }
+
+    It 'keeps branch completion in the current repository for <Command>' -ForEach @(
+        @{ Command = 'Set-Worktree' }; @{ Command = 'Move-Worktree' }; @{ Command = 'Remove-Worktree' }
+        @{ Command = 'Lock-Worktree' }; @{ Command = 'Unlock-Worktree' }
+    ) {
+        Set-Location -LiteralPath $contextB -ErrorAction Stop
+        @(Get-ContextCompletions "$Command -BranchName feature/").ListItemText | Should -Be @('feature/b-tree')
+    }
+
+    It 'preserves mutually exclusive worktree Path and BranchName selection for <Command>' -ForEach @(
+        @{ Command = 'Set-Worktree' }; @{ Command = 'Remove-Worktree' }; @{ Command = 'Move-Worktree' }
+    ) {
+        @(Get-ContextCompletions "$Command -Path '$contextLinked' -BranchName feature/") | Should -HaveCount 0
+        $arguments = @{ Path = $contextLinked; BranchName = 'feature/a-only'; ErrorAction = 'Stop' }
+        if ($Command -eq 'Move-Worktree') { $arguments.DestinationPath = Join-Path $pathContextRoot 'never-move' }
+        { & $Command @arguments } | Should -Throw -ErrorId 'AmbiguousParameterSet*'
+        Test-Path -LiteralPath $contextLinked | Should -BeTrue
+    }
+
+    It 'validates branch operations against pipeline repository context via <Property>' -ForEach @(
+        @{ Property = 'Path' }; @{ Property = 'RepositoryPath' }; @{ Property = 'RepoPath' }
+    ) {
+        Set-Location -LiteralPath $contextOutside -ErrorAction Stop
+        $target = Join-Path $pathContextRoot ('add-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+        $inputPath = [pscustomobject]@{ $Property = $contextB }
+        try {
+            $inputPath | Add-Worktree -BranchName 'feature/b-only' -WorktreePath $target -NoSetLocation -Confirm:$false -ErrorAction Stop
+            (Get-Worktrees -Path $contextB).Path | Should -Contain $target
+            (Get-Location).ProviderPath | Should -BeExactly $contextOutside
+        } finally {
+            if (Test-Path -LiteralPath $target) { Invoke-Git @('-C', $contextB, 'worktree', 'remove', $target) }
+        }
+        { $inputPath | Add-Worktree -BranchName 'feature/a-only' -WorktreePath $target -NoSetLocation -Confirm:$false -ErrorAction Stop } |
+            Should -Throw '*git worktree add failed*'
+        Test-Path -LiteralPath $target | Should -BeFalse
+    }
+
+    It 'validates Set-Branch and Remove-Branch against the supplied repository rather than the caller' {
+        try {
+            [pscustomobject]@{ RepoPath = $contextB } | Set-Branch -Branch 'feature/b-only' -Confirm:$false -ErrorAction Stop
+            Invoke-Git @('-C', $contextB, 'branch', '--show-current') | Should -BeExactly 'feature/b-only'
+            Invoke-Git @('-C', $contextA, 'branch', '--show-current') | Should -BeExactly 'main'
+        } finally { Invoke-Git @('-C', $contextB, 'switch', '--quiet', 'main') }
+        $branch = 'delete-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+        Invoke-Git @('-C', $contextA, 'branch', $branch)
+        Invoke-Git @('-C', $contextB, 'branch', $branch)
+        [pscustomobject]@{ RepoPath = $contextB; BranchName = $branch } | Remove-Branch -Confirm:$false -ErrorAction Stop
+        Invoke-Git @('-C', $contextA, 'branch', '--list', $branch) | Should -Not -BeNullOrEmpty
+        Invoke-Git @('-C', $contextB, 'branch', '--list', $branch) | Should -BeNullOrEmpty
+        (Get-Location).ProviderPath | Should -BeExactly $contextA
+    }
+
+    It 'selects a foreign registered worktree using <InputKind>' -ForEach @(
+        @{ InputKind = 'absolute' }; @{ InputKind = 'relative outside' }; @{ InputKind = 'pipeline' }; @{ InputKind = 'detached' }
+    ) {
+        switch ($InputKind) {
+            absolute { Set-Worktree -Path $contextLinked -ErrorAction Stop }
+            'relative outside' {
+                Set-Location -LiteralPath $contextOutside -ErrorAction Stop
+                Set-Worktree -Path (Join-Path '..' 'linked [b]') -ErrorAction Stop
+            }
+            pipeline { Get-Worktrees -Path $contextB | Where-Object Branch -EQ 'feature/b-tree' | Set-Worktree -ErrorAction Stop }
+            detached { Set-Worktree -Path $contextDetached -ErrorAction Stop }
+        }
+        $expected = if ($InputKind -eq 'detached') { $contextDetached } else { $contextLinked }
+        (Get-Location).ProviderPath | Should -BeExactly $expected
+    }
+
+    It 'removes only the selected repository worktree and branch from <Caller> with KeepBranch=<Keep>' -ForEach @(
+        @{ Caller = 'repo'; Keep = $false }; @{ Caller = 'outside'; Keep = $false }; @{ Caller = 'outside'; Keep = $true }
+    ) {
+        $target = New-ContextTarget
+        $callerPath = if ($Caller -eq 'repo') { $contextA } else { $contextOutside }
+        Set-Location -LiteralPath $callerPath -ErrorAction Stop
+        Get-Worktrees -Path $contextB | Where-Object Branch -EQ $target.Branch |
+            Remove-Worktree -KeepBranch:$Keep -Confirm:$false -ErrorAction Stop
+        Test-Path -LiteralPath $target.Path | Should -BeFalse
+        Invoke-Git @('-C', $contextA, 'branch', '--list', $target.Branch) | Should -Not -BeNullOrEmpty
+        [bool](Invoke-Git @('-C', $contextB, 'branch', '--list', $target.Branch)) | Should -Be $Keep
+        (Get-Location).ProviderPath | Should -BeExactly $callerPath
+    }
+
+    It 'moves a foreign target and resolves the destination relative to the caller' {
+        $target = New-ContextTarget
+        Set-Location -LiteralPath $contextOutside -ErrorAction Stop
+        $destination = 'moved-' + $target.Branch
+        $result = $target | Move-Worktree -DestinationPath $destination -Confirm:$false -ErrorAction Stop
+        $result.NewPath | Should -BeExactly (Join-Path $contextOutside $destination)
+        Test-Path -LiteralPath $target.Path | Should -BeFalse
+        (Get-Worktrees -Path $contextB).Path | Should -Contain $result.NewPath
+        Invoke-Git @('-C', $contextA, 'branch', '--list', $target.Branch) | Should -Not -BeNullOrEmpty
+        (Get-Location).ProviderPath | Should -BeExactly $contextOutside
+    }
+
+    It 'previews foreign worktree mutations without changing either repository' {
+        Set-Location -LiteralPath $contextOutside -ErrorAction Stop
+        $before = @(Get-Worktrees -Path $contextB)
+        $before | Where-Object Branch -EQ 'feature/b-tree' | Remove-Worktree -WhatIf -ErrorAction Stop
+        Move-Worktree -Path $contextLinked -DestinationPath (Join-Path $contextOutside 'never') -WhatIf -ErrorAction Stop
+        (Get-Worktrees -Path $contextB).Path | Should -Be $before.Path
+        Test-Path -LiteralPath $contextLinked | Should -BeTrue
+        (Get-Location).ProviderPath | Should -BeExactly $contextOutside
+    }
+
+    It 'rejects unregistered paths and foreign main-worktree moves without falling back' {
+        $subdirectory = Join-Path $contextLinked 'not-a-root'
+        $null = New-Item -ItemType Directory -Path $subdirectory
+        { Set-Worktree -Path $subdirectory -ErrorAction Stop } | Should -Throw '*No worktree was found*'
+        { Remove-Worktree -Path $contextOutside -WhatIf -ErrorAction Stop } | Should -Throw '*not inside a git working tree*'
+        { Move-Worktree -Path $contextB -DestinationPath (Join-Path $pathContextRoot 'never') -ErrorAction Stop } |
+            Should -Throw '*main/root worktree*'
+        { Set-Worktree -BranchName 'feature/b-tree' -ErrorAction Stop } | Should -Throw '*No worktree was found*'
+        (Get-Location).ProviderPath | Should -BeExactly $contextA
+        Test-Path -LiteralPath $contextLinked | Should -BeTrue
+    }
+
+    It 'rejects non-filesystem target paths before repository lookup' {
+        foreach ($command in 'Set-Worktree', 'Move-Worktree', 'Remove-Worktree') {
+            $arguments = @{ Path = 'Env:PATH'; ErrorAction = 'Stop' }
+            if ($command -eq 'Move-Worktree') { $arguments.DestinationPath = Join-Path $pathContextRoot 'never' }
+            { & $command @arguments } | Should -Throw '*FileSystem path*'
+        }
+        (Get-Location).ProviderPath | Should -BeExactly $contextA
+        Test-Path -LiteralPath $contextLinked | Should -BeTrue
     }
 }
 

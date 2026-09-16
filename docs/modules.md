@@ -58,6 +58,14 @@ The temporary compatibility switch `-SetLocation` still works; explicit
 Do not combine the two switches, even when false. Failed creation and `-WhatIf`
 never change location.
 
+`Add-Worktree` branch completion uses the source `-Path` (or its repository
+aliases), not an unrelated caller repository. The `-Path` parameter on
+`Set-Worktree`, `Move-Worktree` and `Remove-Worktree` instead selects an exact
+registered worktree root: existing targets resolve in their own repository.
+Branch-name selection stays caller-scoped and cannot be combined with target
+`-Path`; deleted/prunable targets still require caller repository context.
+Completion does not execute path expressions, fetch remotes or change location.
+
 ### Removing worktrees: migration
 
 `Remove-Worktree` now removes the backing local branch after successful worktree

@@ -1,5 +1,3 @@
-using module ./Classes/WorktreeSetValuesGenerator.psm1
-
 function Resolve-GitRepositoryPath {
     <#
     .SYNOPSIS
@@ -387,6 +385,8 @@ function Add-Worktree {
     Name of the branch.
     .PARAMETER Path
     Directory inside the git working tree to add the worktree from. Defaults to the current location.
+    Branch completion uses this repository, including RepositoryPath/RepoPath aliases.
+    Completion does not evaluate path expressions or change the caller's directory.
     .PARAMETER WorktreePath
     Optional destination path for the new worktree. When omitted, the path is
     derived from the repository container and branch name.
@@ -645,7 +645,27 @@ function Resolve-WorktreeTarget {
         [string]$Path
     )
 
-    $worktrees = @(Get-Worktrees)
+    $repositoryPath = $null
+    if ($PSCmdlet.ParameterSetName -eq 'Path') {
+        $provider = $null
+        $drive = $null
+        $Path = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Path, [ref]$provider, [ref]$drive)
+        if ($provider.Name -ne 'FileSystem') {
+            Write-Error 'Worktree path must be a FileSystem path.'
+            return
+        }
+        if (Test-Path -LiteralPath $Path) {
+            $repositoryPath = Resolve-GitRepositoryPath -Path $Path -AllowBare
+            if (-not $repositoryPath) { return }
+        }
+        # A deleted/prunable worktree cannot identify its repository. Retain
+        # exact-path lookup in the caller's repository for that existing workflow.
+    }
+    $worktrees = @(Get-Worktrees -Path $repositoryPath)
+    if ($worktrees.Count -eq 0) { return }
+    # The first porcelain entry is the main worktree (or bare repository).
+    # It remains usable after moving/removing the linked target.
+    $repositoryPath = $worktrees[0].Path
     if ($PSCmdlet.ParameterSetName -eq 'Path') {
         $matches = @($worktrees | Where-Object { Test-WorktreePathEquals -Left $_.Path -Right $Path })
         if ($matches.Count -eq 0) {
@@ -656,7 +676,7 @@ function Resolve-WorktreeTarget {
             Write-Error "More than one worktree matched path '$Path'."
             return
         }
-        return $matches[0]
+        return $matches[0] | Add-Member -NotePropertyName RepositoryPath -NotePropertyValue $repositoryPath -PassThru
     }
 
     $matches = @($worktrees | Where-Object Branch -eq $BranchName)
@@ -673,7 +693,7 @@ function Resolve-WorktreeTarget {
         return
     }
 
-    $matches[0]
+    $matches[0] | Add-Member -NotePropertyName RepositoryPath -NotePropertyValue $repositoryPath -PassThru
 }
 
 function Remove-Worktree {
@@ -696,7 +716,9 @@ function Remove-Worktree {
     addressed by `-Path` because their branch label is ambiguous.
     .PARAMETER Path
     The actual filesystem path of the worktree to remove. Accepts pipeline input
-    by property name from `Get-Worktrees` and related objects.
+    by property name from `Get-Worktrees` and related objects. An existing target
+    is resolved in its own repository, not the caller's. It must match a registered
+    worktree root exactly. Deleted/prunable targets require caller repository context.
     .PARAMETER KeepBranch
     Remove only the worktree, preserving its backing local branch. Cannot be
     combined with an enabled -RemoveBranch switch.
@@ -724,7 +746,7 @@ function Remove-Worktree {
     [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'High', DefaultParameterSetName = 'Path')]
     param(
         [Parameter(Mandatory, Position = 0, ParameterSetName = 'BranchName', ValueFromPipelineByPropertyName)]
-        [ValidateSet([WorktreeSetValuesGenerator])]
+        [ValidateNotNullOrEmpty()]
         [Alias('Branch')]
         [string]$BranchName,
 
@@ -759,7 +781,7 @@ function Remove-Worktree {
             if ($Force) { $removeArgs += '--force' }
             $removeArgs += '--'
             $removeArgs += $worktreePath
-            git @removeArgs
+            git -C $target.RepositoryPath @removeArgs
             $worktreeRemoved = $LASTEXITCODE -eq 0
             if ($RemoveBranch -and -not $hasBranch) {
                 Write-Warning 'The target worktree is detached; no branch was removed.'
@@ -771,7 +793,7 @@ function Remove-Worktree {
         # Preview both stages, but never delete a branch after failed or declined removal.
         if ($deleteBranch -and $hasBranch -and ($worktreeRemoved -or $WhatIfPreference)) {
             if ($PSCmdlet.ShouldProcess($target.Branch, 'Delete local branch (allow unmerged)')) {
-                git branch -D -- $target.Branch
+                git -C $target.RepositoryPath branch -D -- $target.Branch
             }
         }
     }
@@ -793,7 +815,9 @@ function Move-Worktree {
     is ambiguous.
     .PARAMETER Path
     The actual filesystem path of the worktree to move. Accepts pipeline input
-    by property name from `Get-Worktrees` and related objects.
+    by property name from `Get-Worktrees` and related objects. Existing targets
+    are resolved in their own repository and must match a registered worktree root.
+    Deleted/prunable targets require caller repository context.
     .PARAMETER DestinationPath
     The new filesystem location for the worktree.
     .PARAMETER Force
@@ -811,7 +835,7 @@ function Move-Worktree {
     [CmdletBinding(SupportsShouldProcess, DefaultParameterSetName = 'Path')]
     param(
         [Parameter(Mandatory, Position = 0, ParameterSetName = 'BranchName', ValueFromPipelineByPropertyName)]
-        [ValidateSet([WorktreeSetValuesGenerator])]
+        [ValidateNotNullOrEmpty()]
         [Alias('Branch')]
         [string]$BranchName,
 
@@ -829,9 +853,6 @@ function Move-Worktree {
     )
 
     process {
-        $repoPath = Resolve-GitRepositoryPath
-        if (-not $repoPath) { return }
-
         $target = if ($PSCmdlet.ParameterSetName -eq 'Path') {
             Resolve-WorktreeTarget -Path $Path
         } else {
@@ -839,14 +860,9 @@ function Move-Worktree {
         }
         if (-not $target) { return }
 
-        $root = Get-RootWorktree -Path $repoPath | Select-Object -First 1
-        if (-not $root) {
-            Write-Error 'Could not identify the main/root worktree for this repository.'
-            return
-        }
-
+        $repoPath = $target.RepositoryPath
         $oldPath = $target.Path
-        if (Test-WorktreePathEquals -Left $oldPath -Right $root.Path) {
+        if (Test-WorktreePathEquals -Left $oldPath -Right $repoPath) {
             Write-Error "The main/root worktree at '$oldPath' cannot be moved. Move a linked worktree instead, or clone the repository to a new location."
             return
         }
@@ -905,7 +921,9 @@ function Set-Worktree {
     worktrees must be addressed by `-Path` because their branch label is ambiguous.
     .PARAMETER Path
     The actual filesystem path of the worktree to change to. Accepts pipeline
-    input by property name from `Get-Worktrees` and related objects.
+    input by property name from `Get-Worktrees` and related objects. Existing targets
+    are resolved in their own repository and must match a registered worktree root.
+    Branch-name selection still uses the caller's repository.
     .EXAMPLE
     Set-Worktree -BranchName main
     Changes the current directory to the main branch worktree.
@@ -916,7 +934,7 @@ function Set-Worktree {
     [CmdletBinding(DefaultParameterSetName = 'Path')]
     param(
         [Parameter(Mandatory, Position = 0, ParameterSetName = 'BranchName', ValueFromPipelineByPropertyName)]
-        [ValidateSet([WorktreeSetValuesGenerator])]
+        [ValidateNotNullOrEmpty()]
         [Alias('Branch')]
         [string]$BranchName,
 
