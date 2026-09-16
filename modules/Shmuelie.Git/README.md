@@ -55,6 +55,11 @@ plugin prediction to use it:
 Set-PSReadLineOption -PredictionSource HistoryAndPlugin -PredictionViewStyle ListView
 ```
 
+Removing or force-reimporting the module cleans up only its own idle subscription
+and action job, preserving other idle handlers, event subscribers and jobs. A
+predictor binary imported by this module is removed with it; an already registered
+predictor owned by the caller is left loaded and registered.
+
 Suggestions use substring (not prefix) matching, so a middle fragment like `wim`
 surfaces `user/alex/wim-work`.
 

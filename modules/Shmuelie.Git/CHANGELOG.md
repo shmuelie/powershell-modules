@@ -6,6 +6,12 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+### Fixed
+- Predictor cleanup now identifies the module's idle subscriber by its action-job
+  association instead of confusing job and subscription IDs. Removal and force
+  re-import release only module-owned subscriptions, jobs and predictor binaries,
+  preserving unrelated handlers and caller-owned predictor registrations. (#262)
+
 ## [0.10.1] - 2026-09-16
 
 ### Fixed
