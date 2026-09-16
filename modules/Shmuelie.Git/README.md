@@ -75,6 +75,34 @@ to `-NoSetLocation`. `-NoSetLocation:$false` uses the new navigation default.
 The two switches are mutually exclusive at parameter binding, even if either or
 both are explicitly false.
 
+## Repository context for completion and worktree targets
+
+`Add-Worktree -Path` selects the source repository for branch completion as well
+as creation, including `-RepositoryPath` and `-RepoPath`. Eligible branches are
+local to that repository and not already checked out in one of its worktrees.
+Literal absolute/relative paths and bound path variables work from another
+repository or a non-repository directory, regardless of parameter order.
+Completion never evaluates commands in path expressions, changes location or
+fetches remotes. Invalid or unresolved explicit paths do not fall back to the
+caller's branches. With no `-Path`, the current repository remains the default.
+
+For `Set-Worktree`, `Move-Worktree` and `Remove-Worktree`, `-Path` instead names an
+exact registered worktree root. Existing targets are resolved in their own
+repository, including objects piped from `Get-Worktrees -Path <repository>`.
+Moving/removing a foreign target and deleting its backing branch operate on that
+repository, not the caller's. Subdirectories and unregistered targets are rejected.
+Deleted/prunable targets cannot identify an owning repository and still require
+the caller to be inside that repository.
+
+These target-path commands retain mutually exclusive `-Path` and `-BranchName`
+parameter sets; branch-name selection and completion use the caller's repository.
+Branch membership is checked when the target is resolved, not by an eager
+current-directory validate-set before pipeline path binding. `Lock-Worktree` and
+`Unlock-Worktree` remain branch-only commands for the current repository.
+Validation and completion never navigate. `Set-Worktree` deliberately navigates
+after resolution; `Move-Worktree` does so only with `-SetLocation`, and relative
+move destinations remain relative to the caller.
+
 ## Examples
 
 ```powershell

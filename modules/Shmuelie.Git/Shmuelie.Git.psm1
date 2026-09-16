@@ -3,23 +3,13 @@ foreach ($script in Get-ChildItem $PSScriptRoot -Filter '*.ps1' -File | Sort-Obj
 }
 
 Register-ArgumentCompleter -CommandName Set-Worktree, Remove-Worktree, Move-Worktree -ParameterName BranchName -ScriptBlock {
-    param($commandName, $parameterName, $wordToComplete)
-    Get-Worktrees |
-        Select-Object -ExpandProperty Branch |
-        Where-Object { $_ -like "$wordToComplete*" } |
-        ForEach-Object {
-            [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_)
-        }
+    param($commandName, $parameterName, $wordToComplete, $commandAst, $fakeBoundParameters)
+    Get-WorktreeBranchCompletion -WordToComplete $wordToComplete -CommandAst $commandAst -BoundParameters $fakeBoundParameters
 }
 
 Register-ArgumentCompleter -CommandName Add-Worktree -ParameterName BranchName -ScriptBlock {
-    param($commandName, $parameterName, $wordToComplete)
-    $worktreeBranches = @(Get-Worktrees | Select-Object -ExpandProperty Branch)
-    git branch --format='%(refname:short)' |
-        Where-Object { $_ -and $_ -notin $worktreeBranches -and $_ -like "$wordToComplete*" } |
-        ForEach-Object {
-            [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_)
-        }
+    param($commandName, $parameterName, $wordToComplete, $commandAst, $fakeBoundParameters)
+    Get-WorktreeBranchCompletion -WordToComplete $wordToComplete -CommandAst $commandAst -BoundParameters $fakeBoundParameters -AvailableBranch
 }
 
 function Update-WorktreePrediction {

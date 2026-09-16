@@ -7,6 +7,13 @@ Versions change only when a release is cut; unreleased work stays under
 ## [Unreleased]
 
 ### Fixed
+- Git worktree completion respects `Add-Worktree -Path` and its repository
+  aliases instead of suggesting branches from the caller's repository.
+  Unresolved explicit paths do not fall back to the caller or execute expressions.
+  `Set-Worktree`, `Move-Worktree` and `Remove-Worktree` resolve existing exact target
+  paths in the target's own repository, including pipeline input; branch selection
+  is validated after binding. Removal and branch cleanup stay in that repository.
+  Deleted/prunable targets still require caller repository context. (#252)
 - `Update-AllWorktrees -ChangedOnly` defaults to wrapping multiline details,
   preserving full identities, paths and diagnostics at narrow terminal widths.
   The original `AllWorktreesChangedResult` table remains explicitly selectable;
