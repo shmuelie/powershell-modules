@@ -6,6 +6,10 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+### Fixed
+- Correct the all-profile Windows Terminal help example to include `-Name '*'`
+  with `-IncludeFragments`, preserving the default current-profile selection. (#269)
+
 ### Added
 - Experimental compiled `Wait-AppInstallItem` for one exact retained caller item,
   using only payload-free manager-event invalidation, an explicit context and a
