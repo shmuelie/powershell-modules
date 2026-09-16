@@ -6,6 +6,12 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+### Fixed
+- `Compress-CopilotSession` and file-backed `Repair-CopilotSessionEvents` stop
+  before rewriting events when a required backup fails, even under `Continue`.
+  Backup copies are staged before replacing an existing backup; failed copies
+  preserve the prior backup and original events. `-NoBackup` remains explicit. (#280)
+
 ## [0.4.0] - 2026-09-10
 
 ### Added

@@ -370,6 +370,78 @@ Describe 'Repair-CopilotSessionEvents' {
     }
 }
 
+Describe 'Copilot required backup safety' {
+    Context '<Command>' -ForEach @(
+        @{ Command = 'Compress-CopilotSession'; Options = @{ Keep = 1 } }
+        @{ Command = 'Repair-CopilotSessionEvents'; Options = @{} }
+    ) {
+        BeforeEach {
+            $root = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
+            $id = [guid]::NewGuid().ToString()
+            $sessionPath = New-CopilotSessionState -SessionRoot $root -Id $id -Cwd $root -Summary 'Backup fixture'
+            $lines = @(New-CopilotTestConversationEvents -Prefix 'backup' -SessionId $id -Count 2 -Start ([datetimeoffset]'2026-09-01T12:00:00Z'))
+            $lines += New-CopilotTestEventLine -Type 'session.warning' -Id 'remove-warning' -Timestamp '2026-09-01T12:03:00Z' -Data @{ message = 'Synthetic warning' }
+            Set-CopilotTestEvents -SessionPath $sessionPath -Lines $lines
+            Set-CopilotTestSnapshotIndex -SessionPath $sessionPath -Snapshots @(
+                @{ eventId = 'backup-user-1'; backupPath = 'retained-fixture' }
+            )
+            $backupSession = [pscustomobject]@{ Id = $id; Path = $sessionPath; Summary = 'Backup fixture' }
+            $eventsFile = Join-Path $sessionPath 'events.jsonl'
+            $backupFile = "$eventsFile.bak"
+            $snapshotFile = Join-Path $sessionPath 'rewind-snapshots' 'index.json'
+            Set-Content -LiteralPath $backupFile -Value 'Previous backup, not the current event stream'
+            $beforeEvents = (Get-FileHash -LiteralPath $eventsFile).Hash
+            $beforeBackup = (Get-FileHash -LiteralPath $backupFile).Hash
+            $beforeSnapshots = (Get-FileHash -LiteralPath $snapshotFile).Hash
+        }
+
+        It 'does not rewrite events or prune snapshots when a required backup fails under Continue' -Skip:(-not $IsWindows) {
+            $handle = [IO.File]::Open($backupFile, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+            try {
+                { & $Command -InputObject $backupSession @Options -Confirm:$false -ErrorAction Continue } |
+                    Should -Throw
+                (Get-FileHash -LiteralPath $eventsFile).Hash | Should -BeExactly $beforeEvents
+                (Get-FileHash -LiteralPath $snapshotFile).Hash | Should -BeExactly $beforeSnapshots
+            } finally {
+                $handle.Dispose()
+            }
+            (Get-FileHash -LiteralPath $backupFile).Hash | Should -BeExactly $beforeBackup
+        }
+
+        It 'retains explicit NoBackup behavior even when an old backup is locked' -Skip:(-not $IsWindows) {
+            $handle = [IO.File]::Open($backupFile, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+            try {
+                & $Command -InputObject $backupSession @Options -NoBackup -Confirm:$false -ErrorAction Stop
+                (Get-FileHash -LiteralPath $eventsFile).Hash | Should -Not -Be $beforeEvents
+            } finally {
+                $handle.Dispose()
+            }
+            (Get-FileHash -LiteralPath $backupFile).Hash | Should -BeExactly $beforeBackup
+        }
+
+        It 'preserves the exact original event bytes in a successful required backup' {
+            & $Command -InputObject $backupSession @Options -Confirm:$false -ErrorAction Stop
+            (Get-FileHash -LiteralPath $backupFile).Hash | Should -BeExactly $beforeEvents
+            (Get-FileHash -LiteralPath $eventsFile).Hash | Should -Not -Be $beforeEvents
+        }
+
+        It 'preserves the previous backup and originals when staging a backup fails' {
+            Mock -ModuleName Shmuelie.Copilot Copy-Item {
+                param($Destination)
+                Set-Content -LiteralPath $Destination -Value 'Synthetic partial backup'
+                throw [IO.IOException]::new('Synthetic backup copy failure.')
+            }
+            { & $Command -InputObject $backupSession @Options -Confirm:$false -ErrorAction Continue } |
+                Should -Throw '*Synthetic backup copy failure*'
+            (Get-FileHash -LiteralPath $eventsFile).Hash | Should -BeExactly $beforeEvents
+            (Get-FileHash -LiteralPath $backupFile).Hash | Should -BeExactly $beforeBackup
+            (Get-FileHash -LiteralPath $snapshotFile).Hash | Should -BeExactly $beforeSnapshots
+            @(Get-ChildItem -LiteralPath $sessionPath -Filter 'events.jsonl.bak.*.tmp') | Should -HaveCount 0
+            Should -Invoke -ModuleName Shmuelie.Copilot Copy-Item -Times 1 -Exactly
+        }
+    }
+}
+
 Describe 'Copilot session maintenance round trip' {
     BeforeEach {
         $testHome = Join-Path $TestDrive 'home'
