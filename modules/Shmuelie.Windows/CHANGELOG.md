@@ -6,6 +6,12 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+### Fixed
+- `Get-InstalledApplications` now dispatches all accepted `-Scope` casing
+  variants consistently. Lowercase, uppercase, and mixed-case values query the
+  same scopes as their canonical spellings instead of silently returning an
+  empty inventory; elevation, preview, and hive cleanup behavior is unchanged.
+
 ### Added
 - Experimental compiled `Wait-AppInstallItem` for one exact retained caller item,
   using only payload-free manager-event invalidation, an explicit context and a
