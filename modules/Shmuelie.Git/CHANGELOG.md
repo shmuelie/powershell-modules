@@ -6,6 +6,8 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-09-16
+
 ### Fixed
 - Git worktree completion respects `Add-Worktree -Path` and its repository
   aliases instead of suggesting branches from the caller's repository.
