@@ -7,6 +7,12 @@ between releases this file tracks catalog-level changes under `[Unreleased]`.
 ## [Unreleased]
 
 ### Fixed
+- `Build-Module.ps1` treats source, output, copy, lookup, and cleanup paths
+  literally and validates the owned output directory before replacing it.
+  Bracketed repository/output paths no longer select or delete sibling
+  artifacts. Isolated temporary views retain framework manifest validation for
+  affected paths; child-process import/removal still checks the actual staged
+  module. (Fixes #257.)
 - `Invoke-Tests.ps1` bounds framework selection and fallback installation to
   the supported major version, keeping local, CI, and publication policy
   consistent even when newer major versions are installed. (Fixes #221.)
