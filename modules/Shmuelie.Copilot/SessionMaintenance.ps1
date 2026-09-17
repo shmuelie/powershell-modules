@@ -1,6 +1,92 @@
 # Copilot session maintenance: merge, compact, and repair operations.
 # Split out of Sessions.ps1 to keep that file focused on basic session CRUD.
 
+function Assert-CopilotMergeArtifactPaths {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][object[]]$Session,
+        [Parameter(Mandatory)][string[]]$RelativeDirectory
+    )
+
+    # Compare overlapping paths consistently, including case-only variants.
+    $seen = [System.Collections.Generic.Dictionary[string, object]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($source in $Session) {
+        $sessionRoot = Get-Item -LiteralPath $source.Path -Force -ErrorAction Stop
+        if ($sessionRoot.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+            throw "Cannot inspect merge artifacts for session '$($source.Id)': '$($sessionRoot.FullName)' is a reparse point."
+        }
+        if (-not $sessionRoot.PSIsContainer) {
+            throw "Cannot inspect merge artifacts for session '$($source.Id)': the session path is not a directory."
+        }
+
+        foreach ($directory in $RelativeDirectory) {
+            $parts = $directory -split '[\\/]'
+            if ([IO.Path]::IsPathRooted($directory) -or '' -in $parts -or '.' -in $parts -or '..' -in $parts) {
+                throw "Invalid relative artifact directory '$directory'."
+            }
+            $root = $sessionRoot
+            foreach ($part in $parts) {
+                $path = Join-Path $root.FullName $part
+                if (-not (Test-Path -LiteralPath $path -ErrorAction Stop)) {
+                    $root = $null
+                    break
+                }
+                $root = Get-Item -LiteralPath $path -Force -ErrorAction Stop
+                if ($root.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+                    throw "Cannot inspect merge artifact '$($root.FullName)': it is a reparse point."
+                }
+                if (-not $root.PSIsContainer) {
+                    throw "Cannot inspect merge artifact directory '$($root.FullName)': it is not a directory."
+                }
+            }
+            if ($null -eq $root) { continue }
+
+            $pending = [System.Collections.Generic.Stack[string]]::new()
+            $pending.Push($root.FullName)
+            while ($pending.Count -gt 0) {
+                # Inspect links before descending; recursive enumeration may follow junctions.
+                foreach ($entry in (Get-ChildItem -LiteralPath $pending.Pop() -Force -ErrorAction Stop)) {
+                    if ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+                        throw "Cannot inspect merge artifact '$($entry.FullName)': it is a reparse point."
+                    }
+                    $relativePath = [IO.Path]::GetRelativePath($sessionRoot.FullName, $entry.FullName)
+                    if ($seen.ContainsKey($relativePath)) {
+                        $previous = $seen[$relativePath]
+                        $compatible = $previous.Directory -and $entry.PSIsContainer
+                        if (-not $previous.Directory -and -not $entry.PSIsContainer) {
+                            $hashes = @(
+                                foreach ($filePath in @($previous.Path, $entry.FullName)) {
+                                    $file = Get-Item -LiteralPath $filePath -Force -ErrorAction Stop
+                                    if ($file -isnot [IO.FileInfo] -or $file.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+                                        throw "Cannot compare merge artifact '$filePath': it is not a regular file."
+                                    }
+                                    $hash = @(Get-FileHash -LiteralPath $filePath -Algorithm SHA256 -ErrorAction Stop)
+                                    if ($hash.Count -ne 1 -or $hash[0].Algorithm -ne 'SHA256' -or
+                                        $hash[0].Hash -isnot [string] -or $hash[0].Hash -notmatch '^[0-9a-fA-F]{64}$') {
+                                        throw "Cannot compare merge artifact '$filePath': SHA-256 hashing did not return a valid result."
+                                    }
+                                    $hash[0].Hash
+                                }
+                            )
+                            $compatible = $hashes[0] -eq $hashes[1]
+                        }
+                        if (-not $compatible) {
+                            throw "Merge artifact path conflict '$relativePath' between session '$($previous.SessionId)' ('$($previous.Path)') and session '$($source.Id)' ('$($entry.FullName)')."
+                        }
+                    } else {
+                        $seen.Add($relativePath, [pscustomobject]@{
+                            Directory = $entry.PSIsContainer
+                            SessionId = $source.Id
+                            Path = $entry.FullName
+                        })
+                    }
+                    if ($entry.PSIsContainer) { $pending.Push($entry.FullName) }
+                }
+            }
+        }
+    }
+}
+
 function Merge-CopilotSession {
     <#
     .SYNOPSIS
@@ -13,6 +99,14 @@ function Merge-CopilotSession {
         is taken from the most recently updated source session.
 
         The original sessions are preserved unless -RemoveSource is specified.
+
+        Files, research, and rewind backup paths are checked before creating the
+        destination. Differing-content files or file/directory paths abort the
+        merge. Regular files at overlapping paths are allowed only when their
+        SHA-256 hashes match; comparison failures abort the merge. Shared
+        directories with compatible descendants are allowed. Artifact links and
+        reparse points are rejected rather than traversed. No artifacts are
+        automatically renamed and no references are rewritten.
 
         Required source reads and destination operations fail the merge even with
         -ErrorAction Continue. Source removal starts only after destination
@@ -106,6 +200,10 @@ function Merge-CopilotSession {
         try {
         # Fail the entire destination build on normally nonterminating errors.
         $ErrorActionPreference = 'Stop'
+
+        Assert-CopilotMergeArtifactPaths -Session $collectedSessions -RelativeDirectory @(
+            'files', 'research', (Join-Path 'rewind-snapshots' 'backups')
+        )
 
         # Use the most recently updated session for workspace metadata
         $primary = $collectedSessions | Sort-Object UpdatedAt -Descending | Select-Object -First 1
@@ -226,8 +324,8 @@ function Merge-CopilotSession {
             }
             # Copy backup files
             $backupsDir = Join-Path $s.Path 'rewind-snapshots' 'backups'
-            if (Test-Path $backupsDir) {
-                Get-ChildItem $backupsDir | Copy-Item -Destination (Join-Path $newSessionPath 'rewind-snapshots' 'backups') -Force
+            if (Test-Path -LiteralPath $backupsDir) {
+                Get-ChildItem -LiteralPath $backupsDir -Force | Copy-Item -Destination (Join-Path $newSessionPath 'rewind-snapshots' 'backups') -Recurse -Force
             }
         }
         $mergedSnapshots = $mergedSnapshots | Sort-Object { [DateTimeOffset]::Parse($_.timestamp) }
@@ -237,12 +335,12 @@ function Merge-CopilotSession {
         Write-Progress -Activity $activity -Status 'Copying files and research' -PercentComplete 75 -Id 1
         foreach ($s in $collectedSessions) {
             $filesDir = Join-Path $s.Path 'files'
-            if ((Test-Path $filesDir) -and (Get-ChildItem $filesDir)) {
-                Get-ChildItem $filesDir | Copy-Item -Destination (Join-Path $newSessionPath 'files') -Recurse -Force
+            if (Test-Path -LiteralPath $filesDir) {
+                Get-ChildItem -LiteralPath $filesDir -Force | Copy-Item -Destination (Join-Path $newSessionPath 'files') -Recurse -Force
             }
             $researchDir = Join-Path $s.Path 'research'
-            if ((Test-Path $researchDir) -and (Get-ChildItem $researchDir)) {
-                Get-ChildItem $researchDir | Copy-Item -Destination (Join-Path $newSessionPath 'research') -Recurse -Force
+            if (Test-Path -LiteralPath $researchDir) {
+                Get-ChildItem -LiteralPath $researchDir -Force | Copy-Item -Destination (Join-Path $newSessionPath 'research') -Recurse -Force
             }
         }
 
