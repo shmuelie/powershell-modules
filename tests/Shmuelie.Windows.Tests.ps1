@@ -435,6 +435,31 @@ Describe 'Windows Terminal settings parsing' -Skip:(-not $IsWindows) {
         $byName.guid | Should -BeExactly '{22222222-2222-2222-2222-222222222222}'
         $byId.name | Should -BeExactly 'PowerShell'
     }
+
+    It 'documents and enumerates all settings and fragment profiles without changing the current-profile default' {
+        $localFragments = Join-Path $env:LOCALAPPDATA 'Microsoft\Windows Terminal\Fragments\Fixture'
+        $sharedFragments = Join-Path $env:ProgramData 'Microsoft\Windows Terminal\Fragments\Fixture'
+        New-Item -ItemType Directory -Path $localFragments, $sharedFragments -Force -ErrorAction Stop | Out-Null
+        Set-Content -LiteralPath (Join-Path $localFragments 'local.json') -Value '{"profiles":[{"name":"Local fragment","guid":"{33333333-3333-3333-3333-333333333333}"}]}'
+        Set-Content -LiteralPath (Join-Path $sharedFragments 'shared.json') -Value '{"profiles":[{"name":"Shared fragment","guid":"{44444444-4444-4444-4444-444444444444}"}]}'
+        $originalProfileId = $env:WT_PROFILE_ID
+        try {
+            $env:WT_PROFILE_ID = '{44444444-4444-4444-4444-444444444444}'
+            $all = @(Get-WindowsTerminalProfile -Name '*' -IncludeFragments)
+            $all | Should -HaveCount 4
+            $all.name | Should -Be @('PowerShell', 'Developer Command Prompt', 'Local fragment', 'Shared fragment')
+            @(Get-WindowsTerminalProfile -IncludeFragments).name | Should -Be @('Shared fragment')
+            @(Get-WindowsTerminalProfile).name | Should -Be @('Shared fragment')
+            $exampleCode = (Get-Help Get-WindowsTerminalProfile).Examples.Example.Code -join "`n"
+            $exampleCode | Should -Match ([regex]::Escape("Get-WindowsTerminalProfile -Name '*' -IncludeFragments"))
+        } finally {
+            if ($null -eq $originalProfileId) {
+                Remove-Item Env:WT_PROFILE_ID -ErrorAction Ignore
+            } else {
+                $env:WT_PROFILE_ID = $originalProfileId
+            }
+        }
+    }
 }
 
 Describe 'Get-ServiceProcess' -Skip:(-not $IsWindows) {

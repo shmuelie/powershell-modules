@@ -286,6 +286,281 @@ Describe 'Merge-CopilotSession' {
     }
 }
 
+Describe 'Merge-CopilotSession atomic failure handling' {
+    BeforeAll {
+        $script:AtomicOriginalFunctions = @{
+            'Get-CopilotSession' = (Get-Command Shmuelie.Copilot\Get-CopilotSession).ScriptBlock
+            'Repair-CopilotSessionEvents' = (Get-Command Shmuelie.Copilot\Repair-CopilotSessionEvents).ScriptBlock
+        }
+
+        function Set-AtomicMergeFailureCommand {
+            param(
+                [string]$Name,
+                [string]$ErrorId = 'AtomicRequiredFailure',
+                [string]$Message = 'Synthetic required operation failed.',
+                [string]$Target = 'synthetic-required-operation',
+                [ValidateSet('Always', 'FinalRepair', 'Discovery', 'Cleanup', 'Empty')]
+                [string]$Mode = 'Always'
+            )
+
+            & (Get-Module Shmuelie.Copilot) {
+                param($CommandName, $FailureId, $FailureMessage, $FailureTarget, $FailureMode, $Root, $Sessions)
+                $script:AtomicFailures[$CommandName] = @{
+                    Error = [System.Management.Automation.ErrorRecord]::new(
+                        [IO.IOException]::new($FailureMessage), $FailureId,
+                        [System.Management.Automation.ErrorCategory]::WriteError, $FailureTarget)
+                    Mode = $FailureMode
+                    Root = $Root
+                    Sessions = $Sessions
+                }
+                # Real advanced functions inherit the merge's preference; Pester's
+                # MockWith execution scope does not reproduce that cmdlet boundary.
+                Microsoft.PowerShell.Management\Set-Item -Path "Function:script:$CommandName" -Value {
+                    [CmdletBinding(SupportsShouldProcess, PositionalBinding = $false)]
+                    param(
+                        [Parameter(ValueFromPipeline)]$InputObject,
+                        [Parameter(Position = 0)][string]$Path,
+                        [string]$LiteralPath, [string]$Id,
+                        [string]$ItemType, [switch]$Force, [switch]$Recurse,
+                        [switch]$Raw, [int]$TotalCount, [string]$Destination,
+                        $Value, [string]$Encoding, [switch]$NoNewline,
+                        [string[]]$EventLines, [switch]$NoBackup
+                    )
+                    process {
+                        $failure = $script:AtomicFailures[$MyInvocation.MyCommand.Name]
+                        if ($failure.Mode -eq 'Empty') { return }
+                        if ($failure.Mode -eq 'FinalRepair' -and $PSBoundParameters.ContainsKey('EventLines')) {
+                            $EventLines
+                            return
+                        }
+                        if ($failure.Mode -eq 'Discovery') {
+                            $existing = @($failure.Sessions | Where-Object Id -EQ $Id)
+                            if ($existing.Count -eq 1) { $existing[0]; return }
+                        }
+                        if ($failure.Mode -eq 'Cleanup' -and
+                            ([IO.Path]::GetDirectoryName($LiteralPath) -ne $failure.Root -or
+                             [IO.Path]::GetFileName($LiteralPath) -in $failure.Sessions.Id)) {
+                            throw 'Unexpected attempt to remove a source session.'
+                        }
+                        $PSCmdlet.WriteError($failure.Error)
+                    }
+                }
+            } $Name $ErrorId $Message $Target $Mode $script:AtomicRoot $script:AtomicSessions
+            $script:AtomicOverriddenCommands.Add($Name)
+        }
+
+        function Get-AtomicMergeSourceSnapshot {
+            param([string[]]$Path)
+
+            @(
+                foreach ($source in $Path) {
+                    Get-Item -LiteralPath $source -ErrorAction Stop
+                    Get-ChildItem -LiteralPath $source -Recurse -Force -ErrorAction Stop
+                }
+            ) | Sort-Object FullName | ForEach-Object {
+                [pscustomobject]@{
+                    Path = $_.FullName
+                    Directory = $_.PSIsContainer
+                    Hash = if (-not $_.PSIsContainer) { (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash }
+                }
+            } | ConvertTo-Json -Depth 4 -Compress
+        }
+    }
+
+    BeforeEach {
+        $script:AtomicOverriddenCommands = [System.Collections.Generic.List[string]]::new()
+        & (Get-Module Shmuelie.Copilot) { $script:AtomicFailures = @{} }
+        $testHome = Join-Path $TestDrive ([guid]::NewGuid().ToString())
+        $script:AtomicRoot = Join-Path $testHome '.copilot' 'session-state'
+        $workspace = Join-Path $testHome 'workspace'
+        New-Item -ItemType Directory -Path $script:AtomicRoot, $workspace -Force -ErrorAction Stop | Out-Null
+        Mock -ModuleName Shmuelie.Copilot Get-CopilotHome {
+            if (-not $testHome -or -not [IO.Directory]::Exists($testHome)) {
+                throw 'Synthetic Copilot home is unavailable.'
+            }
+            $testHome
+        }
+        Mock -ModuleName Shmuelie.Copilot Get-Command { throw 'Unexpected native command discovery.' }
+        $script:AtomicIds = @('a1111111-1111-1111-1111-111111111111', 'b2222222-2222-2222-2222-222222222222')
+        $script:AtomicPaths = @(
+            for ($i = 0; $i -lt $script:AtomicIds.Count; $i++) {
+                $path = New-CopilotSessionState -SessionRoot $script:AtomicRoot -Id $script:AtomicIds[$i] -Cwd $workspace -Summary "Atomic source $i"
+                Set-CopilotTestEvents -SessionPath $path -Lines (New-CopilotTestConversationEvents -Prefix "atomic-$i" -SessionId $script:AtomicIds[$i] -Count 1 -Start ([datetimeoffset]'2026-08-20T20:00:00Z').AddMinutes($i))
+                $files = Join-Path $path 'files'
+                New-Item -ItemType Directory -Path $files -ErrorAction Stop | Out-Null
+                Set-Content -LiteralPath (Join-Path $files "payload-$i.txt") -Value "Source payload $i" -ErrorAction Stop
+                $path
+            }
+        )
+        $script:AtomicSessions = @($script:AtomicIds | ForEach-Object { Get-CopilotSession -Id $_ -ErrorAction Stop })
+        $script:AtomicBefore = Get-AtomicMergeSourceSnapshot -Path $script:AtomicPaths
+    }
+
+    AfterEach {
+        foreach ($name in $script:AtomicOverriddenCommands) {
+            & (Get-Module Shmuelie.Copilot) {
+                param($Name, $Original)
+                if ($Original) {
+                    Microsoft.PowerShell.Management\Set-Item -Path "Function:script:$Name" -Value $Original
+                } else {
+                    Microsoft.PowerShell.Management\Remove-Item -Path "Function:$Name" -ErrorAction Stop
+                }
+            } $name $script:AtomicOriginalFunctions[$name]
+        }
+        & (Get-Module Shmuelie.Copilot) {
+            Microsoft.PowerShell.Utility\Remove-Variable -Name AtomicFailures -Scope Script
+        }
+    }
+
+    It 'aborts a real copy sharing violation without deleting any source files' -Skip:(-not $IsWindows) {
+        $ErrorActionPreference = 'Continue'
+        $beforePreference = $ErrorActionPreference
+        $lockedPath = Join-Path $script:AtomicPaths[0] 'files' 'payload-0.txt'
+        $handle = [IO.File]::Open($lockedPath, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+        $failure = $null
+        $result = $null
+        try {
+            try {
+                $result = Merge-CopilotSession -Id $script:AtomicIds -RemoveSource -Confirm:$false -ErrorAction Continue
+            } catch { $failure = $_ }
+        } finally { $handle.Dispose() }
+
+        $failure | Should -Not -BeNullOrEmpty
+        $failure.FullyQualifiedErrorId | Should -Match 'Copy'
+        $failure.TargetObject | Should -Match ([regex]::Escape('payload-0.txt'))
+        $result | Should -BeNullOrEmpty
+        $ErrorActionPreference | Should -Be $beforePreference
+        Get-AtomicMergeSourceSnapshot -Path $script:AtomicPaths | Should -BeExactly $script:AtomicBefore
+        @(Get-ChildItem -LiteralPath $script:AtomicRoot -Directory).Name | Sort-Object | Should -Be ($script:AtomicIds | Sort-Object)
+    }
+
+    It 'aborts a nonterminating <Operation> failure and retains its error identity' -ForEach @(
+        @{ Operation = 'create'; Command = 'New-Item' }
+        @{ Operation = 'read'; Command = 'Get-Content' }
+        @{ Operation = 'copy'; Command = 'Copy-Item' }
+        @{ Operation = 'append'; Command = 'Add-Content' }
+        @{ Operation = 'write'; Command = 'Set-Content' }
+        @{ Operation = 'repair'; Command = 'Repair-CopilotSessionEvents' }
+    ) {
+        $ErrorActionPreference = 'Continue'
+        $beforePreference = $ErrorActionPreference
+        Set-AtomicMergeFailureCommand -Name $Command
+
+        $failure = $null
+        $result = $null
+        try {
+            $result = $script:AtomicSessions | Merge-CopilotSession -RemoveSource -Confirm:$false -ErrorAction Continue
+        } catch { $failure = $_ }
+
+        $failure | Should -Not -BeNullOrEmpty
+        $failure.FullyQualifiedErrorId | Should -Match 'AtomicRequiredFailure'
+        $failure.CategoryInfo.Category | Should -Be ([System.Management.Automation.ErrorCategory]::WriteError)
+        $failure.TargetObject | Should -Be 'synthetic-required-operation'
+        $result | Should -BeNullOrEmpty
+        $ErrorActionPreference | Should -Be $beforePreference
+        Get-AtomicMergeSourceSnapshot -Path $script:AtomicPaths | Should -BeExactly $script:AtomicBefore
+        @(Get-ChildItem -LiteralPath $script:AtomicRoot -Directory).Name | Sort-Object | Should -Be ($script:AtomicIds | Sort-Object)
+    }
+
+    It 'aborts a final repair error after materialization but before source deletion' {
+        $ErrorActionPreference = 'Continue'
+        Set-AtomicMergeFailureCommand -Name Repair-CopilotSessionEvents -Mode FinalRepair -ErrorId AtomicFinalRepairFailure
+
+        $failure = $null
+        try {
+            $script:AtomicSessions | Merge-CopilotSession -RemoveSource -Confirm:$false -ErrorAction Continue | Out-Null
+        } catch { $failure = $_ }
+
+        $failure.FullyQualifiedErrorId | Should -Match 'AtomicFinalRepairFailure'
+        Get-AtomicMergeSourceSnapshot -Path $script:AtomicPaths | Should -BeExactly $script:AtomicBefore
+        @(Get-ChildItem -LiteralPath $script:AtomicRoot -Directory).Name | Sort-Object | Should -Be ($script:AtomicIds | Sort-Object)
+    }
+
+    It 'aborts source discovery errors without merging a previously collected prefix' {
+        $ErrorActionPreference = 'Continue'
+        Set-AtomicMergeFailureCommand -Name Get-CopilotSession -Mode Discovery -ErrorId AtomicDiscoveryFailure
+
+        $failure = $null
+        try {
+            Merge-CopilotSession -Id ($script:AtomicIds + 'c3333333-3333-3333-3333-333333333333') -RemoveSource -Confirm:$false -ErrorAction Continue | Out-Null
+        } catch { $failure = $_ }
+
+        $failure.FullyQualifiedErrorId | Should -Match 'AtomicDiscoveryFailure'
+        Get-AtomicMergeSourceSnapshot -Path $script:AtomicPaths | Should -BeExactly $script:AtomicBefore
+        @(Get-ChildItem -LiteralPath $script:AtomicRoot -Directory).Name | Sort-Object | Should -Be ($script:AtomicIds | Sort-Object)
+    }
+
+    It 'aborts a missing source without merging a previously collected prefix' {
+        $ErrorActionPreference = 'Continue'
+        {
+            Merge-CopilotSession -Id ($script:AtomicIds + 'c3333333-3333-3333-3333-333333333333') -RemoveSource -Confirm:$false -ErrorAction Continue
+        } | Should -Throw '*not found*'
+
+        Get-AtomicMergeSourceSnapshot -Path $script:AtomicPaths | Should -BeExactly $script:AtomicBefore
+        @(Get-ChildItem -LiteralPath $script:AtomicRoot -Directory).Name | Sort-Object | Should -Be ($script:AtomicIds | Sort-Object)
+    }
+
+    It 'reads the completed destination before deleting any source sessions' {
+        $ErrorActionPreference = 'Continue'
+        Set-AtomicMergeFailureCommand -Name Get-CopilotSession -Mode Discovery -ErrorId AtomicDestinationReadFailure
+
+        $failure = $null
+        try {
+            $script:AtomicSessions | Merge-CopilotSession -RemoveSource -Confirm:$false -ErrorAction Continue | Out-Null
+        } catch { $failure = $_ }
+
+        $failure.FullyQualifiedErrorId | Should -Match 'AtomicDestinationReadFailure'
+        Get-AtomicMergeSourceSnapshot -Path $script:AtomicPaths | Should -BeExactly $script:AtomicBefore
+        @(Get-ChildItem -LiteralPath $script:AtomicRoot -Directory).Name | Sort-Object | Should -Be ($script:AtomicIds | Sort-Object)
+    }
+
+    It 'reports cleanup failure without replacing the original required-operation error' {
+        $ErrorActionPreference = 'Continue'
+        Set-AtomicMergeFailureCommand -Name Repair-CopilotSessionEvents -ErrorId AtomicOriginalFailure -Target 'original-repair'
+        Set-AtomicMergeFailureCommand -Name Remove-Item -Mode Cleanup -ErrorId AtomicCleanupFailure -Message 'Synthetic destination cleanup failure.'
+
+        $failure = $null
+        $cleanupWarnings = @()
+        try {
+            $script:AtomicSessions | Merge-CopilotSession -RemoveSource -Confirm:$false -ErrorAction Continue -WarningAction Stop -WarningVariable +cleanupWarnings | Out-Null
+        } catch { $failure = $_ }
+
+        $failure.FullyQualifiedErrorId | Should -Match 'AtomicOriginalFailure'
+        $failure.TargetObject | Should -Be 'original-repair'
+        @($cleanupWarnings) | Should -HaveCount 1
+        $cleanupWarnings[0].Message | Should -Match 'Failed to clean up partial merged session.*Synthetic destination cleanup failure'
+        Get-AtomicMergeSourceSnapshot -Path $script:AtomicPaths | Should -BeExactly $script:AtomicBefore
+        $partial = @(Get-ChildItem -LiteralPath $script:AtomicRoot -Directory | Where-Object Name -NotIn $script:AtomicIds)
+        $partial | Should -HaveCount 1
+        $cleanupWarnings[0].Message | Should -Match ([regex]::Escape($partial[0].FullName))
+        Microsoft.PowerShell.Management\Remove-Item -LiteralPath $partial[0].FullName -Recurse -Force -ErrorAction Stop
+    }
+
+    It 'rejects an empty destination read-back before deleting sources' {
+        $ErrorActionPreference = 'Continue'
+        Set-AtomicMergeFailureCommand -Name Get-CopilotSession -Mode Empty
+
+        {
+            $script:AtomicSessions | Merge-CopilotSession -RemoveSource -Confirm:$false -ErrorAction Continue
+        } | Should -Throw '*could not be read*'
+
+        Get-AtomicMergeSourceSnapshot -Path $script:AtomicPaths | Should -BeExactly $script:AtomicBefore
+        @(Get-ChildItem -LiteralPath $script:AtomicRoot -Directory).Name | Sort-Object | Should -Be ($script:AtomicIds | Sort-Object)
+    }
+
+    It 'does not leak error preferences after a successful RemoveSource merge' {
+        $ErrorActionPreference = 'Continue'
+        $beforePreference = $ErrorActionPreference
+
+        $merged = Merge-CopilotSession -Id $script:AtomicIds -RemoveSource -Confirm:$false -ErrorAction Continue
+
+        $merged | Should -Not -BeNullOrEmpty
+        $ErrorActionPreference | Should -Be $beforePreference
+        foreach ($path in $script:AtomicPaths) { Test-Path -LiteralPath $path | Should -BeFalse }
+        @(Get-ChildItem -LiteralPath $script:AtomicRoot -Directory).Name | Should -Be $merged.Id
+    }
+}
+
 Describe 'Compress-CopilotSession' {
     BeforeEach {
         $testHome = Join-Path $TestDrive 'home'

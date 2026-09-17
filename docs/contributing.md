@@ -158,6 +158,27 @@ versions do not take precedence. The runner fails on any failing test. CI and
 publication use that same runner rather than independent framework installation
 policies, so a change without passing tests cannot merge or ship.
 
+## Building a module
+
+```powershell
+.\build\Build-Module.ps1 -Module Shmuelie.Dsc -OutputPath '.\output-[ab]'
+```
+
+`OutputPath` is a literal filesystem path, including brackets and PowerShell
+escape characters. The build normalizes it and replaces only the selected
+module's version directory, preserving neighboring modules, versions, and
+wildcard-looking sibling paths. Output directories must not be links.
+
+Source manifests are checked before staging cleanup. Because
+`Test-ModuleManifest` internally expands wildcards even in referenced file paths,
+affected source and staged directories are validated through isolated temporary
+copies with wildcard-free paths. These copies retain the module/version layout,
+reject linked contents, and are removed on success or failure. The system
+temporary directory must itself have no wildcard or escape characters when a
+copy is needed. Ordinary paths continue to use direct manifest validation.
+The final import and removal always run against the **actual staged artifact**
+in a short-lived child PowerShell process, not against a validation copy.
+
 ## Validate
 
 ```powershell
