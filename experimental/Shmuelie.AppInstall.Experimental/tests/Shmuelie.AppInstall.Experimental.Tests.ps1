@@ -40,7 +40,7 @@ Describe 'AppInstall foundation (hermetic)' -Tag AppInstallFoundation -Skip:(-no
     It 'stages only the experimental assembly and its dependencies without Windows module assets' {
         $manifest = Import-PowerShellDataFile -LiteralPath $importManifests.Packaged
         $manifest.PrivateData.Publishable | Should -BeFalse
-        @($manifest.RequiredModules) | Should -HaveCount 0
+        $manifest.RequiredModules | Should -BeNullOrEmpty
         foreach ($name in 'Shmuelie.Windows.AppInstall.dll', 'Microsoft.Windows.SDK.NET.dll', 'WinRT.Runtime.dll') {
             Test-Path -LiteralPath (Join-Path $packagedDirectory[0].FullName 'bin' $name) -PathType Leaf | Should -BeTrue
         }

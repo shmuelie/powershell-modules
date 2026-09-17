@@ -85,7 +85,7 @@ Describe 'Module publication boundary' {
     It 'keeps experimental development explicitly non-publishable' {
         $manifest = Import-PowerShellDataFile -LiteralPath (Join-Path $repoRoot 'experimental' 'Shmuelie.AppInstall.Experimental' 'Shmuelie.AppInstall.Experimental.psd1')
         $manifest.PrivateData.Publishable | Should -BeFalse
-        @($manifest.RequiredModules) | Should -HaveCount 0
+        $manifest.RequiredModules | Should -BeNullOrEmpty
         $manifest.CmdletsToExport | Should -HaveCount 5
     }
 }
