@@ -2,11 +2,13 @@ name: Validate modules
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
   push:
     branches: [main]
 
 jobs:
   validate:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v5
@@ -21,6 +23,7 @@ jobs:
         run: ./build/Invoke-Tests.ps1
 
   validate-portable:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
