@@ -4201,6 +4201,186 @@ Describe 'Get-GitStatusSummary' {
     }
 }
 
+Describe 'Get-GitStatusSummary porcelain counts' -Tag 'TrackedTypeChange' {
+    BeforeEach {
+        $statusFixture = (New-Item -ItemType Directory -Path (
+            Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
+        ) -ErrorAction Stop).FullName
+        $previousStatusExitVariable = Get-Variable LASTEXITCODE -Scope Global -ErrorAction Ignore
+        $previousStatusExitCode = if ($previousStatusExitVariable) { $previousStatusExitVariable.Value }
+        Mock -ModuleName Shmuelie.Git git {
+            if ($args.Count -lt 3 -or $args[0] -cne '-C' -or $args[1] -cne $statusFixture) {
+                throw "Unexpected repository context in status fixture: $args"
+            }
+            $global:LASTEXITCODE = 0
+            switch ($args[2..($args.Count - 1)] -join ' ') {
+                'rev-parse --is-inside-work-tree' { 'true' }
+                'status --porcelain=v1 --branch' { '## main'; $Lines }
+                'rev-parse --show-toplevel' { $statusFixture }
+                'rev-parse --path-format=absolute --git-dir' { Join-Path $statusFixture '.git' }
+                'remote get-url origin' { $global:LASTEXITCODE = 2 }
+                'rev-list --walk-reflogs --count refs/stash' { $global:LASTEXITCODE = 128 }
+                default { throw "Unexpected Git status fixture call: $args" }
+            }
+        }
+    }
+
+    AfterEach {
+        if ($previousStatusExitVariable) {
+            $global:LASTEXITCODE = $previousStatusExitCode
+        } else {
+            Remove-Variable LASTEXITCODE -Scope Global -ErrorAction Ignore
+        }
+    }
+
+    $countCases = @(
+        @{ Name = 'staged type change'; Lines = @('T  file'); Expected = @{ IndexModified = 1 }; Text = '[main +0 ~1 -0 |]' }
+        @{ Name = 'working type change'; Lines = @(' T file'); Expected = @{ WorkingModified = 1 }; Text = '[main | +0 ~1 -0]' }
+        @{ Name = 'combined type changes'; Lines = @('TT file'); Expected = @{ IndexModified = 1; WorkingModified = 1 }; Text = '[main +0 ~1 -0 | +0 ~1 -0]' }
+        @{ Name = 'staged type and working modification'; Lines = @('TM file'); Expected = @{ IndexModified = 1; WorkingModified = 1 }; Text = '[main +0 ~1 -0 | +0 ~1 -0]' }
+        @{ Name = 'staged modification and working type'; Lines = @('MT file'); Expected = @{ IndexModified = 1; WorkingModified = 1 }; Text = '[main +0 ~1 -0 | +0 ~1 -0]' }
+        @{ Name = 'staged addition'; Lines = @('A  file'); Expected = @{ IndexAdded = 1 }; Text = '[main +1 ~0 -0 |]' }
+        @{ Name = 'staged modification'; Lines = @('M  file'); Expected = @{ IndexModified = 1 }; Text = '[main +0 ~1 -0 |]' }
+        @{ Name = 'staged deletion'; Lines = @('D  file'); Expected = @{ IndexDeleted = 1 }; Text = '[main +0 ~0 -1 |]' }
+        @{ Name = 'staged rename'; Lines = @('R  old -> new'); Expected = @{ IndexModified = 1 }; Text = '[main +0 ~1 -0 |]' }
+        @{ Name = 'staged copy'; Lines = @('C  old -> new'); Expected = @{ IndexAdded = 1 }; Text = '[main +1 ~0 -0 |]' }
+        @{ Name = 'working addition'; Lines = @(' A file'); Expected = @{ WorkingAdded = 1 }; Text = '[main | +1 ~0 -0]' }
+        @{ Name = 'working modification'; Lines = @(' M file'); Expected = @{ WorkingModified = 1 }; Text = '[main | +0 ~1 -0]' }
+        @{ Name = 'working deletion'; Lines = @(' D file'); Expected = @{ WorkingDeleted = 1 }; Text = '[main | +0 ~0 -1]' }
+        @{ Name = 'multiple independent type changes'; Lines = @('T  first', ' T second', 'TT third'); Expected = @{ IndexModified = 2; WorkingModified = 2 }; Text = '[main +0 ~2 -0 | +0 ~2 -0]' }
+        @{
+            Name = 'type changes mixed with additions, deletions, renames, copies and conflicts'
+            Lines = @('TT type', 'A  added', 'D  deleted', 'R  old -> renamed', 'C  old -> copied', ' M modified', ' D missing', 'UU conflict')
+            Expected = @{ IndexAdded = 2; IndexModified = 2; IndexDeleted = 1; WorkingModified = 2; WorkingDeleted = 1; Conflicts = 1 }
+            Text = '[main +2 ~2 -1 | +0 ~2 -1 !1]'
+        }
+    ) + @(
+        foreach ($pair in 'UU', 'AA', 'DD', 'AU', 'UA', 'DU', 'UD') {
+            @{ Name = "conflict $pair"; Lines = @("$pair file"); Expected = @{ Conflicts = 1 }; Text = '[main !1]' }
+        }
+    )
+
+    It 'counts and displays <Name> without changing other counters' -ForEach $countCases {
+        $summary = Get-GitStatusSummary -Path $statusFixture
+
+        foreach ($property in @(
+            'IndexAdded', 'IndexModified', 'IndexDeleted',
+            'WorkingAdded', 'WorkingModified', 'WorkingDeleted', 'Conflicts', 'Untracked'
+        )) {
+            $count = if ($Expected.ContainsKey($property)) { $Expected[$property] } else { 0 }
+            $summary.$property | Should -Be $count
+        }
+        $summary.PSTypeNames[0] | Should -BeExactly 'GitStatusSummary'
+        $summary.HasChanges | Should -BeTrue
+        $summary.StatusString | Should -BeExactly $Text
+        $plain = (Format-GitStatusSegment -Status $summary) -replace "$([char]0x1b)\[[0-9;]*m", ''
+        $plain | Should -BeExactly $Text
+    }
+}
+
+Describe 'Get-GitStatusSummary native type changes' -Tag 'TrackedTypeChange' {
+    BeforeAll {
+        $nativeTypeRoot = (New-Item -ItemType Directory -Path (
+            Join-Path $TestDrive "type-changes-$([guid]::NewGuid().ToString('N'))"
+        ) -ErrorAction Stop).FullName
+        $nativeTypeEnvironment = @{}
+        foreach ($key in @(
+            'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_SYSTEM', 'GIT_CONFIG_NOSYSTEM',
+            'GIT_CONFIG_COUNT', 'GIT_CONFIG_PARAMETERS', 'GIT_DIR', 'GIT_WORK_TREE',
+            'GIT_COMMON_DIR', 'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY',
+            'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_CEILING_DIRECTORIES',
+            'GIT_AUTHOR_DATE', 'GIT_COMMITTER_DATE', 'GIT_TERMINAL_PROMPT'
+        )) {
+            $nativeTypeEnvironment[$key] = [Environment]::GetEnvironmentVariable($key, 'Process')
+            Remove-Item "Env:$key" -ErrorAction Ignore
+        }
+        $env:GIT_CONFIG_GLOBAL = Join-Path $nativeTypeRoot 'no-global-config'
+        $env:GIT_CONFIG_SYSTEM = Join-Path $nativeTypeRoot 'no-system-config'
+        $env:GIT_CONFIG_NOSYSTEM = '1'
+        $env:GIT_CONFIG_COUNT = '0'
+        $env:GIT_CEILING_DIRECTORIES = $TestDrive
+        $env:GIT_TERMINAL_PROMPT = '0'
+
+        function Assert-TypeFixturePath {
+            param([string]$Path)
+            if (-not [IO.Path]::GetFullPath($Path).StartsWith(
+                $nativeTypeRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::Ordinal)) {
+                throw "Refusing native Git outside the owned type-change fixture: '$Path'."
+            }
+        }
+
+        function Invoke-TypeFixtureGit {
+            param([string[]]$Arguments)
+            Assert-TypeFixturePath $nativeTypeRepo
+            if ($Arguments[0] -notin @('config', 'rev-parse', 'update-index', 'commit', 'status')) {
+                throw "Unexpected native type-change fixture operation: $Arguments"
+            }
+            Invoke-Git (@('-C', $nativeTypeRepo) + $Arguments)
+        }
+    }
+
+    BeforeEach {
+        $nativeTypeRepo = Join-Path $nativeTypeRoot ([guid]::NewGuid().ToString('N'))
+        Assert-TypeFixturePath $nativeTypeRepo
+        $null = New-TestRepo -Path $nativeTypeRepo
+        $nativeTypeLocationPushed = $false
+        Push-Location -LiteralPath $nativeTypeRepo -ErrorAction Stop
+        $nativeTypeLocationPushed = $true
+        Assert-TypeFixturePath (Get-Location).ProviderPath
+    }
+
+    AfterEach {
+        if ($nativeTypeLocationPushed) { Pop-Location }
+    }
+
+    AfterAll {
+        foreach ($key in $nativeTypeEnvironment.Keys) {
+            if ($null -eq $nativeTypeEnvironment[$key]) {
+                Remove-Item -LiteralPath "Env:$key" -ErrorAction Ignore
+            } else {
+                [Environment]::SetEnvironmentVariable($key, $nativeTypeEnvironment[$key], 'Process')
+            }
+        }
+        if ($nativeTypeRoot -and (Test-Path -LiteralPath $nativeTypeRoot)) {
+            if ((Split-Path $nativeTypeRoot -Parent) -cne $TestDrive) {
+                throw 'Refusing cleanup outside the owned type-change TestDrive.'
+            }
+            Remove-Item -LiteralPath $nativeTypeRoot -Recurse -Force -ErrorAction Stop
+        }
+    }
+
+    It 'reports native <Mode> type changes without creating a filesystem symlink' -ForEach @(
+        @{ Mode = 'staged'; Pair = 'T '; Index = 1; Working = 0; Text = '[main +0 ~1 -0 |]' }
+        @{ Mode = 'unstaged'; Pair = ' T'; Index = 0; Working = 1; Text = '[main | +0 ~1 -0]' }
+        @{ Mode = 'combined'; Pair = 'TT'; Index = 1; Working = 1; Text = '[main +0 ~1 -0 | +0 ~1 -0]' }
+    ) {
+        $blob = Invoke-TypeFixtureGit @('rev-parse', 'HEAD:README.md')
+        $null = Invoke-TypeFixtureGit @('config', 'core.symlinks', 'false')
+        $null = Invoke-TypeFixtureGit @('update-index', '--cacheinfo', "120000,$blob,README.md")
+        if ($Mode -eq 'unstaged') {
+            $null = Invoke-TypeFixtureGit @('commit', '-m', 'record symlink mode', '--quiet')
+        }
+        if ($Mode -ne 'staged') {
+            # Interpret the existing ordinary file against the symlink index mode;
+            # no checkout or filesystem symlink creation is needed.
+            $null = Invoke-TypeFixtureGit @('config', 'core.symlinks', 'true')
+        }
+        @(Invoke-TypeFixtureGit @('status', '--porcelain=v1')) | Should -Be @("$Pair README.md")
+
+        $summary = Get-GitStatusSummary -Path $nativeTypeRepo
+
+        $summary.IndexModified | Should -Be $Index
+        $summary.WorkingModified | Should -Be $Working
+        $summary.HasChanges | Should -BeTrue
+        $summary.StatusString | Should -BeExactly $Text
+        $plain = (Format-GitStatusSegment -Status $summary) -replace "$([char]0x1b)\[[0-9;]*m", ''
+        $plain | Should -BeExactly $Text
+        $compact = (Format-GitStatusSegment -Status $summary -ShowChangeCounts:$false) -replace "$([char]0x1b)\[[0-9;]*m", ''
+        $compact | Should -BeExactly '[main]'
+        (Get-Item -LiteralPath (Join-Path $nativeTypeRepo 'README.md')).LinkType | Should -BeNullOrEmpty
+    }
+}
+
 Describe 'Repair-RepositoryLayout' {
     It 'converts git branch separators to native path separators' {
         InModuleScope Shmuelie.Git {

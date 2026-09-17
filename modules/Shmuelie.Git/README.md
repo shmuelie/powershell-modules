@@ -35,7 +35,7 @@ Import-Module Shmuelie.Git
 | `Update-AllWorktrees` | Discover repositories under `$env:SOURCE_REPOS` or a supplied `-Path` root and update each repository in parallel (`-ChangedOnly` displays actionable results as wrapping multiline details) |
 | `Find-StaleBranch` | Find local branches in the current or `-Path` repository whose upstream branch is gone (`-IncludeNeverPushed` also includes local-only branches) |
 | `Remove-Branch` | Delete an exact local branch (`-Force` permits unmerged deletion) or a remote branch with `-Remote -RemoteName origin`; high-impact confirmation and `-WhatIf` protect every deletion |
-| `Get-GitStatusSummary` | Parse `git status` for the current or `-Path` repository into a typed object (branch, ahead/behind, conflicts, stash, operation) |
+| `Get-GitStatusSummary` | Parse `git status` for the current or `-Path` repository into a typed object (branch, ahead/behind, tracked changes including type changes, conflicts, stash, operation) |
 | `Get-GitTag` | Inspect local annotated/lightweight tags as typed objects, with case-sensitive exact/wildcard `-Name` filtering and standard repository `-Path` input; never fetches |
 | `Save-GitStash` | Save tracked changes with `git stash push`; opt into `-KeepIndex`, `-IncludeUntracked` or `-All`, and a literal `-Message`; supports pipeline repository paths and `-WhatIf`/`-Confirm` |
 | `Set-Branch` | Switch an existing working tree to a local branch; `-CreateNew` creates at HEAD, `-Track` creates from a remote-tracking branch, and `-Force` explicitly discards local changes; supports `-Path`, `-WhatIf` and `-Confirm` |
@@ -157,6 +157,12 @@ exactly one `--force` to `git worktree remove`; it does not suppress confirmatio
 or retry a failure with additional force. A failed removal always keeps the branch.
 
 ### Other command behavior
+
+`Get-GitStatusSummary` counts tracked type changes (`T`, such as a regular file
+becoming a symbolic link) as `IndexModified` and/or `WorkingModified`. A path
+with `TT` contributes one modification to each column. These counts set
+`HasChanges` and appear in the existing `~` modification totals in `StatusString`
+and `Format-GitStatusSegment`; no separate type-change properties are added.
 
 `Remove-Branch` accepts an exact branch name or `refs/heads/<name>`, not wildcard
 patterns, revision expressions or remote-tracking refs. It uses Git's safe local

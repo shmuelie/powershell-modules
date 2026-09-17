@@ -6,6 +6,11 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+### Fixed
+- `Get-GitStatusSummary` includes tracked type changes in the existing index and
+  working-tree modification counts, so `HasChanges` and status displays no longer
+  report a clean tree when only file types have changed. (#267)
+
 ## [0.10.1] - 2026-09-16
 
 ### Fixed
