@@ -6,6 +6,16 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+### Fixed
+- `Compress-CopilotSession` and file-backed `Repair-CopilotSessionEvents` stop
+  before rewriting events when a required backup fails, even under `Continue`.
+  Backup copies are staged before replacing an existing backup; failed copies
+  preserve the prior backup and original events. `-NoBackup` remains explicit. (#280)
+- `Merge-CopilotSession` now aborts required source-read and destination
+  create/copy/write/repair failures even under `-ErrorAction Continue`, before
+  removing any source sessions. Partial-destination cleanup failures are reported
+  without replacing the original error or changing the caller's preferences.
+
 ## [0.4.0] - 2026-09-10
 
 ### Added
