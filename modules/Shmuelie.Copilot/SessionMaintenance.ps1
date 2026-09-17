@@ -14,9 +14,13 @@ function Merge-CopilotSession {
 
         The original sessions are preserved unless -RemoveSource is specified.
 
-        If the merge fails part-way through, the partially written destination
-        session is removed so no broken session is left behind, and the source
-        sessions are never removed unless the destination completes successfully.
+        Required source reads and destination operations fail the merge even with
+        -ErrorAction Continue. Source removal starts only after destination
+        creation, copying, writing, repair, and read-back complete without errors.
+
+        If destination construction fails, the source sessions are preserved and
+        cleanup of the partial destination is attempted. A cleanup failure is
+        reported as a warning without replacing the original terminating error.
 
     .PARAMETER Id
         Two or more session IDs to merge.
@@ -58,10 +62,9 @@ function Merge-CopilotSession {
     process {
         if ($PSCmdlet.ParameterSetName -eq 'ById') {
             foreach ($sid in $Id) {
-                $s = Get-CopilotSession -Id $sid
+                $s = Get-CopilotSession -Id $sid -ErrorAction Stop
                 if ($null -eq $s) {
-                    Write-Error "Session '$sid' not found."
-                    return
+                    Write-Error "Session '$sid' not found." -ErrorAction Stop
                 }
                 $collectedSessions.Add($s)
             }
@@ -98,8 +101,11 @@ function Merge-CopilotSession {
         # the merge does not leave a partial session directory behind.
         $newSessionPath = $null
         $mergeSucceeded = $false
+        $previousErrorActionPreference = $ErrorActionPreference
 
         try {
+        # Fail the entire destination build on normally nonterminating errors.
+        $ErrorActionPreference = 'Stop'
 
         # Use the most recently updated session for workspace metadata
         $primary = $collectedSessions | Sort-Object UpdatedAt -Descending | Select-Object -First 1
@@ -121,17 +127,20 @@ function Merge-CopilotSession {
         # (Global timestamp sorting breaks tool pairing when events share timestamps.)
         Write-Progress -Activity $activity -Status 'Merging conversation history' -PercentComplete 10 -Id 1
 
-        # Order sessions by their earliest event timestamp
-        $orderedSessions = $collectedSessions | Sort-Object { $_.UpdatedAt } | Sort-Object {
-            $eventsFile = Join-Path $_.Path 'events.jsonl'
+        # Read sort keys outside Sort-Object so read failures retain their error records.
+        $sessionOrder = foreach ($s in ($collectedSessions | Sort-Object UpdatedAt)) {
+            $firstEventTimestamp = $null
+            $eventsFile = Join-Path $s.Path 'events.jsonl'
             if (Test-Path $eventsFile) {
                 $firstLine = Get-Content $eventsFile -TotalCount 1
                 if ($firstLine) {
                     $evt = $firstLine | ConvertFrom-Json
-                    [DateTimeOffset]::Parse($evt.timestamp)
+                    $firstEventTimestamp = [DateTimeOffset]::Parse($evt.timestamp)
                 }
             }
+            [pscustomobject]@{ Session = $s; FirstEventTimestamp = $firstEventTimestamp }
         }
+        $orderedSessions = $sessionOrder | Sort-Object FirstEventTimestamp | Select-Object -ExpandProperty Session
 
         $newEventsFile = Join-Path $newSessionPath 'events.jsonl'
         $totalEvents = 0
@@ -275,6 +284,11 @@ function Merge-CopilotSession {
         Write-Progress -Activity $activity -Status 'Repairing merged session' -PercentComplete 90 -Id 1
         Repair-CopilotSessionEvents -Path $newSessionPath -NoBackup
 
+        $mergedSession = Get-CopilotSession -Id $newId -ErrorAction Stop
+        if ($null -eq $mergedSession) {
+            Write-Error "Merged session '$newId' could not be read." -ErrorAction Stop
+        }
+
         Write-Verbose "Merged $($collectedSessions.Count) sessions into $newId"
         Write-Verbose "  Summary: $mergedSummary"
         Write-Verbose "  Events: $totalEvents"
@@ -282,6 +296,7 @@ function Merge-CopilotSession {
         # The destination is fully written and repaired; only now is it safe to
         # treat the merge as successful and to remove the source sessions.
         $mergeSucceeded = $true
+        $ErrorActionPreference = $previousErrorActionPreference
 
         # Remove source sessions if requested
         if ($RemoveSource) {
@@ -295,23 +310,26 @@ function Merge-CopilotSession {
         Write-Progress -Activity $activity -Id 1 -Completed
 
         } finally {
+            $ErrorActionPreference = $previousErrorActionPreference
             Write-Progress -Activity $activity -Id 1 -Completed
 
             # On any mid-merge failure, remove the partial destination so a broken
             # session is never left behind. Cleanup failures must not mask the
             # original error, so surface them as a warning instead.
-            if (-not $mergeSucceeded -and $newSessionPath -and (Test-Path -LiteralPath $newSessionPath)) {
+            if (-not $mergeSucceeded -and $newSessionPath) {
                 try {
-                    Remove-Item -LiteralPath $newSessionPath -Recurse -Force
+                    if (Test-Path -LiteralPath $newSessionPath -ErrorAction Stop) {
+                        Remove-Item -LiteralPath $newSessionPath -Recurse -Force -ErrorAction Stop
+                    }
                 } catch {
-                    Write-Warning "Failed to clean up partial merged session at '$newSessionPath': $($_.Exception.Message)"
+                    Write-Warning "Failed to clean up partial merged session at '$newSessionPath': $($_.Exception.Message)" -WarningAction Continue
                 }
             }
         }
 
         # Return the new session
         if ($mergeSucceeded) {
-            Get-CopilotSession -Id $newId
+            $mergedSession
         }
     }
 }
