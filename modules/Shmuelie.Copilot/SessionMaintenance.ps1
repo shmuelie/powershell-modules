@@ -432,6 +432,33 @@ function Merge-CopilotSession {
     }
 }
 
+function Save-CopilotSessionEventsBackup {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][ValidateNotNullOrEmpty()][string]$Path)
+
+    $ErrorActionPreference = 'Stop'
+    $backupPath = "$Path.bak"
+    $temporaryPath = "$backupPath.$([guid]::NewGuid().ToString('N')).tmp"
+    $primaryError = $null
+    try {
+        Copy-Item -LiteralPath $Path -Destination $temporaryPath -ErrorAction Stop
+        [IO.File]::Move($temporaryPath, $backupPath, $true)
+    } catch {
+        $primaryError = $_
+        throw
+    } finally {
+        try {
+            if (Test-Path -LiteralPath $temporaryPath) {
+                Remove-Item -LiteralPath $temporaryPath -Force -ErrorAction Stop
+            }
+        } catch {
+            if ($null -eq $primaryError) { throw }
+            $primaryError.Exception.Data['BackupCleanupError'] = $_
+            Write-Error -ErrorRecord $_ -ErrorAction Continue
+        }
+    }
+}
+
 function Compress-CopilotSession {
     <#
     .SYNOPSIS
@@ -459,6 +486,7 @@ function Compress-CopilotSession {
 
     .PARAMETER NoBackup
         Skip creating a .bak backup before overwriting.
+        Otherwise, backup failure stops before rewriting events or pruning snapshots.
 
     .EXAMPLE
         Compress-CopilotSession -Id "abc-123"
@@ -554,7 +582,7 @@ function Compress-CopilotSession {
 
         # Back up and write
         if (-not $NoBackup) {
-            Copy-Item -LiteralPath $eventsFile -Destination "$eventsFile.bak" -Force
+            Save-CopilotSessionEventsBackup -Path $eventsFile -ErrorAction Stop
         }
         $content = $output -join "`r`n"
         [System.IO.File]::WriteAllText($eventsFile, "$content`r`n", [System.Text.UTF8Encoding]::new($false))
@@ -622,6 +650,7 @@ function Repair-CopilotSessionEvents {
 
     .PARAMETER NoBackup
         Skip creating a .bak backup before overwriting.
+        Otherwise, backup failure stops before rewriting events.
 
     .EXAMPLE
         Repair-CopilotSessionEvents -Id "fb52be08-2f0a-42e1-95cd-bd137f0ad769"
@@ -857,7 +886,7 @@ function Repair-CopilotSessionEvents {
                 return
             }
             if (-not $NoBackup) {
-                Copy-Item -LiteralPath $eventsFile -Destination "$eventsFile.bak" -Force
+                Save-CopilotSessionEventsBackup -Path $eventsFile -ErrorAction Stop
             }
             $content = $output -join "`r`n"
             [System.IO.File]::WriteAllText($eventsFile, "$content`r`n", [System.Text.UTF8Encoding]::new($false))
