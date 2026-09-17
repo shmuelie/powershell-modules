@@ -4974,7 +4974,7 @@ Describe 'Update-Worktrees ChangedOnly' -Skip:(-not (Get-Command git -ErrorActio
     It 'preserves <Status> results and diagnostics for <Scenario>' -ForEach @(
         @{ Scenario = 'merge failure'; Status = 'Failed'; Dirty = $false; LockIndex = $true; Warning = 'Fast-forward failed'; PopFailed = $false }
         @{ Scenario = 'stash failure'; Status = 'StashFailed'; Dirty = $true; LockIndex = $true; Warning = 'git stash push failed'; PopFailed = $false }
-        @{ Scenario = 'stash pop conflict'; Status = 'Updated'; Dirty = $true; LockIndex = $false; Warning = 'git stash pop failed'; PopFailed = $true }
+        @{ Scenario = 'stash pop conflict'; Status = 'Updated'; Dirty = $true; LockIndex = $false; Warning = 'git stash restoration failed'; PopFailed = $true }
     ) {
         $fixture = New-UpdateFixture -Name ($Scenario -replace ' ', '-')
         $clone = $fixture.Clone
@@ -5093,6 +5093,307 @@ Describe 'Update-Worktrees ChangedOnly' -Skip:(-not (Get-Command git -ErrorActio
         $applied[0].PopFailed | Should -BeFalse
         (Get-Content -LiteralPath (Join-Path $clone 'README.md') -Raw).Trim() | Should -BeExactly 'latest'
         (Get-Content -LiteralPath $localFile -Raw).Trim() | Should -BeExactly 'keep local changes'
+    }
+}
+
+Describe 'Update-Worktrees owned stash restoration' -Tag 'OwnedUpdateStash' {
+    BeforeAll {
+        $ownedUpdateRoot = (New-Item -ItemType Directory -Path (
+            Join-Path $TestDrive "owned-update-$([guid]::NewGuid().ToString('N'))"
+        ) -ErrorAction Stop).FullName
+        $ownedUpdateEnvironment = @{}
+        foreach ($key in @(
+            'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_SYSTEM', 'GIT_CONFIG_NOSYSTEM',
+            'GIT_CONFIG_COUNT', 'GIT_CONFIG_PARAMETERS', 'GIT_DIR', 'GIT_WORK_TREE',
+            'GIT_COMMON_DIR', 'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY',
+            'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_CEILING_DIRECTORIES',
+            'GIT_AUTHOR_DATE', 'GIT_COMMITTER_DATE', 'GIT_TERMINAL_PROMPT'
+        )) {
+            $ownedUpdateEnvironment[$key] = [Environment]::GetEnvironmentVariable($key, 'Process')
+            Remove-Item "Env:$key" -ErrorAction Ignore
+        }
+        $env:GIT_CONFIG_GLOBAL = Join-Path $ownedUpdateRoot 'no-global-config'
+        $env:GIT_CONFIG_SYSTEM = Join-Path $ownedUpdateRoot 'no-system-config'
+        $env:GIT_CONFIG_NOSYSTEM = '1'
+        $env:GIT_CONFIG_COUNT = '0'
+        $env:GIT_CEILING_DIRECTORIES = $TestDrive
+        $env:GIT_TERMINAL_PROMPT = '0'
+
+        function Assert-OwnedUpdatePath {
+            param([Parameter(Mandatory)][string]$Path)
+            $prefix = $ownedUpdateRoot + [IO.Path]::DirectorySeparatorChar
+            if (-not [IO.Path]::GetFullPath($Path).StartsWith($prefix, [StringComparison]::Ordinal)) {
+                throw "Refusing Git fixture access outside '$ownedUpdateRoot': '$Path'."
+            }
+        }
+
+        function Invoke-OwnedUpdateGit {
+            param([string]$Path, [string[]]$Arguments)
+            Assert-OwnedUpdatePath $Path
+            if ($Arguments -contains 'fetch' -or
+                ($Arguments -contains 'push' -and $Arguments -notcontains 'stash')) {
+                throw 'This fixture uses local upstreams only; fetch/push is forbidden.'
+            }
+            Invoke-Git (@('-C', $Path) + $Arguments)
+        }
+
+        function New-OwnedUpdateFixture {
+            param([switch]$Submodule, [switch]$Conflict)
+            $path = Join-Path $ownedCaseRoot 'parent'
+            Assert-OwnedUpdatePath $path
+            $null = New-TestRepo -Path $path
+            if ($Submodule) {
+                $sub = Join-Path $ownedCaseRoot 'sub-source'
+                Assert-OwnedUpdatePath $sub
+                $null = New-TestRepo -Path $sub
+                $null = Invoke-OwnedUpdateGit $path @('submodule', 'add', '--', $sub, 'sub')
+                $null = Invoke-OwnedUpdateGit $path @('commit', '-m', 'add submodule', '--quiet')
+            }
+            $null = Invoke-OwnedUpdateGit $path @('branch', 'behind')
+            $upstreamFile = if ($Conflict) { 'README.md' } else { 'upstream.txt' }
+            Set-Content -LiteralPath (Join-Path $path $upstreamFile) -Value 'upstream'
+            $null = Invoke-OwnedUpdateGit $path @('add', '--', $upstreamFile)
+            $null = Invoke-OwnedUpdateGit $path @('commit', '-m', 'advance upstream', '--quiet')
+            $null = Invoke-OwnedUpdateGit $path @('switch', 'behind', '--quiet')
+            $null = Invoke-OwnedUpdateGit $path @('branch', '--set-upstream-to=main', 'behind')
+            $path
+        }
+
+        function Save-OwnedUpdatePreviousStash {
+            param([string]$Path)
+            Set-Content -LiteralPath (Join-Path $Path 'previous.txt') -Value 'unrelated saved work'
+            $null = Invoke-OwnedUpdateGit $Path @('stash', 'push', '--include-untracked', '-m', 'previous', '--quiet')
+            Invoke-OwnedUpdateGit $Path @('rev-parse', 'refs/stash')
+        }
+    }
+
+    BeforeEach {
+        $ownedCaseRoot = (New-Item -ItemType Directory -Path (
+            Join-Path $ownedUpdateRoot ([guid]::NewGuid().ToString('N'))
+        ) -ErrorAction Stop).FullName
+        $ownedLocationPushed = $false
+        Push-Location -LiteralPath $ownedCaseRoot -ErrorAction Stop
+        $ownedLocationPushed = $true
+        Assert-OwnedUpdatePath (Get-Location).ProviderPath
+        Mock -ModuleName Shmuelie.Git Sync-GitRemote { } -ParameterFilter {
+            $Path -and [IO.Path]::GetFullPath($Path).StartsWith(
+                $ownedCaseRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::Ordinal)
+        }
+    }
+
+    AfterEach {
+        if ($ownedLocationPushed) { Pop-Location }
+    }
+
+    AfterAll {
+        foreach ($key in $ownedUpdateEnvironment.Keys) {
+            if ($null -eq $ownedUpdateEnvironment[$key]) {
+                Remove-Item -LiteralPath "Env:$key" -ErrorAction Ignore
+            } else {
+                [Environment]::SetEnvironmentVariable($key, $ownedUpdateEnvironment[$key], 'Process')
+            }
+        }
+        if ($ownedUpdateRoot -and (Test-Path -LiteralPath $ownedUpdateRoot)) {
+            if ((Split-Path $ownedUpdateRoot -Parent) -cne $TestDrive) {
+                throw 'Refusing cleanup outside the owned TestDrive root.'
+            }
+            Remove-Item -LiteralPath $ownedUpdateRoot -Recurse -Force -ErrorAction Stop
+        }
+    }
+
+    It 'skips a no-op submodule stash with ExistingStash=<ExistingStash>, ChangedOnly=<ChangedOnly>' -ForEach @(
+        @{ ExistingStash = $false; ChangedOnly = $false }
+        @{ ExistingStash = $true; ChangedOnly = $false }
+        @{ ExistingStash = $false; ChangedOnly = $true }
+        @{ ExistingStash = $true; ChangedOnly = $true }
+    ) {
+        $repo = New-OwnedUpdateFixture -Submodule
+        if ($ExistingStash) { $previous = Save-OwnedUpdatePreviousStash $repo }
+        $head = Invoke-OwnedUpdateGit $repo @('rev-parse', 'HEAD')
+        Set-Content -LiteralPath (Join-Path $repo 'sub' 'README.md') -Value 'submodule-only work'
+
+        $results = @(Update-Worktrees -Path $repo -ChangedOnly:$ChangedOnly -NoGitHubAccountResolve -Confirm:$false -WarningVariable warnings)
+
+        $results | Should -HaveCount 1
+        $results[0].Status | Should -Be 'StashFailed'
+        $results[0].Stashed | Should -BeFalse
+        $results[0].PopFailed | Should -BeFalse
+        ($warnings -join "`n") | Should -Match 'did not create.*stash'
+        Invoke-OwnedUpdateGit $repo @('rev-parse', 'HEAD') | Should -BeExactly $head
+        Test-Path -LiteralPath (Join-Path $repo 'previous.txt') | Should -BeFalse
+        (Get-Content -LiteralPath (Join-Path $repo 'sub' 'README.md') -Raw).Trim() | Should -BeExactly 'submodule-only work'
+        $stashes = @(Invoke-OwnedUpdateGit $repo @('stash', 'list', '--format=%H'))
+        if ($ExistingStash) {
+            $stashes | Should -Be @($previous)
+        } else {
+            $stashes | Should -HaveCount 0
+        }
+    }
+
+    It 'restores ordinary changes and drops only the new stash with ExistingStash=<ExistingStash>' -ForEach @(
+        @{ ExistingStash = $false }
+        @{ ExistingStash = $true }
+    ) {
+        $repo = New-OwnedUpdateFixture
+        if ($ExistingStash) { $previous = Save-OwnedUpdatePreviousStash $repo }
+        Set-Content -LiteralPath (Join-Path $repo 'README.md') -Value 'tracked work'
+        Set-Content -LiteralPath (Join-Path $repo 'loose.txt') -Value 'untracked work'
+
+        $results = @(Update-Worktrees -Path $repo -NoGitHubAccountResolve -Confirm:$false)
+
+        $results | Should -HaveCount 1
+        $results[0].Status | Should -Be 'Updated'
+        $results[0].Stashed | Should -BeTrue
+        $results[0].PopFailed | Should -BeFalse
+        Invoke-OwnedUpdateGit $repo @('rev-parse', 'HEAD') | Should -BeExactly (Invoke-OwnedUpdateGit $repo @('rev-parse', 'main'))
+        (Get-Content -LiteralPath (Join-Path $repo 'README.md') -Raw).Trim() | Should -BeExactly 'tracked work'
+        (Get-Content -LiteralPath (Join-Path $repo 'loose.txt') -Raw).Trim() | Should -BeExactly 'untracked work'
+        Test-Path -LiteralPath (Join-Path $repo 'previous.txt') | Should -BeFalse
+        $stashes = @(Invoke-OwnedUpdateGit $repo @('stash', 'list', '--format=%H'))
+        if ($ExistingStash) { $stashes | Should -Be @($previous) }
+        else { $stashes | Should -HaveCount 0 }
+    }
+
+    It 'retains both owned and pre-existing stashes when restoration conflicts' {
+        $repo = New-OwnedUpdateFixture -Conflict
+        $previous = Save-OwnedUpdatePreviousStash $repo
+        Set-Content -LiteralPath (Join-Path $repo 'README.md') -Value 'conflicting local work'
+
+        $results = @(Update-Worktrees -Path $repo -NoGitHubAccountResolve -Confirm:$false -WarningVariable warnings)
+
+        $results[0].Status | Should -Be 'Updated'
+        $results[0].Stashed | Should -BeTrue
+        $results[0].PopFailed | Should -BeTrue
+        ($warnings -join "`n") | Should -Match 'stash.*failed'
+        $stashes = @(Invoke-OwnedUpdateGit $repo @('stash', 'list', '--format=%H'))
+        $stashes | Should -HaveCount 2
+        $stashes[1] | Should -BeExactly $previous
+        Invoke-OwnedUpdateGit $repo @('show', "$($stashes[0]):README.md") | Should -BeExactly 'conflicting local work'
+        Test-Path -LiteralPath (Join-Path $repo 'previous.txt') | Should -BeFalse
+        @(Invoke-OwnedUpdateGit $repo @('ls-files', '--unmerged')) | Should -Not -BeNullOrEmpty
+    }
+
+    It 'keeps dirty linked worktrees and their shared pre-existing stash isolated' {
+        $repo = New-OwnedUpdateFixture
+        $previous = Save-OwnedUpdatePreviousStash $repo
+        $linked = Join-Path $ownedCaseRoot 'linked'
+        Assert-OwnedUpdatePath $linked
+        $null = Invoke-OwnedUpdateGit $repo @('worktree', 'add', '-b', 'behind-linked', '--', $linked, 'HEAD')
+        $null = Invoke-OwnedUpdateGit $repo @('branch', '--set-upstream-to=main', 'behind-linked')
+        Set-Content -LiteralPath (Join-Path $repo 'parent-only.txt') -Value 'parent work'
+        Set-Content -LiteralPath (Join-Path $linked 'linked-only.txt') -Value 'linked work'
+
+        $results = @(Update-Worktrees -Path $repo -NoGitHubAccountResolve -Confirm:$false)
+
+        $results | Should -HaveCount 2
+        foreach ($result in $results) {
+            $result.Status | Should -Be 'Updated'
+            $result.Stashed | Should -BeTrue
+            $result.PopFailed | Should -BeFalse
+        }
+        (Get-Content -LiteralPath (Join-Path $repo 'parent-only.txt') -Raw).Trim() | Should -BeExactly 'parent work'
+        (Get-Content -LiteralPath (Join-Path $linked 'linked-only.txt') -Raw).Trim() | Should -BeExactly 'linked work'
+        Test-Path -LiteralPath (Join-Path $repo 'linked-only.txt') | Should -BeFalse
+        Test-Path -LiteralPath (Join-Path $linked 'parent-only.txt') | Should -BeFalse
+        Test-Path -LiteralPath (Join-Path $repo 'previous.txt') | Should -BeFalse
+        Test-Path -LiteralPath (Join-Path $linked 'previous.txt') | Should -BeFalse
+        @(Invoke-OwnedUpdateGit $repo @('stash', 'list', '--format=%H')) | Should -Be @($previous)
+    }
+
+    It 'does not merge or restore a previous stash when stash creation fails' {
+        $repo = New-OwnedUpdateFixture
+        $previous = Save-OwnedUpdatePreviousStash $repo
+        $head = Invoke-OwnedUpdateGit $repo @('rev-parse', 'HEAD')
+        Set-Content -LiteralPath (Join-Path $repo 'README.md') -Value 'unstashed work'
+        $lock = Join-Path $repo '.git' 'index.lock'
+        $null = New-Item -ItemType File -Path $lock -ErrorAction Stop
+        try {
+            $results = @(Update-Worktrees -Path $repo -NoGitHubAccountResolve -Confirm:$false -WarningVariable warnings)
+        } finally {
+            Remove-Item -LiteralPath $lock -ErrorAction Stop
+        }
+
+        $results[0].Status | Should -Be 'StashFailed'
+        $results[0].Stashed | Should -BeFalse
+        $results[0].PopFailed | Should -BeFalse
+        ($warnings -join "`n") | Should -Match 'git stash push failed'
+        Invoke-OwnedUpdateGit $repo @('rev-parse', 'HEAD') | Should -BeExactly $head
+        @(Invoke-OwnedUpdateGit $repo @('stash', 'list', '--format=%H')) | Should -Be @($previous)
+        (Get-Content -LiteralPath (Join-Path $repo 'README.md') -Raw).Trim() | Should -BeExactly 'unstashed work'
+    }
+
+    It 'restores the captured object and retains the stack when another stash becomes newest' {
+        $repo = New-OwnedUpdateFixture
+        Set-Content -LiteralPath (Join-Path $repo 'owned.txt') -Value 'owned work'
+        $owned = Save-GitStash -Path $repo -IncludeUntracked -Confirm:$false
+        $other = Save-OwnedUpdatePreviousStash $repo
+
+        $restored = InModuleScope Shmuelie.Git -Parameters @{ Repo = $repo; ObjectId = $owned.ObjectId } {
+            Restore-WorktreeUpdateStash -Path $Repo -ObjectId $ObjectId -WarningVariable restoreWarnings
+        }
+
+        $restored | Should -BeFalse
+        (Get-Content -LiteralPath (Join-Path $repo 'owned.txt') -Raw).Trim() | Should -BeExactly 'owned work'
+        Test-Path -LiteralPath (Join-Path $repo 'previous.txt') | Should -BeFalse
+        @(Invoke-OwnedUpdateGit $repo @('stash', 'list', '--format=%H')) | Should -Be @($other, $owned.ObjectId)
+    }
+
+    It 'rejects a saved identity whose message belongs to a different writer' {
+        $repo = New-OwnedUpdateFixture
+        $previous = Save-OwnedUpdatePreviousStash $repo
+        $head = Invoke-OwnedUpdateGit $repo @('rev-parse', 'HEAD')
+        Set-Content -LiteralPath (Join-Path $repo 'README.md') -Value 'unsaved local work'
+        Mock -ModuleName Shmuelie.Git Save-GitStash {
+            [PSCustomObject]@{
+                ObjectId = $previous
+                RepositoryPath = $repo
+                Subject = 'On behind: a different writer'
+            }
+        } -ParameterFilter { $Path -eq $repo -and $IncludeUntracked }
+
+        $results = @(Update-Worktrees -Path $repo -NoGitHubAccountResolve -Confirm:$false -WarningVariable warnings)
+
+        $results[0].Status | Should -Be 'StashFailed'
+        $results[0].Stashed | Should -BeFalse
+        ($warnings -join "`n") | Should -Match 'not created by this update'
+        Invoke-OwnedUpdateGit $repo @('rev-parse', 'HEAD') | Should -BeExactly $head
+        @(Invoke-OwnedUpdateGit $repo @('stash', 'list', '--format=%H')) | Should -Be @($previous)
+        (Get-Content -LiteralPath (Join-Path $repo 'README.md') -Raw).Trim() | Should -BeExactly 'unsaved local work'
+        Test-Path -LiteralPath (Join-Path $repo 'previous.txt') | Should -BeFalse
+    }
+
+    It 'retains the owned stash when cleanup fails after successful restoration' {
+        $repo = New-OwnedUpdateFixture
+        $previous = Save-OwnedUpdatePreviousStash $repo
+        Set-Content -LiteralPath (Join-Path $repo 'owned.txt') -Value 'owned work'
+        $owned = Save-GitStash -Path $repo -IncludeUntracked -Confirm:$false
+        $lock = Join-Path $repo '.git' 'refs' 'stash.lock'
+        $null = New-Item -ItemType File -Path $lock -ErrorAction Stop
+        try {
+            $restored = InModuleScope Shmuelie.Git -Parameters @{ Repo = $repo; ObjectId = $owned.ObjectId } {
+                Restore-WorktreeUpdateStash -Path $Repo -ObjectId $ObjectId
+            }
+        } finally {
+            Remove-Item -LiteralPath $lock -ErrorAction Stop
+        }
+
+        $restored | Should -BeFalse
+        (Get-Content -LiteralPath (Join-Path $repo 'owned.txt') -Raw).Trim() | Should -BeExactly 'owned work'
+        Test-Path -LiteralPath (Join-Path $repo 'previous.txt') | Should -BeFalse
+        @(Invoke-OwnedUpdateGit $repo @('stash', 'list', '--format=%H')) | Should -Be @($owned.ObjectId, $previous)
+    }
+
+    It 'does not create or restore stashes during WhatIf' {
+        $repo = New-OwnedUpdateFixture
+        $previous = Save-OwnedUpdatePreviousStash $repo
+        $head = Invoke-OwnedUpdateGit $repo @('rev-parse', 'HEAD')
+        Set-Content -LiteralPath (Join-Path $repo 'README.md') -Value 'preview work'
+
+        @(Update-Worktrees -Path $repo -NoGitHubAccountResolve -WhatIf) | Should -HaveCount 0
+
+        Invoke-OwnedUpdateGit $repo @('rev-parse', 'HEAD') | Should -BeExactly $head
+        @(Invoke-OwnedUpdateGit $repo @('stash', 'list', '--format=%H')) | Should -Be @($previous)
+        (Get-Content -LiteralPath (Join-Path $repo 'README.md') -Raw).Trim() | Should -BeExactly 'preview work'
     }
 }
 
