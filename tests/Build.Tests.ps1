@@ -34,6 +34,7 @@ Describe 'Build-Module literal paths' -Tag 'LiteralPaths' {
             $null = [System.IO.Directory]::CreateDirectory($build)
             $null = [System.IO.Directory]::CreateDirectory([System.IO.Path]::GetDirectoryName($source))
             Copy-Item -LiteralPath $script:buildScript -Destination (Join-Path $build 'Build-Module.ps1')
+            Copy-Item -LiteralPath (Join-Path $script:repoRoot 'build' 'Assert-ModulePublishable.ps1') -Destination $build
             if ($Module -eq 'Shmuelie.Dsc') {
                 Copy-Item -LiteralPath (Join-Path $script:repoRoot 'modules' $Module) -Destination $source -Recurse
             } else {
@@ -332,13 +333,12 @@ $ExecutionContext.SessionState.Module.OnRemove = {
         $binaryCalls.Count | Should -Be 2
     }
 
-    It 'stages fake Windows build outputs literally with dependency mismatch = <Mismatch>' -ForEach @(
-        @{ Mismatch = $false }
-        @{ Mismatch = $true }
+    It 'stages only supported Windows outputs with stale experimental assets = <Stale>' -ForEach @(
+        @{ Stale = $false }
+        @{ Stale = $true }
     ) {
         $fixture = New-LiteralBuildFixture -Module Shmuelie.Windows
         $windowsOutput = Join-Path $script:caseRoot 'output-[ab]'
-        $windowsMismatch = $Mismatch
         $windowsProjects = @{
             (Join-Path $fixture.Source 'Cmdlets' 'Shmuelie.Windows.Cmdlets.csproj') = @{
                 Operation = 'build'; Directory = '.windows-cmdlets-build'
@@ -347,10 +347,6 @@ $ExecutionContext.SessionState.Module.OnRemove = {
             (Join-Path $fixture.Source 'Cmdlets.AppInstaller' 'Shmuelie.Windows.AppInstaller.csproj') = @{
                 Operation = 'publish'; Directory = '.windows-appinstaller-build'
                 Files = @('Shmuelie.Windows.AppInstaller.dll', 'Microsoft.Windows.SDK.NET.dll', 'WinRT.Runtime.dll')
-            }
-            (Join-Path $fixture.Source 'Cmdlets.AppInstall' 'Shmuelie.Windows.AppInstall.csproj') = @{
-                Operation = 'publish'; Directory = '.windows-appinstall-build'
-                Files = @('Shmuelie.Windows.AppInstall.dll', 'Microsoft.Windows.SDK.NET.dll', 'WinRT.Runtime.dll', (Join-Path 'en-US' 'help-[ab].xml'))
             }
         }
         $windowsCalls = [System.Collections.Generic.List[string]]::new()
@@ -365,10 +361,7 @@ $ExecutionContext.SessionState.Module.OnRemove = {
             foreach ($file in $project.Files) {
                 $destination = Join-Path $args[5] $file
                 $null = [System.IO.Directory]::CreateDirectory([System.IO.Path]::GetDirectoryName($destination))
-                $content = if ($windowsMismatch -and $project.Directory -eq '.windows-appinstall-build' -and $file -eq 'WinRT.Runtime.dll') {
-                    'mismatched dependency fixture'
-                } else { "fixture $file" }
-                Set-Content -LiteralPath $destination -Value $content
+                Set-Content -LiteralPath $destination -Value "fixture $file"
             }
             $windowsCalls.Add($args[1])
             $global:LASTEXITCODE = 0
@@ -376,32 +369,35 @@ $ExecutionContext.SessionState.Module.OnRemove = {
         $function:dotnet = ${function:dotnet}.GetNewClosure()
         $sentinels = @(
             foreach ($neighbor in 'output-a', 'output-b') {
-                foreach ($directory in '.windows-cmdlets-build', '.windows-appinstaller-build', '.windows-appinstall-build', (Join-Path 'Shmuelie.Windows' '0.1.0')) {
+                foreach ($directory in '.windows-cmdlets-build', '.windows-appinstaller-build', '.experimental-appinstall-build', (Join-Path 'Shmuelie.Windows' '0.1.0')) {
                     New-BuildSentinel (Join-Path $script:caseRoot $neighbor $directory)
                 }
             }
         )
-        foreach ($directory in '.windows-cmdlets-build', '.windows-appinstaller-build', '.windows-appinstall-build') {
+        foreach ($directory in '.windows-cmdlets-build', '.windows-appinstaller-build') {
             $null = New-BuildSentinel (Join-Path $windowsOutput $directory)
         }
-        if ($Mismatch) {
-            { & $fixture.Build -Module Shmuelie.Windows -OutputPath $windowsOutput } |
-                Should -Throw '*different copies of WinRT.Runtime.dll*'
-            $windowsCalls.Count | Should -Be 3
-        } else {
-            foreach ($iteration in 1, 2) {
-                $artifact = & $fixture.Build -Module Shmuelie.Windows -OutputPath $windowsOutput
-                foreach ($file in $windowsProjects.Values.Files) {
-                    (Get-Content -LiteralPath (Join-Path $artifact.FullName 'bin' $file) -Raw).Trim() | Should -Be "fixture $file"
-                }
-                Test-Path -LiteralPath (Join-Path $artifact.FullName 'bin' 'en-US' 'en-US') | Should -BeFalse
-                foreach ($directory in '.windows-cmdlets-build', '.windows-appinstaller-build', '.windows-appinstall-build') {
-                    Test-Path -LiteralPath (Join-Path $windowsOutput $directory) | Should -BeFalse
+        $experimentalNeighbor = New-BuildSentinel (Join-Path $windowsOutput '.experimental-appinstall-build')
+        foreach ($iteration in 1, 2) {
+            if ($Stale) {
+                foreach ($staleRoot in (Join-Path $fixture.Source 'bin'), (Join-Path $windowsOutput 'Shmuelie.Windows' '0.1.0' 'bin')) {
+                    $null = [System.IO.Directory]::CreateDirectory((Join-Path $staleRoot 'en-US'))
+                    Set-Content -LiteralPath (Join-Path $staleRoot 'Shmuelie.Windows.AppInstall.dll') -Value 'stale experimental binary'
+                    Set-Content -LiteralPath (Join-Path $staleRoot 'en-US' 'Shmuelie.Windows.AppInstall.dll-Help.xml') -Value 'stale experimental help'
                 }
             }
-            $windowsCalls.Count | Should -Be 6
+            $artifact = & $fixture.Build -Module Shmuelie.Windows -OutputPath $windowsOutput
+            foreach ($file in $windowsProjects.Values.Files) {
+                (Get-Content -LiteralPath (Join-Path $artifact.FullName 'bin' $file) -Raw).Trim() | Should -Be "fixture $file"
+            }
+            Test-Path -LiteralPath (Join-Path $artifact.FullName 'bin' 'Shmuelie.Windows.AppInstall.dll') | Should -BeFalse
+            Test-Path -LiteralPath (Join-Path $artifact.FullName 'bin' 'en-US') | Should -BeFalse
+            foreach ($directory in '.windows-cmdlets-build', '.windows-appinstaller-build') {
+                Test-Path -LiteralPath (Join-Path $windowsOutput $directory) | Should -BeFalse
+            }
         }
-        foreach ($sentinel in $sentinels) {
+        $windowsCalls.Count | Should -Be 4
+        foreach ($sentinel in $sentinels + $experimentalNeighbor) {
             (Get-FileHash -LiteralPath $sentinel.Path).Hash | Should -Be $sentinel.Hash
         }
     }
