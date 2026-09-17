@@ -116,6 +116,19 @@ contract, not command aliases.
 
 ## Testing
 
+Supported modules live under `modules/`. The repository-local
+`experimental/Shmuelie.AppInstall.Experimental/` module is not publishable and is
+not a dependency of the Windows module. Build it explicitly with
+`Build-Module.ps1 -Module Shmuelie.AppInstall.Experimental` and select its own
+`tests` directory with `Invoke-Tests.ps1 -Path` only when validation is authorized.
+Default build/test and publication flows cover the supported catalog instead.
+The shared `build/Assert-ModulePublishable.ps1` policy rejects experimental
+publication and inspects the Windows artifact before import/publication.
+
+Draft PRs skip automated build/test jobs. Mark a PR ready for review only after
+validation is authorized; that event starts the required checks. A skipped draft
+job is not validation evidence.
+
 Behavioral tests live in [`tests/`](https://github.com/shmuelie/powershell-modules/tree/main/tests),
 one [Pester](https://pester.dev/) v6 file per module (`tests/<Module>.Tests.ps1`).
 Each file imports its module directly from source

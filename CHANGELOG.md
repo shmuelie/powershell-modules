@@ -45,6 +45,13 @@ between releases this file tracks catalog-level changes under `[Unreleased]`.
   `Shmuelie.Windows` on Windows) without DLL-lock failures.
 
 ### Changed
+- Separate AppInstallManager development into an unpublished experimental module
+  with explicit build/fake-test entry points. Supported Windows packaging and
+  default validation no longer depend on the experimental project. Share
+  publication policy between scripts and workflows, rejecting experimental
+  modules and experimental content in Windows artifacts.
+- Skip automated build/test jobs for draft PRs and start them when ready for
+  review, allowing code-only work while validation is explicitly paused.
 - The test suite and shared runner target stable Pester 6.2+ within major version
   6, superseding the temporary 5.x compatibility pin. Selection and installation
   exclude prereleases and newer majors, and imports use the selected module's
