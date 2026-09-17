@@ -42,7 +42,8 @@ function Get-WindowsTerminalProfile {
     .PARAMETER IncludeFragments
         Also search fragment JSON files in LOCALAPPDATA and ProgramData.
         Enabled by default when searching by Id, since fragments may define
-        profiles not present in settings.json.
+        profiles not present in settings.json. This does not select all profiles;
+        use -Name '*' to enumerate profiles rather than the current profile.
     .EXAMPLE
         Get-WindowsTerminalProfile
         Returns the current session's terminal profile.
@@ -53,7 +54,7 @@ function Get-WindowsTerminalProfile {
         Get-WindowsTerminalProfile -Name PowerShell
         Returns the PowerShell profile.
     .EXAMPLE
-        Get-WindowsTerminalProfile -IncludeFragments
+        Get-WindowsTerminalProfile -Name '*' -IncludeFragments
         Returns all profiles including those from fragment files.
     .NOTES
         Windows only.

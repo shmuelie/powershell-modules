@@ -6,6 +6,7 @@ if ('Shmuelie.Windows.Cmdlets.UpdateAppInstallerAppCommand' -as [type]) {
 
 $repoRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
 $source = Join-Path $repoRoot 'modules' 'Shmuelie.Windows' 'Cmdlets.AppInstaller'
+$modulePath = Join-Path $PSHOME 'Modules'
 # The production WinRT service is deliberately excluded. All command and
 # matching/result code is compiled unchanged against the fail-closed fixture.
 Add-Type -Path @(
@@ -72,12 +73,16 @@ foreach ($case in $cases) {
         [Shmuelie.Windows.Cmdlets.AppInstallerSelectionFixture]::SuccessBeforeFailure = $case.SuccessBeforeFailure
     }
     $initial = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault2()
+    # Runspace startup otherwise restores user/system module search paths.
+    $initial.EnvironmentVariables.Add([System.Management.Automation.Runspaces.SessionStateVariableEntry]::new(
+        'PSModulePath', $modulePath, $null))
     $initial.Commands.Add([System.Management.Automation.Runspaces.SessionStateCmdletEntry]::new(
         'Update-AppInstallerApp', [Shmuelie.Windows.Cmdlets.UpdateAppInstallerAppCommand], $null))
     $runspace = [runspacefactory]::CreateRunspace($initial)
     $ps = [powershell]::Create()
     try {
         $runspace.Open()
+        if ($env:PSModulePath -cne $modulePath) { throw 'The selection runspace module path is not isolated.' }
         $ps.Runspace = $runspace
         $null = $ps.AddScript($case.Script)
         $terminatingError = $null
