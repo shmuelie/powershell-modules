@@ -168,6 +168,19 @@ Cleanup remains an explicit pipeline into `Remove-CopilotSession`: discovery
 never deletes anything, and removal re-resolves each ID rather than trusting
 the pipeline object's Path.
 
+## Session merge failure handling
+
+`Merge-CopilotSession` stops on required source-read or destination
+create/copy/write/repair failures, even with `-ErrorAction Continue`. A failure
+during destination construction leaves all source sessions intact and triggers
+cleanup of only the partial destination. If cleanup also fails, a warning
+identifies the remaining destination without replacing the original error.
+
+`-RemoveSource` remains opt-in and starts only after destination construction,
+repair, and read-back complete without errors. `-WhatIf` creates or removes
+nothing. Merge failure handling does not change the caller's error-action
+preference.
+
 ## MCP configuration management
 
 `Register-CopilotMcpServer` and `Unregister-CopilotMcpServer` delegate to the
