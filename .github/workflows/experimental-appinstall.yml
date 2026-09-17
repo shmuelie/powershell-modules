@@ -1,0 +1,23 @@
+name: Validate unpublished AppInstall development
+
+# Explicitly dispatched only after validation is authorized; never publishes.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate-experimental:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 8.0.x
+      - name: Build the unpublished module
+        shell: pwsh
+        run: ./build/Build-Module.ps1 -Module Shmuelie.AppInstall.Experimental
+      - name: Run experimental fake-adapter tests
+        shell: pwsh
+        run: ./build/Invoke-Tests.ps1 -Path ./experimental/Shmuelie.AppInstall.Experimental/tests

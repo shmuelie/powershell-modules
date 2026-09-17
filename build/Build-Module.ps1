@@ -2,7 +2,9 @@
 .SYNOPSIS
     Build one independently versioned module into a publishable staging directory.
 .PARAMETER Module
-    Module directory name under modules/.
+    Published module directory name under modules/, or the explicit unpublished
+    Shmuelie.AppInstall.Experimental module under experimental/. The latter is
+    not part of ordinary Windows builds or the supported validation catalog.
 .PARAMETER OutputPath
     Literal filesystem artifact root. Defaults to artifacts/.
     Only the selected module's version directory is replaced.
@@ -10,7 +12,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)]
-    [ValidateSet('Shmuelie.Git', 'Shmuelie.Copilot', 'Shmuelie.Node', 'Shmuelie.DotNet', 'Shmuelie.Utilities', 'Shmuelie.Dsc', 'Shmuelie.VisualStudio', 'Shmuelie.Windows', 'Shmuelie.PackageManagement')]
+    [ValidateSet('Shmuelie.Git', 'Shmuelie.Copilot', 'Shmuelie.Node', 'Shmuelie.DotNet', 'Shmuelie.Utilities', 'Shmuelie.Dsc', 'Shmuelie.VisualStudio', 'Shmuelie.Windows', 'Shmuelie.PackageManagement', 'Shmuelie.AppInstall.Experimental')]
     [string]$Module,
 
     [string]$OutputPath
@@ -106,7 +108,8 @@ function Get-OwnedBuildDirectory {
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = [System.IO.Path]::GetDirectoryName($PSScriptRoot)
-$source = Join-Path $repoRoot 'modules' $Module
+$sourceRoot = if ($Module -eq 'Shmuelie.AppInstall.Experimental') { 'experimental' } else { 'modules' }
+$source = Join-Path $repoRoot $sourceRoot $Module
 $manifestPath = Join-Path $source "$Module.psd1"
 $manifest = Test-BuildModuleManifest -LiteralPath $manifestPath
 
@@ -201,8 +204,12 @@ if ($Module -eq 'Shmuelie.Windows') {
         Copy-Item -LiteralPath (Join-Path $appInstallerBuild $dll) -Destination (Join-Path $bin $dll)
     }
     Remove-Item -LiteralPath $appInstallerBuild -Recurse -Force
+}
 
-    $appInstallBuild = Get-OwnedBuildDirectory -Root $OutputPath -RelativePath '.windows-appinstall-build'
+if ($Module -eq 'Shmuelie.AppInstall.Experimental') {
+    $bin = Join-Path $stage 'bin'
+    New-Item -Path $bin -ItemType Directory -Force | Out-Null
+    $appInstallBuild = Get-OwnedBuildDirectory -Root $OutputPath -RelativePath '.experimental-appinstall-build'
     if (Test-Path -LiteralPath $appInstallBuild) {
         Remove-Item -LiteralPath $appInstallBuild -Recurse -Force
     }
@@ -214,15 +221,15 @@ if ($Module -eq 'Shmuelie.Windows') {
     if ($LASTEXITCODE -ne 0) {
         throw 'Shmuelie.Windows.AppInstall publish failed.'
     }
-    foreach ($dependency in 'Microsoft.Windows.SDK.NET.dll', 'WinRT.Runtime.dll') {
-        if ((Get-FileHash -LiteralPath (Join-Path $appInstallBuild $dependency)).Hash -ne
-            (Get-FileHash -LiteralPath (Join-Path $bin $dependency)).Hash) {
-            throw "The Windows assemblies require different copies of $dependency."
-        }
+    foreach ($dependency in 'Shmuelie.Windows.AppInstall.dll', 'Microsoft.Windows.SDK.NET.dll', 'WinRT.Runtime.dll') {
+        Copy-Item -LiteralPath (Join-Path $appInstallBuild $dependency) -Destination (Join-Path $bin $dependency)
     }
-    Copy-Item -LiteralPath (Join-Path $appInstallBuild 'Shmuelie.Windows.AppInstall.dll') -Destination (Join-Path $bin 'Shmuelie.Windows.AppInstall.dll')
     Copy-Item -LiteralPath (Join-Path $appInstallBuild 'en-US') -Destination (Join-Path $bin 'en-US') -Recurse
     Remove-Item -LiteralPath $appInstallBuild -Recurse -Force
+}
+
+if ($Module -eq 'Shmuelie.Windows') {
+    & (Join-Path $PSScriptRoot 'Assert-ModulePublishable.ps1') -Module $Module -Path $stage
 }
 
 # Validate the staged module in a short-lived child pwsh process so that every

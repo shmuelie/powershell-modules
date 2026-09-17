@@ -24,6 +24,12 @@ Start-Copilot
 | Marketplaces | `Get-CopilotMarketplace`, `Register-CopilotMarketplace`, `Unregister-CopilotMarketplace`, `Get-CopilotMarketplacePlugin` |
 | MCP servers | `Get-CopilotMcpServer`, `Register-CopilotMcpServer`, `Unregister-CopilotMcpServer` (registration/removal protect symlink-managed configuration) |
 
+Compression and file-backed event repair require a successful `.bak` backup before
+rewriting events, unless `-NoBackup` is explicitly supplied. Backup copies are
+staged beside the event file before replacing the prior backup. A failed backup
+stops the operation even under `-ErrorAction Continue`, before event rewriting or
+compression's snapshot pruning; the original events and prior backup remain.
+
 ## Start-Copilot
 
 `Start-Copilot` wraps the `copilot` executable and adds:
