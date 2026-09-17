@@ -6,6 +6,8 @@ if ('Shmuelie.Windows.Cmdlets.GetInstalledApplicationsCommand' -as [type]) {
 
 $repoRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
 $source = Join-Path $repoRoot 'modules' 'Shmuelie.Windows' 'Cmdlets'
+$modulePath = Join-Path $PSHOME 'Modules'
+$env:PSModulePath = $modulePath
 # Compile unchanged command/base/interface code, but no registry or Win32 implementation.
 Add-Type -Path @(
     Join-Path $PSScriptRoot 'InstalledApplicationsScopeFixture.cs'
@@ -52,12 +54,16 @@ try {
         if ($case.Mode -eq 'LoadFailure') { [Shmuelie.Windows.Cmdlets.InstalledApplicationsScopeFixture]::LoadStatus = 5 }
 
         $initial = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault2()
+        # Runspace startup otherwise restores user/system module search paths.
+        $initial.EnvironmentVariables.Add([System.Management.Automation.Runspaces.SessionStateVariableEntry]::new(
+            'PSModulePath', $modulePath, $null))
         $initial.Commands.Add([System.Management.Automation.Runspaces.SessionStateCmdletEntry]::new(
             'Get-InstalledApplications', [Shmuelie.Windows.Cmdlets.GetInstalledApplicationsCommand], $null))
         $runspace = [runspacefactory]::CreateRunspace($initial)
         $ps = [powershell]::Create()
         try {
             $runspace.Open()
+            if ($env:PSModulePath -cne $modulePath) { throw 'The scope runspace module path is not isolated.' }
             $ps.Runspace = $runspace
             if ($case.Mode -in @('InheritedWhatIf', 'ExplicitWhatIfFalse')) {
                 $runspace.SessionStateProxy.SetVariable('WhatIfPreference', $true)
