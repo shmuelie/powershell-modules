@@ -13,6 +13,11 @@ Versions change only when a release is cut; unreleased work stays under
   dependencies remain in Windows; the AppInstallManager support hold is unchanged.
 
 ### Fixed
+- WPR start/stop helpers now report invocation failures and nonzero native exit
+  codes as PowerShell errors that honor `-ErrorAction Stop`, independently of
+  native-error preferences. Failed operations emit no success output.
+  Stop requires a nonblank `-File`; argument boundaries, confirmation, caller
+  preferences and prior exit state are preserved.
 - `New-SubstDrive` rejects ambiguous `-TargetPath` resolutions instead of mapping
   the first match. Targets must resolve to exactly one FileSystem directory,
   including under `-WhatIf`; single-match wildcards and confirmation behavior
