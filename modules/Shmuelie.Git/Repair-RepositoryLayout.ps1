@@ -57,6 +57,11 @@ function Repair-RepositoryLayout {
 
     Returns a RepositoryLayoutResult object per repository describing the action.
     Use -WhatIf to preview the full From->To plan without moving anything.
+    Standalone main-clone renames skip occupied exact destinations with
+    Skipped-TargetExists, including during WhatIf. They never merge into or nest
+    under existing directories. Failed exact moves return rename-failed with
+    an Error status; cross-filesystem copying and concurrent-writer coordination
+    are not provided.
     .PARAMETER Root
     The repos root to scan. Defaults to $env:SOURCE_REPOS. Fails if neither is set.
     .PARAMETER Organization
@@ -250,11 +255,16 @@ function Repair-RepositoryLayout {
                         New-Result $repoRel 'leaf-not-branch' 'none' $wt $target 'Skipped-HasWorktrees'
                         continue
                     }
+                    if (Test-Path -LiteralPath $target) {
+                        New-Result $repoRel 'leaf-not-branch' 'none' $wt $target 'Skipped-TargetExists'
+                        continue
+                    }
                     if ($PSCmdlet.ShouldProcess($wt, "Rename main clone dir -> '$branchDir'")) {
                         try {
                             $targetParent = Split-Path $target -Parent
-                            if (-not (Test-Path $targetParent)) { New-Item -ItemType Directory -Path $targetParent -Force | Out-Null }
-                            Move-Item -LiteralPath $wt -Destination $target -ErrorAction Stop
+                            if (-not (Test-Path -LiteralPath $targetParent)) { New-Item -ItemType Directory -Path $targetParent -Force -ErrorAction Stop | Out-Null }
+                            # Unlike Move-Item, the move itself treats target as an exact path.
+                            [System.IO.Directory]::Move($wt, $target)
                             New-Result $repoRel 'leaf-not-branch' 'renamed' $wt $target 'Converted'
                         } catch {
                             New-Result $repoRel 'leaf-not-branch' 'rename-failed' $wt $target "Error: $($_.Exception.Message)"

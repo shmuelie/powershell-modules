@@ -4641,6 +4641,264 @@ Describe 'Repair-RepositoryLayout' {
     }
 }
 
+Describe 'Repair-RepositoryLayout standalone targets' {
+    BeforeAll {
+        $layoutRoot = (New-Item -ItemType Directory -Path (
+            Join-Path $TestDrive "layout-$([guid]::NewGuid().ToString('N'))"
+        ) -ErrorAction Stop).FullName
+        $layoutEnvironment = @{}
+        foreach ($item in @(Get-ChildItem Env: | Where-Object Name -Like 'GIT_*')) {
+            $layoutEnvironment[$item.Name] = $item.Value
+            Remove-Item -LiteralPath "Env:$($item.Name)" -ErrorAction Stop
+        }
+        $env:GIT_CONFIG_GLOBAL = Join-Path $layoutRoot 'no-global'
+        $env:GIT_CONFIG_SYSTEM = Join-Path $layoutRoot 'no-system'
+        $env:GIT_CONFIG_NOSYSTEM = '1'
+        $env:GIT_CONFIG_COUNT = '0'
+        $env:GIT_CEILING_DIRECTORIES = $TestDrive
+        $env:GIT_TERMINAL_PROMPT = '0'
+        $env:GIT_ALLOW_PROTOCOL = 'file'
+
+        function Assert-LayoutFixturePath {
+            param([string]$Path)
+            if (-not [IO.Path]::GetFullPath($Path).StartsWith(
+                $layoutRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::Ordinal)) {
+                throw "Refusing layout fixture access outside '$layoutRoot': '$Path'."
+            }
+        }
+
+        function Get-LayoutSnapshot {
+            param([string]$Path)
+            Assert-LayoutFixturePath $Path
+            if (-not (Test-Path -LiteralPath $Path)) { return 'absent' }
+            $rootItem = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+            $items = @($rootItem)
+            if ($rootItem.PSIsContainer) {
+                $items += @(Get-ChildItem -LiteralPath $Path -Force -Recurse -ErrorAction Stop)
+            }
+            @($items | Sort-Object FullName | ForEach-Object {
+                [pscustomobject]@{
+                    Path = [IO.Path]::GetRelativePath($Path, $_.FullName)
+                    Kind = if ($_.PSIsContainer) { 'directory' } else { 'file' }
+                    SHA256 = if (-not $_.PSIsContainer) { (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash }
+                }
+            }) | ConvertTo-Json -Depth 4 -Compress
+        }
+
+        function New-LayoutFixture {
+            param([string]$Branch = 'main')
+            $root = Join-Path $layoutCase 'repos'
+            $source = Join-Path $root 'example' 'project' 'old-name'
+            Assert-LayoutFixturePath $source
+            $null = New-TestRepo -Path $source
+            if ($Branch -ne 'main') { $null = Invoke-Git @('-C', $source, 'branch', '-m', $Branch) }
+            $target = Join-Path $root 'example' 'project' ([IO.Path]::Combine([string[]]($Branch -split '/')))
+            Assert-LayoutFixturePath $target
+            [pscustomobject]@{ Root = $root; Source = $source; Target = $target }
+        }
+
+        function Invoke-LayoutFixtureRepair {
+            param($Fixture, [switch]$WhatIf)
+            Assert-LayoutFixturePath $Fixture.Root
+            Assert-LayoutFixturePath (Get-Location).ProviderPath
+            Repair-RepositoryLayout -Root $Fixture.Root -Organization example -Name project -Confirm:$false -WhatIf:$WhatIf
+        }
+
+        function Write-LayoutEvidence {
+            param($Fixture, $BeforeSource, $BeforeTarget, $BeforeLocation, $Results)
+            Write-Information -Tags 'RepositoryLayoutEvidence' -MessageData ([pscustomobject]@{
+                Source = $Fixture.Source
+                Target = $Fixture.Target
+                SourceBefore = $BeforeSource
+                SourceAfter = Get-LayoutSnapshot $Fixture.Source
+                TargetBefore = $BeforeTarget
+                TargetAfter = Get-LayoutSnapshot $Fixture.Target
+                LocationBefore = $BeforeLocation
+                LocationAfter = (Get-Location).ProviderPath
+                Results = $Results
+            })
+        }
+    }
+
+    BeforeEach {
+        $layoutCase = (New-Item -ItemType Directory -Path (
+            Join-Path $layoutRoot ([guid]::NewGuid().ToString('N'))
+        ) -ErrorAction Stop).FullName
+        $layoutPushed = $false
+        Push-Location -LiteralPath $layoutCase -ErrorAction Stop
+        $layoutPushed = $true
+        Assert-LayoutFixturePath (Get-Location).ProviderPath
+    }
+
+    AfterEach {
+        if ($layoutPushed) { Pop-Location -ErrorAction Stop }
+    }
+
+    AfterAll {
+        foreach ($item in @(Get-ChildItem Env: | Where-Object Name -Like 'GIT_*')) {
+            Remove-Item -LiteralPath "Env:$($item.Name)" -ErrorAction Stop
+        }
+        foreach ($key in $layoutEnvironment.Keys) {
+            [Environment]::SetEnvironmentVariable($key, $layoutEnvironment[$key], 'Process')
+        }
+        if ($layoutRoot -and (Test-Path -LiteralPath $layoutRoot)) {
+            if ((Split-Path $layoutRoot -Parent) -cne $TestDrive) { throw 'Layout cleanup escaped TestDrive.' }
+            Remove-Item -LiteralPath $layoutRoot -Recurse -Force -ErrorAction Stop
+        }
+    }
+
+    It 'leaves both paths unchanged for an occupied <Kind> target with WhatIf=<Preview>' -ForEach @(
+        foreach ($kind in 'empty directory', 'nonempty directory', 'file', 'repository') {
+            foreach ($preview in $false, $true) { @{ Kind = $kind; Preview = $preview } }
+        }
+    ) {
+        $fixture = New-LayoutFixture
+        switch ($Kind) {
+            'empty directory' { $null = New-Item -ItemType Directory -Path $fixture.Target -ErrorAction Stop }
+            'nonempty directory' {
+                $null = New-Item -ItemType Directory -Path $fixture.Target -ErrorAction Stop
+                Set-Content -LiteralPath (Join-Path $fixture.Target 'keep.txt') -Value 'unrelated data'
+            }
+            'file' { Set-Content -LiteralPath $fixture.Target -Value 'unrelated file' }
+            'repository' { $null = New-TestRepo -Path $fixture.Target }
+        }
+        $sourceBefore = Get-LayoutSnapshot $fixture.Source
+        $targetBefore = Get-LayoutSnapshot $fixture.Target
+        $locationBefore = (Get-Location).ProviderPath
+
+        $results = @(Invoke-LayoutFixtureRepair $fixture -WhatIf:$Preview)
+
+        Write-LayoutEvidence $fixture $sourceBefore $targetBefore $locationBefore $results
+        $results | Should -HaveCount 1
+        $results[0].PSTypeNames[0] | Should -BeExactly 'RepositoryLayoutResult'
+        $results[0].Status | Should -BeExactly 'Skipped-TargetExists'
+        $results[0].Action | Should -BeExactly 'none'
+        $results[0].From | Should -BeExactly $fixture.Source
+        $results[0].To | Should -BeExactly $fixture.Target
+        Get-LayoutSnapshot $fixture.Source | Should -BeExactly $sourceBefore
+        Get-LayoutSnapshot $fixture.Target | Should -BeExactly $targetBefore
+        (Get-Location).ProviderPath | Should -BeExactly $locationBefore
+    }
+
+    It 'moves a standalone <Branch> clone to exactly the reported root' -ForEach @(
+        @{ Branch = 'main' }
+        @{ Branch = 'feature/nested' }
+    ) {
+        $fixture = New-LayoutFixture -Branch $Branch
+        $sourceBefore = Get-LayoutSnapshot $fixture.Source
+        $locationBefore = (Get-Location).ProviderPath
+
+        $results = @(Invoke-LayoutFixtureRepair $fixture)
+
+        Write-LayoutEvidence $fixture $sourceBefore 'absent' $locationBefore $results
+        $results | Should -HaveCount 1
+        $results[0].Status | Should -BeExactly 'Converted'
+        $results[0].Action | Should -BeExactly 'renamed'
+        $results[0].To | Should -BeExactly $fixture.Target
+        Test-Path -LiteralPath $fixture.Source | Should -BeFalse
+        Get-LayoutSnapshot $fixture.Target | Should -BeExactly $sourceBefore
+        $top = Invoke-Git @('-C', $results[0].To, 'rev-parse', '--show-toplevel')
+        ConvertTo-NativeTestPath $top | Should -BeExactly $results[0].To
+        (Get-Location).ProviderPath | Should -BeExactly $locationBefore
+    }
+
+    It 'previews a standalone nested move without creating destination parents' {
+        $fixture = New-LayoutFixture -Branch feature/nested
+        $sourceBefore = Get-LayoutSnapshot $fixture.Source
+        $locationBefore = (Get-Location).ProviderPath
+
+        $results = @(Invoke-LayoutFixtureRepair $fixture -WhatIf)
+
+        Write-LayoutEvidence $fixture $sourceBefore 'absent' $locationBefore $results
+        $results | Should -HaveCount 1
+        $results[0].Status | Should -BeExactly 'WhatIf'
+        $results[0].Action | Should -BeExactly 'would-rename'
+        $results[0].To | Should -BeExactly $fixture.Target
+        Get-LayoutSnapshot $fixture.Source | Should -BeExactly $sourceBefore
+        Test-Path -LiteralPath (Split-Path $fixture.Target -Parent) | Should -BeFalse
+        (Get-Location).ProviderPath | Should -BeExactly $locationBefore
+    }
+
+    It 'preserves the standalone current-directory guard' {
+        $fixture = New-LayoutFixture
+        $child = Join-Path $fixture.Source 'child'
+        $null = New-Item -ItemType Directory -Path $child -ErrorAction Stop
+        Set-Location -LiteralPath $child -ErrorAction Stop
+        Assert-LayoutFixturePath (Get-Location).ProviderPath
+        $sourceBefore = Get-LayoutSnapshot $fixture.Source
+
+        $results = @(Invoke-LayoutFixtureRepair $fixture)
+
+        Write-LayoutEvidence $fixture $sourceBefore 'absent' $child $results
+        $results[0].Status | Should -BeExactly 'Skipped-CwdInside'
+        Get-LayoutSnapshot $fixture.Source | Should -BeExactly $sourceBefore
+        Test-Path -LiteralPath $fixture.Target | Should -BeFalse
+        (Get-Location).ProviderPath | Should -BeExactly $child
+    }
+
+    It 'preserves the standalone dependent-worktree guard' {
+        $fixture = New-LayoutFixture
+        $linked = Join-Path $layoutCase 'linked'
+        Assert-LayoutFixturePath $linked
+        $null = Invoke-Git @('-C', $fixture.Source, 'worktree', 'add', '--quiet', '-b', 'other', $linked)
+        $sourceBefore = Get-LayoutSnapshot $fixture.Source
+        $linkedBefore = Get-LayoutSnapshot $linked
+        $locationBefore = (Get-Location).ProviderPath
+
+        $results = @(Invoke-LayoutFixtureRepair $fixture)
+
+        Write-LayoutEvidence $fixture $sourceBefore 'absent' $locationBefore $results
+        $results[0].Status | Should -BeExactly 'Skipped-HasWorktrees'
+        Get-LayoutSnapshot $fixture.Source | Should -BeExactly $sourceBefore
+        Get-LayoutSnapshot $linked | Should -BeExactly $linkedBefore
+        Test-Path -LiteralPath $fixture.Target | Should -BeFalse
+        (Get-Location).ProviderPath | Should -BeExactly $locationBefore
+    }
+
+    It 'does not treat a destination created after the occupancy check as a container' {
+        $fixture = New-LayoutFixture -Branch feature/nested
+        $targetParent = Split-Path $fixture.Target -Parent
+        $race = @{ TargetBeforeMove = $null }
+        Mock -ModuleName Shmuelie.Git New-Item {
+            Assert-LayoutFixturePath $Path
+            $null = [IO.Directory]::CreateDirectory($Path)
+            $null = [IO.Directory]::CreateDirectory($fixture.Target)
+            [IO.File]::WriteAllText((Join-Path $fixture.Target 'keep.txt'), 'concurrent destination')
+            $race.TargetBeforeMove = Get-LayoutSnapshot $fixture.Target
+        } -ParameterFilter { $ItemType -eq 'Directory' -and $Path -ceq $targetParent }
+        $sourceBefore = Get-LayoutSnapshot $fixture.Source
+        $locationBefore = (Get-Location).ProviderPath
+
+        $results = @(Invoke-LayoutFixtureRepair $fixture)
+
+        Write-LayoutEvidence $fixture $sourceBefore $race.TargetBeforeMove $locationBefore $results
+        Should -Invoke -ModuleName Shmuelie.Git New-Item -Times 1 -Exactly -ParameterFilter { $Path -ceq $targetParent }
+        $results[0].Action | Should -BeExactly 'rename-failed'
+        $results[0].Status | Should -Match '^Error:'
+        Get-LayoutSnapshot $fixture.Source | Should -BeExactly $sourceBefore
+        Get-LayoutSnapshot $fixture.Target | Should -BeExactly $race.TargetBeforeMove
+        (Get-Location).ProviderPath | Should -BeExactly $locationBefore
+    }
+
+    It 'reports a failed exact move when a destination parent is a file' {
+        $fixture = New-LayoutFixture -Branch feature/nested
+        $parent = Split-Path $fixture.Target -Parent
+        Set-Content -LiteralPath $parent -Value 'keep parent file'
+        $sourceBefore = Get-LayoutSnapshot $fixture.Source
+        $parentBefore = Get-LayoutSnapshot $parent
+        $locationBefore = (Get-Location).ProviderPath
+
+        $results = @(Invoke-LayoutFixtureRepair $fixture)
+
+        Write-LayoutEvidence $fixture $sourceBefore 'absent' $locationBefore $results
+        $results[0].Action | Should -BeExactly 'rename-failed'
+        $results[0].Status | Should -Match '^Error:'
+        Get-LayoutSnapshot $fixture.Source | Should -BeExactly $sourceBefore
+        Get-LayoutSnapshot $parent | Should -BeExactly $parentBefore
+        (Get-Location).ProviderPath | Should -BeExactly $locationBefore
+    }
+}
+
 Describe 'Find-StaleBranch' {
     BeforeAll {
         function New-AdoLikeRemote {
