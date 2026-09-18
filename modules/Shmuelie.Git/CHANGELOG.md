@@ -7,6 +7,9 @@ Versions change only when a release is cut; unreleased work stays under
 ## [Unreleased]
 
 ### Fixed
+- `Repair-RepositoryLayout` skips occupied standalone-clone destinations without
+  changing either path. Exact-path renames no longer nest a clone inside an
+  existing directory while reporting the wrong resulting root. (#265)
 - Predictor cleanup now identifies the module's idle subscriber by its action-job
   association instead of confusing job and subscription IDs. Removal and force
   re-import release only module-owned subscriptions, jobs and predictor binaries,
