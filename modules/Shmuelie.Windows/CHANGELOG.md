@@ -13,6 +13,11 @@ Versions change only when a release is cut; unreleased work stays under
   dependencies remain in Windows; the AppInstallManager support hold is unchanged.
 
 ### Fixed
+- `Update-AppInstallerApp` no longer turns empty pipelines or failed identity
+  binding into updates for every application. Null, empty, and whitespace-only
+  identities are rejected. Standalone unfiltered calls retain update-all
+  behavior, while valid selections, confirmation, and opt-in request-completion
+  results are unchanged.
 - Correct the all-profile Windows Terminal help example to include `-Name '*'`
   with `-IncludeFragments`, preserving the default current-profile selection. (#269)
 

@@ -37,6 +37,14 @@ request-completion output when an orchestrator needs evidence:
 Get-AppInstallerApp | Update-AppInstallerApp -PassThru
 ```
 
+A standalone `Update-AppInstallerApp` without `-Name` requests updates for all
+discovered App Installer apps. An empty upstream pipeline selects nothing:
+it performs no discovery, requests no updates, and emits no completion results.
+Supplied names and pipeline identity properties reject null, empty, and
+whitespace-only values instead of becoming an update-all request. Objects that
+fail pipeline binding retain their PowerShell errors; with the default error
+policy, other valid input records still select only their matching apps.
+
 Each `Shmuelie.Windows.AppInstallerUpdateRequestResult` has `Name`,
 `PackageFullName`, `PackageFamilyName`, `AppInstallerUri`,
 `Operation = UpdateCheck`, and `RequestCompleted = true`. It is emitted only
