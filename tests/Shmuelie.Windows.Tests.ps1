@@ -327,6 +327,18 @@ Describe 'Get-InstalledApplications' -Skip:(-not $IsWindows) {
     }
 }
 
+Describe 'Get-InstalledApplications scope binding (hermetic)' -Skip:(-not $IsWindows) {
+    It 'dispatches every accepted case variant without live registry access' {
+        $fixture = Join-Path $PSScriptRoot 'fixtures' 'Test-InstalledApplicationsScope.ps1'
+        $output = & pwsh -NoProfile -NonInteractive -File $fixture
+        $LASTEXITCODE | Should -Be 0 -Because ($output -join "`n")
+        $result = ($output -join "`n") | ConvertFrom-Json -ErrorAction Stop
+        $result.Failed | Should -Be 0
+        $result.Passed | Should -BeGreaterOrEqual 75
+        @($result.Cases | Where-Object { -not $_.Passed }) | Should -HaveCount 0
+    }
+}
+
 Describe 'Get-InstalledApplications hive-cleanup regression' -Skip:(-not $IsWindows) {
     BeforeAll {
         $repoRoot    = Split-Path (Split-Path $PSCommandPath -Parent) -Parent
