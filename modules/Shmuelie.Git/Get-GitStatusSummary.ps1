@@ -19,6 +19,10 @@ function Get-GitStatusSummary {
         any in-progress operation (rebase/merge/cherry-pick/revert/bisect),
         repo name, relative path, and a formatted status string.
 
+        Tracked type changes (git's T status, such as a file becoming a symlink)
+        count as IndexModified or WorkingModified in the corresponding column.
+        A type change in both columns contributes one modification to each.
+
         Self-contained — no posh-git or external module dependency. Only requires
         the git CLI.
     .PARAMETER Path
@@ -120,6 +124,7 @@ function Get-GitStatusSummary {
             switch ($x) {
                 'A' { $idxA++ }
                 'M' { $idxM++ }
+                'T' { $idxM++ }
                 'R' { $idxM++ }
                 'C' { $idxA++ }
                 'D' { $idxD++ }
@@ -128,6 +133,7 @@ function Get-GitStatusSummary {
             # Working tree changes
             switch ($y) {
                 'M' { $wrkM++ }
+                'T' { $wrkM++ }
                 'D' { $wrkD++ }
                 'A' { $wrkA++ }
             }
