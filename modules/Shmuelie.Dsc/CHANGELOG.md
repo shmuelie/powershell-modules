@@ -13,6 +13,12 @@ Versions change only when a release is cut; unreleased work stays under
   rather than reporting a guessed installed/absent state. CLI wrappers reject
   missing exit status without reusing a previous command's exit code and restore
   caller state. Existing known-exit `Set()` behavior is unchanged. (Fixes #259.)
+- `SavePSResource.Test()` and `Get().Installed` require a readable, correctly
+  named module manifest, matching version layout, and declared root/startup
+  files instead of accepting empty or incomplete directories. Checks remain
+  read-only and do not import candidate code or resolve dependencies; save
+  options and repository/path selection are unchanged. Numeric versions compare
+  with omitted components treated as zero. (Fixes #258.)
 
 ## [0.1.0] - 2026-08-24
 

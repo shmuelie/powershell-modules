@@ -185,6 +185,141 @@ function New-DscSymbolicLink {
     New-Item -ItemType SymbolicLink -Path $Path -Target $Target -Force -ErrorAction Stop | Out-Null
 }
 
+function Test-DscSavedModuleFile {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Directory,
+        [Parameter(Mandatory)][string]$Entry,
+        [ValidateSet('File', 'RootModule', 'NestedModule')]
+        [string]$Kind = 'File'
+    )
+
+    if ([System.IO.Path]::IsPathRooted($Entry)) {
+        Write-Verbose "Saved module entry must be relative to its module directory: '$Entry'."
+        return $false
+    }
+    $suffixes = @('')
+    if ($Kind -ne 'File') {
+        $moduleExtensions = @('.psm1', '.dll', '.exe', '.cdxml', '.xaml')
+        if ($Kind -eq 'NestedModule') { $moduleExtensions += '.psd1' }
+        $extension = [System.IO.Path]::GetExtension($Entry)
+        if (-not $extension) {
+            $suffixes = $moduleExtensions
+        } elseif ($extension -notin $moduleExtensions) {
+            Write-Verbose "Unsupported saved module entry file: '$Entry'."
+            return $false
+        }
+    }
+    foreach ($suffix in $suffixes) {
+        try {
+            $file = [System.IO.Path]::GetFullPath((Join-Path $Directory "$Entry$suffix"))
+        } catch [System.ArgumentException], [System.NotSupportedException] {
+            Write-Verbose "Invalid saved module entry '$Entry': $_"
+            return $false
+        }
+        $relative = [System.IO.Path]::GetRelativePath($Directory, $file)
+        if ($relative -eq '..' -or $relative.StartsWith("..$([System.IO.Path]::DirectorySeparatorChar)") -or
+            [System.IO.Path]::IsPathRooted($relative)) {
+            Write-Verbose "Saved module entry is outside its module directory: '$Entry'."
+            return $false
+        }
+        if (Test-Path -LiteralPath $file -PathType Leaf -ErrorAction Stop) {
+            return $true
+        }
+    }
+    Write-Verbose "Saved module entry is missing: '$Entry' in '$Directory'."
+    return $false
+}
+
+function Test-DscSavedModule {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Directory,
+        [Parameter(Mandatory)][string]$Name,
+        [string]$Version
+    )
+
+    if (-not (Test-Path -LiteralPath $Directory -PathType Container -ErrorAction Stop)) {
+        return $false
+    }
+    $manifestPath = Join-Path $Directory "$Name.psd1"
+    if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf -ErrorAction Stop)) {
+        return $false
+    }
+    try {
+        $manifest = Import-PowerShellDataFile -LiteralPath $manifestPath -ErrorAction Stop
+    } catch [System.InvalidOperationException] {
+        Write-Verbose "Saved module manifest is not readable static data: '$manifestPath': $_"
+        return $false
+    }
+    $manifestVersion = $null
+    if ($manifest.ModuleVersion -isnot [string] -or
+        -not [version]::TryParse($manifest.ModuleVersion, [ref]$manifestVersion)) {
+        Write-Verbose "Saved module manifest has no valid ModuleVersion: '$manifestPath'."
+        return $false
+    }
+    if ($Version) {
+        $directoryVersion = $null
+        if (-not [version]::TryParse($Version, [ref]$directoryVersion) -or
+            $manifestVersion.Major -ne $directoryVersion.Major -or $manifestVersion.Minor -ne $directoryVersion.Minor -or
+            [Math]::Max(0, $manifestVersion.Build) -ne [Math]::Max(0, $directoryVersion.Build) -or
+            [Math]::Max(0, $manifestVersion.Revision) -ne [Math]::Max(0, $directoryVersion.Revision)) {
+            Write-Verbose "Saved module manifest does not match version directory '$Version': '$manifestPath'."
+            return $false
+        }
+    }
+
+    $directoryPath = (Get-Item -LiteralPath $Directory -Force -ErrorAction Stop).FullName
+    if ($manifest.ContainsKey('RootModule')) {
+        $rootModule = $manifest.RootModule
+    } else {
+        $rootModule = $manifest.ModuleToProcess
+    }
+    if ($null -ne $rootModule) {
+        if ($rootModule -isnot [string]) {
+            Write-Verbose "Saved module manifest has an invalid root module value: '$manifestPath'."
+            return $false
+        }
+        if ($rootModule.Length -gt 0 -and -not (Test-DscSavedModuleFile -Directory $directoryPath -Entry $rootModule -Kind RootModule)) {
+            return $false
+        }
+    }
+    # These are local startup files, not dependencies resolved through PSModulePath.
+    foreach ($field in 'ScriptsToProcess', 'TypesToProcess', 'FormatsToProcess') {
+        foreach ($entry in $manifest[$field]) {
+            if ($entry -isnot [string] -or [string]::IsNullOrWhiteSpace($entry)) {
+                Write-Verbose "Saved module manifest has an invalid $field entry: '$manifestPath'."
+                return $false
+            }
+            if (-not (Test-DscSavedModuleFile -Directory $directoryPath -Entry $entry)) {
+                return $false
+            }
+        }
+    }
+    foreach ($field in 'NestedModules', 'RequiredAssemblies') {
+        foreach ($reference in $manifest[$field]) {
+            $entry = $reference
+            if ($field -eq 'NestedModules' -and $reference -is [hashtable]) {
+                $entry = $reference.ModuleName
+            }
+            if ($entry -isnot [string] -or [string]::IsNullOrWhiteSpace($entry)) {
+                Write-Verbose "Saved module manifest has an invalid $field entry: '$manifestPath'."
+                return $false
+            }
+            # Bare dependency names remain unresolved, as with -SkipDependencyCheck.
+            $localFile = $entry.IndexOfAny([char[]]'\/') -ge 0 -or
+                [System.IO.Path]::GetExtension($entry) -in @('.psm1', '.psd1', '.dll', '.exe', '.cdxml', '.xaml')
+            if ($localFile) {
+                $kind = if ($field -eq 'NestedModules') { 'NestedModule' } else { 'File' }
+                if (-not (Test-DscSavedModuleFile -Directory $directoryPath -Entry $entry -Kind $kind)) {
+                    return $false
+                }
+            }
+        }
+    }
+    return $true
+}
+
 # Resources -------------------------------------------------------------------
 
 <#
@@ -193,8 +328,11 @@ function New-DscSymbolicLink {
 
 .DESCRIPTION
     DSC resource that ensures a PowerShell module is saved (not installed) to a
-    specified directory. Tests for existence by checking whether a subfolder
-    matching the module name (and version, when specified) exists under Path.
+    specified directory. Tests for a readable, correctly named manifest with a
+    valid ModuleVersion and any declared root module and local startup files.
+    Accepts a flat module directory or at least one matching version directory.
+    Presence checks read data only; they do not import candidate module code or
+    resolve dependencies, and do not prove runtime compatibility.
     Uses Save-PSResource with -TrustRepository, -IncludeXml, -AcceptLicense, and
     -SkipDependencyCheck so it runs non-interactively.
 
@@ -211,11 +349,13 @@ function New-DscSymbolicLink {
     The PSResourceRepository to save from. Defaults to 'PSGallery'.
 
 .PROPERTY Version
-    Optional specific version to save. When set, Test() checks for that version's
-    subfolder and Set() passes it to Save-PSResource -Version.
+    Optional specific version to save. When set, Test() checks only that exact
+    subfolder and requires its manifest version to match. Set() passes the value
+    unchanged to Save-PSResource -Version; Test() does not resolve version ranges.
 
 .PROPERTY Installed
-    Read-only. Reports whether the module (and version, if specified) is present.
+    Read-only. Reports whether the saved module layout passes the read-only
+    presence check (and matches the version directory, if specified).
 
 .EXAMPLE
     - name: Save Pester
@@ -254,13 +394,21 @@ class SavePSResource {
 
     [bool] Test() {
         $modulePath = Join-Path $this.Path $this.Name
-        if (-not (Test-Path -LiteralPath $modulePath)) {
+        if (-not (Test-Path -LiteralPath $modulePath -PathType Container -ErrorAction Stop)) {
             return $false
         }
         if ($this.Version) {
-            return (Test-Path -LiteralPath (Join-Path $modulePath $this.Version))
+            return (Test-DscSavedModule -Directory (Join-Path $modulePath $this.Version) -Name $this.Name -Version $this.Version)
         }
-        return $true
+        if (Test-DscSavedModule -Directory $modulePath -Name $this.Name) {
+            return $true
+        }
+        foreach ($directory in Get-ChildItem -LiteralPath $modulePath -Directory -ErrorAction Stop) {
+            if (Test-DscSavedModule -Directory $directory.FullName -Name $this.Name -Version $directory.Name) {
+                return $true
+            }
+        }
+        return $false
     }
 
     [void] Set() {
