@@ -21,6 +21,7 @@ public sealed class NewSubstDriveCommand : SubstDriveCommandBase
 
     /// <summary>
     /// The existing local directory that the virtual drive should point to.
+    /// Wildcards are supported but must resolve to exactly one FileSystem directory.
     /// </summary>
     [Parameter(Mandatory = true, Position = 1)]
     [ValidateNotNullOrEmpty]
@@ -92,6 +93,15 @@ public sealed class NewSubstDriveCommand : SubstDriveCommandBase
             ThrowTerminatingError(new ErrorRecord(
                 new ArgumentException($"TargetPath must resolve to a FileSystem directory: {targetPath}", nameof(TargetPath)),
                 "TargetNotFileSystem",
+                ErrorCategory.InvalidArgument,
+                targetPath));
+        }
+
+        if (resolved.Count > 1)
+        {
+            ThrowTerminatingError(new ErrorRecord(
+                new ArgumentException($"TargetPath must resolve to exactly one FileSystem directory; multiple paths matched: {targetPath}", nameof(TargetPath)),
+                "AmbiguousTargetPath",
                 ErrorCategory.InvalidArgument,
                 targetPath));
         }
