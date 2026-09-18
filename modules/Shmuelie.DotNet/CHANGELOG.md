@@ -5,6 +5,11 @@ Versions change only when a release is cut; pending work lives under [Unreleased
 
 ## [Unreleased]
 
+### Fixed
+- Align the private location helper with Utilities: reject non-container targets,
+  stop before the callback on entry failure, and clean up only a successful entry.
+  Preserve cleanup on callback errors and early downstream termination.
+
 ## [0.2.0] - 2026-09-10
 
 ### Added
