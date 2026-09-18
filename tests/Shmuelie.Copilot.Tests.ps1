@@ -126,6 +126,26 @@ BeforeAll {
             Where-Object { $_.Trim() } |
             ForEach-Object { $_ | ConvertFrom-Json }
     }
+
+    function Get-AtomicMergeSourceSnapshot {
+        param([string[]]$Path)
+
+        @(
+            foreach ($source in $Path) {
+                Get-Item -LiteralPath $source -ErrorAction Stop
+                Get-ChildItem -LiteralPath $source -Recurse -Force -ErrorAction Stop
+            }
+        ) | Sort-Object FullName | ForEach-Object {
+            [pscustomobject]@{
+                Path = $_.FullName
+                Directory = $_.PSIsContainer
+                LinkTarget = $_.LinkTarget
+                Hash = if (-not $_.PSIsContainer -and -not ($_.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+                    (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash
+                }
+            }
+        } | ConvertTo-Json -Depth 4 -Compress
+    }
 }
 
 Describe 'Copilot CLI shim argument validation' {
@@ -323,7 +343,7 @@ Describe 'Merge-CopilotSession atomic failure handling' {
                         [string]$LiteralPath, [string]$Id,
                         [string]$ItemType, [switch]$Force, [switch]$Recurse,
                         [switch]$Raw, [int]$TotalCount, [string]$Destination,
-                        $Value, [string]$Encoding, [switch]$NoNewline,
+                        $Value, [string]$Encoding, [string]$Algorithm, [switch]$NoNewline,
                         [string[]]$EventLines, [switch]$NoBackup
                     )
                     process {
@@ -349,22 +369,6 @@ Describe 'Merge-CopilotSession atomic failure handling' {
             $script:AtomicOverriddenCommands.Add($Name)
         }
 
-        function Get-AtomicMergeSourceSnapshot {
-            param([string[]]$Path)
-
-            @(
-                foreach ($source in $Path) {
-                    Get-Item -LiteralPath $source -ErrorAction Stop
-                    Get-ChildItem -LiteralPath $source -Recurse -Force -ErrorAction Stop
-                }
-            ) | Sort-Object FullName | ForEach-Object {
-                [pscustomobject]@{
-                    Path = $_.FullName
-                    Directory = $_.PSIsContainer
-                    Hash = if (-not $_.PSIsContainer) { (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash }
-                }
-            } | ConvertTo-Json -Depth 4 -Compress
-        }
     }
 
     BeforeEach {
@@ -437,6 +441,8 @@ Describe 'Merge-CopilotSession atomic failure handling' {
     It 'aborts a nonterminating <Operation> failure and retains its error identity' -ForEach @(
         @{ Operation = 'create'; Command = 'New-Item' }
         @{ Operation = 'read'; Command = 'Get-Content' }
+        @{ Operation = 'enumerate'; Command = 'Get-ChildItem' }
+        @{ Operation = 'hash'; Command = 'Get-FileHash' }
         @{ Operation = 'copy'; Command = 'Copy-Item' }
         @{ Operation = 'append'; Command = 'Add-Content' }
         @{ Operation = 'write'; Command = 'Set-Content' }
@@ -444,6 +450,10 @@ Describe 'Merge-CopilotSession atomic failure handling' {
     ) {
         $ErrorActionPreference = 'Continue'
         $beforePreference = $ErrorActionPreference
+        if ($Operation -eq 'hash') {
+            Copy-Item -LiteralPath (Join-Path $script:AtomicPaths[0] 'files' 'payload-0.txt') -Destination (Join-Path $script:AtomicPaths[1] 'files' 'payload-0.txt') -ErrorAction Stop
+            $script:AtomicBefore = Get-AtomicMergeSourceSnapshot -Path $script:AtomicPaths
+        }
         Set-AtomicMergeFailureCommand -Name $Command
 
         $failure = $null
@@ -548,6 +558,19 @@ Describe 'Merge-CopilotSession atomic failure handling' {
         @(Get-ChildItem -LiteralPath $script:AtomicRoot -Directory).Name | Sort-Object | Should -Be ($script:AtomicIds | Sort-Object)
     }
 
+    It 'rejects an empty hash result rather than assuming identical contents' {
+        Copy-Item -LiteralPath (Join-Path $script:AtomicPaths[0] 'files' 'payload-0.txt') -Destination (Join-Path $script:AtomicPaths[1] 'files' 'payload-0.txt') -ErrorAction Stop
+        $before = Get-AtomicMergeSourceSnapshot -Path $script:AtomicPaths
+        Set-AtomicMergeFailureCommand -Name Get-FileHash -Mode Empty
+
+        {
+            $script:AtomicSessions | Merge-CopilotSession -RemoveSource -Confirm:$false -ErrorAction Continue
+        } | Should -Throw '*hashing did not return a valid result*'
+
+        Get-AtomicMergeSourceSnapshot -Path $script:AtomicPaths | Should -BeExactly $before
+        @(Get-ChildItem -LiteralPath $script:AtomicRoot -Directory).Name | Sort-Object | Should -Be ($script:AtomicIds | Sort-Object)
+    }
+
     It 'does not leak error preferences after a successful RemoveSource merge' {
         $ErrorActionPreference = 'Continue'
         $beforePreference = $ErrorActionPreference
@@ -558,6 +581,265 @@ Describe 'Merge-CopilotSession atomic failure handling' {
         $ErrorActionPreference | Should -Be $beforePreference
         foreach ($path in $script:AtomicPaths) { Test-Path -LiteralPath $path | Should -BeFalse }
         @(Get-ChildItem -LiteralPath $script:AtomicRoot -Directory).Name | Should -Be $merged.Id
+    }
+}
+
+Describe 'Merge-CopilotSession artifact collisions' {
+    BeforeEach {
+        $testHome = Join-Path $TestDrive ([guid]::NewGuid().ToString())
+        $script:CollisionRoot = Join-Path $testHome '.copilot' 'session-state'
+        $workspace = Join-Path $testHome 'workspace'
+        New-Item -ItemType Directory -Path $script:CollisionRoot, $workspace -Force -ErrorAction Stop | Out-Null
+        Mock -ModuleName Shmuelie.Copilot Get-CopilotHome {
+            if (-not $testHome -or -not [IO.Directory]::Exists($testHome)) { throw 'Synthetic Copilot home is unavailable.' }
+            $testHome
+        }
+        Mock -ModuleName Shmuelie.Copilot Get-Command { throw 'Unexpected native command discovery.' }
+        $script:CollisionIds = @('c1111111-1111-1111-1111-111111111111', 'd2222222-2222-2222-2222-222222222222')
+        $script:CollisionPaths = @(
+            for ($i = 0; $i -lt $script:CollisionIds.Count; $i++) {
+                $path = New-CopilotSessionState -SessionRoot $script:CollisionRoot -Id $script:CollisionIds[$i] -Cwd $workspace -Summary "Collision source $i"
+                Set-CopilotTestEvents -SessionPath $path -Lines (New-CopilotTestConversationEvents -Prefix "collision-$i" -SessionId $script:CollisionIds[$i] -Count 1 -Start ([datetimeoffset]'2026-08-20T20:00:00Z').AddMinutes($i))
+                $path
+            }
+        )
+    }
+
+    It 'rejects <Kind> in <Area> without changing any source' -ForEach @(
+        foreach ($area in 'files', 'research', (Join-Path 'rewind-snapshots' 'backups')) {
+            foreach ($kind in 'different contents', 'file then directory', 'directory then file', 'nested file', 'case-only file', 'hidden file') {
+                @{ Area = $area; Kind = $kind }
+            }
+        }
+    ) {
+        $ErrorActionPreference = 'Continue'
+        $relative = if ($Kind -eq 'nested file') { Join-Path 'shared' 'report[1].txt' } elseif ($Kind -eq 'hidden file') { '.report[1].txt' } else { 'report[1].txt' }
+        for ($i = 0; $i -lt 2; $i++) {
+            $name = if ($Kind -eq 'case-only file' -and $i -eq 1) { 'REPORT[1].TXT' } else { $relative }
+            $path = Join-Path $script:CollisionPaths[$i] $Area $name
+            $isDirectory = ($Kind -eq 'file then directory' -and $i -eq 1) -or ($Kind -eq 'directory then file' -and $i -eq 0)
+            if ($isDirectory) { $path = Join-Path $path 'child.txt' }
+            New-Item -ItemType Directory -Path (Split-Path $path -Parent) -Force -ErrorAction Stop | Out-Null
+            Set-Content -LiteralPath $path -Value "Distinct source $i" -ErrorAction Stop
+            if ($Kind -eq 'hidden file' -and $IsWindows) {
+                [IO.File]::SetAttributes($path, [IO.File]::GetAttributes($path) -bor [IO.FileAttributes]::Hidden)
+            }
+        }
+        $before = Get-AtomicMergeSourceSnapshot -Path $script:CollisionPaths
+        Mock -ModuleName Shmuelie.Copilot New-Item { throw 'Destination creation started before conflict validation.' }
+
+        $failure = $null
+        $result = $null
+        try {
+            $result = Merge-CopilotSession -Id $script:CollisionIds -RemoveSource -Confirm:$false -ErrorAction Continue
+        } catch { $failure = $_ }
+
+        $failure.Exception.Message | Should -Match 'artifact.*conflict'
+        $failure.Exception.Message | Should -Match ([regex]::Escape($Area))
+        foreach ($id in $script:CollisionIds) { $failure.Exception.Message | Should -Match ([regex]::Escape($id)) }
+        $result | Should -BeNullOrEmpty
+        Get-AtomicMergeSourceSnapshot -Path $script:CollisionPaths | Should -BeExactly $before
+        @(Get-ChildItem -LiteralPath $script:CollisionRoot -Directory).Name | Sort-Object | Should -Be ($script:CollisionIds | Sort-Object)
+        $ErrorActionPreference | Should -Be 'Continue'
+    }
+
+    It 'preserves disjoint artifacts under shared directories and literal bracket names in <Area>' -ForEach @(
+        @{ Area = 'files' }
+        @{ Area = 'research' }
+        @{ Area = (Join-Path 'rewind-snapshots' 'backups') }
+    ) {
+        foreach ($i in 0, 1) {
+            $directory = Join-Path $script:CollisionPaths[$i] $Area 'shared[1]'
+            New-Item -ItemType Directory -Path $directory -Force -ErrorAction Stop | Out-Null
+            Set-Content -LiteralPath (Join-Path $directory "report-$i.txt") -Value "Distinct source $i" -ErrorAction Stop
+        }
+
+        $merged = Merge-CopilotSession -Id $script:CollisionIds -RemoveSource -Confirm:$false -ErrorAction Continue
+
+        $merged | Should -Not -BeNullOrEmpty
+        foreach ($i in 0, 1) {
+            Get-Content -LiteralPath (Join-Path $merged.Path $Area 'shared[1]' "report-$i.txt") | Should -Be "Distinct source $i"
+            Test-Path -LiteralPath $script:CollisionPaths[$i] | Should -BeFalse
+        }
+        $events = @(Get-CopilotTestEventObjects -SessionPath $merged.Path)
+        @($events | Where-Object type -EQ 'user.message' | ForEach-Object { $_.data.content }) | Should -Be @('collision-0 user 1', 'collision-1 user 1')
+    }
+
+    It 'preserves identical <ContentKind> artifacts in <Area> with RemoveSource=<RemoveSources>' -ForEach @(
+        foreach ($area in 'files', 'research', (Join-Path 'rewind-snapshots' 'backups')) {
+            foreach ($kind in 'binary', 'empty') {
+                foreach ($remove in $false, $true) {
+                    @{ Area = $area; ContentKind = $kind; RemoveSources = $remove }
+                }
+            }
+        }
+    ) {
+        $bytes = [byte[]]@()
+        if ($ContentKind -eq 'binary') { $bytes = [byte[]]@(0, 1, 13, 10, 127, 128, 254, 255) }
+        foreach ($i in 0, 1) {
+            $directory = Join-Path $script:CollisionPaths[$i] $Area 'shared[1]'
+            New-Item -ItemType Directory -Path $directory -Force -ErrorAction Stop | Out-Null
+            [IO.File]::WriteAllBytes((Join-Path $directory 'identical[1].bin'), [byte[]]$bytes)
+        }
+        $before = Get-AtomicMergeSourceSnapshot -Path $script:CollisionPaths
+
+        $merged = Merge-CopilotSession -Id $script:CollisionIds -RemoveSource:$RemoveSources -Confirm:$false -ErrorAction Continue
+
+        [Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $merged.Path $Area 'shared[1]' 'identical[1].bin'))) |
+            Should -BeExactly ([Convert]::ToBase64String($bytes))
+        if ($RemoveSources) {
+            foreach ($path in $script:CollisionPaths) { Test-Path -LiteralPath $path | Should -BeFalse }
+        } else {
+            Get-AtomicMergeSourceSnapshot -Path $script:CollisionPaths | Should -BeExactly $before
+        }
+    }
+
+    It 'aborts when identical artifact <LockedIndex> cannot be read for comparison' -Skip:(-not $IsWindows) -ForEach @(
+        @{ LockedIndex = 0 }
+        @{ LockedIndex = 1 }
+    ) {
+        $paths = @(
+            foreach ($i in 0, 1) {
+                $directory = Join-Path $script:CollisionPaths[$i] 'files'
+                New-Item -ItemType Directory -Path $directory -ErrorAction Stop | Out-Null
+                $path = Join-Path $directory 'identical.txt'
+                Set-Content -LiteralPath $path -Value 'Identical bytes' -ErrorAction Stop
+                $path
+            }
+        )
+        $before = Get-AtomicMergeSourceSnapshot -Path $script:CollisionPaths
+        $handle = [IO.File]::Open($paths[$LockedIndex], [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+        $failure = $null
+        try {
+            try {
+                Merge-CopilotSession -Id $script:CollisionIds -RemoveSource -Confirm:$false -ErrorAction Continue | Out-Null
+            } catch { $failure = $_ }
+        } finally { $handle.Dispose() }
+
+        $failure | Should -Not -BeNullOrEmpty
+        $failure.FullyQualifiedErrorId | Should -Match 'FileReadError|GetFileHash'
+        Get-AtomicMergeSourceSnapshot -Path $script:CollisionPaths | Should -BeExactly $before
+        @(Get-ChildItem -LiteralPath $script:CollisionRoot -Directory).Name | Sort-Object | Should -Be ($script:CollisionIds | Sort-Object)
+    }
+
+    It 'keeps same leaf names in different artifact namespaces independent' {
+        $first = Join-Path $script:CollisionPaths[0] 'files'
+        $second = Join-Path $script:CollisionPaths[1] 'research'
+        New-Item -ItemType Directory -Path $first, $second -ErrorAction Stop | Out-Null
+        Set-Content -LiteralPath (Join-Path $first 'report.txt') -Value 'File artifact' -ErrorAction Stop
+        Set-Content -LiteralPath (Join-Path $second 'report.txt') -Value 'Research artifact' -ErrorAction Stop
+
+        $merged = Merge-CopilotSession -Id $script:CollisionIds -RemoveSource -Confirm:$false
+
+        Get-Content -LiteralPath (Join-Path $merged.Path 'files' 'report.txt') | Should -Be 'File artifact'
+        Get-Content -LiteralPath (Join-Path $merged.Path 'research' 'report.txt') | Should -Be 'Research artifact'
+    }
+
+    It 'also rejects conflicting pipeline input when RemoveSource is not requested' {
+        foreach ($i in 0, 1) {
+            $directory = Join-Path $script:CollisionPaths[$i] 'files'
+            New-Item -ItemType Directory -Path $directory -ErrorAction Stop | Out-Null
+            Set-Content -LiteralPath (Join-Path $directory 'shared.txt') -Value "Source $i" -ErrorAction Stop
+        }
+        $sessions = @($script:CollisionIds | ForEach-Object { Get-CopilotSession -Id $_ -ErrorAction Stop })
+        $before = Get-AtomicMergeSourceSnapshot -Path $script:CollisionPaths
+
+        { $sessions | Merge-CopilotSession -Confirm:$false -ErrorAction Continue } |
+            Should -Throw '*artifact path conflict*'
+
+        Get-AtomicMergeSourceSnapshot -Path $script:CollisionPaths | Should -BeExactly $before
+        @(Get-ChildItem -LiteralPath $script:CollisionRoot -Directory).Name | Sort-Object | Should -Be ($script:CollisionIds | Sort-Object)
+    }
+
+    It 'preserves nonconflicting hidden artifacts in <Area>' -ForEach @(
+        @{ Area = 'files' }
+        @{ Area = 'research' }
+        @{ Area = (Join-Path 'rewind-snapshots' 'backups') }
+    ) {
+        foreach ($i in 0, 1) {
+            $directory = Join-Path $script:CollisionPaths[$i] $Area
+            New-Item -ItemType Directory -Path $directory -Force -ErrorAction Stop | Out-Null
+            $path = Join-Path $directory ".hidden-$i.txt"
+            Set-Content -LiteralPath $path -Value "Hidden source $i" -ErrorAction Stop
+            if ($IsWindows) {
+                [IO.File]::SetAttributes($path, [IO.File]::GetAttributes($path) -bor [IO.FileAttributes]::Hidden)
+            }
+        }
+
+        $merged = Merge-CopilotSession -Id $script:CollisionIds -RemoveSource -Confirm:$false
+
+        foreach ($i in 0, 1) {
+            Get-Content -LiteralPath (Join-Path $merged.Path $Area ".hidden-$i.txt") | Should -Be "Hidden source $i"
+            Test-Path -LiteralPath $script:CollisionPaths[$i] | Should -BeFalse
+        }
+    }
+
+    It 'does not inspect or copy artifacts during WhatIf' {
+        Mock -ModuleName Shmuelie.Copilot Get-ChildItem { throw 'Unexpected artifact inspection.' }
+        $before = Get-AtomicMergeSourceSnapshot -Path $script:CollisionPaths
+
+        $result = Merge-CopilotSession -Id $script:CollisionIds -RemoveSource -WhatIf
+
+        $result | Should -BeNullOrEmpty
+        Get-AtomicMergeSourceSnapshot -Path $script:CollisionPaths | Should -BeExactly $before
+        Should -Invoke -ModuleName Shmuelie.Copilot Get-ChildItem -Times 0 -Exactly
+        @(Get-ChildItem -LiteralPath $script:CollisionRoot -Directory).Name | Sort-Object | Should -Be ($script:CollisionIds | Sort-Object)
+    }
+
+    It 'does not report missing optional artifact directories as errors' {
+        $observedErrors = @()
+
+        $merged = Merge-CopilotSession -Id $script:CollisionIds -Confirm:$false -ErrorAction Continue -ErrorVariable +observedErrors
+
+        $merged | Should -Not -BeNullOrEmpty
+        @($observedErrors) | Should -HaveCount 0
+    }
+
+    It 'refuses artifact links at <Location> without following their targets' -ForEach @(
+        @{ Location = 'root' }
+        @{ Location = 'dangling root' }
+        @{ Location = 'nested directory' }
+        @{ Location = 'nested file' }
+        @{ Location = 'intermediate rewind directory' }
+    ) {
+        $canary = Join-Path $testHome 'canary'
+        New-Item -ItemType Directory -Path (Join-Path $canary 'backups') -Force -ErrorAction Stop | Out-Null
+        $canaryFile = Join-Path $canary 'backups' 'untouched.txt'
+        Set-Content -LiteralPath $canaryFile -Value 'Synthetic canary' -ErrorAction Stop
+        $target = $canary
+        $link = switch ($Location) {
+            'root' { Join-Path $script:CollisionPaths[0] 'files' }
+            'dangling root' {
+                $target = Join-Path $testHome 'missing-target'
+                Join-Path $script:CollisionPaths[0] 'files'
+            }
+            'nested directory' {
+                $files = Join-Path $script:CollisionPaths[0] 'files'
+                New-Item -ItemType Directory -Path $files -ErrorAction Stop | Out-Null
+                Join-Path $files 'linked'
+            }
+            'nested file' {
+                $files = Join-Path $script:CollisionPaths[0] 'files'
+                New-Item -ItemType Directory -Path $files -ErrorAction Stop | Out-Null
+                $target = $canaryFile
+                Join-Path $files 'linked.txt'
+            }
+            'intermediate rewind directory' { Join-Path $script:CollisionPaths[0] 'rewind-snapshots' }
+        }
+        if ($Location -eq 'nested file') {
+            [IO.File]::CreateSymbolicLink($link, $target) | Out-Null
+        } else {
+            [IO.Directory]::CreateSymbolicLink($link, $target) | Out-Null
+        }
+        $before = Get-AtomicMergeSourceSnapshot -Path $script:CollisionPaths
+
+        { Merge-CopilotSession -Id $script:CollisionIds -RemoveSource -Confirm:$false -ErrorAction Continue } |
+            Should -Throw '*artifact*reparse point*'
+
+        Get-AtomicMergeSourceSnapshot -Path $script:CollisionPaths | Should -BeExactly $before
+        Get-Content -LiteralPath $canaryFile | Should -Be 'Synthetic canary'
+        (Get-Item -LiteralPath $link -Force -ErrorAction Stop).LinkTarget | Should -BeExactly $target
+        @(Get-ChildItem -LiteralPath $script:CollisionRoot -Directory).Name | Sort-Object | Should -Be ($script:CollisionIds | Sort-Object)
     }
 }
 
