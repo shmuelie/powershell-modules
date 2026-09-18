@@ -105,8 +105,13 @@ function Update-NpmPackage {
     .DESCRIPTION
         Updates NPM packages by name. Supports pipeline input from Get-NpmPackage.
         Returns an NpmUpdateResult object per package with the name and success status.
+        Validates each package name before invoking npm, including npm.cmd on Windows.
     .PARAMETER Name
-        The name of the package to update. Accepts pipeline input.
+        Registry package identifier, such as typescript or @scope/tool, at most
+        214 characters. Accepts pipeline input by property name. Version/tag
+        specifications, paths, URLs, options, whitespace, control characters,
+        and shell metacharacters are not supported. Validation is per record;
+        earlier valid pipeline records may already have been updated.
     .PARAMETER Global
         If specified, updates the package globally
     .EXAMPLE
@@ -126,6 +131,9 @@ function Update-NpmPackage {
     [CmdletBinding(SupportsShouldProcess)]
     param(
         [Parameter(Mandatory = $true, Position = 0, ValueFromPipelineByPropertyName = $true)]
+        [ValidateLength(1, 214)]
+        [ValidatePattern('\A(?!-)(?:@[A-Za-z0-9_-][A-Za-z0-9._-]*/)?[A-Za-z0-9_-][A-Za-z0-9._-]*\z', Options = [System.Text.RegularExpressions.RegexOptions]::None,
+            ErrorMessage = 'Use a registry package name such as typescript or @scope/tool, without versions, paths, options, or shell syntax.')]
         [string]$Name,
 
         [Parameter(ValueFromPipelineByPropertyName = $true)]
