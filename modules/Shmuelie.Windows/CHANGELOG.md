@@ -13,6 +13,10 @@ Versions change only when a release is cut; unreleased work stays under
   dependencies remain in Windows; the AppInstallManager support hold is unchanged.
 
 ### Fixed
+- `New-SubstDrive` rejects ambiguous `-TargetPath` resolutions instead of mapping
+  the first match. Targets must resolve to exactly one FileSystem directory,
+  including under `-WhatIf`; single-match wildcards and confirmation behavior
+  are unchanged.
 - `Get-InstalledApplications` now dispatches all accepted `-Scope` casing
   variants consistently. Lowercase, uppercase, and mixed-case values query the
   same scopes as their canonical spellings instead of silently returning an
