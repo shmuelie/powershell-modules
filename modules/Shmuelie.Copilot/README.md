@@ -24,6 +24,12 @@ Start-Copilot
 | Marketplaces | `Get-CopilotMarketplace`, `Register-CopilotMarketplace`, `Unregister-CopilotMarketplace`, `Get-CopilotMarketplacePlugin` |
 | MCP servers | `Get-CopilotMcpServer`, `Register-CopilotMcpServer`, `Unregister-CopilotMcpServer` (registration/removal protect symlink-managed configuration) |
 
+Compression and file-backed event repair require a successful `.bak` backup before
+rewriting events, unless `-NoBackup` is explicitly supplied. Backup copies are
+staged beside the event file before replacing the prior backup. A failed backup
+stops the operation even under `-ErrorAction Continue`, before event rewriting or
+compression's snapshot pruning; the original events and prior backup remain.
+
 ## Start-Copilot
 
 `Start-Copilot` wraps the `copilot` executable and adds:
@@ -167,6 +173,34 @@ $stale | Remove-CopilotSession -Confirm
 Cleanup remains an explicit pipeline into `Remove-CopilotSession`: discovery
 never deletes anything, and removal re-resolves each ID rather than trusting
 the pipeline object's Path.
+
+## Session merge failure handling
+
+`Merge-CopilotSession` checks artifact paths in `files`, `research`, and
+`rewind-snapshots/backups` before creating the destination. Differing-content
+files and file/directory conflicts terminate the merge and leave all sources
+unchanged.
+Paths are compared case-insensitively. Overlapping regular files are allowed when
+their SHA-256 hashes match, preserving harmless identical-content copies at the
+same relative path. Differing contents, read/hash failures, and invalid hash
+results abort the merge. It does not rename artifacts or rewrite references.
+
+Shared directories may merge when their descendants do not conflict. Names are
+handled literally, including wildcard characters; hidden artifacts and nested
+rewind backup directories are included. Symbolic links and other reparse points
+are rejected rather than followed. Optional artifact directories may be absent.
+`-WhatIf` previews the merge without performing artifact inspection or copying.
+
+`Merge-CopilotSession` stops on required source-read or destination
+create/copy/write/repair failures, even with `-ErrorAction Continue`. A failure
+during destination construction leaves all source sessions intact and triggers
+cleanup of only the partial destination. If cleanup also fails, a warning
+identifies the remaining destination without replacing the original error.
+
+`-RemoveSource` remains opt-in and starts only after destination construction,
+repair, and read-back complete without errors. `-WhatIf` creates or removes
+nothing. Merge failure handling does not change the caller's error-action
+preference.
 
 ## MCP configuration management
 

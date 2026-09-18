@@ -112,6 +112,14 @@ gh issue create --repo shmuelie/bash-scripts --label upstream-parity `
 
 ## Testing
 
+- Unpublished AppInstallManager development lives under
+  `experimental/Shmuelie.AppInstall.Experimental/`, outside the default build/test
+  and publication catalog. Keep its implementation, formatting, help and fake
+  tests separate from the supported Windows/AppInstaller commands. The explicit
+  experimental build and test paths do not authorize live access or publication.
+- Draft PRs skip automated build/test jobs. Do not mark a PR ready or dispatch
+  validation workflows while validation is on hold; skipped jobs are not evidence.
+
 - One Pester v6 file per module: `tests/<Module>.Tests.ps1`. Each imports its
   module directly from source (`modules/<Module>/<Module>.psd1`) — no build step.
 - **Every new cmdlet and every behavioral change ships with tests in the same
