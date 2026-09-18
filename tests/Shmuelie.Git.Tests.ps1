@@ -94,6 +94,224 @@ BeforeAll {
     }
 }
 
+Describe 'Worktree predictor event ownership' -Tag 'PredictorEventOwnership' {
+    BeforeAll {
+        $lifecycleRoot = (New-Item -ItemType Directory -Path (
+            Join-Path $TestDrive "predictor-lifetime-$([guid]::NewGuid().ToString('N'))"
+        ) -ErrorAction Stop).FullName
+        $lifecycleChild = Join-Path $lifecycleRoot 'lifecycle.ps1'
+        $lifecycleSource = Join-Path $repoRoot 'modules' 'Shmuelie.Git'
+        $lifecyclePwsh = (Get-Command pwsh -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
+        Set-Content -LiteralPath $lifecycleChild -Encoding utf8 -Value @'
+param(
+    [Parameter(Mandatory)][string]$Source,
+    [Parameter(Mandatory)][string]$Root,
+    [Parameter(Mandatory)][string]$Mode,
+    [Parameter(Mandatory)][string]$PriorState,
+    [switch]$AlreadyRemoved
+)
+$ErrorActionPreference = 'Stop'
+$originalLocation = Get-Location
+$timer = [Timers.Timer]::new()
+$module = $null
+$externalBinary = $null
+$externalJobs = @()
+$externalSubscribers = @()
+
+function Assert-LifecycleState([bool]$Condition, [string]$Message) {
+    if (-not $Condition) { throw $Message }
+}
+
+function Assert-ExternalState {
+    $subscribers = @(Get-EventSubscriber -Force)
+    foreach ($expected in $externalSubscribers) {
+        Assert-LifecycleState ([bool]($subscribers | Where-Object {
+            [object]::ReferenceEquals($_, $expected)
+        })) "Removed unrelated subscriber $($expected.SubscriptionId)."
+    }
+    $jobs = @(Get-Job)
+    foreach ($expected in $externalJobs) {
+        Assert-LifecycleState ([bool]($jobs | Where-Object {
+            [object]::ReferenceEquals($_, $expected)
+        })) "Removed unrelated job $($expected.Id)."
+    }
+}
+
+try {
+    Assert-LifecycleState (-not (Test-Path -LiteralPath $Root)) 'Scenario directory must be new.'
+    $null = New-Item -ItemType Directory -Path $Root -ErrorAction Stop
+    Set-Location -LiteralPath $Root -ErrorAction Stop
+    Assert-LifecycleState ((Get-Location).ProviderPath -ceq $Root) 'Scenario location guard failed.'
+    $staged = (New-Item -ItemType Directory -Path (Join-Path $Root 'Shmuelie.Git') -ErrorAction Stop).FullName
+    Get-ChildItem -LiteralPath $Source -File | Copy-Item -Destination $staged -ErrorAction Stop
+    Copy-Item -LiteralPath (Join-Path $Source 'Classes') -Destination $staged -Recurse -ErrorAction Stop
+    $manifest = Join-Path $staged 'Shmuelie.Git.psd1'
+
+    # This double exercises the real loader without starting Git on idle.
+    $predictorSource = @"
+using System;
+using System.Collections.Generic;
+using System.Management.Automation;
+using System.Management.Automation.Subsystem;
+using System.Management.Automation.Subsystem.Prediction;
+using System.Threading;
+namespace WorktreePredictor {
+    public sealed class WorktreeCommandPredictor : ICommandPredictor {
+        public static readonly Guid PredictorId = new Guid("a1b2c3d4-e5f6-7890-abcd-ef1234567890");
+        public static int Imports;
+        public static int Removals;
+        public static int Updates;
+        public static void UpdateWorkingDirectory(string path) { Updates++; }
+        public Guid Id => PredictorId;
+        public string Name => "Worktree";
+        public string Description => "No-Git lifecycle test predictor";
+        public SuggestionPackage GetSuggestion(PredictionClient client, PredictionContext context, CancellationToken token) => default;
+        public bool CanAcceptFeedback(PredictionClient client, PredictorFeedbackKind feedback) => false;
+        public void OnSuggestionDisplayed(PredictionClient client, uint session, int countOrIndex) { }
+        public void OnSuggestionAccepted(PredictionClient client, uint session, string text) { }
+        public void OnCommandLineAccepted(PredictionClient client, IReadOnlyList<string> history) { }
+        public void OnCommandLineExecuted(PredictionClient client, string commandLine, bool success) { }
+    }
+    public sealed class Init : IModuleAssemblyInitializer, IModuleAssemblyCleanup {
+        public void OnImport() {
+            SubsystemManager.RegisterSubsystem(SubsystemKind.CommandPredictor, new WorktreeCommandPredictor());
+            WorktreeCommandPredictor.Imports++;
+        }
+        public void OnRemove(PSModuleInfo module) {
+            SubsystemManager.UnregisterSubsystem(SubsystemKind.CommandPredictor, WorktreeCommandPredictor.PredictorId);
+            WorktreeCommandPredictor.Removals++;
+        }
+    }
+}
+"@
+    if ($Mode -eq 'SourceWithType') {
+        Add-Type -TypeDefinition $predictorSource
+    } elseif ($Mode -in @('Bundled', 'Preloaded')) {
+        $bin = (New-Item -ItemType Directory -Path (Join-Path $staged 'bin') -ErrorAction Stop).FullName
+        $binaryPath = Join-Path $bin 'WorktreePredictor.dll'
+        Add-Type -TypeDefinition $predictorSource -OutputAssembly $binaryPath
+        if ($Mode -eq 'Preloaded') {
+            $externalBinary = Import-Module $binaryPath -PassThru -ErrorAction Stop
+        }
+    }
+
+    if ($PriorState -in @('Actionless', 'Mixed')) {
+        $null = Register-ObjectEvent -InputObject $timer -EventName Elapsed -SourceIdentifier 'Fixture.Actionless.One'
+        $null = Register-ObjectEvent -InputObject $timer -EventName Disposed -SourceIdentifier 'Fixture.Actionless.Two'
+        $null = Register-ObjectEvent -InputObject $timer -EventName Elapsed -SourceIdentifier 'Fixture.Actionless.Three'
+    }
+    if ($PriorState -in @('Jobs', 'Mixed')) {
+        $job = Start-Job -ScriptBlock { 'unrelated completed job' }
+        $externalJobs += $job
+        $null = Wait-Job -Job $job -Timeout 30
+        Assert-LifecycleState ($job.State -eq 'Completed') 'Unrelated fixture job did not complete.'
+    }
+    if ($PriorState -eq 'Mixed') {
+        $externalJobs += Register-EngineEvent -SourceIdentifier PowerShell.OnIdle -Action { }
+        $externalJobs += Register-ObjectEvent -InputObject $timer -EventName Elapsed -SourceIdentifier 'Fixture.Action' -Action { }
+    }
+    $externalSubscribers = @(Get-EventSubscriber -Force)
+    $externalIds = @($externalSubscribers | Select-Object -ExpandProperty SubscriptionId)
+    $externalJobIds = @($externalJobs | Select-Object -ExpandProperty Id)
+    $expectedOwnCount = if ($Mode -eq 'SourceWithoutPredictor') { 0 } else { 1 }
+    $divergentIdsObserved = $false
+
+    foreach ($cycle in 1..3) {
+        foreach ($import in 1..2) {
+            $module = Import-Module $manifest -Force -PassThru -ErrorAction Stop
+            Assert-ExternalState
+            $ownedSubscribers = @(Get-EventSubscriber -Force | Where-Object SubscriptionId -NotIn $externalIds)
+            $ownedJobs = @(Get-Job | Where-Object Id -NotIn $externalJobIds)
+            Assert-LifecycleState ($ownedSubscribers.Count -eq $expectedOwnCount) "Unexpected owned subscriber count after import: $($ownedSubscribers.Count)."
+            Assert-LifecycleState ($ownedJobs.Count -eq $expectedOwnCount) "Unexpected owned job count after import: $($ownedJobs.Count)."
+            if ($expectedOwnCount -eq 1) {
+                Assert-LifecycleState ([object]::ReferenceEquals($ownedSubscribers[0].Action, $ownedJobs[0])) 'Owned job/subscriber association differs.'
+                if ($ownedSubscribers[0].SubscriptionId -ne $ownedJobs[0].Id) { $divergentIdsObserved = $true }
+            }
+            if ($Mode -in @('Bundled', 'Preloaded')) {
+                Assert-LifecycleState ((Get-PSSubsystem -Kind CommandPredictor).Implementations.Name -contains 'Worktree') 'Predictor must be registered while the module is loaded.'
+            }
+        }
+        if ($AlreadyRemoved -and $ownedSubscribers.Count -gt 0) {
+            Unregister-Event -SubscriptionId $ownedSubscribers[0].SubscriptionId
+            Remove-Job -Job $ownedJobs[0] -Force
+        }
+        Remove-Module $module -Force -ErrorAction Stop
+        $module = $null
+        Assert-ExternalState
+        Assert-LifecycleState (@(Get-EventSubscriber -Force | Where-Object SubscriptionId -NotIn $externalIds).Count -eq 0) 'Module subscriber leaked after removal.'
+        Assert-LifecycleState (@(Get-Job | Where-Object Id -NotIn $externalJobIds).Count -eq 0) 'Module action job leaked after removal.'
+        if ($Mode -eq 'Preloaded') {
+            Assert-LifecycleState ([bool](Get-Module WorktreePredictor)) 'Caller-owned binary module was removed.'
+            Assert-LifecycleState ((Get-PSSubsystem -Kind CommandPredictor).Implementations.Name -contains 'Worktree') 'Caller-owned predictor was unregistered.'
+            Assert-LifecycleState ([WorktreePredictor.WorktreeCommandPredictor]::Removals -eq 0) 'Caller-owned binary cleanup ran.'
+        } elseif ($Mode -eq 'Bundled') {
+            Assert-LifecycleState (-not (Get-Module WorktreePredictor)) 'Loader-owned binary module leaked.'
+            Assert-LifecycleState ((Get-PSSubsystem -Kind CommandPredictor).Implementations.Name -notcontains 'Worktree') 'Loader-owned predictor registration leaked.'
+        }
+    }
+    if ($expectedOwnCount -eq 1) {
+        Assert-LifecycleState $divergentIdsObserved 'Fixture did not exercise divergent counters.'
+        Assert-LifecycleState ([WorktreePredictor.WorktreeCommandPredictor]::Updates -ge 6) 'Predictor update wiring did not run on import.'
+    }
+    [pscustomobject]@{
+        Mode = $Mode
+        PriorState = $PriorState
+        Cycles = 3
+        ForceImports = 6
+        DivergentIdsObserved = $divergentIdsObserved
+        ExternalSubscribersPreserved = $externalSubscribers.Count
+        ExternalJobsPreserved = $externalJobs.Count
+    } | ConvertTo-Json -Compress
+} finally {
+    if ($module) { Remove-Module $module -Force -ErrorAction SilentlyContinue }
+    Get-EventSubscriber -Force | ForEach-Object { Unregister-Event -SubscriptionId $_.SubscriptionId -ErrorAction SilentlyContinue }
+    Get-Job | Remove-Job -Force -ErrorAction SilentlyContinue
+    if ($externalBinary) { Remove-Module $externalBinary -Force -ErrorAction SilentlyContinue }
+    $timer.Dispose()
+    Set-Location -LiteralPath $originalLocation.ProviderPath -ErrorAction Stop
+}
+'@
+    }
+
+    AfterAll {
+        if ($lifecycleRoot -and (Test-Path -LiteralPath $lifecycleRoot)) {
+            if ((Split-Path $lifecycleRoot -Parent) -cne $TestDrive) {
+                throw 'Refusing cleanup outside the owned lifecycle TestDrive.'
+            }
+            Remove-Item -LiteralPath $lifecycleRoot -Recurse -Force -ErrorAction Stop
+        }
+    }
+
+    It 'preserves subscriber, job and binary ownership for <Mode> with <PriorState> state (AlreadyRemoved=<AlreadyRemoved>)' -ForEach @(
+        @{ Mode = 'SourceWithType'; PriorState = 'Actionless'; AlreadyRemoved = $false }
+        @{ Mode = 'SourceWithType'; PriorState = 'Jobs'; AlreadyRemoved = $false }
+        @{ Mode = 'SourceWithType'; PriorState = 'Mixed'; AlreadyRemoved = $false }
+        @{ Mode = 'SourceWithType'; PriorState = 'Mixed'; AlreadyRemoved = $true }
+        @{ Mode = 'SourceWithoutPredictor'; PriorState = 'Mixed'; AlreadyRemoved = $false }
+        @{ Mode = 'Bundled'; PriorState = 'Mixed'; AlreadyRemoved = $false }
+        @{ Mode = 'Preloaded'; PriorState = 'Mixed'; AlreadyRemoved = $false }
+    ) {
+        $scenarioRoot = Join-Path $lifecycleRoot ([guid]::NewGuid().ToString('N'))
+        $arguments = @(
+            '-NoProfile', '-NonInteractive', '-File', $lifecycleChild,
+            '-Source', $lifecycleSource, '-Root', $scenarioRoot,
+            '-Mode', $Mode, '-PriorState', $PriorState
+        )
+        if ($AlreadyRemoved) { $arguments += '-AlreadyRemoved' }
+        $output = & $lifecyclePwsh @arguments 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            throw "Isolated lifecycle test failed (exit $LASTEXITCODE): $($output -join [Environment]::NewLine)"
+        }
+        $result = ($output -join "`n") | ConvertFrom-Json
+        $result.Cycles | Should -Be 3
+        $result.ForceImports | Should -Be 6
+        if ($Mode -ne 'SourceWithoutPredictor') {
+            $result.DivergentIdsObserved | Should -BeTrue
+        }
+    }
+}
+
 Describe 'Restore-GitStash' {
     BeforeAll {
         $restoreLocation = Get-Location
