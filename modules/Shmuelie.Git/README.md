@@ -16,7 +16,7 @@ Import-Module Shmuelie.Git
 | Command | Purpose |
 |---|---|
 | `New-Repository` | Clone a URL into a standard `<root>/<org>/<repo>/<branch>` layout (parses GitHub and Azure DevOps URLs) |
-| `Repair-RepositoryLayout` | Conform existing clones and worktrees to that layout |
+| `Repair-RepositoryLayout` | Conform existing clones and worktrees to that layout; standalone renames skip occupied exact destinations |
 | `Sync-GitRemote` | Fetch all remotes for the current or `-Path` repository with pruning, returning typed results; picks the right `gh` account per host (github.com/GHE) when several are signed in |
 | `Get-Worktrees` | List worktrees for the current or `-Path` repository |
 | `Get-Branch` | List local and cached remote-tracking refs as `GitBranch` objects, with current branch, commit, upstream, ahead/behind counts and symbolic target (`-Local` / `-Remote` filter the results; never fetches) |
@@ -162,6 +162,16 @@ exactly one `--force` to `git worktree remove`; it does not suppress confirmatio
 or retry a failure with additional force. A failed removal always keeps the branch.
 
 ### Other command behavior
+
+`Repair-RepositoryLayout` skips a standalone main-clone rename when the exact
+destination already exists, whether it is an empty directory, a populated
+directory, a file or another repository. It returns `Skipped-TargetExists` with
+the planned `From` and `To`, leaving both paths unchanged; `-WhatIf` reports the
+same skip. Unoccupied destinations retain the normal preview and confirmation.
+The move treats `To` as the exact new root, never as a directory container.
+Failed moves retain the existing `rename-failed` action and `Error:` status.
+There is no cross-filesystem copy fallback or coordination with concurrent
+filesystem writers.
 
 `Get-GitStatusSummary` counts tracked type changes (`T`, such as a regular file
 becoming a symbolic link) as `IndexModified` and/or `WorkingModified`. A path
