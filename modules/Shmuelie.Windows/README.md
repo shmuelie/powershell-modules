@@ -28,6 +28,23 @@ AppInstallManager development is isolated in the repository-local
 It is not included in this module or published to the Gallery. Existing
 `Get-AppInstallerApp` and `Update-AppInstallerApp` commands remain here.
 
+## Windows Performance Recorder failures
+
+`Start-WindowsPerformanceRecorder` and `Stop-WindowsPerformanceRecorder` report
+sudo/WPR invocation failures and nonzero exit codes as PowerShell errors,
+regardless of `$PSNativeCommandUseErrorActionPreference`. Use `-ErrorAction Stop`
+with `try`/`catch` when automation must stop on failure. Errors identify the
+operation and, when available, the native exit code and captured diagnostics.
+Native output is returned only after a successful exit; failed stops do not
+produce success output claiming a saved trace.
+
+`Stop-WindowsPerformanceRecorder -File` requires a nonblank ETL output filename,
+including with `-WhatIf`, as required by the
+[WPR stop contract](https://learn.microsoft.com/windows-hardware/test/wpt/wpr-command-line-options#stop).
+Profile and output paths containing spaces remain separate arguments.
+Both commands retain `-WhatIf`/`-Confirm` and preserve the caller's preferences
+and original `LASTEXITCODE` value (or its absence).
+
 ## App Installer request results
 
 `Update-AppInstallerApp` still emits nothing by default. Opt in to typed

@@ -164,6 +164,18 @@ Describe 'Windows-only guards' {
     }
 }
 
+Describe 'WPR native errors (hermetic)' -Skip:(-not $IsWindows) {
+    It 'propagates native failures without invoking sudo or WPR' {
+        $fixture = Join-Path $PSScriptRoot 'fixtures' 'Test-WprErrors.ps1'
+        $output = & pwsh -NoProfile -NonInteractive -File $fixture
+        $LASTEXITCODE | Should -Be 0 -Because ($output -join "`n")
+        $result = ($output -join "`n") | ConvertFrom-Json -ErrorAction Stop
+        $result.Passed | Should -Be 91
+        $result.Failed | Should -Be 0
+        @($result.Cases | Where-Object { -not $_.Passed }) | Should -HaveCount 0
+    }
+}
+
 Describe 'New-SubstDrive validation' -Skip:(-not $IsWindows) {
     It 'rejects invalid drive letters without creating a mapping' -ForEach @(
         @{ DriveLetter = '1' }
