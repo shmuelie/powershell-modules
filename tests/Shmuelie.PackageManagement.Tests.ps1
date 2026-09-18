@@ -89,7 +89,8 @@ Describe 'PSResourceGet package provider' {
         }
 
         function New-PSResourceProviderTestLayout {
-            param($Root, $Name, $Version = '1.0.0', $Repository = 'FeedA', $Prerelease = '', $RepositorySourceLocation = '')
+            param($Root, $Name, $Version = '1.0.0', $Repository = 'FeedA', $Prerelease = '', $RepositorySourceLocation = '',
+                [switch]$Direct, [switch]$WithoutMetadata)
             if (-not $TestDrive -or -not (Test-Path -LiteralPath $TestDrive -PathType Container)) {
                 throw 'Pester TestDrive must exist before creating module fixtures.'
             }
@@ -98,9 +99,13 @@ Describe 'PSResourceGet package provider' {
             if (-not $fullRoot.StartsWith($testPrefix, [StringComparison]::OrdinalIgnoreCase)) {
                 throw 'Fixture root must be inside TestDrive.'
             }
-            $directory = Join-Path $Root $Name $Version
+            $directory = Join-Path $Root $Name
+            if (-not $Direct) { $directory = Join-Path $directory $Version }
             New-Item -ItemType Directory -Path $directory -Force -ErrorAction Stop | Out-Null
-            New-ModuleManifest -Path (Join-Path $directory "$Name.psd1") -ModuleVersion $Version -ErrorAction Stop
+            $manifestParameters = @{ Path = Join-Path $directory "$Name.psd1"; ModuleVersion = $Version; ErrorAction = 'Stop' }
+            if ($Prerelease) { $manifestParameters.Prerelease = $Prerelease }
+            New-ModuleManifest @manifestParameters
+            if ($WithoutMetadata) { return }
             [pscustomobject]@{
                 Version = $Version
                 Prerelease = $Prerelease
@@ -267,6 +272,52 @@ Describe 'PSResourceGet package provider' {
         $results[0].ResultingVersion | Should -BeExactly '2.0.0-beta.10'
         Should -Invoke Find-PSResource -ModuleName Shmuelie.Utilities -Times 1 -Exactly -ParameterFilter { $Name -eq 'Preview' -and $Prerelease }
         Should -Invoke Find-PSResource -ModuleName Shmuelie.Utilities -Times 1 -Exactly -ParameterFilter { $Name -eq 'Stable' -and -not $Prerelease }
+    }
+
+    It 'observes manifest prerelease promotion to <Remote> in a <Layout> layout with <MetadataState> XML' -ForEach @(
+        foreach ($layout in 'versioned', 'direct') {
+            foreach ($metadataState in 'missing', 'corrupt') {
+                foreach ($remote in '1.0.0', '1.0.0-beta.10') {
+                    @{ Layout = $layout; MetadataState = $metadataState; Remote = $remote }
+                }
+            }
+        }
+    ) {
+        New-PSResourceProviderTestLayout -Root $script:ResourceRoot -Name Preview -Prerelease beta.2 `
+            -Direct:($Layout -eq 'direct') -WithoutMetadata
+        if ($MetadataState -eq 'corrupt') {
+            $directory = Join-Path $script:ResourceRoot 'Preview'
+            if ($Layout -eq 'versioned') { $directory = Join-Path $directory '1.0.0' }
+            Set-Content -LiteralPath (Join-Path $directory 'PSGetModuleInfo.xml') -Value '<broken'
+        }
+        Mock Find-PSResource -ModuleName Shmuelie.Utilities { throw 'Unexpected resource lookup.' }
+        Mock Save-PSResource -ModuleName Shmuelie.Utilities { throw 'Unexpected resource save.' }
+        Mock Find-PSResource -ModuleName Shmuelie.Utilities { [pscustomobject]@{ Version = $Remote } } -ParameterFilter {
+            $Name -eq 'Preview' -and $Repository -eq 'PSGallery' -and $Prerelease
+        }
+        Mock Save-PSResource -ModuleName Shmuelie.Utilities {
+            New-PSResourceProviderTestLayout -Root $Path -Name $Name -Version (($Version -split '-', 2)[0]) `
+                -Prerelease (($Version -split '-', 2)[1]) -Repository $Repository
+        } -ParameterFilter {
+            $Name -eq 'Preview' -and $Repository -eq 'PSGallery' -and $Version -ceq $Remote -and $Path -eq $script:ResourceRoot
+        }
+        $options = @{ PSResourceGet = @{ Path = $script:ResourceRoot } }
+        $preview = Update-AllPackages -Provider PSResourceGet -ProviderOptions $options -WhatIf -WarningAction Stop
+        $preview.Status | Should -BeExactly 'Planned'
+        $preview.PreviousVersion | Should -BeExactly '1.0.0-beta.2'
+        $preview.ResultingVersion | Should -BeNullOrEmpty
+        Should -Invoke Find-PSResource -ModuleName Shmuelie.Utilities -Times 0 -Exactly
+        Should -Invoke Save-PSResource -ModuleName Shmuelie.Utilities -Times 0 -Exactly
+
+        $result = Update-AllPackages -Provider PSResourceGet -ProviderOptions $options -Confirm:$false -WarningAction Stop
+        $result.Status | Should -BeExactly 'Updated'
+        $result.PreviousVersion | Should -BeExactly '1.0.0-beta.2'
+        $result.ResultingVersion | Should -BeExactly $Remote
+        $result.Target | Should -BeExactly (Join-Path $script:ResourceRoot 'Preview')
+        Should -Invoke Find-PSResource -ModuleName Shmuelie.Utilities -Times 1 -Exactly -ParameterFilter { $Prerelease }
+        Should -Invoke Save-PSResource -ModuleName Shmuelie.Utilities -Times 1 -Exactly -ParameterFilter {
+            $Version -ceq $Remote -and $Path -eq $script:ResourceRoot
+        }
     }
 
     It 'reuses comma-separated wildcard filters before repository lookup' {
