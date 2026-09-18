@@ -6,6 +6,8 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-09-18
+
 ### Fixed
 - `SymbolicLink.Test()` anchors relative targets to the link parent and uses
   read-only directory-entry and literal-lookup evidence for case differences.

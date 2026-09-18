@@ -33,7 +33,7 @@ no longer eagerly imports PSReadLine before registering the predictor.
 ## Shmuelie.Git
 
 Git repository, worktree, status, completion, and PSReadLine prediction helpers.
-**Version 0.10.1.**
+**Version 0.10.2.**
 [README](https://github.com/shmuelie/powershell-modules/blob/main/modules/Shmuelie.Git/README.md)
 
 Highlights:
@@ -85,7 +85,7 @@ bypassing confirmation or escalating after a failure.
 ## Shmuelie.Copilot
 
 GitHub Copilot CLI sessions, plugins, marketplaces, MCP servers, and the
-`Start-Copilot` launcher. **Version 0.4.0.**
+`Start-Copilot` launcher. **Version 0.5.0.**
 [README](https://github.com/shmuelie/powershell-modules/blob/main/modules/Shmuelie.Copilot/README.md)
 
 Highlights:
@@ -105,7 +105,7 @@ Highlights:
 ## Shmuelie.Node
 
 Node.js, nvm-windows, npm package, and Azure DevOps npm credential helpers.
-**Version 0.1.4.**
+**Version 0.1.5.**
 [README](https://github.com/shmuelie/powershell-modules/blob/main/modules/Shmuelie.Node/README.md)
 
 Highlights:
@@ -118,7 +118,7 @@ Highlights:
 
 User-local .NET SDK installation and canonical tool management for Windows,
 Linux, and macOS.
-**Version 0.2.0.**
+**Version 0.2.1.**
 [README](https://github.com/shmuelie/powershell-modules/blob/main/modules/Shmuelie.DotNet/README.md)
 
 Highlights:
@@ -145,7 +145,7 @@ scope behavior.
 ## Shmuelie.Utilities
 
 General developer utilities for PowerShell, .NET tools, Python packages, VS
-Code, terminal recovery, and general developer workflows. **Version 0.6.0.**
+Code, terminal recovery, and general developer workflows. **Version 0.6.1.**
 [README](https://github.com/shmuelie/powershell-modules/blob/main/modules/Shmuelie.Utilities/README.md)
 
 Highlights:
@@ -157,7 +157,7 @@ Highlights:
 ## Shmuelie.Windows
 
 Windows-only developer utilities for installed applications, Windows Terminal,
-Windows Performance Recorder, and service host processes. **Version 0.2.0.**
+Windows Performance Recorder, and service host processes. **Version 0.2.1.**
 [README](https://github.com/shmuelie/powershell-modules/blob/main/modules/Shmuelie.Windows/README.md)
 
 Highlights:
@@ -179,7 +179,7 @@ unchanged private-capability restriction and #233 release hold.
 ## Shmuelie.Dsc
 
 Class-based [DSC v3](https://learn.microsoft.com/powershell/dsc/overview)
-resources for developer machine setup. **Version 0.1.0.**
+resources for developer machine setup. **Version 0.1.1.**
 [README](https://github.com/shmuelie/powershell-modules/blob/main/modules/Shmuelie.Dsc/README.md)
 
 Highlights:

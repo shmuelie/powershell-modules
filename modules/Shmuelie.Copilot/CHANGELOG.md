@@ -6,6 +6,8 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-18
+
 ### Changed
 - Session selection now uses the active PowerShell host's `PromptForChoice`,
   without automatic grid pickers or custom console input loops. The initial host

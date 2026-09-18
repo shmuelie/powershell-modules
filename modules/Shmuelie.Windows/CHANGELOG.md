@@ -6,6 +6,8 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-09-18
+
 ### Changed
 - Extract unpublished AppInstallManager commands, help and formatting into a
   separate repository-local experimental module excluded from Windows builds,

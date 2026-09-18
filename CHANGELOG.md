@@ -7,6 +7,8 @@ between releases this file tracks catalog-level changes under `[Unreleased]`.
 ## [Unreleased]
 
 ### Fixed
+- Literal build-path fixtures derive the stage version from the copied module
+  manifest, preserving path and neighbor checks across module releases.
 - `Build-Module.ps1` treats source, output, copy, lookup, and cleanup paths
   literally and validates the owned output directory before replacing it.
   Bracketed repository/output paths no longer select or delete sibling
