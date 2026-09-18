@@ -185,6 +185,73 @@ function New-DscSymbolicLink {
     New-Item -ItemType SymbolicLink -Path $Path -Target $Target -Force -ErrorAction Stop | Out-Null
 }
 
+function Test-DscSymbolicLinkTarget {
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory)][string]$LinkPath,
+        [Parameter(Mandatory)][string]$ActualTarget,
+        [Parameter(Mandatory)][string]$DesiredTarget
+    )
+
+    $provider = $null
+    $drive = $null
+    $link = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($LinkPath, [ref]$provider, [ref]$drive)
+    if ($provider.Name -ne 'FileSystem') {
+        throw 'Symbolic-link comparison requires a filesystem path.'
+    }
+    $parent = [IO.Path]::GetDirectoryName($link)
+    $actual = [IO.Path]::TrimEndingDirectorySeparator([IO.Path]::GetFullPath($ActualTarget, $parent))
+    $desired = [IO.Path]::TrimEndingDirectorySeparator([IO.Path]::GetFullPath($DesiredTarget, $parent))
+    # Drive letters are namespace syntax, not directory-entry case policy.
+    if ($actual -cmatch '^[a-z]:\\') { $actual = $actual.Substring(0, 1).ToUpperInvariant() + $actual.Substring(1) }
+    if ($desired -cmatch '^[a-z]:\\') { $desired = $desired.Substring(0, 1).ToUpperInvariant() + $desired.Substring(1) }
+    if ([string]::Equals($actual, $desired, [StringComparison]::Ordinal)) { return $true }
+    if (-not [string]::Equals($actual, $desired, [StringComparison]::OrdinalIgnoreCase)) { return $false }
+
+    try {
+        $root = [IO.Path]::GetPathRoot($actual)
+        if (-not [string]::Equals($root, [IO.Path]::GetPathRoot($desired), [StringComparison]::Ordinal)) {
+            throw 'The target roots have different spellings and cannot be compared as directory entries.'
+        }
+        $separators = [char[]]@([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+        $actualParts = $actual.Substring($root.Length).Split($separators, [StringSplitOptions]::RemoveEmptyEntries)
+        $desiredParts = $desired.Substring($root.Length).Split($separators, [StringSplitOptions]::RemoveEmptyEntries)
+        $directory = $root
+        for ($index = 0; $index -lt $actualParts.Count; $index++) {
+            if ([string]::Equals($actualParts[$index], $desiredParts[$index], [StringComparison]::Ordinal)) {
+                $directory = Join-Path $directory $actualParts[$index]
+                continue
+            }
+            $entries = @(Get-ChildItem -LiteralPath $directory -Force -ErrorAction Stop)
+            $names = [System.Collections.Generic.List[string]]::new()
+            foreach ($part in $actualParts[$index], $desiredParts[$index]) {
+                # Enumeration supplies stored spelling; a literal lookup proves that
+                # the filesystem accepts the requested spelling, not an OS heuristic.
+                $lookup = @(Get-Item -LiteralPath (Join-Path $directory $part) -Force -ErrorAction Stop)
+                if ($lookup.Count -ne 1) { throw "Literal lookup did not identify one entry for '$part'." }
+                $exact = @($entries | Where-Object { [string]::Equals($_.Name, $part, [StringComparison]::Ordinal) })
+                $matches = if ($exact.Count) { $exact } else {
+                    @($entries | Where-Object { [string]::Equals($_.Name, $part, [StringComparison]::OrdinalIgnoreCase) })
+                }
+                if (@($matches).Count -ne 1) {
+                    throw "No unambiguous directory entry for '$part' in '$directory'."
+                }
+                $names.Add(@($matches)[0].Name)
+            }
+            if (-not [string]::Equals($names[0], $names[1], [StringComparison]::Ordinal)) { return $false }
+            $directory = Join-Path $directory $names[0]
+        }
+        return $true
+    } catch {
+        $exception = [InvalidOperationException]::new(
+            "Cannot determine symbolic-link target case equivalence for '$LinkPath': '$ActualTarget' and '$DesiredTarget'. $($_.Exception.Message)",
+            $_.Exception)
+        $PSCmdlet.ThrowTerminatingError([System.Management.Automation.ErrorRecord]::new(
+            $exception, 'DscSymbolicLinkComparisonUnknown', [System.Management.Automation.ErrorCategory]::InvalidResult, $LinkPath))
+    }
+}
+
 function Test-DscSavedModuleFile {
     [CmdletBinding()]
     param(
@@ -436,6 +503,10 @@ class SavePSResource {
     DSC resource that ensures a symbolic link exists pointing to the correct
     target. Creates parent directories if they do not exist and replaces an
     existing item at Path when the link is missing or points elsewhere.
+    Test() normalizes relative targets against the link's parent. Case-only
+    differences require unambiguous directory entries and successful literal
+    lookups; unknown equivalence raises an error instead of requesting replacement.
+    Exact normalized matches remain compliant even when the target is absent.
 
     On Windows, creating symbolic links requires Developer Mode or an elevated
     session.
@@ -476,7 +547,7 @@ class SymbolicLink {
         if ($null -eq $item -or $item.LinkType -ne 'SymbolicLink') {
             return $false
         }
-        return ([string]$item.Target -eq $this.Target)
+        return (Test-DscSymbolicLinkTarget -LinkPath $this.Path -ActualTarget ([string]$item.Target) -DesiredTarget $this.Target)
     }
 
     [void] Set() {

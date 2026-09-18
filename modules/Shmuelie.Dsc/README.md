@@ -104,6 +104,20 @@ These are DSC v3 resources, addressed as `Shmuelie.Dsc/<ResourceName>`:
 - **Shell-safe arguments.** Values passed to the `copilot`/`uv` CLIs are
   validated to reject characters that Windows would re-parse when the CLI
   resolves to a `.cmd`/`.bat` shim.
+- **`SymbolicLink` target comparison.** `Test()` compares immediate target
+  pathnames, with relative targets anchored to the link's parent directory.
+  Exact normalized matches are compliant even for dangling links. Case-only
+  differences require directory-entry enumeration and successful literal
+  lookups: distinct stored names are noncompliant, while one unambiguous stored
+  name accepted under both spellings is equivalent. This uses observed
+  filesystem behavior, not an operating-system case assumption.
+  If missing or inaccessible components, ambiguous entries, or differing root
+  spellings prevent proving case equivalence, `Test()` raises
+  `DscSymbolicLinkComparisonUnknown` rather than reporting absence and requesting
+  replacement. Drive-letter case is normalized as path syntax.
+  Checks do not create probe files or resolve final file identity; different
+  hard-link names or symlink chains are not made equivalent by sharing a final
+  target. `Get()` retains the observed target spelling; `Set()` is unchanged.
 
 ## Requirements
 

@@ -7,6 +7,11 @@ Versions change only when a release is cut; unreleased work stays under
 ## [Unreleased]
 
 ### Fixed
+- `SymbolicLink.Test()` anchors relative targets to the link parent and uses
+  read-only directory-entry and literal-lookup evidence for case differences.
+  Distinct names are noncompliant; unknown equivalence raises an explicit error
+  rather than requesting replacement. Exact normalized dangling targets remain
+  compliant, without assuming filesystem case rules from the OS. (Fixes #260.)
 - `CopilotPlugin`, `CopilotMarketplace`, and `UvTool` validate discovery exit
   status before matching list output. `Test()` and `Get()` now raise explicit
   errors with diagnostics and exit status on failure or unknown completion,

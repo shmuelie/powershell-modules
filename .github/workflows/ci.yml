@@ -50,3 +50,21 @@ jobs:
       - name: Run portable .NET tool tests
         shell: pwsh
         run: ./build/Invoke-Tests.ps1 -Path ./tests/Shmuelie.DotNet.Tests.ps1
+      - name: Verify symbolic links on a case-sensitive filesystem
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $pester = Get-Module -ListAvailable Pester |
+              Where-Object { $_.Version -ge [version]'6.2.0' -and $_.Version.Major -eq 6 -and -not $_.PrivateData.PSData.Prerelease } |
+              Sort-Object Version -Descending | Select-Object -First 1
+          if (-not $pester) { throw 'The preceding test steps must provide stable Pester 6.2+.' }
+          Import-Module $pester.Path -Force
+          $config = New-PesterConfiguration
+          $config.Run.Path = './tests/Shmuelie.Dsc.Tests.ps1'
+          $config.Run.PassThru = $true
+          $config.Filter.Tag = 'DscSymbolicLinkCaseSensitive'
+          $config.Output.Verbosity = 'Detailed'
+          $result = Invoke-Pester -Configuration $config
+          if ($result.Result -ne 'Passed' -or $result.PassedCount -ne 2 -or $result.SkippedCount -ne 0) {
+              throw 'Both owned case-sensitive filesystem tests must execute and pass.'
+          }
