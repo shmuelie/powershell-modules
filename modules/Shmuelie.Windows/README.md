@@ -28,6 +28,23 @@ Import-Module Shmuelie.Windows
 | Windows Terminal | `Get-WindowsTerminalSettings`, `Get-WindowsTerminalProfile` |
 | Diagnostics | `Start-WindowsPerformanceRecorder`, `Stop-WindowsPerformanceRecorder` |
 
+## Service process results
+
+`Get-ServiceProcess` uses a process ID only when the same
+`QueryServiceStatusEx` snapshot reports `Running`, `PausePending`, `Paused`,
+or `ContinuePending`, the states for which Win32 guarantees PID validity.
+`Stopped`, `StartPending`, `StopPending`, and unknown native states instead
+produce the existing `ServiceProcessInfo` fallback: `ProcessId = 0`,
+`Process = $null`, and an empty `ProcessName`. No process lookup is attempted
+for those snapshots.
+
+A single successfully resolved service still returns its `System.Diagnostics.Process`;
+multiple matches still return per-service `ServiceProcessInfo` objects, including
+services sharing a host. `-PerService` configuration and confirmation are unchanged.
+The service status and process lookup are separate observations: this state check
+is not an atomic snapshot or a guarantee that a process continues to own a service.
+See the [Win32 PID-validity contract](https://learn.microsoft.com/windows/win32/api/winsvc/nf-winsvc-queryservicestatusex#remarks).
+
 ## Experimental AppInstall context
 
 `New-AppInstallContext` creates an `IDisposable` context owned by the current
