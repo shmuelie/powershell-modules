@@ -7,6 +7,10 @@ Versions change only when a release is cut; unreleased work stays under
 ## [Unreleased]
 
 ### Fixed
+- `Repair-CopilotSessionEvents` now filters malformed events before relocation,
+  preventing empty-ID or unknown-model completions from being reinserted and
+  suppressing valid replacement completions. Already-valid raw tool events and
+  the existing synthesis and backup policies are preserved. (#284)
 - `Merge-CopilotSession` now preserves checkpoint bodies alongside the merged
   index, retaining file references while renumbering rows. The generated root
   index is excluded from body collision checks; differing bodies and type

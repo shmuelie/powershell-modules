@@ -30,6 +30,14 @@ staged beside the event file before replacing the prior backup. A failed backup
 stops the operation even under `-ErrorAction Continue`, before event rewriting or
 compression's snapshot pruning; the original events and prior backup remain.
 
+`Repair-CopilotSessionEvents` removes empty-ID events and tool completions with
+`model: unknown` before relocating out-of-order tool events. Rejected completions
+do not count as completed requests; the existing missing-completion policy
+generates a replacement when a following turn-end event is available. Valid
+events retain their raw lines and fields, and a second repair preserves the
+generated completion rather than duplicating it. Use `-EventLines` for in-memory
+repair without reading or writing session files.
+
 ## Start-Copilot
 
 `Start-Copilot` wraps the `copilot` executable and adds:
