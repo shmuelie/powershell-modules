@@ -206,6 +206,259 @@ npm warn deprecated request@2.88.2: request has been deprecated
     }
 }
 
+Describe 'Update-NpmPackage' {
+    BeforeAll {
+        $script:OriginalNpmExitCodeVariable = Get-Variable LASTEXITCODE -Scope Global -ErrorAction Ignore
+        $script:OriginalNpmExitCode = if ($script:OriginalNpmExitCodeVariable) { $script:OriginalNpmExitCodeVariable.Value }
+    }
+
+    AfterAll {
+        if ($script:OriginalNpmExitCodeVariable) {
+            $global:LASTEXITCODE = $script:OriginalNpmExitCode
+        } else {
+            Remove-Variable LASTEXITCODE -Scope Global -ErrorAction Ignore
+        }
+    }
+
+    Context 'command contract' {
+        BeforeEach {
+            Mock npm -ModuleName Shmuelie.Node { $global:LASTEXITCODE = 0 }
+        }
+
+        It 'preserves <Label> names and <Scope> arguments' -ForEach @(
+            foreach ($case in @(
+                @{ Label = 'ordinary'; Name = 'typescript' }
+                @{ Label = 'scoped'; Name = '@scope/tool' }
+                @{ Label = 'legacy uppercase'; Name = 'Legacy.Tool-2' }
+                @{ Label = 'underscore'; Name = 'some_tool' }
+                @{ Label = 'maximum length'; Name = ('a' * 214) }
+                @{ Label = 'maximum scoped length'; Name = ('@scope/' + ('a' * 207)) }
+            )) {
+                foreach ($global in $false, $true) {
+                    @{ Label = $case.Label; Name = $case.Name; Global = $global; Scope = $(if ($global) { 'global' } else { 'local' }) }
+                }
+            }
+        ) {
+            $ConfirmPreference = 'Low'
+            $result = Update-NpmPackage -Name $Name -Global:$Global -Confirm:$false
+
+            $result.PSTypeNames[0] | Should -BeExactly 'NpmUpdateResult'
+            @($result.PSObject.Properties.Name) | Should -Be @('Name', 'Global', 'Success')
+            $result.Name | Should -BeExactly $Name
+            $result.Global | Should -Be $Global
+            $result.Success | Should -BeTrue
+            $expectedArguments = if ($Global) { @('install', '-g', "$Name@latest") } else { @('update', $Name) }
+            Should -Invoke npm -ModuleName Shmuelie.Node -Times 1 -Exactly -ParameterFilter {
+                ($args -join '|') -ceq ($expectedArguments -join '|')
+            }
+        }
+
+        It 'rejects <Label> in <Scope> scope without invoking npm' -ForEach @(
+            foreach ($case in @(
+                @{ Label = 'unspaced ampersand'; Name = 'safe-package&echo.REVIEW_SENTINEL' }
+                @{ Label = 'spaced ampersand'; Name = 'safe-package&echo REVIEW_SENTINEL' }
+                @{ Label = 'pipe'; Name = 'tool|echo.sentinel' }
+                @{ Label = 'input redirection'; Name = 'tool<input' }
+                @{ Label = 'output redirection'; Name = 'tool>output' }
+                @{ Label = 'percent expansion'; Name = 'tool%PATH%' }
+                @{ Label = 'delayed expansion'; Name = 'tool!PATH!' }
+                @{ Label = 'caret'; Name = 'tool^name' }
+                @{ Label = 'quote'; Name = 'tool"name' }
+                @{ Label = 'backtick'; Name = 'tool`name' }
+                @{ Label = 'parentheses'; Name = 'tool(name)' }
+                @{ Label = 'semicolon'; Name = 'tool;name' }
+                @{ Label = 'space'; Name = 'two words' }
+                @{ Label = 'tab'; Name = "tool`tname" }
+                @{ Label = 'trailing newline'; Name = "tool`n" }
+                @{ Label = 'carriage return'; Name = "tool`rname" }
+                @{ Label = 'NUL'; Name = "tool`0name" }
+                @{ Label = 'DEL'; Name = "tool$([char]127)name" }
+                @{ Label = 'Unicode case folding'; Name = "tool$([char]0x212a)" }
+                @{ Label = 'non-ASCII name'; Name = "caf$([char]0xe9)" }
+                @{ Label = 'long option'; Name = '--global' }
+                @{ Label = 'short option'; Name = '-g' }
+                @{ Label = 'local path'; Name = './tool' }
+                @{ Label = 'Windows path'; Name = 'C:\tool' }
+                @{ Label = 'URL'; Name = 'https://example.test/tool' }
+                @{ Label = 'version spec'; Name = 'tool@1.0.0' }
+                @{ Label = 'scoped tag spec'; Name = '@scope/tool@latest' }
+                @{ Label = 'missing scoped name'; Name = '@scope/' }
+                @{ Label = 'additional slash'; Name = '@scope/tool/name' }
+                @{ Label = 'overlong'; Name = ('a' * 215) }
+                @{ Label = 'overlong scoped'; Name = ('@scope/' + ('a' * 208)) }
+                @{ Label = 'empty'; Name = '' }
+                @{ Label = 'null'; Name = $null }
+            )) {
+                foreach ($global in $false, $true) {
+                    @{ Label = $case.Label; Name = $case.Name; Global = $global; Scope = $(if ($global) { 'global' } else { 'local' }) }
+                }
+            }
+        ) {
+            { Update-NpmPackage -Name $Name -Global:$Global -Confirm:$false -ErrorAction Stop } | Should -Throw
+            Should -Invoke npm -ModuleName Shmuelie.Node -Times 0 -Exactly
+        }
+
+        It 'binds the name and global scope separately for each pipeline record' {
+            $packages = @(
+                [pscustomobject]@{ Name = 'typescript'; Global = $false }
+                [pscustomobject]@{ Name = '@scope/tool'; Global = $true }
+            )
+            $results = @($packages | Update-NpmPackage -Confirm:$false)
+            $results.Name | Should -Be @('typescript', '@scope/tool')
+            $results.Global | Should -Be @($false, $true)
+            Should -Invoke npm -ModuleName Shmuelie.Node -Times 1 -Exactly -ParameterFilter {
+                ($args -join '|') -ceq 'update|typescript'
+            }
+            Should -Invoke npm -ModuleName Shmuelie.Node -Times 1 -Exactly -ParameterFilter {
+                ($args -join '|') -ceq 'install|-g|@scope/tool@latest'
+            }
+        }
+
+        It 'stops on an invalid pipeline record without updating it or later records' {
+            $packages = @(
+                [pscustomobject]@{ Name = 'typescript'; Global = $false }
+                [pscustomobject]@{ Name = '--global'; Global = $false }
+                [pscustomobject]@{ Name = '@scope/later'; Global = $true }
+            )
+            { $packages | Update-NpmPackage -Confirm:$false -ErrorAction Stop } | Should -Throw
+            Should -Invoke npm -ModuleName Shmuelie.Node -Times 1 -Exactly
+            Should -Invoke npm -ModuleName Shmuelie.Node -Times 1 -Exactly -ParameterFilter {
+                ($args -join '|') -ceq 'update|typescript'
+            }
+        }
+
+        It 'streams results without reading ahead of a downstream stop' {
+            $results = @(& {
+                [pscustomobject]@{ Name = 'typescript'; Global = $false }
+                throw 'The updater read beyond the first input.'
+            } | Update-NpmPackage -Confirm:$false | Select-Object -First 1)
+            $results | Should -HaveCount 1
+            $results[0].Name | Should -BeExactly 'typescript'
+            Should -Invoke npm -ModuleName Shmuelie.Node -Times 1 -Exactly
+        }
+
+        It 'skips invalid pipeline records without reusing a previously bound name' {
+            $packages = @(
+                [pscustomobject]@{ Name = 'typescript'; Global = $false }
+                [pscustomobject]@{ Name = 'tool&echo.REVIEW_SENTINEL'; Global = $true }
+                [pscustomobject]@{ Name = '@scope/tool'; Global = $true }
+            )
+            $output = @($packages | Update-NpmPackage -Confirm:$false -ErrorAction Continue 2>&1)
+            @($output | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] }) | Should -HaveCount 1
+            $results = @($output | Where-Object { $_.PSTypeNames -contains 'NpmUpdateResult' })
+            $results.Name | Should -Be @('typescript', '@scope/tool')
+            $results.Global | Should -Be @($false, $true)
+            Should -Invoke npm -ModuleName Shmuelie.Node -Times 2 -Exactly
+            Should -Invoke npm -ModuleName Shmuelie.Node -Times 1 -Exactly -ParameterFilter {
+                ($args -join '|') -ceq 'update|typescript'
+            }
+            Should -Invoke npm -ModuleName Shmuelie.Node -Times 1 -Exactly -ParameterFilter {
+                ($args -join '|') -ceq 'install|-g|@scope/tool@latest'
+            }
+        }
+
+        It 'preserves native failure in the existing result shape' {
+            Mock npm -ModuleName Shmuelie.Node { $global:LASTEXITCODE = 7 }
+            $result = Update-NpmPackage -Name typescript -Confirm:$false
+            $result.PSTypeNames[0] | Should -BeExactly 'NpmUpdateResult'
+            $result.Name | Should -BeExactly 'typescript'
+            $result.Success | Should -BeFalse
+        }
+
+        It 'does not invoke npm or return update results under WhatIf' {
+            @(Update-NpmPackage -Name '@scope/tool' -Global -WhatIf) | Should -HaveCount 0
+            Should -Invoke npm -ModuleName Shmuelie.Node -Times 0 -Exactly
+        }
+
+        It 'validates names even under WhatIf' {
+            { Update-NpmPackage -Name '--global' -WhatIf -ErrorAction Stop } | Should -Throw
+            Should -Invoke npm -ModuleName Shmuelie.Node -Times 0 -Exactly
+        }
+    }
+
+    Context 'Windows batch boundary' -Skip:(-not $IsWindows) {
+        BeforeAll {
+            $script:NpmBatchPath = Join-Path $TestDrive 'npm-echo-only.cmd'
+            Set-Content -LiteralPath $script:NpmBatchPath -Encoding ascii -Value @(
+                '@echo off'
+                'echo FAKE_TOOL_REACHED'
+                'exit /b 0'
+            )
+            $script:NpmBatchModule = Get-Module Shmuelie.Node
+            & $script:NpmBatchModule {
+                param($Path)
+                $script:NpmBatchFixture = $Path
+                function script:npm {
+                    if ($args[0] -eq 'list') {
+                        $global:LASTEXITCODE = 0
+                        @{ dependencies = @{ $script:NpmBatchName = @{ version = '1.0.0' } } } | ConvertTo-Json -Depth 4 -Compress
+                        return
+                    }
+                    $script:NpmBatchCalls++
+                    & $script:NpmBatchFixture @args
+                }
+            } $script:NpmBatchPath
+
+            function Invoke-TestNpmBatchUpdate {
+                param([string]$Name, [bool]$Global, [bool]$Pipeline)
+                & $script:NpmBatchModule { param($Name) $script:NpmBatchName = $Name } $Name
+                if ($Pipeline) {
+                    Get-NpmPackage -Global:$Global | Update-NpmPackage -Confirm:$false -Verbose -ErrorAction Stop
+                } else {
+                    Update-NpmPackage -Name $Name -Global:$Global -Confirm:$false -Verbose -ErrorAction Stop
+                }
+            }
+        }
+
+        BeforeEach {
+            & $script:NpmBatchModule { $script:NpmBatchCalls = 0 }
+        }
+
+        AfterAll {
+            & $script:NpmBatchModule {
+                Remove-Item Function:\script:npm -ErrorAction Stop
+                Remove-Variable NpmBatchFixture, NpmBatchName, NpmBatchCalls -Scope Script -ErrorAction Ignore
+            }
+            Remove-Item -LiteralPath $script:NpmBatchPath -Force -ErrorAction Stop
+        }
+
+        It 'reaches only the echo-only shim for <Name> via <Mode>' -ForEach @(
+            foreach ($name in 'typescript', '@scope/tool') {
+                foreach ($global in $false, $true) {
+                    foreach ($pipeline in $false, $true) {
+                        @{ Name = $name; Global = $global; Pipeline = $pipeline; Mode = "$(if ($global) { 'global' } else { 'local' }) $(if ($pipeline) { 'pipeline' } else { 'direct' })" }
+                    }
+                }
+            }
+        ) {
+            $output = @(Invoke-TestNpmBatchUpdate -Name $Name -Global $Global -Pipeline $Pipeline 4>&1)
+            @($output | Where-Object { $_ -is [System.Management.Automation.VerboseRecord] -and $_.Message -ceq 'FAKE_TOOL_REACHED' }) | Should -HaveCount 1
+            $results = @($output | Where-Object { $_.PSTypeNames -contains 'NpmUpdateResult' })
+            $results | Should -HaveCount 1
+            $results[0].Name | Should -BeExactly $Name
+            $results[0].Global | Should -Be $Global
+            $results[0].Success | Should -BeTrue
+            (& $script:NpmBatchModule { $script:NpmBatchCalls }) | Should -Be 1
+        }
+
+        It 'rejects the unspaced echo sentinel before reaching the shim via <Mode>' -ForEach @(
+            foreach ($global in $false, $true) {
+                foreach ($pipeline in $false, $true) {
+                    @{ Global = $global; Pipeline = $pipeline; Mode = "$(if ($global) { 'global' } else { 'local' }) $(if ($pipeline) { 'pipeline' } else { 'direct' })" }
+                }
+            }
+        ) {
+            $seen = [System.Collections.Generic.List[object]]::new()
+            {
+                Invoke-TestNpmBatchUpdate -Name 'safe-package&echo.REVIEW_SENTINEL' -Global $Global -Pipeline $Pipeline 4>&1 |
+                    ForEach-Object { $seen.Add($_) }
+            } | Should -Throw
+            @($seen | Where-Object { $_ -is [System.Management.Automation.VerboseRecord] -and $_.Message -clike 'REVIEW_SENTINEL*' }) | Should -HaveCount 0
+            (& $script:NpmBatchModule { $script:NpmBatchCalls }) | Should -Be 0
+        }
+    }
+}
+
 Describe 'nvm wrapper cmdlets' {
     BeforeEach {
         $script:NvmOutput = $null

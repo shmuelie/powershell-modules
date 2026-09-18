@@ -3,6 +3,7 @@ if (-not $IsWindows) { throw 'The service status fixture requires Windows.' }
 if ('Shmuelie.Windows.Cmdlets.GetServiceProcessCommand' -as [type]) {
     throw 'Run this fixture in a fresh no-profile process without a native Windows module loaded.'
 }
+$env:PSModulePath = Join-Path $PSHOME 'Modules'
 $repoRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
 $source = Join-Path $repoRoot 'modules' 'Shmuelie.Windows' 'Cmdlets'
 $references = @(

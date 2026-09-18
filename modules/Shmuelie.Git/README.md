@@ -31,7 +31,7 @@ Import-Module Shmuelie.Git
 | `Remove-StaleWorktree` | Prune stale worktree administrative entries for deleted worktree directories |
 | `Repair-Worktree` | Repair worktree links after a repository or worktree move |
 | `Lock-Worktree` / `Unlock-Worktree` | Lock or unlock a worktree by branch name |
-| `Update-Worktrees` | Fast-forward every worktree for the current or `-Path` repository from upstream (`-ChangedOnly` emits only actionable results; forwards the `Sync-GitRemote` GitHub-account options to the fetch) |
+| `Update-Worktrees` | Fast-forward every worktree for the current or `-Path` repository from upstream, restoring only its own saved changes (`-ChangedOnly` emits only actionable results; forwards the `Sync-GitRemote` GitHub-account options to the fetch) |
 | `Update-AllWorktrees` | Discover repositories under `$env:SOURCE_REPOS` or a supplied `-Path` root and update each repository in parallel (`-ChangedOnly` displays actionable results as wrapping multiline details) |
 | `Find-StaleBranch` | Find local branches in the current or `-Path` repository whose upstream branch is gone (`-IncludeNeverPushed` also includes local-only branches) |
 | `Remove-Branch` | Delete an exact local branch (`-Force` permits unmerged deletion) or a remote branch with `-Remote -RemoteName origin`; high-impact confirmation and `-WhatIf` protect every deletion |
@@ -54,6 +54,11 @@ plugin prediction to use it:
 ```powershell
 Set-PSReadLineOption -PredictionSource HistoryAndPlugin -PredictionViewStyle ListView
 ```
+
+Removing or force-reimporting the module cleans up only its own idle subscription
+and action job, preserving other idle handlers, event subscribers and jobs. A
+predictor binary imported by this module is removed with it; an already registered
+predictor owned by the caller is left loaded and registered.
 
 Suggestions use substring (not prefix) matching, so a middle fragment like `wim`
 surfaces `user/alex/wim-work`.
@@ -325,6 +330,21 @@ multi-path restore can leave partial changes and is not automatically rolled bac
 operation, returning `Status = 'InProgress'` with the existing operation string
 (for example `MERGING` or `REBASE-i 1/3`) instead of stashing or fast-forwarding
 them.
+
+For dirty worktrees, `Update-Worktrees` uses `Save-GitStash` to capture a newly
+created stash identity, then applies that exact object after the fast-forward
+attempt. It drops the restored entry only if it is still the newest stash.
+Existing unrelated stashes are never used as a fallback. When a successful push
+creates no stash (such as submodule-only changes), the worktree is skipped with
+`Status = 'StashFailed'`, `Stashed = $false`, and a warning; neither its branch
+nor the pre-existing stash stack is changed.
+
+Apply conflicts retain the saved stash and report `PopFailed = $true`. If the
+stack changes before cleanup, the captured object is restored but no stash is
+dropped; a warning and `PopFailed = $true` indicate manual cleanup is needed.
+Dirty worktrees remain sequential. Avoid concurrent stash writers in any linked
+worktree while updating: the identity reads and verified drop are not atomic
+with other Git processes.
 
 `Update-Worktrees -ChangedOnly` returns only `WorktreeUpdateResult` objects with
 status `Updated`, `Removed`, `Failed`, or `StashFailed`, matching the actionable

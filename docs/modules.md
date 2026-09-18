@@ -164,15 +164,17 @@ Highlights:
 
 - `Get-InstalledApplications` queries Windows uninstall registry state.
 - `Get-ServiceProcess` resolves a Windows service to its hosting process.
-- [`New-AppInstallContext`](appinstall.md) creates an experimental lazy context;
-  it does not activate the manager or perform installation or search.
-- [`Get-AppInstallSettings`](appinstall.md#read-only-settings) reads the approved
-  settings through an explicit context; acquisition identity requires opt-in.
-- [`Request-AppInstallUpdateSearch`](appinstall.md#caller-scoped-paused-update-search)
-  confirms the experimental caller all-app paused-queue mutation; explicit context
-  and caller correlation are required, with automatic download/install and forced restart fixed false.
+- `Get-AppInstallerApp` and `Update-AppInstallerApp` provide existing
+  AppInstaller-managed application discovery and update-check requests.
 - `Get-WindowsTerminalSettings` and `Get-WindowsTerminalProfile` inspect Windows Terminal configuration.
 - `Start-WindowsPerformanceRecorder` and `Stop-WindowsPerformanceRecorder` wrap WPR tracing.
+
+AppInstallManager is separate from these AppInstaller commands. Its five
+unpublished commands live in the repository-local
+[`Shmuelie.AppInstall.Experimental`](https://github.com/shmuelie/powershell-modules/tree/main/experimental/Shmuelie.AppInstall.Experimental)
+module, outside the supported module catalog. Windows neither loads nor packages
+that implementation. See [the experimental contract](appinstall.md) for the
+unchanged private-capability restriction and #233 release hold.
 
 ## Shmuelie.Dsc
 

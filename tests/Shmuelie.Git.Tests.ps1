@@ -94,6 +94,224 @@ BeforeAll {
     }
 }
 
+Describe 'Worktree predictor event ownership' -Tag 'PredictorEventOwnership' {
+    BeforeAll {
+        $lifecycleRoot = (New-Item -ItemType Directory -Path (
+            Join-Path $TestDrive "predictor-lifetime-$([guid]::NewGuid().ToString('N'))"
+        ) -ErrorAction Stop).FullName
+        $lifecycleChild = Join-Path $lifecycleRoot 'lifecycle.ps1'
+        $lifecycleSource = Join-Path $repoRoot 'modules' 'Shmuelie.Git'
+        $lifecyclePwsh = (Get-Command pwsh -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
+        Set-Content -LiteralPath $lifecycleChild -Encoding utf8 -Value @'
+param(
+    [Parameter(Mandatory)][string]$Source,
+    [Parameter(Mandatory)][string]$Root,
+    [Parameter(Mandatory)][string]$Mode,
+    [Parameter(Mandatory)][string]$PriorState,
+    [switch]$AlreadyRemoved
+)
+$ErrorActionPreference = 'Stop'
+$originalLocation = Get-Location
+$timer = [Timers.Timer]::new()
+$module = $null
+$externalBinary = $null
+$externalJobs = @()
+$externalSubscribers = @()
+
+function Assert-LifecycleState([bool]$Condition, [string]$Message) {
+    if (-not $Condition) { throw $Message }
+}
+
+function Assert-ExternalState {
+    $subscribers = @(Get-EventSubscriber -Force)
+    foreach ($expected in $externalSubscribers) {
+        Assert-LifecycleState ([bool]($subscribers | Where-Object {
+            [object]::ReferenceEquals($_, $expected)
+        })) "Removed unrelated subscriber $($expected.SubscriptionId)."
+    }
+    $jobs = @(Get-Job)
+    foreach ($expected in $externalJobs) {
+        Assert-LifecycleState ([bool]($jobs | Where-Object {
+            [object]::ReferenceEquals($_, $expected)
+        })) "Removed unrelated job $($expected.Id)."
+    }
+}
+
+try {
+    Assert-LifecycleState (-not (Test-Path -LiteralPath $Root)) 'Scenario directory must be new.'
+    $null = New-Item -ItemType Directory -Path $Root -ErrorAction Stop
+    Set-Location -LiteralPath $Root -ErrorAction Stop
+    Assert-LifecycleState ((Get-Location).ProviderPath -ceq $Root) 'Scenario location guard failed.'
+    $staged = (New-Item -ItemType Directory -Path (Join-Path $Root 'Shmuelie.Git') -ErrorAction Stop).FullName
+    Get-ChildItem -LiteralPath $Source -File | Copy-Item -Destination $staged -ErrorAction Stop
+    Copy-Item -LiteralPath (Join-Path $Source 'Classes') -Destination $staged -Recurse -ErrorAction Stop
+    $manifest = Join-Path $staged 'Shmuelie.Git.psd1'
+
+    # This double exercises the real loader without starting Git on idle.
+    $predictorSource = @"
+using System;
+using System.Collections.Generic;
+using System.Management.Automation;
+using System.Management.Automation.Subsystem;
+using System.Management.Automation.Subsystem.Prediction;
+using System.Threading;
+namespace WorktreePredictor {
+    public sealed class WorktreeCommandPredictor : ICommandPredictor {
+        public static readonly Guid PredictorId = new Guid("a1b2c3d4-e5f6-7890-abcd-ef1234567890");
+        public static int Imports;
+        public static int Removals;
+        public static int Updates;
+        public static void UpdateWorkingDirectory(string path) { Updates++; }
+        public Guid Id => PredictorId;
+        public string Name => "Worktree";
+        public string Description => "No-Git lifecycle test predictor";
+        public SuggestionPackage GetSuggestion(PredictionClient client, PredictionContext context, CancellationToken token) => default;
+        public bool CanAcceptFeedback(PredictionClient client, PredictorFeedbackKind feedback) => false;
+        public void OnSuggestionDisplayed(PredictionClient client, uint session, int countOrIndex) { }
+        public void OnSuggestionAccepted(PredictionClient client, uint session, string text) { }
+        public void OnCommandLineAccepted(PredictionClient client, IReadOnlyList<string> history) { }
+        public void OnCommandLineExecuted(PredictionClient client, string commandLine, bool success) { }
+    }
+    public sealed class Init : IModuleAssemblyInitializer, IModuleAssemblyCleanup {
+        public void OnImport() {
+            SubsystemManager.RegisterSubsystem(SubsystemKind.CommandPredictor, new WorktreeCommandPredictor());
+            WorktreeCommandPredictor.Imports++;
+        }
+        public void OnRemove(PSModuleInfo module) {
+            SubsystemManager.UnregisterSubsystem(SubsystemKind.CommandPredictor, WorktreeCommandPredictor.PredictorId);
+            WorktreeCommandPredictor.Removals++;
+        }
+    }
+}
+"@
+    if ($Mode -eq 'SourceWithType') {
+        Add-Type -TypeDefinition $predictorSource
+    } elseif ($Mode -in @('Bundled', 'Preloaded')) {
+        $bin = (New-Item -ItemType Directory -Path (Join-Path $staged 'bin') -ErrorAction Stop).FullName
+        $binaryPath = Join-Path $bin 'WorktreePredictor.dll'
+        Add-Type -TypeDefinition $predictorSource -OutputAssembly $binaryPath
+        if ($Mode -eq 'Preloaded') {
+            $externalBinary = Import-Module $binaryPath -PassThru -ErrorAction Stop
+        }
+    }
+
+    if ($PriorState -in @('Actionless', 'Mixed')) {
+        $null = Register-ObjectEvent -InputObject $timer -EventName Elapsed -SourceIdentifier 'Fixture.Actionless.One'
+        $null = Register-ObjectEvent -InputObject $timer -EventName Disposed -SourceIdentifier 'Fixture.Actionless.Two'
+        $null = Register-ObjectEvent -InputObject $timer -EventName Elapsed -SourceIdentifier 'Fixture.Actionless.Three'
+    }
+    if ($PriorState -in @('Jobs', 'Mixed')) {
+        $job = Start-Job -ScriptBlock { 'unrelated completed job' }
+        $externalJobs += $job
+        $null = Wait-Job -Job $job -Timeout 30
+        Assert-LifecycleState ($job.State -eq 'Completed') 'Unrelated fixture job did not complete.'
+    }
+    if ($PriorState -eq 'Mixed') {
+        $externalJobs += Register-EngineEvent -SourceIdentifier PowerShell.OnIdle -Action { }
+        $externalJobs += Register-ObjectEvent -InputObject $timer -EventName Elapsed -SourceIdentifier 'Fixture.Action' -Action { }
+    }
+    $externalSubscribers = @(Get-EventSubscriber -Force)
+    $externalIds = @($externalSubscribers | Select-Object -ExpandProperty SubscriptionId)
+    $externalJobIds = @($externalJobs | Select-Object -ExpandProperty Id)
+    $expectedOwnCount = if ($Mode -eq 'SourceWithoutPredictor') { 0 } else { 1 }
+    $divergentIdsObserved = $false
+
+    foreach ($cycle in 1..3) {
+        foreach ($import in 1..2) {
+            $module = Import-Module $manifest -Force -PassThru -ErrorAction Stop
+            Assert-ExternalState
+            $ownedSubscribers = @(Get-EventSubscriber -Force | Where-Object SubscriptionId -NotIn $externalIds)
+            $ownedJobs = @(Get-Job | Where-Object Id -NotIn $externalJobIds)
+            Assert-LifecycleState ($ownedSubscribers.Count -eq $expectedOwnCount) "Unexpected owned subscriber count after import: $($ownedSubscribers.Count)."
+            Assert-LifecycleState ($ownedJobs.Count -eq $expectedOwnCount) "Unexpected owned job count after import: $($ownedJobs.Count)."
+            if ($expectedOwnCount -eq 1) {
+                Assert-LifecycleState ([object]::ReferenceEquals($ownedSubscribers[0].Action, $ownedJobs[0])) 'Owned job/subscriber association differs.'
+                if ($ownedSubscribers[0].SubscriptionId -ne $ownedJobs[0].Id) { $divergentIdsObserved = $true }
+            }
+            if ($Mode -in @('Bundled', 'Preloaded')) {
+                Assert-LifecycleState ((Get-PSSubsystem -Kind CommandPredictor).Implementations.Name -contains 'Worktree') 'Predictor must be registered while the module is loaded.'
+            }
+        }
+        if ($AlreadyRemoved -and $ownedSubscribers.Count -gt 0) {
+            Unregister-Event -SubscriptionId $ownedSubscribers[0].SubscriptionId
+            Remove-Job -Job $ownedJobs[0] -Force
+        }
+        Remove-Module $module -Force -ErrorAction Stop
+        $module = $null
+        Assert-ExternalState
+        Assert-LifecycleState (@(Get-EventSubscriber -Force | Where-Object SubscriptionId -NotIn $externalIds).Count -eq 0) 'Module subscriber leaked after removal.'
+        Assert-LifecycleState (@(Get-Job | Where-Object Id -NotIn $externalJobIds).Count -eq 0) 'Module action job leaked after removal.'
+        if ($Mode -eq 'Preloaded') {
+            Assert-LifecycleState ([bool](Get-Module WorktreePredictor)) 'Caller-owned binary module was removed.'
+            Assert-LifecycleState ((Get-PSSubsystem -Kind CommandPredictor).Implementations.Name -contains 'Worktree') 'Caller-owned predictor was unregistered.'
+            Assert-LifecycleState ([WorktreePredictor.WorktreeCommandPredictor]::Removals -eq 0) 'Caller-owned binary cleanup ran.'
+        } elseif ($Mode -eq 'Bundled') {
+            Assert-LifecycleState (-not (Get-Module WorktreePredictor)) 'Loader-owned binary module leaked.'
+            Assert-LifecycleState ((Get-PSSubsystem -Kind CommandPredictor).Implementations.Name -notcontains 'Worktree') 'Loader-owned predictor registration leaked.'
+        }
+    }
+    if ($expectedOwnCount -eq 1) {
+        Assert-LifecycleState $divergentIdsObserved 'Fixture did not exercise divergent counters.'
+        Assert-LifecycleState ([WorktreePredictor.WorktreeCommandPredictor]::Updates -ge 6) 'Predictor update wiring did not run on import.'
+    }
+    [pscustomobject]@{
+        Mode = $Mode
+        PriorState = $PriorState
+        Cycles = 3
+        ForceImports = 6
+        DivergentIdsObserved = $divergentIdsObserved
+        ExternalSubscribersPreserved = $externalSubscribers.Count
+        ExternalJobsPreserved = $externalJobs.Count
+    } | ConvertTo-Json -Compress
+} finally {
+    if ($module) { Remove-Module $module -Force -ErrorAction SilentlyContinue }
+    Get-EventSubscriber -Force | ForEach-Object { Unregister-Event -SubscriptionId $_.SubscriptionId -ErrorAction SilentlyContinue }
+    Get-Job | Remove-Job -Force -ErrorAction SilentlyContinue
+    if ($externalBinary) { Remove-Module $externalBinary -Force -ErrorAction SilentlyContinue }
+    $timer.Dispose()
+    Set-Location -LiteralPath $originalLocation.ProviderPath -ErrorAction Stop
+}
+'@
+    }
+
+    AfterAll {
+        if ($lifecycleRoot -and (Test-Path -LiteralPath $lifecycleRoot)) {
+            if ((Split-Path $lifecycleRoot -Parent) -cne $TestDrive) {
+                throw 'Refusing cleanup outside the owned lifecycle TestDrive.'
+            }
+            Remove-Item -LiteralPath $lifecycleRoot -Recurse -Force -ErrorAction Stop
+        }
+    }
+
+    It 'preserves subscriber, job and binary ownership for <Mode> with <PriorState> state (AlreadyRemoved=<AlreadyRemoved>)' -ForEach @(
+        @{ Mode = 'SourceWithType'; PriorState = 'Actionless'; AlreadyRemoved = $false }
+        @{ Mode = 'SourceWithType'; PriorState = 'Jobs'; AlreadyRemoved = $false }
+        @{ Mode = 'SourceWithType'; PriorState = 'Mixed'; AlreadyRemoved = $false }
+        @{ Mode = 'SourceWithType'; PriorState = 'Mixed'; AlreadyRemoved = $true }
+        @{ Mode = 'SourceWithoutPredictor'; PriorState = 'Mixed'; AlreadyRemoved = $false }
+        @{ Mode = 'Bundled'; PriorState = 'Mixed'; AlreadyRemoved = $false }
+        @{ Mode = 'Preloaded'; PriorState = 'Mixed'; AlreadyRemoved = $false }
+    ) {
+        $scenarioRoot = Join-Path $lifecycleRoot ([guid]::NewGuid().ToString('N'))
+        $arguments = @(
+            '-NoProfile', '-NonInteractive', '-File', $lifecycleChild,
+            '-Source', $lifecycleSource, '-Root', $scenarioRoot,
+            '-Mode', $Mode, '-PriorState', $PriorState
+        )
+        if ($AlreadyRemoved) { $arguments += '-AlreadyRemoved' }
+        $output = & $lifecyclePwsh @arguments 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            throw "Isolated lifecycle test failed (exit $LASTEXITCODE): $($output -join [Environment]::NewLine)"
+        }
+        $result = ($output -join "`n") | ConvertFrom-Json
+        $result.Cycles | Should -Be 3
+        $result.ForceImports | Should -Be 6
+        if ($Mode -ne 'SourceWithoutPredictor') {
+            $result.DivergentIdsObserved | Should -BeTrue
+        }
+    }
+}
+
 Describe 'Restore-GitStash' {
     BeforeAll {
         $restoreLocation = Get-Location
@@ -4974,7 +5192,7 @@ Describe 'Update-Worktrees ChangedOnly' -Skip:(-not (Get-Command git -ErrorActio
     It 'preserves <Status> results and diagnostics for <Scenario>' -ForEach @(
         @{ Scenario = 'merge failure'; Status = 'Failed'; Dirty = $false; LockIndex = $true; Warning = 'Fast-forward failed'; PopFailed = $false }
         @{ Scenario = 'stash failure'; Status = 'StashFailed'; Dirty = $true; LockIndex = $true; Warning = 'git stash push failed'; PopFailed = $false }
-        @{ Scenario = 'stash pop conflict'; Status = 'Updated'; Dirty = $true; LockIndex = $false; Warning = 'git stash pop failed'; PopFailed = $true }
+        @{ Scenario = 'stash pop conflict'; Status = 'Updated'; Dirty = $true; LockIndex = $false; Warning = 'git stash restoration failed'; PopFailed = $true }
     ) {
         $fixture = New-UpdateFixture -Name ($Scenario -replace ' ', '-')
         $clone = $fixture.Clone
@@ -5093,6 +5311,307 @@ Describe 'Update-Worktrees ChangedOnly' -Skip:(-not (Get-Command git -ErrorActio
         $applied[0].PopFailed | Should -BeFalse
         (Get-Content -LiteralPath (Join-Path $clone 'README.md') -Raw).Trim() | Should -BeExactly 'latest'
         (Get-Content -LiteralPath $localFile -Raw).Trim() | Should -BeExactly 'keep local changes'
+    }
+}
+
+Describe 'Update-Worktrees owned stash restoration' -Tag 'OwnedUpdateStash' {
+    BeforeAll {
+        $ownedUpdateRoot = (New-Item -ItemType Directory -Path (
+            Join-Path $TestDrive "owned-update-$([guid]::NewGuid().ToString('N'))"
+        ) -ErrorAction Stop).FullName
+        $ownedUpdateEnvironment = @{}
+        foreach ($key in @(
+            'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_SYSTEM', 'GIT_CONFIG_NOSYSTEM',
+            'GIT_CONFIG_COUNT', 'GIT_CONFIG_PARAMETERS', 'GIT_DIR', 'GIT_WORK_TREE',
+            'GIT_COMMON_DIR', 'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY',
+            'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_CEILING_DIRECTORIES',
+            'GIT_AUTHOR_DATE', 'GIT_COMMITTER_DATE', 'GIT_TERMINAL_PROMPT'
+        )) {
+            $ownedUpdateEnvironment[$key] = [Environment]::GetEnvironmentVariable($key, 'Process')
+            Remove-Item "Env:$key" -ErrorAction Ignore
+        }
+        $env:GIT_CONFIG_GLOBAL = Join-Path $ownedUpdateRoot 'no-global-config'
+        $env:GIT_CONFIG_SYSTEM = Join-Path $ownedUpdateRoot 'no-system-config'
+        $env:GIT_CONFIG_NOSYSTEM = '1'
+        $env:GIT_CONFIG_COUNT = '0'
+        $env:GIT_CEILING_DIRECTORIES = $TestDrive
+        $env:GIT_TERMINAL_PROMPT = '0'
+
+        function Assert-OwnedUpdatePath {
+            param([Parameter(Mandatory)][string]$Path)
+            $prefix = $ownedUpdateRoot + [IO.Path]::DirectorySeparatorChar
+            if (-not [IO.Path]::GetFullPath($Path).StartsWith($prefix, [StringComparison]::Ordinal)) {
+                throw "Refusing Git fixture access outside '$ownedUpdateRoot': '$Path'."
+            }
+        }
+
+        function Invoke-OwnedUpdateGit {
+            param([string]$Path, [string[]]$Arguments)
+            Assert-OwnedUpdatePath $Path
+            if ($Arguments -contains 'fetch' -or
+                ($Arguments -contains 'push' -and $Arguments -notcontains 'stash')) {
+                throw 'This fixture uses local upstreams only; fetch/push is forbidden.'
+            }
+            Invoke-Git (@('-C', $Path) + $Arguments)
+        }
+
+        function New-OwnedUpdateFixture {
+            param([switch]$Submodule, [switch]$Conflict)
+            $path = Join-Path $ownedCaseRoot 'parent'
+            Assert-OwnedUpdatePath $path
+            $null = New-TestRepo -Path $path
+            if ($Submodule) {
+                $sub = Join-Path $ownedCaseRoot 'sub-source'
+                Assert-OwnedUpdatePath $sub
+                $null = New-TestRepo -Path $sub
+                $null = Invoke-OwnedUpdateGit $path @('submodule', 'add', '--', $sub, 'sub')
+                $null = Invoke-OwnedUpdateGit $path @('commit', '-m', 'add submodule', '--quiet')
+            }
+            $null = Invoke-OwnedUpdateGit $path @('branch', 'behind')
+            $upstreamFile = if ($Conflict) { 'README.md' } else { 'upstream.txt' }
+            Set-Content -LiteralPath (Join-Path $path $upstreamFile) -Value 'upstream'
+            $null = Invoke-OwnedUpdateGit $path @('add', '--', $upstreamFile)
+            $null = Invoke-OwnedUpdateGit $path @('commit', '-m', 'advance upstream', '--quiet')
+            $null = Invoke-OwnedUpdateGit $path @('switch', 'behind', '--quiet')
+            $null = Invoke-OwnedUpdateGit $path @('branch', '--set-upstream-to=main', 'behind')
+            $path
+        }
+
+        function Save-OwnedUpdatePreviousStash {
+            param([string]$Path)
+            Set-Content -LiteralPath (Join-Path $Path 'previous.txt') -Value 'unrelated saved work'
+            $null = Invoke-OwnedUpdateGit $Path @('stash', 'push', '--include-untracked', '-m', 'previous', '--quiet')
+            Invoke-OwnedUpdateGit $Path @('rev-parse', 'refs/stash')
+        }
+    }
+
+    BeforeEach {
+        $ownedCaseRoot = (New-Item -ItemType Directory -Path (
+            Join-Path $ownedUpdateRoot ([guid]::NewGuid().ToString('N'))
+        ) -ErrorAction Stop).FullName
+        $ownedLocationPushed = $false
+        Push-Location -LiteralPath $ownedCaseRoot -ErrorAction Stop
+        $ownedLocationPushed = $true
+        Assert-OwnedUpdatePath (Get-Location).ProviderPath
+        Mock -ModuleName Shmuelie.Git Sync-GitRemote { } -ParameterFilter {
+            $Path -and [IO.Path]::GetFullPath($Path).StartsWith(
+                $ownedCaseRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::Ordinal)
+        }
+    }
+
+    AfterEach {
+        if ($ownedLocationPushed) { Pop-Location }
+    }
+
+    AfterAll {
+        foreach ($key in $ownedUpdateEnvironment.Keys) {
+            if ($null -eq $ownedUpdateEnvironment[$key]) {
+                Remove-Item -LiteralPath "Env:$key" -ErrorAction Ignore
+            } else {
+                [Environment]::SetEnvironmentVariable($key, $ownedUpdateEnvironment[$key], 'Process')
+            }
+        }
+        if ($ownedUpdateRoot -and (Test-Path -LiteralPath $ownedUpdateRoot)) {
+            if ((Split-Path $ownedUpdateRoot -Parent) -cne $TestDrive) {
+                throw 'Refusing cleanup outside the owned TestDrive root.'
+            }
+            Remove-Item -LiteralPath $ownedUpdateRoot -Recurse -Force -ErrorAction Stop
+        }
+    }
+
+    It 'skips a no-op submodule stash with ExistingStash=<ExistingStash>, ChangedOnly=<ChangedOnly>' -ForEach @(
+        @{ ExistingStash = $false; ChangedOnly = $false }
+        @{ ExistingStash = $true; ChangedOnly = $false }
+        @{ ExistingStash = $false; ChangedOnly = $true }
+        @{ ExistingStash = $true; ChangedOnly = $true }
+    ) {
+        $repo = New-OwnedUpdateFixture -Submodule
+        if ($ExistingStash) { $previous = Save-OwnedUpdatePreviousStash $repo }
+        $head = Invoke-OwnedUpdateGit $repo @('rev-parse', 'HEAD')
+        Set-Content -LiteralPath (Join-Path $repo 'sub' 'README.md') -Value 'submodule-only work'
+
+        $results = @(Update-Worktrees -Path $repo -ChangedOnly:$ChangedOnly -NoGitHubAccountResolve -Confirm:$false -WarningVariable warnings)
+
+        $results | Should -HaveCount 1
+        $results[0].Status | Should -Be 'StashFailed'
+        $results[0].Stashed | Should -BeFalse
+        $results[0].PopFailed | Should -BeFalse
+        ($warnings -join "`n") | Should -Match 'did not create.*stash'
+        Invoke-OwnedUpdateGit $repo @('rev-parse', 'HEAD') | Should -BeExactly $head
+        Test-Path -LiteralPath (Join-Path $repo 'previous.txt') | Should -BeFalse
+        (Get-Content -LiteralPath (Join-Path $repo 'sub' 'README.md') -Raw).Trim() | Should -BeExactly 'submodule-only work'
+        $stashes = @(Invoke-OwnedUpdateGit $repo @('stash', 'list', '--format=%H'))
+        if ($ExistingStash) {
+            $stashes | Should -Be @($previous)
+        } else {
+            $stashes | Should -HaveCount 0
+        }
+    }
+
+    It 'restores ordinary changes and drops only the new stash with ExistingStash=<ExistingStash>' -ForEach @(
+        @{ ExistingStash = $false }
+        @{ ExistingStash = $true }
+    ) {
+        $repo = New-OwnedUpdateFixture
+        if ($ExistingStash) { $previous = Save-OwnedUpdatePreviousStash $repo }
+        Set-Content -LiteralPath (Join-Path $repo 'README.md') -Value 'tracked work'
+        Set-Content -LiteralPath (Join-Path $repo 'loose.txt') -Value 'untracked work'
+
+        $results = @(Update-Worktrees -Path $repo -NoGitHubAccountResolve -Confirm:$false)
+
+        $results | Should -HaveCount 1
+        $results[0].Status | Should -Be 'Updated'
+        $results[0].Stashed | Should -BeTrue
+        $results[0].PopFailed | Should -BeFalse
+        Invoke-OwnedUpdateGit $repo @('rev-parse', 'HEAD') | Should -BeExactly (Invoke-OwnedUpdateGit $repo @('rev-parse', 'main'))
+        (Get-Content -LiteralPath (Join-Path $repo 'README.md') -Raw).Trim() | Should -BeExactly 'tracked work'
+        (Get-Content -LiteralPath (Join-Path $repo 'loose.txt') -Raw).Trim() | Should -BeExactly 'untracked work'
+        Test-Path -LiteralPath (Join-Path $repo 'previous.txt') | Should -BeFalse
+        $stashes = @(Invoke-OwnedUpdateGit $repo @('stash', 'list', '--format=%H'))
+        if ($ExistingStash) { $stashes | Should -Be @($previous) }
+        else { $stashes | Should -HaveCount 0 }
+    }
+
+    It 'retains both owned and pre-existing stashes when restoration conflicts' {
+        $repo = New-OwnedUpdateFixture -Conflict
+        $previous = Save-OwnedUpdatePreviousStash $repo
+        Set-Content -LiteralPath (Join-Path $repo 'README.md') -Value 'conflicting local work'
+
+        $results = @(Update-Worktrees -Path $repo -NoGitHubAccountResolve -Confirm:$false -WarningVariable warnings)
+
+        $results[0].Status | Should -Be 'Updated'
+        $results[0].Stashed | Should -BeTrue
+        $results[0].PopFailed | Should -BeTrue
+        ($warnings -join "`n") | Should -Match 'stash.*failed'
+        $stashes = @(Invoke-OwnedUpdateGit $repo @('stash', 'list', '--format=%H'))
+        $stashes | Should -HaveCount 2
+        $stashes[1] | Should -BeExactly $previous
+        Invoke-OwnedUpdateGit $repo @('show', "$($stashes[0]):README.md") | Should -BeExactly 'conflicting local work'
+        Test-Path -LiteralPath (Join-Path $repo 'previous.txt') | Should -BeFalse
+        @(Invoke-OwnedUpdateGit $repo @('ls-files', '--unmerged')) | Should -Not -BeNullOrEmpty
+    }
+
+    It 'keeps dirty linked worktrees and their shared pre-existing stash isolated' {
+        $repo = New-OwnedUpdateFixture
+        $previous = Save-OwnedUpdatePreviousStash $repo
+        $linked = Join-Path $ownedCaseRoot 'linked'
+        Assert-OwnedUpdatePath $linked
+        $null = Invoke-OwnedUpdateGit $repo @('worktree', 'add', '-b', 'behind-linked', '--', $linked, 'HEAD')
+        $null = Invoke-OwnedUpdateGit $repo @('branch', '--set-upstream-to=main', 'behind-linked')
+        Set-Content -LiteralPath (Join-Path $repo 'parent-only.txt') -Value 'parent work'
+        Set-Content -LiteralPath (Join-Path $linked 'linked-only.txt') -Value 'linked work'
+
+        $results = @(Update-Worktrees -Path $repo -NoGitHubAccountResolve -Confirm:$false)
+
+        $results | Should -HaveCount 2
+        foreach ($result in $results) {
+            $result.Status | Should -Be 'Updated'
+            $result.Stashed | Should -BeTrue
+            $result.PopFailed | Should -BeFalse
+        }
+        (Get-Content -LiteralPath (Join-Path $repo 'parent-only.txt') -Raw).Trim() | Should -BeExactly 'parent work'
+        (Get-Content -LiteralPath (Join-Path $linked 'linked-only.txt') -Raw).Trim() | Should -BeExactly 'linked work'
+        Test-Path -LiteralPath (Join-Path $repo 'linked-only.txt') | Should -BeFalse
+        Test-Path -LiteralPath (Join-Path $linked 'parent-only.txt') | Should -BeFalse
+        Test-Path -LiteralPath (Join-Path $repo 'previous.txt') | Should -BeFalse
+        Test-Path -LiteralPath (Join-Path $linked 'previous.txt') | Should -BeFalse
+        @(Invoke-OwnedUpdateGit $repo @('stash', 'list', '--format=%H')) | Should -Be @($previous)
+    }
+
+    It 'does not merge or restore a previous stash when stash creation fails' {
+        $repo = New-OwnedUpdateFixture
+        $previous = Save-OwnedUpdatePreviousStash $repo
+        $head = Invoke-OwnedUpdateGit $repo @('rev-parse', 'HEAD')
+        Set-Content -LiteralPath (Join-Path $repo 'README.md') -Value 'unstashed work'
+        $lock = Join-Path $repo '.git' 'index.lock'
+        $null = New-Item -ItemType File -Path $lock -ErrorAction Stop
+        try {
+            $results = @(Update-Worktrees -Path $repo -NoGitHubAccountResolve -Confirm:$false -WarningVariable warnings)
+        } finally {
+            Remove-Item -LiteralPath $lock -ErrorAction Stop
+        }
+
+        $results[0].Status | Should -Be 'StashFailed'
+        $results[0].Stashed | Should -BeFalse
+        $results[0].PopFailed | Should -BeFalse
+        ($warnings -join "`n") | Should -Match 'git stash push failed'
+        Invoke-OwnedUpdateGit $repo @('rev-parse', 'HEAD') | Should -BeExactly $head
+        @(Invoke-OwnedUpdateGit $repo @('stash', 'list', '--format=%H')) | Should -Be @($previous)
+        (Get-Content -LiteralPath (Join-Path $repo 'README.md') -Raw).Trim() | Should -BeExactly 'unstashed work'
+    }
+
+    It 'restores the captured object and retains the stack when another stash becomes newest' {
+        $repo = New-OwnedUpdateFixture
+        Set-Content -LiteralPath (Join-Path $repo 'owned.txt') -Value 'owned work'
+        $owned = Save-GitStash -Path $repo -IncludeUntracked -Confirm:$false
+        $other = Save-OwnedUpdatePreviousStash $repo
+
+        $restored = InModuleScope Shmuelie.Git -Parameters @{ Repo = $repo; ObjectId = $owned.ObjectId } {
+            Restore-WorktreeUpdateStash -Path $Repo -ObjectId $ObjectId -WarningVariable restoreWarnings
+        }
+
+        $restored | Should -BeFalse
+        (Get-Content -LiteralPath (Join-Path $repo 'owned.txt') -Raw).Trim() | Should -BeExactly 'owned work'
+        Test-Path -LiteralPath (Join-Path $repo 'previous.txt') | Should -BeFalse
+        @(Invoke-OwnedUpdateGit $repo @('stash', 'list', '--format=%H')) | Should -Be @($other, $owned.ObjectId)
+    }
+
+    It 'rejects a saved identity whose message belongs to a different writer' {
+        $repo = New-OwnedUpdateFixture
+        $previous = Save-OwnedUpdatePreviousStash $repo
+        $head = Invoke-OwnedUpdateGit $repo @('rev-parse', 'HEAD')
+        Set-Content -LiteralPath (Join-Path $repo 'README.md') -Value 'unsaved local work'
+        Mock -ModuleName Shmuelie.Git Save-GitStash {
+            [PSCustomObject]@{
+                ObjectId = $previous
+                RepositoryPath = $repo
+                Subject = 'On behind: a different writer'
+            }
+        } -ParameterFilter { $Path -eq $repo -and $IncludeUntracked }
+
+        $results = @(Update-Worktrees -Path $repo -NoGitHubAccountResolve -Confirm:$false -WarningVariable warnings)
+
+        $results[0].Status | Should -Be 'StashFailed'
+        $results[0].Stashed | Should -BeFalse
+        ($warnings -join "`n") | Should -Match 'not created by this update'
+        Invoke-OwnedUpdateGit $repo @('rev-parse', 'HEAD') | Should -BeExactly $head
+        @(Invoke-OwnedUpdateGit $repo @('stash', 'list', '--format=%H')) | Should -Be @($previous)
+        (Get-Content -LiteralPath (Join-Path $repo 'README.md') -Raw).Trim() | Should -BeExactly 'unsaved local work'
+        Test-Path -LiteralPath (Join-Path $repo 'previous.txt') | Should -BeFalse
+    }
+
+    It 'retains the owned stash when cleanup fails after successful restoration' {
+        $repo = New-OwnedUpdateFixture
+        $previous = Save-OwnedUpdatePreviousStash $repo
+        Set-Content -LiteralPath (Join-Path $repo 'owned.txt') -Value 'owned work'
+        $owned = Save-GitStash -Path $repo -IncludeUntracked -Confirm:$false
+        $lock = Join-Path $repo '.git' 'refs' 'stash.lock'
+        $null = New-Item -ItemType File -Path $lock -ErrorAction Stop
+        try {
+            $restored = InModuleScope Shmuelie.Git -Parameters @{ Repo = $repo; ObjectId = $owned.ObjectId } {
+                Restore-WorktreeUpdateStash -Path $Repo -ObjectId $ObjectId
+            }
+        } finally {
+            Remove-Item -LiteralPath $lock -ErrorAction Stop
+        }
+
+        $restored | Should -BeFalse
+        (Get-Content -LiteralPath (Join-Path $repo 'owned.txt') -Raw).Trim() | Should -BeExactly 'owned work'
+        Test-Path -LiteralPath (Join-Path $repo 'previous.txt') | Should -BeFalse
+        @(Invoke-OwnedUpdateGit $repo @('stash', 'list', '--format=%H')) | Should -Be @($owned.ObjectId, $previous)
+    }
+
+    It 'does not create or restore stashes during WhatIf' {
+        $repo = New-OwnedUpdateFixture
+        $previous = Save-OwnedUpdatePreviousStash $repo
+        $head = Invoke-OwnedUpdateGit $repo @('rev-parse', 'HEAD')
+        Set-Content -LiteralPath (Join-Path $repo 'README.md') -Value 'preview work'
+
+        @(Update-Worktrees -Path $repo -NoGitHubAccountResolve -WhatIf) | Should -HaveCount 0
+
+        Invoke-OwnedUpdateGit $repo @('rev-parse', 'HEAD') | Should -BeExactly $head
+        @(Invoke-OwnedUpdateGit $repo @('stash', 'list', '--format=%H')) | Should -Be @($previous)
+        (Get-Content -LiteralPath (Join-Path $repo 'README.md') -Raw).Trim() | Should -BeExactly 'preview work'
     }
 }
 
