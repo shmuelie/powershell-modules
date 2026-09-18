@@ -66,6 +66,28 @@ docs/                             # Markdown docs site (contributing, modules, i
 6. If the change applies to the bash port, file an `upstream-parity` issue in
    `shmuelie/bash-scripts` (see [Bash port parity](#bash-port-parity)).
 
+## Interactive input
+
+- Use `$Host.UI.Prompt(...)` / `FieldDescription` for module-owned fields, and
+  `$Host.UI.PromptForChoice(...)` / `ChoiceDescription` for defined options.
+  Supply meaningful captions, messages, labels/help and intentional defaults;
+  preserve exact candidate mapping, cancellation, and explicit selector hooks.
+- Put useful session names in a descriptive numbered list in the host prompt
+  message, with unique numeric choice labels (no `&` markers). Sanitize controls,
+  cap normalized names at 80 Unicode text elements including `...`, and append
+  available branches only for names duplicated after sanitization/truncation.
+  Keep full sanitized names and identity/context in help; no RawUI/width logic.
+- No automatic grid dependencies, custom menu rendering, number-parsing loops,
+  or console key reads. Host capability, not `Environment.UserInteractive` or
+  console availability, determines whether prompting works. Host errors and
+  invalid responses must fail closed, including under `-ErrorAction Continue`.
+- Input is not confirmation. Leave `SupportsShouldProcess`, `ShouldProcess`,
+  `ConfirmImpact`, `$ConfirmPreference`, `-Confirm`, `-WhatIf`, existing
+  `ShouldContinue`, and mandatory-parameter prompts framework managed.
+  Preview and explicit noninteractive paths must not acquire input prompts.
+- Use controlled host UI tests with synthetic input and fail-closed native
+  boundaries; see [Interactive input and confirmation](../docs/contributing.md#interactive-input-and-confirmation).
+
 ## .NET tool compatibility
 
 `Shmuelie.DotNet` owns the four .NET tool implementations. Utilities keeps thin,

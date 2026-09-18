@@ -6,6 +6,17 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+### Changed
+- Session selection now uses the active PowerShell host's `PromptForChoice`,
+  without automatic grid pickers or custom console input loops. The initial host
+  message shows numbered names capped at 80 Unicode text elements, with branches
+  only for duplicated displayed names. Numeric labels stay unique beyond nine
+  choices; help retains full names and context. Names and branches have terminal
+  controls sanitized without changing identity; no default is selected. Global
+  Cancel and launch New session remain distinct, and host failures or invalid responses
+  terminate without launching. Custom selectors, explicit bypasses, and standard
+  PowerShell confirmation/preview behavior are unchanged. (#304)
+
 ### Fixed
 - `Repair-CopilotSessionEvents` now filters malformed events before relocation,
   preventing empty-ID or unknown-model completions from being reinserted and

@@ -1704,8 +1704,7 @@ Describe 'Copilot pluggable session selector' {
             $script:SelectorLaunchPlanCommand
         } -ParameterFilter { $Name.Count -eq 1 -and $Name[0] -eq 'Get-CopilotLaunchPlan' }
         Mock -ModuleName Shmuelie.Copilot git { 'test-branch' }
-        $script:ExpectedConsoleReads = 0
-        Mock -ModuleName Shmuelie.Copilot Assert-CopilotSessionPickerInteractive { throw 'No interactive console.' }
+        Mock -ModuleName Shmuelie.Copilot Invoke-CopilotSessionChoice { throw 'Unexpected native picker.' }
         Mock -ModuleName Shmuelie.Copilot Read-Host { throw 'Unexpected console read.' }
         Mock -ModuleName Shmuelie.Copilot Invoke-CopilotSessionPicker { throw 'Unexpected default picker.' }
         Mock -ModuleName Shmuelie.Copilot Resume-CopilotSession {}
@@ -1718,7 +1717,8 @@ Describe 'Copilot pluggable session selector' {
 
     AfterEach {
         Pop-Location
-        Should -Invoke -ModuleName Shmuelie.Copilot Read-Host -Times $script:ExpectedConsoleReads -Exactly
+        Should -Invoke -ModuleName Shmuelie.Copilot Read-Host -Times 0 -Exactly
+        Should -Invoke -ModuleName Shmuelie.Copilot Invoke-CopilotSessionChoice -Times 0 -Exactly
         Should -Invoke -ModuleName Shmuelie.Copilot Invoke-CopilotSessionPicker -Times 0 -Exactly
     }
 
@@ -1981,33 +1981,6 @@ Describe 'Copilot pluggable session selector' {
         $candidates[0].Id | Should -Be $recentId
     }
 
-    It 'fails before prompting when the default picker has no interactive input' {
-        { Get-CopilotLaunchPlan } | Should -Throw '*No interactive console*'
-        Should -Invoke -ModuleName Shmuelie.Copilot Assert-CopilotSessionPickerInteractive -Times 1 -Exactly
-    }
-
-    It 'preserves the default numeric picker choice <Choice>' -ForEach @(
-        @{ Choice = '2'; ExpectedResume = $true }
-        @{ Choice = 'N'; ExpectedResume = $false }
-    ) {
-        Mock -ModuleName Shmuelie.Copilot Assert-CopilotSessionPickerInteractive {}
-        Mock -ModuleName Shmuelie.Copilot Read-Host { $Choice }
-        $script:ExpectedConsoleReads = 1
-        $plan = Get-CopilotLaunchPlan
-        if ($ExpectedResume) {
-            $plan.Args | Should -Contain $olderId
-        } else {
-            $plan.Args | Should -Not -Contain '--resume'
-        }
-    }
-
-    It 'surfaces a host prompt error instead of repeatedly retrying' {
-        Mock -ModuleName Shmuelie.Copilot Assert-CopilotSessionPickerInteractive {}
-        Mock -ModuleName Shmuelie.Copilot Read-Host { throw 'Host does not support prompting.' }
-        $script:ExpectedConsoleReads = 1
-        { Get-CopilotLaunchPlan } | Should -Throw '*Host does not support prompting*'
-    }
-
     It 'rejects an unsafe candidate ID before invoking the custom selector' {
         $candidate = [pscustomobject]@{
             PSTypeName = 'CopilotSession'
@@ -2017,6 +1990,578 @@ Describe 'Copilot pluggable session selector' {
             param($Candidate)
             Invoke-CopilotSessionSelector -Sessions @($Candidate) -SessionSelector { throw 'Unexpected selector.' }
         } $candidate } | Should -Throw '*Invalid Copilot session ID*'
+    }
+}
+
+Describe 'Copilot native host selection' -Tag 'NativeHostSelection' {
+    BeforeAll {
+        if (-not ('CopilotPromptTestHost' -as [type])) {
+            Add-Type -Path (Join-Path $repoRoot 'tests' 'fixtures' 'CopilotPromptTestHost.cs')
+        }
+
+        function Invoke-CopilotPromptCase {
+            param(
+                [scriptblock]$Command,
+                [object[]]$Candidates = $script:PromptCandidates,
+                [int[]]$Answers = @(),
+                [Exception]$Failure,
+                [switch]$MissingUI
+            )
+
+            $hostStub = [CopilotPromptTestHost]::new()
+            $hostStub.MissingUI = $MissingUI
+            $hostStub.TestUI.Failure = $Failure
+            foreach ($answer in $Answers) { $hostStub.TestUI.Answers.Enqueue($answer) }
+            $runspace = [runspacefactory]::CreateRunspace($hostStub)
+            $pipeline = [powershell]::Create()
+            try {
+                $runspace.Open()
+                $pipeline.Runspace = $runspace
+                $null = $pipeline.AddScript({
+                    param($Root, $Scratch, $Candidates, $CommandText)
+                    $ErrorActionPreference = 'Stop'
+                    $PSModuleAutoLoadingPreference = 'None'
+                    Set-Location -LiteralPath $Scratch
+                    Import-Module (Join-Path $Root 'modules' 'Shmuelie.Copilot' 'Shmuelie.Copilot.psd1') -Force
+                    $module = Get-Module Shmuelie.Copilot
+                    & $module {
+                        param($Candidates, $Scratch)
+                        $script:PromptCandidates = $Candidates
+                        $script:PromptScratch = $Scratch
+                        $script:NativeCalls = [System.Collections.Generic.List[object]]::new()
+                        # Capture real metadata before installing fail-closed discovery.
+                        $script:PromptPlanCommand = Get-Command Get-CopilotLaunchPlan
+                        function script:Get-Command {
+                            [CmdletBinding()]
+                            param([string[]]$Name, $CommandType)
+                            if ($Name.Count -ne 1) { throw 'Unexpected command discovery.' }
+                            switch -Exact ($Name[0]) {
+                                'Get-CopilotLaunchPlan' { return $script:PromptPlanCommand }
+                                'copilot' { return [pscustomobject]@{ Source = 'Invoke-CopilotPromptTestEngine' } }
+                                default { throw "Unexpected command discovery: $Name" }
+                            }
+                        }
+                        function script:Get-CopilotHome { $script:PromptScratch }
+                        function script:Get-Date {
+                            [CmdletBinding()]
+                            param([switch]$AsUTC)
+                            if (-not $AsUTC) { throw 'Unexpected clock request.' }
+                            [datetime]::new(2026, 8, 22, 0, 0, 0, [DateTimeKind]::Utc)
+                        }
+                        function script:Get-CopilotResumeCandidate { $script:PromptCandidates }
+                        function script:Get-CopilotSession {
+                            [CmdletBinding()]
+                            param([switch]$All, [string]$Id)
+                            if ($All) { return $script:PromptCandidates }
+                            if ($Id) { return $script:PromptCandidates | Where-Object Id -CEQ $Id }
+                            throw 'Unexpected session discovery.'
+                        }
+                        function script:Resolve-CopilotSessionPath {
+                            [CmdletBinding()]
+                            param([string]$Id)
+                            if ($Id -cnotin $script:PromptCandidates.Id) { throw 'Unexpected session path access.' }
+                            Join-Path $script:PromptScratch $Id
+                        }
+                        function script:Invoke-CopilotPromptTestEngine {
+                            $script:NativeCalls.Add([pscustomobject]@{
+                                Args = @($args | ForEach-Object { $_ })
+                                Cwd = (Get-Location).Path
+                            })
+                            throw 'Native execution blocked by fixture.'
+                        }
+                        function script:git { throw 'Unexpected native git call.' }
+                        function script:Read-Host { throw 'Unexpected Read-Host call.' }
+                        function script:Out-GridView { throw 'Unexpected grid picker.' }
+                        function script:Out-ConsoleGridView { throw 'Unexpected console grid picker.' }
+                    } $Candidates $Scratch
+                    $ErrorActionPreference = 'Continue'
+                    $caught = $null
+                    $output = @()
+                    try { $output = @(& ([scriptblock]::Create($CommandText))) } catch { $caught = $_ }
+                    [pscustomobject]@{
+                        Output = $output
+                        Error = $caught
+                        NativeCalls = @(& $module { $script:NativeCalls.ToArray() })
+                        Preference = $ErrorActionPreference
+                        Location = (Get-Location).Path
+                    }
+                }.ToString()).AddArgument($repoRoot).AddArgument($TestDrive).
+                    AddArgument($Candidates).AddArgument($Command.ToString())
+                $result = @($pipeline.Invoke())
+                if ($pipeline.Streams.Error.Count -gt 0) { throw ($pipeline.Streams.Error -join "`n") }
+                if ($result.Count -ne 1) { throw 'Unexpected fixture result count.' }
+                $result[0] | Add-Member -NotePropertyName HostUI -NotePropertyValue $hostStub.TestUI -PassThru
+            } finally {
+                $pipeline.Dispose()
+                $runspace.Dispose()
+            }
+        }
+    }
+
+    BeforeEach {
+        $script:PromptCandidates = @(
+            [pscustomobject]@{
+                PSTypeName = 'CopilotSession'; Id = 'recent-id'; Name = 'Same & name [x]; $(not-code)'
+                Summary = 'Same & name [x]; $(not-code)'; Repository = 'owner/repo'; Branch = 'topic&branch'
+                Cwd = $TestDrive; UpdatedAt = [datetimeoffset]'2026-08-20T11:00:00Z'; EventCount = 8
+            }
+            [pscustomobject]@{
+                PSTypeName = 'CopilotSession'; Id = 'older-id'; Name = 'Same & name [x]; $(not-code)'
+                Summary = 'Same & name [x]; $(not-code)'; Repository = 'owner/repo'; Branch = 'other'
+                Cwd = $TestDrive; UpdatedAt = [datetimeoffset]'2026-08-19T11:00:00Z'; EventCount = 4
+            }
+        )
+    }
+
+    It 'uses a nonconsole native host with literal candidate help and no implicit default' {
+        $result = Invoke-CopilotPromptCase -Answers 1 -Command { Get-CopilotLaunchPlan -Name 'new work' -Model 'gpt-5.4' }
+        $result.Error | Should -BeNullOrEmpty
+        $result.Output | Should -HaveCount 1
+        $result.Output[0].PSObject.TypeNames | Should -Contain 'CopilotLaunchPlan'
+        $result.Output[0].Args | Should -Contain 'older-id'
+        $result.Output[0].Args | Should -Contain 'gpt-5.4'
+        $result.Output[0].Args | Should -Not -Contain '--name'
+        $result.HostUI.Calls | Should -HaveCount 1
+        $call = $result.HostUI.Calls[0]
+        $call.Caption | Should -Be 'Choose Copilot session'
+        $call.Message | Should -Match 'current folder'
+        $call.DefaultChoice | Should -Be -1
+        $call.Choices.Label | Should -Be @('1', '2', '&New session')
+        $call.Message | Should -Match ([regex]::Escape('1. Same & name [x]; $(not-code) (topic&branch)'))
+        $call.Message | Should -Match ([regex]::Escape('2. Same & name [x]; $(not-code) (other)'))
+        foreach ($i in 0, 1) {
+            foreach ($value in $script:PromptCandidates[$i].Id, $script:PromptCandidates[$i].Summary, $TestDrive, 'owner/repo') {
+                $call.Choices[$i].HelpMessage | Should -Match ([regex]::Escape($value))
+            }
+        }
+        $call.Choices[0].HelpMessage | Should -Match 'Branch: topic&branch'
+        $call.Choices[0].HelpMessage | Should -Match 'Updated: 2026-08-20T11:00:00'
+        $call.Choices[0].HelpMessage | Should -Match 'Events: 8'
+        $result.HostUI.OtherInputCalls | Should -Be 0
+        $result.NativeCalls | Should -HaveCount 0
+    }
+
+    It 'maps large lists to the original object without hotkey or duplicate-name collisions' {
+        $candidates = @(foreach ($i in 1..120) {
+            $candidate = $script:PromptCandidates[0].PSObject.Copy()
+            $candidate.Id = "id-$i"
+            $candidate
+        })
+        $result = Invoke-CopilotPromptCase -Candidates $candidates -Answers 109 -Command {
+            & (Get-Module Shmuelie.Copilot) {
+                $selected = Invoke-CopilotSessionPicker -Sessions $script:PromptCandidates
+                [object]::ReferenceEquals($selected, $script:PromptCandidates[109])
+            }
+        }
+        $result.Error | Should -BeNullOrEmpty
+        $result.Output[0] | Should -BeTrue
+        $result.HostUI.Calls[0].Choices | Should -HaveCount 121
+        @($result.HostUI.Calls[0].Choices.Label | Select-Object -Unique) | Should -HaveCount 121
+        $result.HostUI.Calls[0].Choices[109].Label | Should -Be '110'
+        $result.HostUI.Calls[0].Choices[0..119].Label | Should -Be @(1..120 | ForEach-Object { "$_" })
+        $result.HostUI.Calls[0].Message | Should -Match '(?m)^110\. Same & name'
+        $result.HostUI.Calls[0].Choices[109].HelpMessage | Should -Match '(?m)^Id: id-110$'
+    }
+
+    It 'shows normalized names with the <Kind> <Length>-text-element boundary in the initial message' -ForEach @(
+        foreach ($elementCase in @(
+            @{ Kind = 'ASCII'; Element = 'a' }
+            @{ Kind = 'ordinary Unicode'; Element = "`u{5B57}" }
+            @{ Kind = 'astral'; Element = "`u{1F680}" }
+            @{ Kind = 'combining'; Element = "e`u{0301}" }
+            @{ Kind = 'joined emoji'; Element = "`u{1F469}`u{200D}`u{1F4BB}" }
+        )) {
+            foreach ($length in 79, 80, 81) {
+                @{ Kind = $elementCase.Kind; Element = $elementCase.Element; Length = $length }
+            }
+        }
+    ) {
+        $candidate = $script:PromptCandidates[0]
+        $candidate.Name = 'Not the normalized display name'
+        $candidate.Summary = $Element * $Length
+        $candidate.Branch = 'not-needed-for-unique-name'
+        $expected = if ($Length -gt 80) { ($Element * 77) + '...' } else { $candidate.Summary }
+        $result = Invoke-CopilotPromptCase -Candidates @($candidate) -Answers 0 -Command {
+            Get-CopilotLaunchPlan -NoAutoResume
+        }
+        $result.Error | Should -BeNullOrEmpty
+        $call = $result.HostUI.Calls[0]
+        $line = @($call.Message -split "`n" | Where-Object { $_ -match '^1\. ' })
+        $line | Should -HaveCount 1
+        $line[0] | Should -BeExactly "1. $expected"
+        [System.Globalization.StringInfo]::new($line[0].Substring(3)).LengthInTextElements | Should -Be ([Math]::Min($Length, 80))
+        $call.Message | Should -Not -Match 'not-needed-for-unique-name|Not the normalized display name'
+        $call.Choices[0].Label | Should -Be '1'
+        $call.Choices[0].HelpMessage | Should -Match ([regex]::Escape("Name: $($candidate.Summary)`n"))
+        $call.Choices[0].HelpMessage | Should -Match 'Branch: not-needed-for-unique-name'
+        $result.Output[0].Args | Should -Contain $candidate.Id
+    }
+
+    It 'appends branches only for final duplicated names including <Kind>' -ForEach @(
+        @{ Kind = 'exact duplicates'; First = 'shared'; Second = 'shared'; Display = 'shared' }
+        @{ Kind = 'truncation collisions'; First = ('a' * 80) + 'first'; Second = ('a' * 80) + 'second'; Display = ('a' * 77) + '...' }
+        @{ Kind = 'sanitization collisions'; First = "shared`tname"; Second = "shared`nname"; Display = 'shared name' }
+    ) {
+        $script:PromptCandidates[0].Summary = $First
+        $script:PromptCandidates[1].Summary = $Second
+        $script:PromptCandidates[0].Branch = 'first-branch'
+        $script:PromptCandidates[1].Branch = 'second-branch'
+        $unique = $script:PromptCandidates[0].PSObject.Copy()
+        $unique.Id = 'unique-id'; $unique.Summary = 'unique'; $unique.Branch = 'hidden-branch'
+        $result = Invoke-CopilotPromptCase -Candidates @($script:PromptCandidates + $unique) -Answers 1 -Command {
+            Get-CopilotLaunchPlan
+        }
+        $result.Error | Should -BeNullOrEmpty
+        $lines = @($result.HostUI.Calls[0].Message -split "`n" | Where-Object { $_ -match '^\d+\. ' })
+        $lines | Should -Be @("1. $Display (first-branch)", "2. $Display (second-branch)", '3. unique')
+        $result.HostUI.Calls[0].Message | Should -Not -Match 'hidden-branch'
+        $result.Output[0].Args | Should -Contain 'older-id'
+        $result.HostUI.Calls[0].Choices[1].HelpMessage | Should -Match 'Id: older-id'
+    }
+
+    It 'keeps identical or unavailable branches disambiguated by numbers and full help' {
+        $branches = @('same-branch', 'same-branch', $null, '', '   ', "`t`e")
+        $candidates = @(for ($i = 0; $i -lt $branches.Count; $i++) {
+            $candidate = $script:PromptCandidates[0].PSObject.Copy()
+            $candidate.Id = "duplicate-$i"
+            $candidate.Summary = 'same'
+            $candidate.Branch = $branches[$i]
+            $candidate
+        })
+        $result = Invoke-CopilotPromptCase -Candidates $candidates -Answers 4 -Command { Get-CopilotLaunchPlan }
+        $result.Error | Should -BeNullOrEmpty
+        $lines = @($result.HostUI.Calls[0].Message -split "`n" | Where-Object { $_ -match '^\d+\. ' })
+        $lines | Should -Be @('1. same (same-branch)', '2. same (same-branch)', '3. same', '4. same', '5. same', '6. same')
+        $result.Output[0].Args | Should -Contain 'duplicate-4'
+        foreach ($i in 0..5) {
+            $result.HostUI.Calls[0].Choices[$i].HelpMessage | Should -Match "Id: duplicate-$i"
+        }
+    }
+
+    It 'treats names that remain distinct after truncation as unique' {
+        $script:PromptCandidates[0].Summary = ('a' * 80) + 'one'
+        $script:PromptCandidates[1].Summary = ('b' * 80) + 'two'
+        $result = Invoke-CopilotPromptCase -Answers 0 -Command { Get-CopilotLaunchPlan }
+        $result.Error | Should -BeNullOrEmpty
+        $lines = @($result.HostUI.Calls[0].Message -split "`n" | Where-Object { $_ -match '^\d+\. ' })
+        $lines | Should -Be @("1. $('a' * 77)...", "2. $('b' * 77)...")
+        $result.HostUI.Calls[0].Message | Should -Not -Match 'topic&branch|\(other\)'
+    }
+
+    It 'sanitizes terminal controls in names and branches but preserves Unicode and ampersands' {
+        $name = "A&B`u{5B57}`u{1F680}e`u{0301}`0`t`r`n`e[31m`a`b`u{007F}`u{0085}`u{009B}31m`u{2028}`u{2029}"
+        $safeName = "A&B`u{5B57}`u{1F680}e`u{0301}" + (' ' * 5) + '[31m' + (' ' * 5) + '31m' + (' ' * 2)
+        $branch = "feature&`u{5B57}`e]0;title`a`tbranch"
+        $safeBranch = "feature&`u{5B57} ]0;title  branch"
+        foreach ($candidate in $script:PromptCandidates) {
+            $candidate.Summary = $name
+            $candidate.Branch = $branch
+        }
+        $result = Invoke-CopilotPromptCase -Answers 1 -Command { Get-CopilotLaunchPlan }
+        $result.Error | Should -BeNullOrEmpty
+        $call = $result.HostUI.Calls[0]
+        $lines = @($call.Message -split "`n" | Where-Object { $_ -match '^\d+\. ' })
+        $lines | Should -Be @("1. $safeName ($safeBranch)", "2. $safeName ($safeBranch)")
+        foreach ($line in $lines) { $line | Should -Not -Match '[\p{Cc}\p{Zl}\p{Zp}]' }
+        foreach ($choice in $call.Choices[0..1]) {
+            $choice.HelpMessage | Should -Match ([regex]::Escape("Name: $safeName`n"))
+            $choice.HelpMessage | Should -Match ([regex]::Escape("Branch: $safeBranch`n"))
+            ($choice.HelpMessage -replace "`n", '') | Should -Not -Match '[\p{Cc}\p{Zl}\p{Zp}]'
+        }
+        $call.Choices.Label | Should -Be @('1', '2', '&New session')
+        $script:PromptCandidates[0].Summary | Should -BeExactly $name
+        $script:PromptCandidates[1].Branch | Should -BeExactly $branch
+        $result.Output[0].Args | Should -Contain 'older-id'
+    }
+
+    It 'keeps global Cancel distinct from launch New session' {
+        $cancel = Invoke-CopilotPromptCase -Answers 2 -Command { Select-CopilotSession -Confirm:$false }
+        $cancel.Error | Should -BeNullOrEmpty
+        $cancel.Output | Should -HaveCount 0
+        $cancel.NativeCalls | Should -HaveCount 0
+        $cancel.HostUI.Calls[0].Caption | Should -Be 'Select Copilot session to resume'
+        $cancel.HostUI.Calls[0].Choices[2].Label | Should -Be '&Cancel'
+        $fresh = Invoke-CopilotPromptCase -Answers 2 -Command { Start-Copilot -PassThru -Name 'new work' }
+        $fresh.Error | Should -BeNullOrEmpty
+        $fresh.Output[0].Args | Should -Not -Contain '--resume'
+        $fresh.Output[0].Args | Should -Contain 'new work'
+        $fresh.NativeCalls | Should -HaveCount 0
+    }
+
+    It 'filters and sorts global candidates then resumes the exact choice from its Cwd' {
+        $workspace = Join-Path $TestDrive 'selected-workspace'
+        $null = New-Item -ItemType Directory -Path $workspace -Force
+        $script:PromptCandidates[1].Cwd = $workspace
+        $excluded = $script:PromptCandidates[0].PSObject.Copy()
+        $excluded.Id = 'excluded'; $excluded.Repository = 'other/repo'
+        $result = Invoke-CopilotPromptCase -Candidates @($script:PromptCandidates[1], $excluded, $script:PromptCandidates[0]) -Answers 1 -Command {
+            Select-CopilotSession -Id '*-id' -Repository 'OWNER/*' -Branch '*' -Cwd '*' -Summary 'Same*' `
+                -UpdatedBefore '2026-08-21T00:00:00Z' -OlderThan ([timespan]::FromDays(1)) -First 2 `
+                -Prompt 'continue' -RemainingArgs '--model', 'gpt-5.4' -Confirm:$false
+        }
+        $result.Error.Exception.Message | Should -Be 'Native execution blocked by fixture.'
+        $result.NativeCalls | Should -HaveCount 1
+        $result.NativeCalls[0].Args | Should -Contain 'older-id'
+        $result.NativeCalls[0].Args | Should -Contain 'continue'
+        $result.NativeCalls[0].Args | Should -Contain 'gpt-5.4'
+        $result.NativeCalls[0].Cwd | Should -Be $workspace
+        $result.Location | Should -Be $TestDrive
+        $result.HostUI.Calls[0].Choices[0].HelpMessage | Should -Match 'Id: recent-id'
+        $result.HostUI.Calls[0].Choices | Should -HaveCount 3
+    }
+
+    It 'rejects invalid host response <Answer> without output or execution under Continue' -ForEach @(
+        @{ Answer = -1 }, @{ Answer = -2 }, @{ Answer = 3 }, @{ Answer = [int]::MaxValue }
+    ) {
+        foreach ($command in @(
+            { Start-Copilot -Confirm:$false -ErrorAction Continue },
+            { Select-CopilotSession -Confirm:$false -ErrorAction Continue }
+        )) {
+            $result = Invoke-CopilotPromptCase -Answers $Answer -Command $command
+            $result.Error.Exception.Message | Should -Match 'invalid session choice'
+            $result.Output | Should -HaveCount 0
+            $result.NativeCalls | Should -HaveCount 0
+            $result.HostUI.Calls | Should -HaveCount 1
+            $result.Preference | Should -Be 'Continue'
+        }
+    }
+
+    It 'preserves underlying host <Kind> failures and offers explicit alternatives' -ForEach @(
+        @{ Kind = 'unsupported'; Failure = [NotSupportedException]::new('Host cannot prompt.') }
+        @{ Kind = 'unimplemented'; Failure = [NotImplementedException]::new('Method not implemented.') }
+        @{ Kind = 'EOF'; Failure = [IO.EndOfStreamException]::new('Input ended.') }
+    ) {
+        foreach ($command in @({ Start-Copilot -Confirm:$false }, { Select-CopilotSession -Confirm:$false })) {
+            $result = Invoke-CopilotPromptCase -Failure $Failure -Command $command
+            $result.Error.Exception.Message | Should -Match 'PromptForChoice.*SessionSelector'
+            $result.Error.Exception.ToString() | Should -Match ([regex]::Escape($Failure.Message))
+            $result.Error.Exception.InnerException | Should -Not -BeNullOrEmpty
+            $result.NativeCalls | Should -HaveCount 0
+            $result.Output | Should -HaveCount 0
+            $result.HostUI.Calls | Should -HaveCount 1
+        }
+    }
+
+    It 'fails closed when input is unavailable' {
+        $result = Invoke-CopilotPromptCase -Command { Start-Copilot -Confirm:$false }
+        $result.Error.Exception.Message | Should -Match 'No prompt input is available'
+        $result.Output | Should -HaveCount 0
+        $result.NativeCalls | Should -HaveCount 0
+    }
+
+    It 'fails closed when the host has no user interface' {
+        $result = Invoke-CopilotPromptCase -MissingUI -Command { Start-Copilot -Confirm:$false }
+        $result.Error | Should -Not -BeNullOrEmpty
+        $result.Output | Should -HaveCount 0
+        $result.NativeCalls | Should -HaveCount 0
+    }
+
+    It 'has no prompt for zero candidates and preserves the global no-match error' {
+        $launch = Invoke-CopilotPromptCase -Candidates @() -Command {
+            Get-CopilotLaunchPlan -NoAutoResume -SessionSelector { throw 'Unexpected selector.' }
+        }
+        $launch.Error | Should -BeNullOrEmpty
+        $launch.Output[0].Args | Should -Not -Contain '--resume'
+        $launch.HostUI.Calls | Should -HaveCount 0
+        $globalSelection = Invoke-CopilotPromptCase -Candidates @() -Command {
+            Select-CopilotSession -SessionSelector { throw 'Unexpected selector.' } -ErrorAction Stop
+        }
+        $globalSelection.Error.Exception.Message | Should -Match 'No Copilot sessions matched'
+        $globalSelection.HostUI.Calls | Should -HaveCount 0
+        $globalSelection.NativeCalls | Should -HaveCount 0
+    }
+
+    It 'preserves empty metadata and all-unnamed candidates in native help' {
+        foreach ($candidate in $script:PromptCandidates) {
+            $candidate.Summary = '(no summary)'
+            $candidate.Name = $null
+            $candidate.UpdatedAt = $null
+            $candidate.Repository = $null
+            $candidate.Branch = $null
+            $candidate.EventCount = $null
+        }
+        $result = Invoke-CopilotPromptCase -Answers 1 -Command { Get-CopilotLaunchPlan }
+        $result.Error | Should -BeNullOrEmpty
+        $result.Output[0].Args | Should -Contain 'older-id'
+        $result.HostUI.Calls[0].Choices | Should -HaveCount 3
+        $result.HostUI.Calls[0].Choices[0].HelpMessage | Should -Match 'Updated: \(unknown\)'
+        $result.HostUI.Calls[0].Message | Should -Match '(?m)^1\. \(no summary\)$'
+        $result.HostUI.Calls[0].Message | Should -Match '(?m)^2\. \(no summary\)$'
+    }
+
+    It 'bypasses host prompting with <Label>' -ForEach @(
+        @{ Label = 'NoResume'; Command = { Get-CopilotLaunchPlan -NoResume } }
+        @{ Label = 'ResumeLatest'; Command = { Get-CopilotLaunchPlan -ResumeLatest } }
+        @{ Label = 'explicit resume'; Command = { Get-CopilotLaunchPlan -ResumeSession 'explicit' } }
+        @{ Label = 'SessionId'; Command = { Get-CopilotLaunchPlan -SessionId 'assigned' } }
+        @{ Label = 'DeferResume'; Command = { Get-CopilotLaunchPlan -DeferResume } }
+        @{ Label = 'help'; Command = { Get-CopilotLaunchPlan -Prompt help } }
+        @{ Label = 'update'; Command = { Get-CopilotLaunchPlan -Prompt update } }
+    ) {
+        $result = Invoke-CopilotPromptCase -Command $Command
+        $result.Error | Should -BeNullOrEmpty
+        $result.Output | Should -HaveCount 1
+        $result.HostUI.Calls | Should -HaveCount 0
+        $result.NativeCalls | Should -HaveCount 0
+    }
+
+    It 'auto-resumes a single session but NoAutoResume forces the host even for one' {
+        $single = @($script:PromptCandidates[0])
+        $auto = Invoke-CopilotPromptCase -Candidates $single -Command { Get-CopilotLaunchPlan }
+        $auto.Output[0].Args | Should -Contain 'recent-id'
+        $auto.HostUI.Calls | Should -HaveCount 0
+        $forced = Invoke-CopilotPromptCase -Candidates $single -Answers 1 -Command { Get-CopilotLaunchPlan -NoAutoResume }
+        $forced.Error | Should -BeNullOrEmpty
+        $forced.Output[0].Args | Should -Not -Contain '--resume'
+        $forced.HostUI.Calls[0].Choices | Should -HaveCount 2
+    }
+
+    It 'preserves lone-named preference and IncludeUnnamed picker filtering' {
+        $script:PromptCandidates[0].Summary = '(no summary)'
+        $auto = Invoke-CopilotPromptCase -Command { Get-CopilotLaunchPlan -IncludeUnnamed }
+        $auto.Output[0].Args | Should -Contain 'older-id'
+        $auto.HostUI.Calls | Should -HaveCount 0
+        $filtered = Invoke-CopilotPromptCase -Answers 0 -Command { Get-CopilotLaunchPlan -NoAutoResume }
+        $filtered.Output[0].Args | Should -Contain 'older-id'
+        $filtered.HostUI.Calls[0].Choices | Should -HaveCount 2
+        $all = Invoke-CopilotPromptCase -Answers 0 -Command { Get-CopilotLaunchPlan -NoAutoResume -IncludeUnnamed }
+        $all.Output[0].Args | Should -Contain 'recent-id'
+        $all.HostUI.Calls[0].Choices | Should -HaveCount 3
+    }
+
+    It 'skips the host for First and exact single-match selection' {
+        foreach ($command in @(
+            { Select-CopilotSession -First 1 -StayInDirectory -Confirm:$false },
+            { Select-CopilotSession -Id 'recent-id' -StayInDirectory -Confirm:$false }
+        )) {
+            $result = Invoke-CopilotPromptCase -Command $command
+            $result.Error.Exception.Message | Should -Be 'Native execution blocked by fixture.'
+            $result.NativeCalls[0].Args | Should -Contain 'recent-id'
+            $result.HostUI.Calls | Should -HaveCount 0
+        }
+    }
+
+    It 'never prompts or executes for WhatIf' {
+        foreach ($command in @(
+            { Start-Copilot -NoAutoResume -WhatIf },
+            { Start-Copilot -NoAutoResume -PassThru -WhatIf },
+            { Select-CopilotSession -First 1 -WhatIf },
+            { Select-CopilotSession -WhatIf -ErrorAction Stop },
+            { Start-Copilot -WhatIf -NoAutoResume -SessionSelector { throw 'Unexpected selector.' } },
+            { Select-CopilotSession -WhatIf -First 1 -SessionSelector { throw 'Unexpected selector.' } }
+        )) {
+            $result = Invoke-CopilotPromptCase -Command $command
+            $result.HostUI.Calls | Should -HaveCount 0
+            $result.NativeCalls | Should -HaveCount 0
+            if ($result.Error) {
+                $result.Error.Exception.Message | Should -Match '^Multiple Copilot sessions matched'
+            }
+        }
+    }
+
+    It 'keeps the native choice helper private and public confirmation metadata unchanged' {
+        $module = Get-Module Shmuelie.Copilot
+        $module.ExportedFunctions.Keys | Should -Not -Contain 'Invoke-CopilotSessionChoice'
+        $module.ExportedFunctions.Keys | Should -Not -Contain 'ConvertTo-CopilotSessionDisplayText'
+        foreach ($name in 'Start-Copilot', 'Select-CopilotSession') {
+            $command = $module.ExportedFunctions[$name]
+            $binding = $command.ScriptBlock.Attributes |
+                Where-Object { $_ -is [System.Management.Automation.CmdletBindingAttribute] }
+            $binding.SupportsShouldProcess | Should -BeTrue
+            $binding.ConfirmImpact | Should -Be 'Medium'
+            $command.Parameters.Keys | Should -Contain 'Confirm'
+            $command.Parameters.Keys | Should -Contain 'WhatIf'
+            $command.Parameters.Keys | Should -Contain 'SessionSelector'
+        }
+    }
+
+    It 'keeps caller selectors and canonical identity without using the host' {
+        $result = Invoke-CopilotPromptCase -Command {
+            Start-Copilot -PassThru -SessionSelector {
+                param([object[]]$Sessions)
+                if ($args.Count -ne 0 -or $Sessions.Count -ne 2) { throw 'Invalid callback input.' }
+                $Sessions[1].Cwd = 'not-the-original-path'
+                $Sessions[1]
+            }
+        }
+        $result.Error | Should -BeNullOrEmpty
+        $result.Output[0].Args | Should -Contain 'older-id'
+        $result.HostUI.Calls | Should -HaveCount 0
+        $result.NativeCalls | Should -HaveCount 0
+        $cancel = Invoke-CopilotPromptCase -Command { Select-CopilotSession -SessionSelector { $null } -Confirm:$false }
+        $cancel.Error | Should -BeNullOrEmpty
+        $cancel.Output | Should -HaveCount 0
+        $cancel.NativeCalls | Should -HaveCount 0
+        $cancel.HostUI.Calls | Should -HaveCount 0
+    }
+
+    It 'retains canonical resume metadata when a custom selector changes its copy' {
+        $result = Invoke-CopilotPromptCase -Command {
+            Select-CopilotSession -SessionSelector {
+                param($Sessions)
+                $Sessions[1].Cwd = 'not-an-existing-workspace'
+                $Sessions[1].PSObject.Copy()
+            } -Confirm:$false
+        }
+        $result.Error.Exception.Message | Should -Be 'Native execution blocked by fixture.'
+        $result.NativeCalls | Should -HaveCount 1
+        $result.NativeCalls[0].Args | Should -Contain 'older-id'
+        $result.NativeCalls[0].Cwd | Should -Be $TestDrive
+        $result.HostUI.Calls | Should -HaveCount 0
+    }
+
+    It 'retains custom-selector new-session semantics for null and no output' {
+        foreach ($command in @(
+            { Start-Copilot -PassThru -Name 'new work' -SessionSelector { $null } },
+            { Get-CopilotLaunchPlan -Name 'new work' -SessionSelector {} }
+        )) {
+            $result = Invoke-CopilotPromptCase -Command $command
+            $result.Error | Should -BeNullOrEmpty
+            $result.Output[0].Args | Should -Not -Contain '--resume'
+            $result.Output[0].Args | Should -Contain 'new work'
+            $result.HostUI.Calls | Should -HaveCount 0
+            $result.NativeCalls | Should -HaveCount 0
+        }
+    }
+
+    It 'retains selector contract rejection without host fallback for <Label>' -ForEach @(
+        @{ Label = 'extra output'; Selector = "param(`$Sessions) 'extra'; `$Sessions[0]" }
+        @{ Label = 'noncandidate'; Selector = "param(`$Sessions) `$Sessions[0].Id = 'OTHER'; `$Sessions[0]" }
+        @{ Label = 'case-mismatched identity'; Selector = "param(`$Sessions) `$Sessions[0].Id = 'RECENT-ID'; `$Sessions[0]" }
+        @{ Label = 'multiple candidates'; Selector = "param(`$Sessions) `$Sessions" }
+        @{ Label = 'untyped result'; Selector = "param(`$Sessions) [pscustomobject]@{ Id = `$Sessions[0].Id }" }
+        @{ Label = 'throw'; Selector = "throw 'selector failure'" }
+        @{ Label = 'error'; Selector = "param(`$Sessions) Write-Error 'selector failure' -ErrorAction Continue; `$Sessions[0]" }
+    ) {
+        foreach ($entry in 'Start-Copilot', 'Select-CopilotSession') {
+            $command = [scriptblock]::Create("$entry -SessionSelector { $Selector } -Confirm:`$false")
+            $result = Invoke-CopilotPromptCase -Command $command
+            $result.Error | Should -Not -BeNullOrEmpty
+            $result.Output | Should -HaveCount 0
+            $result.HostUI.Calls | Should -HaveCount 0
+            $result.NativeCalls | Should -HaveCount 0
+        }
+    }
+
+    It 'leaves standard confirmation to ShouldProcess with <Label>' -ForEach @(
+        @{ Label = 'explicit Confirm'; Command = { Start-Copilot -Confirm }; Answers = @(2); ExpectedCalls = 1; NativeCount = 0 }
+        @{ Label = 'ConfirmPreference'; Command = { $global:ConfirmPreference = 'Medium'; Start-Copilot }; Answers = @(2); ExpectedCalls = 1; NativeCount = 0 }
+        @{ Label = 'approved launch'; Command = { Start-Copilot -Confirm }; Answers = @(0, 1); ExpectedCalls = 2; NativeCount = 1 }
+        @{ Label = 'selected but declined resume'; Command = { Select-CopilotSession -Confirm }; Answers = @(1, 2); ExpectedCalls = 2; NativeCount = 0 }
+    ) {
+        $result = Invoke-CopilotPromptCase -Answers $Answers -Command $Command
+        $result.HostUI.Calls | Should -HaveCount $ExpectedCalls
+        $result.NativeCalls | Should -HaveCount $NativeCount
+        if ($NativeCount) {
+            $result.Error.Exception.Message | Should -Be 'Native execution blocked by fixture.'
+            $result.NativeCalls[0].Args | Should -Contain 'older-id'
+        } else {
+            $result.Error | Should -BeNullOrEmpty
+        }
+        $confirmation = @($result.HostUI.Calls | Where-Object { $_.Choices.Label -contains '&Yes' })
+        $confirmation | Should -HaveCount 1
+        $confirmation[0].Choices.Label | Should -Contain '&No'
+        $confirmation[0].Message | Should -Match 'Execute|Resume Copilot'
     }
 }
 

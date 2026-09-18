@@ -17,8 +17,8 @@ Start-Copilot
 
 | Area | Commands |
 |---|---|
-| Launcher | `Start-Copilot`, `Get-CopilotLaunchPlan` (optional `-SessionSelector`) |
-| Sessions | `Get-CopilotSession` / `Select-CopilotSession` (composable metadata and age filters; optional `-SessionSelector` on selection), `Resume-CopilotSession`, `Rename-CopilotSession`, `Remove-CopilotSession` |
+| Launcher | `Start-Copilot`, `Get-CopilotLaunchPlan` (native host choices; optional `-SessionSelector`) |
+| Sessions | `Get-CopilotSession` / `Select-CopilotSession` (composable metadata and age filters; native host choices or `-SessionSelector` on selection), `Resume-CopilotSession`, `Rename-CopilotSession`, `Remove-CopilotSession` |
 | Session maintenance | `Merge-CopilotSession`, `Compress-CopilotSession`, `Repair-CopilotSessionEvents` |
 | Plugins | `Get-CopilotPlugin`, `Install-CopilotPlugin`, `Update-CopilotPlugin`, `Uninstall-CopilotPlugin` |
 | Marketplaces | `Get-CopilotMarketplace`, `Register-CopilotMarketplace`, `Unregister-CopilotMarketplace`, `Get-CopilotMarketplacePlugin` |
@@ -127,14 +127,38 @@ deny-tool rules, passthrough arguments, and all other launch flags remain intact
 Returning null is **not** a request to abort a new launch; throw an exception if
 your launch selector must cancel the entire operation.
 
-Without a custom callback, the launcher still uses its numbered `[N] New session`
-picker; `Select-CopilotSession` still prefers `Out-ConsoleGridView`, then
-`Out-GridView`, then its numbered `[Q] Cancel` picker. Built-in pickers reject
-unavailable interactive input (including redirected ConsoleHost input), and host
-prompt errors, such as PowerShell `-NonInteractive`, terminate without fallback.
-The module does not inspect or read the console before invoking custom callbacks,
-so they can select deterministically in noninteractive hosts. Callbacks that
-implement a UI own its requirements.
+Without a custom callback, both pickers use the active PowerShell host's
+`PSHostUserInterface.PromptForChoice`, without grid dependencies or console input
+loops. The host renders and handles the choices, including in hosts without a
+conventional console. The initial prompt message lists numbered session names,
+using the existing normalized `Summary` (name, legacy summary, or unnamed
+placeholder). Each displayed name is capped at **80 Unicode text elements**,
+including `...` when truncated; surrogate pairs and combining sequences remain
+intact. Numbers and branch suffixes are outside the cap. Branches appear only
+beside duplicated displayed names, including truncation/sanitization collisions,
+and only when available. Identical names and branches still have distinct numbers.
+
+Choice labels are the full numbers (`1`, `2`, ..., `10`, ...), without accelerator
+markers. Enter the number in ConsoleHost; names and literal ampersands in the
+message cannot become choice hotkeys. Choice help (`?` in ConsoleHost) contains
+the full, untruncated normalized name, exact ID, repository, branch, working
+directory, update timestamp, and event count when available. Terminal control
+characters and Unicode line/paragraph separators in names and branches are
+replaced with spaces in the message and help; ordinary Unicode is preserved.
+Selection still maps to the original object, not the displayed name.
+
+There is **no default choice** (`defaultChoice = -1`); blank input is not an
+implicit resume or new-session request. `Select-CopilotSession` offers **Cancel**
+to return without launching; the launcher offers **New session** to continue
+without resuming. Unsupported/unavailable prompting, host exceptions (including
+noninteractive input errors), and out-of-range responses terminate without a
+fallback UI or launch. Supply `-SessionSelector` or an explicit selection/bypass
+parameter when prompting is unavailable. Callbacks own any UI they use and still
+work without console access.
+
+Selection is separate from confirmation: `-Confirm`, `$ConfirmPreference`, and
+`-WhatIf` retain PowerShell's standard `ShouldProcess` behavior. Previews do not
+open either the native picker or a custom selector.
 
 ## Session discovery and cleanup
 

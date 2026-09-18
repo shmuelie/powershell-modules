@@ -4,52 +4,9 @@ function Invoke-CopilotSessionPicker {
         [object[]]$Sessions
     )
 
-    Assert-CopilotSessionPickerInteractive
-    $choices = @($Sessions | ForEach-Object {
-        [PSCustomObject]@{
-            Id         = $_.Id
-            Name       = $_.Name
-            Summary    = $_.Summary
-            Repository = $_.Repository
-            Branch     = $_.Branch
-            Cwd        = $_.Cwd
-            UpdatedAt  = $_.UpdatedAt
-            EventCount = $_.EventCount
-            Session    = $_
-        }
-    })
-
-    if (Get-Command Out-ConsoleGridView -ErrorAction SilentlyContinue) {
-        $selected = $choices | Out-ConsoleGridView -OutputMode Single
-        return $selected.Session
-    }
-
-    if (Get-Command Out-GridView -ErrorAction SilentlyContinue) {
-        $selected = $choices | Out-GridView -Title 'Select Copilot session to resume' -PassThru
-        return $selected.Session
-    }
-
-    Write-Host 'Select a Copilot session to resume:' -ForegroundColor Yellow
-    Write-Host ''
-    for ($i = 0; $i -lt $choices.Count; $i++) {
-        $choice = $choices[$i]
-        $updatedAt = if ($choice.UpdatedAt) { $choice.UpdatedAt.LocalDateTime } else { '(unknown)' }
-        Write-Host ("  [{0}] {1}" -f ($i + 1), $choice.Summary) -ForegroundColor ($(if ($i -eq 0) { 'Cyan' } else { 'Gray' }))
-        Write-Host ("      Repo: {0}  Branch: {1}" -f ($choice.Repository ?? '(unknown)'), ($choice.Branch ?? '(unknown)')) -ForegroundColor DarkGray
-        Write-Host ("      Cwd: {0}" -f ($choice.Cwd ?? '(unknown)')) -ForegroundColor DarkGray
-        Write-Host ("      Updated: {0}  Events: {1}" -f $updatedAt, $choice.EventCount) -ForegroundColor DarkGray
-    }
-    Write-Host '  [Q] Cancel' -ForegroundColor Green
-    Write-Host ''
-
-    do {
-        Write-Host "Select session [1-$($choices.Count)/Q]: " -NoNewline -ForegroundColor Yellow
-        $selection = Read-Host -ErrorAction Stop
-        if ($selection -in @('Q', 'q')) { return $null }
-        $number = $selection -as [int]
-    } while ($null -eq $number -or $number -lt 1 -or $number -gt $choices.Count)
-
-    return $choices[$number - 1].Session
+    Invoke-CopilotSessionChoice -Sessions $Sessions -Caption 'Select Copilot session to resume' `
+        -Message 'Choose a session from all matching sessions, or Cancel to return without resuming.' `
+        -ExitLabel '&Cancel' -ExitHelp 'Return without resuming or launching a session.'
 }
 
 function Select-CopilotSession {
@@ -64,8 +21,13 @@ function Select-CopilotSession {
         default current-directory scope. All supplied filters must match.
         Resumes the selected session by delegating to Resume-CopilotSession.
         When filters and -First resolve to exactly one session, the picker is
-        skipped. Otherwise, the command prefers
-        Out-ConsoleGridView, then Out-GridView, then a numbered console prompt.
+        skipped. Otherwise, the active PowerShell host presents PromptForChoice
+        with numbered names in its initial message and an explicit Cancel option.
+        Names are capped at 80 Unicode text elements (including '...' when
+        truncated); branches appear only for duplicated displayed names.
+        Full names and context remain in choice help. Names/branches have terminal
+        controls sanitized; numeric labels preserve exact selection even for
+        duplicate names. No default choice or grid-view dependency is required.
 
         By default the resume runs from the session's recorded Cwd so sessions
         from other directories restore their original workspace context. Use
@@ -120,8 +82,10 @@ function Select-CopilotSession {
         A single match still skips selection. No matches retain the existing
         error, and -WhatIf never invokes a selector. Custom selectors work without
         an interactive console and are responsible for their own UI requirements.
-        The default picker requires interactive input; unavailable input or host
-        prompt errors terminate instead of choosing a session automatically.
+        The default picker requires a host that supports PromptForChoice.
+        Unavailable input, host errors, or invalid responses terminate without
+        choosing a session or falling back to another UI. Confirmation remains
+        managed by PowerShell's standard -Confirm and -WhatIf support.
 
     .PARAMETER Prompt
         Optional prompt to execute in autopilot mode within the resumed session.

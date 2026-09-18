@@ -79,7 +79,7 @@ function Start-Copilot {
         The AI model to use for the session.
 
     .PARAMETER SessionSelector
-        Optional scriptblock replacing the numbered picker, forwarded unchanged
+        Optional scriptblock replacing the native host picker, forwarded unchanged
         to Get-CopilotLaunchPlan. Receives one object[] of CopilotSession candidates
         (Id, Name, Summary, Branch, UpdatedAt, Cwd). Return one candidate or
         $null/no output to start a new session; errors and invalid/noncandidate
@@ -89,8 +89,15 @@ function Start-Copilot {
         -WhatIf bypass it.
         Zero candidates start a new session without calling the selector.
         Custom selectors need no interactive console and own their UI requirements.
-        The default picker requires interactive input; unavailable input or host
-        prompt errors terminate instead of choosing a session automatically.
+        The default picker uses the active host's PromptForChoice with numbered
+        names in the initial message, full details in choice help, an explicit
+        New session option, and no default choice. Names are capped at 80 Unicode
+        text elements including '...'; branches appear only for duplicated
+        displayed names. Names/branches have terminal controls sanitized and
+        numeric labels preserve exact selection. Unavailable input, host errors,
+        and invalid responses terminate without choosing a session or falling
+        back to another UI. Execution
+        confirmation remains managed by PowerShell's -Confirm and -WhatIf.
 
     .PARAMETER Version
         Run a specific Copilot CLI engine version for this session, e.g. '1.0.55'.

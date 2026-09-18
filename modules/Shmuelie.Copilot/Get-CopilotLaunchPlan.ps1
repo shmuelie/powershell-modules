@@ -88,22 +88,28 @@ function Get-CopilotLaunchPlan {
         The AI model to use for the session.
 
     .PARAMETER SessionSelector
-        Optional scriptblock replacing only the numbered session picker. Receives
+        Optional scriptblock replacing only the native host session picker. Receives
         one object[] argument containing CopilotSession objects with Id, Name,
         Summary, Branch, UpdatedAt (DateTimeOffset), and Cwd. Return exactly one
         CopilotSession whose Id exactly matches a candidate, or $null/no output
         to start a new session. Other success-stream output is invalid; use
         Write-Host or Write-Verbose for UI/diagnostics. Returned metadata changes
         are ignored. Errors and invalid results terminate without launching or
-        falling back to the console picker.
+        falling back to another picker.
 
         Automatic single-session/lone-named-session resume still takes precedence;
         use -NoAutoResume to force selection. -NoResume, -ResumeLatest,
         -ResumeSession, -SessionId, -DeferResume, and help/update passthrough bypass
         the selector. It is never called for zero candidates. Custom selectors work
         in noninteractive hosts without console access; they own any UI they use.
-        The default picker requires interactive input; unavailable input or host
-        prompt errors terminate instead of choosing a session automatically.
+        The default picker uses the active host's PromptForChoice with numbered
+        names in the initial message, full details in choice help, an explicit
+        New session option, and no default choice. Names are capped at 80 Unicode
+        text elements including '...'; branches appear only for duplicated
+        displayed names. Names/branches have terminal controls sanitized and
+        numeric labels preserve exact selection. Unavailable input, host errors,
+        and invalid responses terminate without choosing a session or falling
+        back to another UI.
 
     .PARAMETER Version
         Run a specific Copilot CLI engine version for this session, e.g. '1.0.55'.

@@ -38,6 +38,39 @@ modules/<Module>/
 only when a release is cut — see [Releasing](#releasing). Between releases the
 manifest version stays fixed and changes accumulate under `[Unreleased]`.
 
+## Interactive input and confirmation
+
+Use the active PowerShell host UI for module-owned input:
+`$Host.UI.Prompt(...)` with `FieldDescription` metadata for fields/free-form input,
+and `$Host.UI.PromptForChoice(...)` with `ChoiceDescription` metadata for defined
+options. Supply meaningful captions, messages, labels/help, and intentional
+defaults. Keep candidate identity/order exact and cancellation explicit.
+Do not automatically select grid-view packages, render custom menus, parse
+numbered responses, or read console keys. Preserve explicit selector callbacks.
+A descriptive numbered list inside the host prompt's **message** is appropriate:
+keep useful context visible upfront while leaving rendering and input to the
+host. For session choices, use unique numeric labels without `&`, sanitized
+normalized names capped at 80 Unicode text elements including `...`, and branch
+suffixes only for duplicates after sanitization/truncation. Keep full sanitized
+names and identity/context in help. Do not truncate UTF-16 code units or remove
+Unicode joiners/combining sequences; do not depend on console width or RawUI.
+Rely on the host's prompting capability, not console availability or
+`Environment.UserInteractive`; surface unsupported input, errors, and invalid
+choice indices without silently selecting or proceeding. Method-call failures
+must terminate even under `-ErrorAction Continue`.
+
+These input APIs **do not replace operation confirmation**. Keep
+`SupportsShouldProcess`, `ShouldProcess`, `ConfirmImpact`, `$ConfirmPreference`,
+`-Confirm`, `-WhatIf`, and any existing `ShouldContinue` safeguards framework
+managed. Do not add input prompts to preview or explicit noninteractive paths.
+Mandatory-parameter prompting already belongs to PowerShell; do not duplicate it.
+
+Test prompts with a controlled `PSHostUserInterface` in an isolated runspace,
+synthetic candidates, and fail-closed native boundaries. Cover exact mapping,
+metadata/defaults, cancellation, host errors, unavailable input, explicit
+bypasses, callbacks, and standard confirmation separately. No real UI, user
+session data, optional picker installations, or native launches are needed.
+
 ## Running git from module commands
 
 Within `Shmuelie.Git`, use the private `Invoke-Git` helper with `-Arguments`
