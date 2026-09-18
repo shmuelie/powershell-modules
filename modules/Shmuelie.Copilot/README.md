@@ -176,6 +176,21 @@ the pipeline object's Path.
 
 ## Session merge failure handling
 
+`Merge-CopilotSession` checks artifact paths in `files`, `research`, and
+`rewind-snapshots/backups` before creating the destination. Differing-content
+files and file/directory conflicts terminate the merge and leave all sources
+unchanged.
+Paths are compared case-insensitively. Overlapping regular files are allowed when
+their SHA-256 hashes match, preserving harmless identical-content copies at the
+same relative path. Differing contents, read/hash failures, and invalid hash
+results abort the merge. It does not rename artifacts or rewrite references.
+
+Shared directories may merge when their descendants do not conflict. Names are
+handled literally, including wildcard characters; hidden artifacts and nested
+rewind backup directories are included. Symbolic links and other reparse points
+are rejected rather than followed. Optional artifact directories may be absent.
+`-WhatIf` previews the merge without performing artifact inspection or copying.
+
 `Merge-CopilotSession` stops on required source-read or destination
 create/copy/write/repair failures, even with `-ErrorAction Continue`. A failure
 during destination construction leaves all source sessions intact and triggers
