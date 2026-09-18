@@ -13,6 +13,10 @@ Versions change only when a release is cut; unreleased work stays under
   dependencies remain in Windows; the AppInstallManager support hold is unchanged.
 
 ### Fixed
+- `Get-InstalledApplications` now dispatches all accepted `-Scope` casing
+  variants consistently. Lowercase, uppercase, and mixed-case values query the
+  same scopes as their canonical spellings instead of silently returning an
+  empty inventory; elevation, preview, and hive cleanup behavior is unchanged.
 - `Update-AppInstallerApp` no longer turns empty pipelines or failed identity
   binding into updates for every application. Null, empty, and whitespace-only
   identities are rejected. Standalone unfiltered calls retain update-all
