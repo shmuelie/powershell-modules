@@ -7,6 +7,10 @@ Versions change only when a release is cut; unreleased work stays under
 ## [Unreleased]
 
 ### Fixed
+- Predictor cleanup now identifies the module's idle subscriber by its action-job
+  association instead of confusing job and subscription IDs. Removal and force
+  re-import release only module-owned subscriptions, jobs and predictor binaries,
+  preserving unrelated handlers and caller-owned predictor registrations. (#262)
 - `Update-Worktrees` restores only the stash object created for that update,
   retaining unrelated existing stashes. A successful no-op stash push (such as
   submodule-only dirt) now skips the worktree with `StashFailed` rather than

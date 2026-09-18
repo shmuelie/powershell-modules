@@ -67,6 +67,12 @@ wrapper's help, not repeated warnings or success-stream output.
   numeric version. The exact selected version is saved to the supplied path.
   A metadata-less newer version can inherit older repository provenance, but
   never the older version's prerelease state.
+  When XML metadata is missing, corrupt, or cannot supply a version, a readable
+  manifest supplies `ModuleVersion` and `PrivateData.PSData.Prerelease` before
+  its numeric directory can imply a stable version. Recoverable XML versions
+  (including a prerelease label completed by a numeric directory) retain
+  precedence. Numeric directories remain the fallback for unreadable or dynamic
+  manifests, so those layouts remain discoverable without evaluating script.
 
 ## Examples
 
