@@ -890,6 +890,37 @@ Describe 'Repair-GlobalJson' {
 }
 
 Describe 'Update-InstalledPSResource' {
+    BeforeAll {
+        $script:OriginalPSResourceModules = @(Get-Module Microsoft.PowerShell.PSResourceGet)
+        $script:PSResourceStub = New-Module -Name Microsoft.PowerShell.PSResourceGet -ScriptBlock {
+            function Find-PSResource {
+                [CmdletBinding()]
+                param($Name, $Repository, [switch]$Prerelease)
+                throw 'Unmocked Find-PSResource.'
+            }
+            function Save-PSResource {
+                [CmdletBinding(SupportsShouldProcess)]
+                param($Name, $Version, $Path, $Repository, [switch]$TrustRepository,
+                    [switch]$IncludeXml, [switch]$AcceptLicense, [switch]$SkipDependencyCheck)
+                throw 'Unmocked Save-PSResource.'
+            }
+            function Get-PSResourceRepository {
+                [CmdletBinding()]
+                param()
+                throw 'Unmocked Get-PSResourceRepository.'
+            }
+            Export-ModuleMember -Function Find-PSResource, Save-PSResource, Get-PSResourceRepository
+        }
+        Import-Module $script:PSResourceStub -Global -Force
+    }
+
+    AfterAll {
+        Remove-Module -ModuleInfo $script:PSResourceStub -Force -ErrorAction Stop
+        foreach ($module in $script:OriginalPSResourceModules) {
+            Import-Module $module -Global -ErrorAction Stop
+        }
+    }
+
     BeforeEach {
         function New-TestSaveLayout {
             param(
@@ -900,6 +931,8 @@ Describe 'Update-InstalledPSResource' {
                 [string]$Name,
 
                 [string]$Version = '1.0.0',
+
+                [string]$Prerelease,
 
                 [string]$Repository,
 
@@ -916,7 +949,13 @@ Describe 'Update-InstalledPSResource' {
             $versionRoot = Join-Path $Root $Name
             if (-not $Direct) { $versionRoot = Join-Path $versionRoot $DirectoryName }
             New-Item -ItemType Directory -Path $versionRoot -Force | Out-Null
-            New-ModuleManifest -Path (Join-Path $versionRoot "$Name.psd1") -ModuleVersion $Version -RootModule "$Name.psm1"
+            $manifestParameters = @{
+                Path = Join-Path $versionRoot "$Name.psd1"
+                ModuleVersion = $Version
+                RootModule = "$Name.psm1"
+            }
+            if ($Prerelease) { $manifestParameters.Prerelease = $Prerelease }
+            New-ModuleManifest @manifestParameters
 
             if ($PSBoundParameters.ContainsKey('Metadata')) {
                 $Metadata | Export-Clixml -LiteralPath (Join-Path $versionRoot 'PSGetModuleInfo.xml') -Depth 5
@@ -936,6 +975,152 @@ Describe 'Update-InstalledPSResource' {
             [PSCustomObject]@{ Version = [version]'2.0.0' }
         }
         Mock -ModuleName Shmuelie.Utilities Save-PSResource {}
+        Mock -ModuleName Shmuelie.Utilities Get-PSResourceRepository { throw 'Unexpected repository enumeration.' }
+    }
+
+    Context 'manifest version fallback' {
+        BeforeEach {
+            $script:FallbackRoot = Join-Path $TestDrive ([guid]::NewGuid().ToString())
+            Mock Find-PSResource -ModuleName Shmuelie.Utilities { throw 'Unexpected resource lookup.' }
+            Mock Save-PSResource -ModuleName Shmuelie.Utilities { throw 'Unexpected resource save.' }
+            Mock Get-PSResourceRepository -ModuleName Shmuelie.Utilities { throw 'Unexpected repository enumeration.' }
+
+            function Get-TestFallbackResource {
+                & (Get-Module Shmuelie.Utilities) {
+                    param($Path)
+                    Get-InstalledPSResourceInPath -Path $Path
+                } $script:FallbackRoot
+            }
+        }
+
+        It 'recovers a <Layout> manifest with <MetadataState> XML and updates to <Remote>' -ForEach @(
+            foreach ($layout in 'versioned', 'direct') {
+                foreach ($metadataState in 'missing', 'corrupt', 'provenance-only') {
+                    foreach ($remote in '1.0.0', '1.0.0-beta.10') {
+                        @{ Layout = $layout; MetadataState = $metadataState; Remote = $remote }
+                    }
+                }
+            }
+        ) {
+            $parameters = @{ Root = $script:FallbackRoot; Name = 'ModuleA'; Prerelease = 'beta.2'; Direct = ($Layout -eq 'direct') }
+            if ($MetadataState -eq 'provenance-only') { $parameters.Metadata = @{ Repository = 'FeedA' } }
+            New-TestSaveLayout @parameters
+            if ($MetadataState -eq 'corrupt') {
+                $directory = Join-Path $script:FallbackRoot 'ModuleA'
+                if ($Layout -eq 'versioned') { $directory = Join-Path $directory '1.0.0' }
+                Set-Content -LiteralPath (Join-Path $directory 'PSGetModuleInfo.xml') -Value '<broken'
+            }
+            $expectedRepository = if ($MetadataState -eq 'provenance-only') { 'FeedA' } else { 'PSGallery' }
+            Mock Find-PSResource -ModuleName Shmuelie.Utilities { [pscustomobject]@{ Version = $Remote } } -ParameterFilter {
+                $Name -eq 'ModuleA' -and $Repository -eq $expectedRepository -and $Prerelease
+            }
+            Mock Save-PSResource -ModuleName Shmuelie.Utilities {} -ParameterFilter {
+                $Name -eq 'ModuleA' -and $Repository -eq $expectedRepository -and $Version -ceq $Remote -and $Path -eq $script:FallbackRoot
+            }
+
+            $resource = Get-TestFallbackResource
+            $resource.Version | Should -BeExactly '1.0.0-beta.2'
+            $resource.IsPrerelease | Should -BeTrue
+            Update-InstalledPSResource -Path $script:FallbackRoot -Confirm:$false -WarningAction Stop
+            Should -Invoke Find-PSResource -ModuleName Shmuelie.Utilities -Times 1 -Exactly -ParameterFilter {
+                $Name -eq 'ModuleA' -and $Repository -eq $expectedRepository -and $Prerelease
+            }
+            Should -Invoke Save-PSResource -ModuleName Shmuelie.Utilities -Times 1 -Exactly -ParameterFilter {
+                $Version -ceq $Remote -and $Path -eq $script:FallbackRoot
+            }
+        }
+
+        It 'keeps a stable <Layout> manifest on stable candidates with <MetadataState> XML' -ForEach @(
+            foreach ($layout in 'versioned', 'direct') {
+                foreach ($metadataState in 'missing', 'corrupt') {
+                    @{ Layout = $layout; MetadataState = $metadataState }
+                }
+            }
+        ) {
+            New-TestSaveLayout -Root $script:FallbackRoot -Name ModuleA -Direct:($Layout -eq 'direct')
+            if ($MetadataState -eq 'corrupt') {
+                $directory = Join-Path $script:FallbackRoot 'ModuleA'
+                if ($Layout -eq 'versioned') { $directory = Join-Path $directory '1.0.0' }
+                Set-Content -LiteralPath (Join-Path $directory 'PSGetModuleInfo.xml') -Value '<broken'
+            }
+            Mock Find-PSResource -ModuleName Shmuelie.Utilities {
+                [pscustomobject]@{ Version = '2.0.0-beta.1' }
+                [pscustomobject]@{ Version = '1.0.0' }
+            } -ParameterFilter { $Name -eq 'ModuleA' -and $Repository -eq 'PSGallery' -and -not $Prerelease }
+
+            (Get-TestFallbackResource).IsPrerelease | Should -BeFalse
+            Update-InstalledPSResource -Path $script:FallbackRoot -Confirm:$false -WarningAction Stop
+            Should -Invoke Find-PSResource -ModuleName Shmuelie.Utilities -Times 1 -Exactly
+            Should -Invoke Save-PSResource -ModuleName Shmuelie.Utilities -Times 0 -Exactly
+        }
+
+        It 'retains valid <Expected> XML over a disagreeing <Layout> manifest' -ForEach @(
+            foreach ($layout in 'versioned', 'direct') {
+                foreach ($version in '1.0.0', '1.0.0-rc.1') {
+                    @{ Layout = $layout; Expected = $version }
+                }
+            }
+        ) {
+            New-TestSaveLayout -Root $script:FallbackRoot -Name ModuleA -Prerelease beta.2 -Direct:($Layout -eq 'direct') `
+                -Metadata @{ Version = $Expected; Repository = 'FeedA' }
+            Mock Import-PowerShellDataFile -ModuleName Shmuelie.Utilities { throw 'Valid XML must not require manifest evaluation.' }
+            $resource = Get-TestFallbackResource
+            $resource.Version | Should -BeExactly $Expected
+            $resource.Repository | Should -BeExactly 'FeedA'
+            Should -Invoke Import-PowerShellDataFile -ModuleName Shmuelie.Utilities -Times 0 -Exactly
+            Should -Invoke Find-PSResource -ModuleName Shmuelie.Utilities -Times 0 -Exactly
+            Should -Invoke Save-PSResource -ModuleName Shmuelie.Utilities -Times 0 -Exactly
+        }
+
+        It 'preserves a label-only XML prerelease completed by its numeric directory' {
+            New-TestSaveLayout -Root $script:FallbackRoot -Name ModuleA -Prerelease beta.2 `
+                -Metadata @{ Prerelease = 'rc.1'; Repository = 'FeedA' }
+            Mock Import-PowerShellDataFile -ModuleName Shmuelie.Utilities { throw 'Recoverable XML must not require manifest evaluation.' }
+            $resource = Get-TestFallbackResource
+            $resource.Version | Should -BeExactly '1.0.0-rc.1'
+            $resource.Repository | Should -BeExactly 'FeedA'
+            Should -Invoke Import-PowerShellDataFile -ModuleName Shmuelie.Utilities -Times 0 -Exactly
+        }
+
+        It 'retains the numeric fallback for a dynamic manifest with <MetadataState> XML' -ForEach @(
+            @{ MetadataState = 'missing' }
+            @{ MetadataState = 'corrupt' }
+        ) {
+            New-TestSaveLayout -Root $script:FallbackRoot -Name ModuleA -Version 1.2.3
+            $directory = Join-Path $script:FallbackRoot 'ModuleA' '1.2.3'
+            Set-Content -LiteralPath (Join-Path $directory 'ModuleA.psd1') -Value @'
+@{
+    ModuleVersion = '1.2.3'
+    FormatsToProcess = "$PSScriptRoot/ModuleA.format.ps1xml"
+}
+'@
+            if ($MetadataState -eq 'corrupt') {
+                Set-Content -LiteralPath (Join-Path $directory 'PSGetModuleInfo.xml') -Value '<broken'
+            }
+            $manifestPath = Join-Path $directory 'ModuleA.psd1'
+            Mock Import-PowerShellDataFile -ModuleName Shmuelie.Utilities { throw 'Synthetic dynamic manifest is not a data file.' } -ParameterFilter {
+                $LiteralPath -eq $manifestPath
+            }
+            $resource = Get-TestFallbackResource
+            $resource.Version | Should -BeExactly '1.2.3'
+            $resource.IsPrerelease | Should -BeFalse
+            Should -Invoke Import-PowerShellDataFile -ModuleName Shmuelie.Utilities -Times 1 -Exactly -ParameterFilter {
+                $LiteralPath -eq $manifestPath
+            }
+        }
+
+        It 'inherits only old repository provenance for a newer manifest label <Prerelease>' -ForEach @(
+            @{ Prerelease = ''; Expected = '1.5.0' }
+            @{ Prerelease = 'beta.2'; Expected = '1.5.0-beta.2' }
+        ) {
+            New-TestSaveLayout -Root $script:FallbackRoot -Name ModuleA `
+                -Metadata @{ Version = '1.0.0-rc.7'; Repository = 'FeedA' }
+            New-TestSaveLayout -Root $script:FallbackRoot -Name ModuleA -Version 1.5.0 -Prerelease $Prerelease
+            $resource = Get-TestFallbackResource
+            $resource.Version | Should -BeExactly $Expected
+            $resource.Repository | Should -BeExactly 'FeedA'
+            $resource.Prerelease | Should -BeExactly $Prerelease
+        }
     }
 
     It 'calls Save-PSResource with correct parameters for an outdated module (1.0.0 installed, 2.0.0 available)' {
