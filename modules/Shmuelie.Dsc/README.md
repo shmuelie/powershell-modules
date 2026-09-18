@@ -64,6 +64,14 @@ These are DSC v3 resources, addressed as `Shmuelie.Dsc/<ResourceName>`:
   `UvTool` determine "already installed" by a whole-token match against the
   relevant CLI list output (color/ANSI is stripped first), so a desired name
   that is a substring of another entry does not produce a false positive.
+  List output is parsed only after a confirmed zero exit code. A failed list
+  command or unknown completion raises a terminating error from both `Test()`
+  and `Get()` instead of reporting installed or absent, even if error text
+  contains the requested name. The underlying exception retains the CLI output
+  and exit status in `Data['Output']` and `Data['ExitCode']`; an unknown exit is
+  not success.
+  Native exit tracking is reset per invocation and the caller's previous value
+  and color environment are restored. These checks do not install anything.
 - **`CopilotPlugin` URL sources.** The installed plugin name is derived from
   `Source` for `owner/repo`, `plugin@marketplace`, and `market:plugin@marketplace`
   forms. For a URL source the name cannot be derived reliably — set the optional

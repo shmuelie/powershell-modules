@@ -23,7 +23,7 @@ Describe 'Shmuelie.Dsc module' {
     }
 }
 
-Describe 'Private helpers' {
+Describe 'Private helpers' -Tag 'DscDiscovery' {
     It 'strips ANSI escape sequences from CLI output' {
         InModuleScope Shmuelie.Dsc {
             $esc = [char]27
@@ -168,7 +168,7 @@ Describe 'SymbolicLink' {
     }
 }
 
-Describe 'CopilotPlugin' {
+Describe 'CopilotPlugin' -Tag 'DscDiscovery' {
     It 'detects an installed plugin by whole-token match (owner/repo and plugin@marketplace)' {
         InModuleScope Shmuelie.Dsc {
             Mock Invoke-DscCopilot { [pscustomobject]@{ Output = @('my-plugin  installed'); ExitCode = 0 } }
@@ -213,7 +213,7 @@ Describe 'CopilotPlugin' {
     }
 }
 
-Describe 'CopilotMarketplace' {
+Describe 'CopilotMarketplace' -Tag 'DscDiscovery' {
     It 'detects a registered marketplace by whole-token match and avoids substring false positives' {
         InModuleScope Shmuelie.Dsc {
             Mock Invoke-DscCopilot { [pscustomobject]@{ Output = @('dotnet-skills  dotnet/skills'); ExitCode = 0 } }
@@ -244,7 +244,7 @@ Describe 'CopilotMarketplace' {
     }
 }
 
-Describe 'UvTool' {
+Describe 'UvTool' -Tag 'DscDiscovery' {
     It 'detects an installed tool and avoids substring false positives' {
         InModuleScope Shmuelie.Dsc {
             Mock Invoke-DscUv { [pscustomobject]@{ Output = @('fast-agent-mcp v1.2.3', '- fast-agent'); ExitCode = 0 } }
@@ -270,6 +270,259 @@ Describe 'UvTool' {
 
             Mock Invoke-DscUv { [pscustomobject]@{ Output = 'network error'; ExitCode = 1 } }
             { ([UvTool]@{ Name = 'fast-agent-mcp' }).Set() } | Should -Throw '*network error*'
+        }
+    }
+}
+
+Describe 'DSC CLI discovery validation' -Tag 'DscDiscovery' {
+    BeforeEach {
+        Mock -ModuleName Shmuelie.Dsc Invoke-DscCopilot { throw 'Unexpected Copilot operation.' }
+        Mock -ModuleName Shmuelie.Dsc Invoke-DscUv { throw 'Unexpected uv operation.' }
+    }
+
+    It '<Resource> handles <Case> without guessing state' -ForEach @(
+        foreach ($resource in 'CopilotPlugin', 'CopilotMarketplace', 'UvTool') {
+            foreach ($case in @(
+                @{ Case = 'successful matching inventory'; Code = 0; Lines = @('example installed'); Expected = $true; Known = $true }
+                @{ Case = 'successful nonmatching inventory'; Code = 0; Lines = @('other installed'); Expected = $false; Known = $true }
+                @{ Case = 'successful substring-only inventory'; Code = 0; Lines = @('example-extra installed'); Expected = $false; Known = $true }
+                @{ Case = 'successful empty inventory'; Code = 0; Lines = @(); Expected = $false; Known = $true }
+                @{ Case = 'failed matching diagnostics'; Code = 1; Lines = @('error: inventory for example failed'); Known = $true }
+                @{ Case = 'failed nonmatching diagnostics'; Code = 3; Lines = @('service unavailable'); Known = $true }
+                @{ Case = 'failed empty inventory'; Code = 2; Lines = @(); Known = $true }
+                @{ Case = 'failed partial stdout'; Code = 5; Lines = @('example installed', 'other installed', 'inventory interrupted'); Known = $true }
+                @{ Case = 'negative native failure'; Code = -7; Lines = @('example failed'); Known = $true }
+                @{ Case = 'missing exit code'; Code = $null; Lines = @('example installed'); Known = $false }
+                @{ Case = 'string exit code'; Code = '0'; Lines = @('example installed'); Known = $false }
+                @{ Case = 'missing exit property'; Code = $null; Lines = @('inventory incomplete'); Known = $false; Shape = 'MissingExit' }
+                @{ Case = 'missing result'; Code = $null; Lines = @(); Known = $false; Shape = 'Null' }
+            )) {
+                $case + @{ Resource = $resource }
+            }
+        }
+    ) {
+        InModuleScope Shmuelie.Dsc -Parameters @{
+            Resource = $Resource; Code = $Code; Lines = $Lines; Expected = $Expected; Known = $Known; Shape = $Shape
+        } {
+            param($Resource, $Code, $Lines, $Expected, $Known, $Shape)
+
+            $result = [pscustomobject]@{ Output = $Lines; ExitCode = $Code }
+            if ($Shape -eq 'MissingExit') { $result = [pscustomobject]@{ Output = $Lines } }
+            if ($Shape -eq 'Null') { $result = $null }
+            switch ($Resource) {
+                CopilotPlugin {
+                    $instance = [CopilotPlugin]@{ Source = 'owner/example' }
+                    $expectedArguments = 'plugin list'
+                    Mock Invoke-DscCopilot { $result } -ParameterFilter { ($Arguments -join ' ') -eq $expectedArguments }
+                }
+                CopilotMarketplace {
+                    $instance = [CopilotMarketplace]@{ Name = 'example'; Repository = 'owner/repository' }
+                    $expectedArguments = 'plugin marketplace list'
+                    Mock Invoke-DscCopilot { $result } -ParameterFilter { ($Arguments -join ' ') -eq $expectedArguments }
+                }
+                UvTool {
+                    $instance = [UvTool]@{ Name = 'example' }
+                    $expectedArguments = 'tool list'
+                    Mock Invoke-DscUv { $result } -ParameterFilter { ($Arguments -join ' ') -eq $expectedArguments }
+                }
+            }
+            if ($Known -and $Code -eq 0) {
+                $instance.Test() | Should -Be $Expected
+                $instance.Get().Installed | Should -Be $Expected
+            } else {
+                $ErrorActionPreference = 'Continue'
+                Mock Test-DscListContainsToken { throw 'Failed discovery must not be parsed.' }
+                foreach ($method in 'Test', 'Get') {
+                    $values = [System.Collections.Generic.List[object]]::new()
+                    $failure = $null
+                    try { $instance.$method() | ForEach-Object { $values.Add($_) } }
+                    catch { $failure = $_ }
+                    $failure | Should -Not -BeNullOrEmpty
+                    $values.Count | Should -Be 0
+                    $exception = $failure.Exception
+                    while ($exception -and -not $exception.Data.Contains('ExitCode')) { $exception = $exception.InnerException }
+                    $exception | Should -Not -BeNullOrEmpty
+                    $exception.Data['ExitCode'] | Should -Be $Code
+                    if ($Shape -eq 'Null') {
+                        $exception.Data['Output'] | Should -BeNullOrEmpty
+                    } else {
+                        @($exception.Data['Output']) | Should -Be $Lines
+                    }
+                    if ($Known) {
+                        $exception.Message | Should -BeLike "*discovery failed (exit $Code)*"
+                    } else {
+                        $exception.Message | Should -BeLike '*discovery did not report a valid native exit code*'
+                    }
+                    foreach ($line in $Lines) { $exception.Message | Should -BeLike "*$line*" }
+                }
+                Should -Invoke Test-DscListContainsToken -Times 0 -Exactly
+            }
+            if ($Resource -eq 'UvTool') {
+                Should -Invoke Invoke-DscUv -Times 2 -Exactly -ParameterFilter { ($Arguments -join ' ') -eq $expectedArguments }
+                Should -Invoke Invoke-DscCopilot -Times 0 -Exactly
+            } else {
+                Should -Invoke Invoke-DscCopilot -Times 2 -Exactly -ParameterFilter { ($Arguments -join ' ') -eq $expectedArguments }
+                Should -Invoke Invoke-DscUv -Times 0 -Exactly
+            }
+        }
+    }
+}
+
+Describe 'DSC CLI native completion capture' -Tag 'DscDiscovery' {
+    BeforeAll {
+        InModuleScope Shmuelie.Dsc {
+            function script:copilot {
+                param([Parameter(ValueFromRemainingArguments)][string[]]$Arguments)
+                throw 'Real Copilot invocation is forbidden.'
+            }
+            function script:uv {
+                param([Parameter(ValueFromRemainingArguments)][string[]]$Arguments)
+                throw 'Real uv invocation is forbidden.'
+            }
+        }
+    }
+
+    BeforeEach {
+        $script:originalExitVariable = Get-Variable LASTEXITCODE -Scope Global -ErrorAction Ignore
+        $script:originalExitValue = if ($script:originalExitVariable) { $script:originalExitVariable.Value } else { $null }
+        $script:originalNoColor = [Environment]::GetEnvironmentVariable('NO_COLOR')
+        $script:originalUvColor = [Environment]::GetEnvironmentVariable('UV_NO_COLOR')
+        [Environment]::SetEnvironmentVariable('NO_COLOR', 'caller-color')
+        [Environment]::SetEnvironmentVariable('UV_NO_COLOR', 'caller-uv-color')
+    }
+
+    AfterEach {
+        if ($null -eq $script:originalNoColor) {
+            Remove-Item -LiteralPath Env:NO_COLOR -ErrorAction Ignore -WhatIf:$false -Confirm:$false
+        } else {
+            [Environment]::SetEnvironmentVariable('NO_COLOR', $script:originalNoColor)
+        }
+        if ($null -eq $script:originalUvColor) {
+            Remove-Item -LiteralPath Env:UV_NO_COLOR -ErrorAction Ignore -WhatIf:$false -Confirm:$false
+        } else {
+            [Environment]::SetEnvironmentVariable('UV_NO_COLOR', $script:originalUvColor)
+        }
+        if ($script:originalExitVariable) { $global:LASTEXITCODE = $script:originalExitValue }
+        else { Remove-Variable LASTEXITCODE -Scope Global -ErrorAction Ignore }
+    }
+
+    It '<Command> rejects missing completion instead of reusing caller exit <Previous>' -ForEach @(
+        foreach ($command in 'copilot', 'uv') {
+            foreach ($previous in 0, 17, $null) { @{ Command = $command; Previous = $previous } }
+        }
+    ) {
+        InModuleScope Shmuelie.Dsc -Parameters @{ Command = $Command; Previous = $Previous } {
+            param($Command, $Previous)
+            $global:LASTEXITCODE = $Previous
+            Mock $Command { 'example incomplete inventory' } -ParameterFilter { ($Arguments -join ' ') -eq 'fixture-list' }
+            $wrapper = if ($Command -eq 'copilot') { 'Invoke-DscCopilot' } else { 'Invoke-DscUv' }
+            { & $wrapper -Arguments @('fixture-list') } |
+                Should -Throw "*$Command did not report a valid native exit code*example incomplete inventory*"
+            $global:LASTEXITCODE | Should -Be $Previous
+            $env:NO_COLOR | Should -Be 'caller-color'
+            $env:UV_NO_COLOR | Should -Be 'caller-uv-color'
+            Should -Invoke $Command -Times 1 -Exactly
+        }
+    }
+
+    It '<Command> restores absent caller state under inherited WhatIf=<Preview>' -ForEach @(
+        @{ Command = 'copilot'; Preview = $false }
+        @{ Command = 'uv'; Preview = $false }
+        @{ Command = 'copilot'; Preview = $true }
+        @{ Command = 'uv'; Preview = $true }
+    ) {
+        InModuleScope Shmuelie.Dsc -Parameters @{ Command = $Command; Preview = $Preview } {
+            param($Command, $Preview)
+            Remove-Variable LASTEXITCODE -Scope Global -ErrorAction Ignore
+            Remove-Item -LiteralPath Env:NO_COLOR, Env:UV_NO_COLOR -ErrorAction Ignore
+            Mock $Command { 'incomplete' } -ParameterFilter { ($Arguments -join ' ') -eq 'fixture-list' }
+            $wrapper = if ($Command -eq 'copilot') { 'Invoke-DscCopilot' } else { 'Invoke-DscUv' }
+            $WhatIfPreference = $Preview
+            $ConfirmPreference = 'Low'
+            { & $wrapper -Arguments @('fixture-list') } | Should -Throw '*did not report a valid native exit code*'
+            Get-Variable LASTEXITCODE -Scope Global -ErrorAction Ignore | Should -BeNullOrEmpty
+            Test-Path -LiteralPath Env:NO_COLOR | Should -BeFalse
+            Test-Path -LiteralPath Env:UV_NO_COLOR | Should -BeFalse
+        }
+    }
+
+    It '<Command> restores caller state when invocation throws' -ForEach @(
+        @{ Command = 'copilot' }
+        @{ Command = 'uv' }
+    ) {
+        InModuleScope Shmuelie.Dsc -Parameters @{ Command = $Command } {
+            param($Command)
+            $global:LASTEXITCODE = 23
+            Mock $Command { throw 'fixture command launch failure' } -ParameterFilter { ($Arguments -join ' ') -eq 'fixture-list' }
+            $wrapper = if ($Command -eq 'copilot') { 'Invoke-DscCopilot' } else { 'Invoke-DscUv' }
+            { & $wrapper -Arguments @('fixture-list') } | Should -Throw '*fixture command launch failure*'
+            $global:LASTEXITCODE | Should -Be 23
+            $env:NO_COLOR | Should -Be 'caller-color'
+            $env:UV_NO_COLOR | Should -Be 'caller-uv-color'
+        }
+    }
+
+    It '<Resource>.Set rejects unknown completion through the shared wrapper' -ForEach @(
+        @{ Resource = 'CopilotPlugin'; Command = 'copilot'; Arguments = 'plugin install owner/example' }
+        @{ Resource = 'CopilotMarketplace'; Command = 'copilot'; Arguments = 'plugin marketplace add example owner/repository' }
+        @{ Resource = 'UvTool'; Command = 'uv'; Arguments = 'tool install example' }
+    ) {
+        InModuleScope Shmuelie.Dsc -Parameters @{ Resource = $Resource; Command = $Command; ExpectedArguments = $Arguments } {
+            param($Resource, $Command, $ExpectedArguments)
+            $global:LASTEXITCODE = 0
+            Mock $Command { 'fixture incomplete install' } -ParameterFilter { ($Arguments -join ' ') -eq $ExpectedArguments }
+            $instance = switch ($Resource) {
+                CopilotPlugin { [CopilotPlugin]@{ Source = 'owner/example' } }
+                CopilotMarketplace { [CopilotMarketplace]@{ Name = 'example'; Repository = 'owner/repository' } }
+                UvTool { [UvTool]@{ Name = 'example' } }
+            }
+            { $instance.Set() } | Should -Throw '*did not report a valid native exit code*fixture incomplete install*'
+            $global:LASTEXITCODE | Should -Be 0
+            $env:NO_COLOR | Should -Be 'caller-color'
+            $env:UV_NO_COLOR | Should -Be 'caller-uv-color'
+            Should -Invoke $Command -Times 1 -Exactly
+        }
+    }
+
+    It '<Command> preserves known exit <ExitCode> and stdout/stderr under terminating native policy' -ForEach @(
+        @{ Command = 'copilot'; ExitCode = 0 }
+        @{ Command = 'copilot'; ExitCode = 7 }
+        @{ Command = 'uv'; ExitCode = 0 }
+        @{ Command = 'uv'; ExitCode = 7 }
+    ) {
+        InModuleScope Shmuelie.Dsc -Parameters @{ Command = $Command; ExitCode = $ExitCode } {
+            param($Command, $ExitCode)
+            $native = (Get-Process -Id $PID).Path
+            Set-Alias -Name $Command -Value $native -Scope Script
+            $global:LASTEXITCODE = 83
+            $LASTEXITCODE = 91
+            $PSNativeCommandUseErrorActionPreference = $true
+            $ErrorActionPreference = 'Stop'
+            $child = @'
+if ($env:NO_COLOR -ne '1') { throw 'NO_COLOR was not set for the child.' }
+if ($env:UV_NO_COLOR -ne 'EXPECTED_UV_COLOR') { throw 'Unexpected UV_NO_COLOR value.' }
+[Console]::Out.WriteLine("$([char]27)[32mexample installed$([char]27)[0m")
+[Console]::Error.WriteLine('native diagnostic')
+exit EXPECTED_EXIT
+'@
+            $uvColor = if ($Command -eq 'uv') { '1' } else { 'caller-uv-color' }
+            $child = $child.Replace('EXPECTED_UV_COLOR', $uvColor).Replace('EXPECTED_EXIT', [string]$ExitCode)
+            try {
+                $wrapper = if ($Command -eq 'copilot') { 'Invoke-DscCopilot' } else { 'Invoke-DscUv' }
+                $result = & $wrapper -Arguments @('-NoProfile', '-NonInteractive', '-Command', $child)
+                $result.ExitCode | Should -BeExactly $ExitCode
+                $result.ExitCode | Should -BeOfType ([int])
+                $result.Output.Count | Should -Be 2
+                $result.Output | Should -Contain 'example installed'
+                $result.Output | Should -Contain 'native diagnostic'
+                $global:LASTEXITCODE | Should -Be 83
+                $LASTEXITCODE | Should -Be 91
+                $PSNativeCommandUseErrorActionPreference | Should -BeTrue
+                $env:NO_COLOR | Should -Be 'caller-color'
+                $env:UV_NO_COLOR | Should -Be 'caller-uv-color'
+            } finally {
+                Remove-Alias -Name $Command -Scope Script -Force -ErrorAction Stop
+            }
         }
     }
 }

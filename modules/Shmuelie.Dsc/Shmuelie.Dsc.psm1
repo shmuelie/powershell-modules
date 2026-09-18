@@ -57,6 +57,71 @@ function Assert-DscSafeArgument {
     }
 }
 
+function Assert-DscCliResult {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][AllowNull()][object]$Result,
+        [Parameter(Mandatory)][string]$Operation,
+        [switch]$AllowNonZeroExit
+    )
+
+    $exitCode = $null
+    $output = $null
+    if ($Result -is [System.Collections.IDictionary]) {
+        $exitCode = $Result['ExitCode']
+        $output = $Result['Output']
+    } elseif ($null -ne $Result) {
+        $exitProperty = $Result.PSObject.Properties['ExitCode']
+        $outputProperty = $Result.PSObject.Properties['Output']
+        if ($exitProperty) { $exitCode = $exitProperty.Value }
+        if ($outputProperty) { $output = $outputProperty.Value }
+    }
+    if ($exitCode -is [int] -and ($AllowNonZeroExit -or $exitCode -eq 0)) {
+        return
+    }
+    $knownExit = $exitCode -is [int]
+    $message = if ($knownExit) {
+        "$Operation failed (exit $exitCode)."
+    } else {
+        "$Operation did not report a valid native exit code."
+    }
+    if ($output) { $message += [Environment]::NewLine + ($output -join [Environment]::NewLine) }
+    $exception = [System.InvalidOperationException]::new($message)
+    $exception.Data['ExitCode'] = $exitCode
+    $exception.Data['Output'] = $output
+    $errorId = if ($knownExit) { 'DscCliCommandFailed' } else { 'DscCliCompletionUnknown' }
+    $PSCmdlet.ThrowTerminatingError([System.Management.Automation.ErrorRecord]::new(
+        $exception, $errorId, [System.Management.Automation.ErrorCategory]::InvalidResult, $Result))
+}
+
+function Invoke-DscCliCommand {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][ValidateSet('copilot', 'uv')][string]$Command,
+        [Parameter(Mandatory)][string[]]$Arguments
+    )
+
+    $previousExitCode = Get-Variable LASTEXITCODE -Scope Global -ErrorAction Ignore
+    $previousValue = if ($previousExitCode) { $previousExitCode.Value } else { $null }
+    # Native invocation writes the global variable even when a local one exists.
+    # Capture diagnostics ourselves, independent of the caller's native error policy.
+    $PSNativeCommandUseErrorActionPreference = $false
+    try {
+        $global:LASTEXITCODE = $null
+        $raw = @(& $Command @Arguments 2>&1)
+        $exitCode = $global:LASTEXITCODE
+    } finally {
+        if ($previousExitCode) { $global:LASTEXITCODE = $previousValue }
+        else { Remove-Variable LASTEXITCODE -Scope Global -ErrorAction Ignore -WhatIf:$false -Confirm:$false }
+    }
+    $result = [pscustomobject]@{
+        Output = @($raw | ForEach-Object { Remove-DscAnsiEscape ([string]$_) })
+        ExitCode = $exitCode
+    }
+    Assert-DscCliResult -Result $result -Operation $Command -AllowNonZeroExit
+    return $result
+}
+
 function Invoke-DscCopilot {
     [CmdletBinding()]
     param(
@@ -67,19 +132,13 @@ function Invoke-DscCopilot {
     $previousNoColor = $env:NO_COLOR
     $env:NO_COLOR = '1'
     try {
-        $raw = & copilot @Arguments 2>&1
-        $exit = $LASTEXITCODE
+        Invoke-DscCliCommand -Command copilot -Arguments $Arguments
     } finally {
         if ($null -eq $previousNoColor) {
-            Remove-Item Env:NO_COLOR -ErrorAction SilentlyContinue
+            Remove-Item Env:NO_COLOR -ErrorAction SilentlyContinue -WhatIf:$false -Confirm:$false
         } else {
             $env:NO_COLOR = $previousNoColor
         }
-    }
-    $lines = @($raw | ForEach-Object { Remove-DscAnsiEscape ([string]$_) })
-    [pscustomobject]@{
-        Output   = $lines
-        ExitCode = $exit
     }
 }
 
@@ -95,24 +154,18 @@ function Invoke-DscUv {
     $env:NO_COLOR = '1'
     $env:UV_NO_COLOR = '1'
     try {
-        $raw = & uv @Arguments 2>&1
-        $exit = $LASTEXITCODE
+        Invoke-DscCliCommand -Command uv -Arguments $Arguments
     } finally {
         if ($null -eq $previousNoColor) {
-            Remove-Item Env:NO_COLOR -ErrorAction SilentlyContinue
+            Remove-Item Env:NO_COLOR -ErrorAction SilentlyContinue -WhatIf:$false -Confirm:$false
         } else {
             $env:NO_COLOR = $previousNoColor
         }
         if ($null -eq $previousUvNoColor) {
-            Remove-Item Env:UV_NO_COLOR -ErrorAction SilentlyContinue
+            Remove-Item Env:UV_NO_COLOR -ErrorAction SilentlyContinue -WhatIf:$false -Confirm:$false
         } else {
             $env:UV_NO_COLOR = $previousUvNoColor
         }
-    }
-    $lines = @($raw | ForEach-Object { Remove-DscAnsiEscape ([string]$_) })
-    [pscustomobject]@{
-        Output   = $lines
-        ExitCode = $exit
     }
 }
 
@@ -296,6 +349,8 @@ class SymbolicLink {
     checking whether the plugin's name appears as a whole token in
     'copilot plugin list' output. Supports the owner/repo, plugin@marketplace,
     and market:plugin@marketplace source formats accepted by the Copilot CLI.
+    Failed discovery or unknown native completion raises an error instead of
+    reporting the plugin as installed or absent.
 
     For a URL source (or any source whose installed plugin name cannot be
     derived from the source spec), set the Name property so Test() can match the
@@ -350,6 +405,7 @@ class CopilotPlugin {
 
     [bool] Test() {
         $result = Invoke-DscCopilot -Arguments @('plugin', 'list')
+        Assert-DscCliResult -Result $result -Operation 'Copilot plugin discovery'
         return Test-DscListContainsToken -Lines $result.Output -Token $this.ResolveName()
     }
 
@@ -370,6 +426,8 @@ class CopilotPlugin {
     DSC resource that ensures a Copilot CLI plugin marketplace is registered.
     Tests by checking whether the marketplace name appears as a whole token in
     'copilot plugin marketplace list' output.
+    Failed discovery or unknown native completion raises an error instead of
+    reporting the marketplace as registered or absent.
 
     Depends only on the public GitHub Copilot CLI (copilot) on PATH.
 
@@ -411,6 +469,7 @@ class CopilotMarketplace {
 
     [bool] Test() {
         $result = Invoke-DscCopilot -Arguments @('plugin', 'marketplace', 'list')
+        Assert-DscCliResult -Result $result -Operation 'Copilot marketplace discovery'
         return Test-DscListContainsToken -Lines $result.Output -Token $this.Name
     }
 
@@ -432,6 +491,8 @@ class CopilotMarketplace {
     DSC resource that ensures a Python tool is installed via 'uv tool install'.
     Tests by checking whether the tool name appears as a whole token in
     'uv tool list' output.
+    Failed discovery or unknown native completion raises an error instead of
+    reporting the tool as installed or absent.
 
     Depends only on the public uv CLI on PATH.
 
@@ -465,6 +526,7 @@ class UvTool {
 
     [bool] Test() {
         $result = Invoke-DscUv -Arguments @('tool', 'list')
+        Assert-DscCliResult -Result $result -Operation 'uv tool discovery'
         return Test-DscListContainsToken -Lines $result.Output -Token $this.Name
     }
 
