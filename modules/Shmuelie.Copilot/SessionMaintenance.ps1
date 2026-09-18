@@ -731,6 +731,9 @@ function Repair-CopilotSessionEvents {
            model set to 'unknown').
         5. Validates the final tool_use/tool_result pairing.
 
+        Malformed events are removed before relocation. Only retained valid
+        completions suppress synthesis; valid events keep their original raw lines.
+
         These issues typically arise from race conditions in the event logger
         where tool completions are recorded before the assistant message that
         requested them, or from context window truncation that splits
@@ -811,9 +814,18 @@ function Repair-CopilotSessionEvents {
             return $lines
         }
 
-        # Parse all events
-        $parsed = for ($i = 0; $i -lt $lines.Count; $i++) {
+        # Filter before indexing so relocation cannot reintroduce rejected events.
+        $removedErrors = 0
+        $removedMalformed = 0
+        $parsed = @(for ($i = 0; $i -lt $lines.Count; $i++) {
             $json = $lines[$i] | ConvertFrom-Json
+            $isSessionError = $json.type -in @('session.error', 'session.warning')
+            $isMalformed = $json.id -eq '' -or
+                ($json.type -eq 'tool.execution_complete' -and $json.data.model -eq 'unknown')
+            if ($isSessionError) { $removedErrors++ }
+            if ($isMalformed) { $removedMalformed++ }
+            if ($isSessionError -or $isMalformed) { continue }
+
             $toolReqs = if ($json.type -eq 'assistant.message' -and $json.data.toolRequests) {
                 @($json.data.toolRequests | ForEach-Object { $_.toolCallId })
             } else { @() }
@@ -825,7 +837,7 @@ function Repair-CopilotSessionEvents {
                 Raw          = $lines[$i]
                 Json         = $json
             }
-        }
+        })
 
         # Build global map: toolCallId -> index of the assistant.message that requested it
         $requestMap = @{}
@@ -868,22 +880,13 @@ function Repair-CopilotSessionEvents {
             }
         }
 
-        # Build output: skip relocated/error events, insert relocated ones after their assistant.message
+        # Build output from retained events, relocating tool events after their assistant.message.
         $output = [System.Collections.Generic.List[string]]::new()
         for ($i = 0; $i -lt $parsed.Count; $i++) {
             $ev = $parsed[$i]
 
             # Skip orphaned events (will be re-inserted after their request)
             if ($relocate.Contains($i)) { continue }
-
-            # Strip session.error and session.warning events
-            if ($ev.Type -in @('session.error', 'session.warning')) { continue }
-
-            # Strip malformed events from previous bad repairs (empty id, unknown model)
-            if ($ev.Json.id -eq '' -or
-                ($ev.Type -eq 'tool.execution_complete' -and $ev.Json.data.model -eq 'unknown')) {
-                continue
-            }
 
             $output.Add($ev.Raw)
 
@@ -905,7 +908,7 @@ function Repair-CopilotSessionEvents {
         }
 
         # Synthesize missing tool completions (tool_use with no execution_complete anywhere)
-        # Re-parse output to find the assistant.messages and their positions
+        # Re-parse valid output to find retained requests and completions.
         $outputParsed = for ($i = 0; $i -lt $output.Count; $i++) {
             $json = $output[$i] | ConvertFrom-Json
             [PSCustomObject]@{ Idx = $i; Type = $json.type; Json = $json }
@@ -968,11 +971,6 @@ function Repair-CopilotSessionEvents {
         }
 
         # Report stats
-        $removedErrors = ($parsed | Where-Object { $_.Type -in @('session.error', 'session.warning') }).Count
-        $removedMalformed = ($parsed | Where-Object {
-            $_.Json.id -eq '' -or
-            ($_.Type -eq 'tool.execution_complete' -and $_.Json.data.model -eq 'unknown')
-        }).Count
         $stats = @{
             Relocated  = $relocate.Count
             Removed    = $removedErrors + $removedMalformed

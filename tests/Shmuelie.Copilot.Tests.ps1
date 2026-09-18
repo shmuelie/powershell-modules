@@ -1184,6 +1184,204 @@ Describe 'Repair-CopilotSessionEvents' {
     }
 }
 
+Describe 'Repair-CopilotSessionEvents event validity' {
+    BeforeAll {
+        $script:MalformedRepairFixture = @(
+            '{"type":"session.start","id":"start","timestamp":"2026-09-01T12:00:00Z","data":{"sessionId":"synthetic"}}'
+            '{"type":"tool.execution_complete","id":"","timestamp":"2026-09-01T12:00:00Z","data":{"toolCallId":"tool-1","model":"unknown"}}'
+            '{"type":"assistant.message","id":"assistant-1","timestamp":"2026-09-01T12:00:01Z","data":{"toolRequests":[{"toolCallId":"tool-1"}],"model":"test-model"}}'
+            '{"type":"assistant.turn_end","id":"end-1","timestamp":"2026-09-01T12:00:02Z","data":{}}'
+        )
+    }
+
+    BeforeEach {
+        Mock -ModuleName Shmuelie.Copilot Get-CopilotHome { throw 'Unexpected session discovery in isolated repair tests.' }
+        Mock -ModuleName Shmuelie.Copilot Get-Command { throw 'Unexpected native command discovery.' }
+    }
+
+    It 'replaces the malformed relocated completion from the four-line regression fixture and is idempotent' {
+        $records = @(Repair-CopilotSessionEvents -EventLines $script:MalformedRepairFixture -Verbose 4>&1)
+        $fixed = @($records | Where-Object { $_ -is [string] })
+        $events = @($fixed | ForEach-Object { $_ | ConvertFrom-Json })
+        $completions = @($events | Where-Object type -EQ 'tool.execution_complete')
+
+        $fixed | Should -HaveCount 4
+        $fixed[0] | Should -BeExactly $script:MalformedRepairFixture[0]
+        $fixed[1] | Should -BeExactly $script:MalformedRepairFixture[2]
+        $fixed[3] | Should -BeExactly $script:MalformedRepairFixture[3]
+        $completions | Should -HaveCount 1
+        $completions[0].id | Should -Not -BeNullOrEmpty
+        { [guid]::Parse($completions[0].id) } | Should -Not -Throw
+        $completions[0].timestamp | Should -Be $events[-1].timestamp
+        $completions[0].data.toolCallId | Should -Be 'tool-1'
+        $completions[0].data.model | Should -Be 'test-model'
+        $completions[0].data.success | Should -BeTrue
+        $completions[0].data.result.content | Should -Be '[Session repair: tool execution data unavailable]'
+        @($records | Where-Object { $_ -is [System.Management.Automation.VerboseRecord] }).Message |
+            Should -Contain 'Repaired: relocated 0 orphaned tool events, removed 1 error/malformed events, synthesized 1 missing completions'
+        $again = @(Repair-CopilotSessionEvents -EventLines $fixed)
+        [string]::Join("`n", $again) | Should -BeExactly ([string]::Join("`n", $fixed))
+    }
+
+    It 'replaces a completion with <Defect> appearing <Position> its request' -ForEach @(
+        foreach ($defect in 'empty ID', 'unknown model') {
+            foreach ($position in 'before', 'after') {
+                @{ Defect = $defect; Position = $position }
+            }
+        }
+    ) {
+        $completion = if ($Defect -eq 'empty ID') {
+            $script:MalformedRepairFixture[1].Replace('"model":"unknown"', '"model":"test-model"')
+        } else {
+            $script:MalformedRepairFixture[1].Replace('"id":""', '"id":"malformed-completion"')
+        }
+        $request = $script:MalformedRepairFixture[2].Replace('"model":"test-model"', '"model":"test-model","interactionId":"interaction-1"')
+        $lines = @(
+            $script:MalformedRepairFixture[0]
+            if ($Position -eq 'before') { $completion }
+            $request
+            if ($Position -eq 'after') { $completion }
+            $script:MalformedRepairFixture[3]
+        )
+
+        $fixed = @(Repair-CopilotSessionEvents -EventLines $lines)
+        $events = @($fixed | ForEach-Object { $_ | ConvertFrom-Json })
+        $completions = @($events | Where-Object type -EQ 'tool.execution_complete')
+
+        $completions | Should -HaveCount 1
+        $completions[0].id | Should -Not -BeNullOrEmpty
+        $completions[0].id | Should -Not -Be 'malformed-completion'
+        $completions[0].data.model | Should -Be 'test-model'
+        $completions[0].data.interactionId | Should -Be 'interaction-1'
+        $events.type | Should -Be @('session.start', 'assistant.message', 'tool.execution_complete', 'assistant.turn_end')
+        $fixed | Should -Not -Contain $completion
+        $again = @(Repair-CopilotSessionEvents -EventLines $fixed)
+        [string]::Join("`n", $again) | Should -BeExactly ([string]::Join("`n", $fixed))
+    }
+
+    It 'preserves valid raw tool pairs with events <Position> their request' -ForEach @(
+        @{ Position = 'before' }
+        @{ Position = 'after' }
+    ) {
+        $start = '{ "type": "tool.execution_start", "id": "tool-start", "timestamp": "2026-09-01T12:00:00Z", "data": { "toolCallId": "tool-1", "extra": "preserved" } }'
+        $complete = '{ "type": "tool.execution_complete", "id": "tool-complete", "timestamp": "2026-09-01T12:00:00Z", "data": { "toolCallId": "tool-1", "model": "test-model", "success": false, "result": { "content": "original result" }, "extra": [1, 2] } }'
+        $lines = @(
+            $script:MalformedRepairFixture[0]
+            if ($Position -eq 'before') { $start; $complete }
+            $script:MalformedRepairFixture[2]
+            if ($Position -eq 'after') { $start; $complete }
+            $script:MalformedRepairFixture[3]
+        )
+        $expected = @($script:MalformedRepairFixture[0], $script:MalformedRepairFixture[2], $start, $complete, $script:MalformedRepairFixture[3])
+
+        $fixed = @(Repair-CopilotSessionEvents -EventLines $lines)
+
+        [string]::Join("`n", $fixed) | Should -BeExactly ([string]::Join("`n", $expected))
+        $again = @(Repair-CopilotSessionEvents -EventLines $fixed)
+        [string]::Join("`n", $again) | Should -BeExactly ([string]::Join("`n", $fixed))
+    }
+
+    It 'does not synthesize a duplicate when a valid completion is <Position> its request beside a malformed one' -ForEach @(
+        @{ Position = 'before' }
+        @{ Position = 'after' }
+    ) {
+        $valid = $script:MalformedRepairFixture[1].Replace('"id":""', '"id":"valid-completion"').Replace('"model":"unknown"', '"model":"test-model"')
+        $lines = @(
+            $script:MalformedRepairFixture[0]
+            $script:MalformedRepairFixture[1]
+            if ($Position -eq 'before') { $valid }
+            $script:MalformedRepairFixture[2]
+            if ($Position -eq 'after') { $valid }
+            $script:MalformedRepairFixture[3]
+        )
+
+        $fixed = @(Repair-CopilotSessionEvents -EventLines $lines)
+        $completions = @($fixed | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object type -EQ 'tool.execution_complete')
+
+        $completions | Should -HaveCount 1
+        $completions[0].id | Should -Be 'valid-completion'
+        $fixed | Should -Contain $valid
+        $fixed | Should -Not -Contain $script:MalformedRepairFixture[1]
+    }
+
+    It 'drops an empty-ID relocated start without discarding the valid completion' {
+        $start = $script:MalformedRepairFixture[1].Replace('tool.execution_complete', 'tool.execution_start')
+        $complete = $script:MalformedRepairFixture[1].Replace('"id":""', '"id":"valid-completion"').Replace('"model":"unknown"', '"model":"test-model"')
+        $lines = @($script:MalformedRepairFixture[0], $start, $complete, $script:MalformedRepairFixture[2], $script:MalformedRepairFixture[3])
+
+        $fixed = @(Repair-CopilotSessionEvents -EventLines $lines)
+
+        $expected = @($script:MalformedRepairFixture[0], $script:MalformedRepairFixture[2], $complete, $script:MalformedRepairFixture[3])
+        [string]::Join("`n", $fixed) | Should -BeExactly ([string]::Join("`n", $expected))
+    }
+
+    It 'handles filtering down to <Retained> retained events' -ForEach @(
+        @{ Retained = 0 }
+        @{ Retained = 1 }
+    ) {
+        $lines = @(
+            $script:MalformedRepairFixture[1]
+            '{"type":"session.warning","id":"warning","data":{"message":"synthetic"}}'
+            '{"type":"session.error","id":"error","data":{"message":"synthetic"}}'
+            if ($Retained -eq 1) { $script:MalformedRepairFixture[0] }
+        )
+
+        $fixed = @(Repair-CopilotSessionEvents -EventLines $lines)
+
+        $fixed | Should -HaveCount $Retained
+        if ($Retained -eq 1) { $fixed[0] | Should -BeExactly $script:MalformedRepairFixture[0] }
+    }
+
+    It 'retains the existing replacement model policy when the request model is <Model>' -ForEach @(
+        @{ Model = 'unknown' }
+        @{ Model = '' }
+    ) {
+        $lines = @($script:MalformedRepairFixture)
+        $lines[2] = $lines[2].Replace('"model":"test-model"', "`"model`":`"$Model`"")
+
+        $fixed = @(Repair-CopilotSessionEvents -EventLines $lines)
+        $completions = @($fixed | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object type -EQ 'tool.execution_complete')
+
+        $completions | Should -HaveCount 1
+        $completions[0].data.model | Should -Be 'claude-sonnet-4'
+        $completions[0].id | Should -Not -BeNullOrEmpty
+    }
+
+    It 'repairs synthetic pipeline sessions with NoBackup=<NoBackup> while preserving backup policy' -ForEach @(
+        @{ NoBackup = $false }
+        @{ NoBackup = $true }
+    ) {
+        $root = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
+        $sessions = @(
+            foreach ($id in 'first', 'second') {
+                $path = New-CopilotSessionState -SessionRoot $root -Id $id -Cwd $root -Summary 'Synthetic repair'
+                Set-CopilotTestEvents -SessionPath $path -Lines $script:MalformedRepairFixture
+                [pscustomobject]@{
+                    Path = $path
+                    OriginalHash = (Get-FileHash -LiteralPath (Join-Path $path 'events.jsonl')).Hash
+                }
+            }
+        )
+
+        $output = @($sessions | Repair-CopilotSessionEvents -NoBackup:$NoBackup -Confirm:$false)
+
+        $output | Should -HaveCount 0
+        foreach ($session in $sessions) {
+            $eventsFile = Join-Path $session.Path 'events.jsonl'
+            $events = @(Get-CopilotTestEventObjects -SessionPath $session.Path)
+            $completions = @($events | Where-Object type -EQ 'tool.execution_complete')
+            $completions | Should -HaveCount 1
+            $completions[0].id | Should -Not -BeNullOrEmpty
+            $completions[0].data.model | Should -Be 'test-model'
+            if ($NoBackup) {
+                Test-Path -LiteralPath "$eventsFile.bak" | Should -BeFalse
+            } else {
+                (Get-FileHash -LiteralPath "$eventsFile.bak").Hash | Should -BeExactly $session.OriginalHash
+            }
+        }
+    }
+}
+
 Describe 'Copilot required backup safety' {
     Context '<Command>' -ForEach @(
         @{ Command = 'Compress-CopilotSession'; Options = @{ Keep = 1 } }
