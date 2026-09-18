@@ -176,6 +176,19 @@ Describe 'WPR native errors (hermetic)' -Skip:(-not $IsWindows) {
     }
 }
 
+Describe 'New-SubstDrive target resolution (hermetic)' -Skip:(-not $IsWindows) {
+    It 'requires one directory before reaching the fake mapping boundary' {
+        $fixture = Join-Path $PSScriptRoot 'fixtures' 'Test-SubstTarget.ps1'
+        $output = & pwsh -NoProfile -NonInteractive -File $fixture
+        $LASTEXITCODE | Should -Be 0 -Because ($output -join "`n")
+        $result = ($output -join "`n") | ConvertFrom-Json -ErrorAction Stop
+        $result.Failed | Should -Be 0
+        $result.Passed | Should -Be 28
+        @($result.Cases | Where-Object { -not $_.Passed }) | Should -HaveCount 0
+        $result.OwnedRootRemoved | Should -BeTrue
+    }
+}
+
 Describe 'New-SubstDrive validation' -Skip:(-not $IsWindows) {
     It 'rejects invalid drive letters without creating a mapping' -ForEach @(
         @{ DriveLetter = '1' }
@@ -513,6 +526,18 @@ Describe 'Windows Terminal settings parsing' -Skip:(-not $IsWindows) {
                 $env:WT_PROFILE_ID = $originalProfileId
             }
         }
+    }
+}
+
+Describe 'Get-ServiceProcess status validity (hermetic)' -Skip:(-not $IsWindows) {
+    It 'resolves only PIDs guaranteed valid by the captured native status' {
+        $fixture = Join-Path $PSScriptRoot 'fixtures' 'Test-ServiceProcessStatus.ps1'
+        $output = & pwsh -NoProfile -NonInteractive -File $fixture
+        $LASTEXITCODE | Should -Be 0 -Because ($output -join "`n")
+        $result = ($output -join "`n") | ConvertFrom-Json -ErrorAction Stop
+        $result.Failed | Should -Be 0
+        $result.Passed | Should -BeGreaterOrEqual 50
+        @($result.Cases | Where-Object { -not $_.Passed }) | Should -HaveCount 0
     }
 }
 
