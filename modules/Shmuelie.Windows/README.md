@@ -28,6 +28,50 @@ AppInstallManager development is isolated in the repository-local
 It is not included in this module or published to the Gallery. Existing
 `Get-AppInstallerApp` and `Update-AppInstallerApp` commands remain here.
 
+## Windows Performance Recorder failures
+
+`Start-WindowsPerformanceRecorder` and `Stop-WindowsPerformanceRecorder` report
+sudo/WPR invocation failures and nonzero exit codes as PowerShell errors,
+regardless of `$PSNativeCommandUseErrorActionPreference`. Use `-ErrorAction Stop`
+with `try`/`catch` when automation must stop on failure. Errors identify the
+operation and, when available, the native exit code and captured diagnostics.
+Native output is returned only after a successful exit; failed stops do not
+produce success output claiming a saved trace.
+
+`Stop-WindowsPerformanceRecorder -File` requires a nonblank ETL output filename,
+including with `-WhatIf`, as required by the
+[WPR stop contract](https://learn.microsoft.com/windows-hardware/test/wpt/wpr-command-line-options#stop).
+Profile and output paths containing spaces remain separate arguments.
+Both commands retain `-WhatIf`/`-Confirm` and preserve the caller's preferences
+and original `LASTEXITCODE` value (or its absence).
+
+## Subst target paths
+
+`New-SubstDrive -TargetPath` must resolve to exactly one existing FileSystem
+directory. Wildcards remain supported when they match a single directory;
+multiple matches produce a terminating `AmbiguousTargetPath` error instead of
+mapping the first result. This validation also applies under `-WhatIf`, before
+checking the drive letter's availability or requesting confirmation. Ambiguous
+targets create no mapping and emit no success object. Missing targets, files,
+and non-FileSystem providers remain invalid.
+
+## Service process results
+
+`Get-ServiceProcess` uses a process ID only when the same
+`QueryServiceStatusEx` snapshot reports `Running`, `PausePending`, `Paused`,
+or `ContinuePending`, the states for which Win32 guarantees PID validity.
+`Stopped`, `StartPending`, `StopPending`, and unknown native states instead
+produce the existing `ServiceProcessInfo` fallback: `ProcessId = 0`,
+`Process = $null`, and an empty `ProcessName`. No process lookup is attempted
+for those snapshots.
+
+A single successfully resolved service still returns its `System.Diagnostics.Process`;
+multiple matches still return per-service `ServiceProcessInfo` objects, including
+services sharing a host. `-PerService` configuration and confirmation are unchanged.
+The service status and process lookup are separate observations: this state check
+is not an atomic snapshot or a guarantee that a process continues to own a service.
+See the [Win32 PID-validity contract](https://learn.microsoft.com/windows/win32/api/winsvc/nf-winsvc-queryservicestatusex#remarks).
+
 ## App Installer request results
 
 `Update-AppInstallerApp` still emits nothing by default. Opt in to typed

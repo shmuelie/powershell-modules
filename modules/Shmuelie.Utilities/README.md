@@ -51,8 +51,12 @@ wrapper's help, not repeated warnings or success-stream output.
 
 - `Reset-TerminalModes` recovers a terminal left in a bad state (mouse tracking,
   alternate screen, bracketed paste, kitty keyboard flags) by a crashed TUI.
-- `Invoke-InLocation` runs a script block in a location and always returns, even
-  on Ctrl+C.
+- `Invoke-InLocation` runs a script block only after entering an existing container.
+  Files and missing locations are rejected; entry failures stop before the callback,
+  even under `-ErrorAction Continue`. Relative, wildcard, and provider-qualified
+  paths retain `Push-Location -Path` semantics and must resolve to one location.
+  Successful entry is paired with cleanup on completion, callback errors, and early
+  downstream termination (including interruption); output remains streaming.
 - Tool helpers list and update .NET global tools, Python packages, uv tools, VS
   Code extensions, and PowerShell resources deployed with `Save-PSResource` to
   caller-supplied module paths (`Update-InstalledPSResource`). The PowerShell
