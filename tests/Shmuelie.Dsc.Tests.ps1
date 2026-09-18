@@ -362,7 +362,7 @@ Describe 'SavePSResource' -Tag 'SavedModulePresence' {
     }
 }
 
-Describe 'SymbolicLink' {
+Describe 'SymbolicLink' -Tag 'DscSymbolicLink' {
     It 'is not in the desired state when the path is missing' {
         InModuleScope Shmuelie.Dsc {
             Mock Get-Item { $null }
@@ -378,10 +378,13 @@ Describe 'SymbolicLink' {
     }
 
     It 'is in the desired state only when the link target matches' {
-        InModuleScope Shmuelie.Dsc {
-            Mock Get-Item { [pscustomobject]@{ LinkType = 'SymbolicLink'; Target = 'C:\target' } }
-            ([SymbolicLink]@{ Path = 'C:\link'; Target = 'C:\target' }).Test() | Should -BeTrue
-            ([SymbolicLink]@{ Path = 'C:\link'; Target = 'C:\other' }).Test() | Should -BeFalse
+        InModuleScope Shmuelie.Dsc -Parameters @{ Root = $TestDrive } {
+            param($Root)
+            $link = Join-Path $Root 'link'
+            $target = Join-Path $Root 'target'
+            Mock Get-Item { [pscustomobject]@{ LinkType = 'SymbolicLink'; Target = $target } } -ParameterFilter { $LiteralPath -ceq $link }
+            ([SymbolicLink]@{ Path = $link; Target = $target }).Test() | Should -BeTrue
+            ([SymbolicLink]@{ Path = $link; Target = (Join-Path $Root 'other') }).Test() | Should -BeFalse
         }
     }
 
@@ -412,6 +415,234 @@ Describe 'SymbolicLink' {
                 $Path -eq $linkPath -and $Target -eq 'C:\target'
             }
         }
+    }
+}
+
+Describe 'SymbolicLink pathname comparison' -Tag 'DscSymbolicLink' {
+    BeforeEach {
+        Mock -ModuleName Shmuelie.Dsc Get-Item { throw 'Unexpected filesystem lookup.' }
+        Mock -ModuleName Shmuelie.Dsc Get-ChildItem { throw 'Unexpected directory enumeration.' }
+        Mock -ModuleName Shmuelie.Dsc New-DscSymbolicLink { throw 'Comparison must not replace a link.' }
+    }
+
+    It 'compares normalized pathnames without metadata: <Case>' -ForEach @(
+        @{ Case = 'exact dangling spelling'; Actual = 'missing'; Desired = 'missing'; Expected = $true }
+        @{ Case = 'dot component'; Actual = './missing'; Desired = 'missing'; Expected = $true }
+        @{ Case = 'relative to absolute'; Actual = 'missing'; Desired = 'missing'; AbsoluteDesired = $true; Expected = $true }
+        @{ Case = 'absolute to relative'; Actual = 'missing'; Desired = 'missing'; AbsoluteActual = $true; Expected = $true }
+        @{ Case = 'parent-relative spelling'; Actual = '../missing'; Desired = '../missing'; AbsoluteDesired = $true; Expected = $true }
+        @{ Case = 'trailing separator'; Actual = 'missing/'; Desired = 'missing'; Expected = $true }
+        @{ Case = 'distinct missing names'; Actual = 'missing'; Desired = 'other'; Expected = $false }
+        @{ Case = 'different immediate chains'; Actual = 'first/leaf'; Desired = 'second/leaf'; Expected = $false }
+    ) {
+        InModuleScope Shmuelie.Dsc -Parameters @{
+            Root = $TestDrive; Actual = $Actual; Desired = $Desired
+            AbsoluteActual = $AbsoluteActual; AbsoluteDesired = $AbsoluteDesired; Expected = $Expected
+        } {
+            param($Root, $Actual, $Desired, $AbsoluteActual, $AbsoluteDesired, $Expected)
+            $linkParent = Join-Path $Root 'links'
+            if ($AbsoluteActual) { $Actual = [IO.Path]::GetFullPath($Actual, $linkParent) }
+            if ($AbsoluteDesired) { $Desired = [IO.Path]::GetFullPath($Desired, $linkParent) }
+            Test-DscSymbolicLinkTarget -LinkPath (Join-Path $linkParent 'link') -ActualTarget $Actual -DesiredTarget $Desired | Should -Be $Expected
+            Should -Invoke Get-Item -Times 0 -Exactly
+            Should -Invoke Get-ChildItem -Times 0 -Exactly
+            Should -Invoke New-DscSymbolicLink -Times 0 -Exactly
+        }
+    }
+
+    It 'requires actual directory-entry evidence: <Case>' -ForEach @(
+        @{ Case = 'case-insensitive existing entry'; Names = @('Foo'); Expected = $true }
+        @{ Case = 'lowercase stored entry'; Names = @('foo'); Expected = $true }
+        @{ Case = 'case-sensitive distinct entries'; Names = @('Foo', 'foo'); Expected = $false }
+        @{ Case = 'no matching entries'; Names = @('other'); Unknown = $true; ErrorLike = '*No unambiguous directory entry*' }
+        @{ Case = 'ambiguous nonexact spelling'; Names = @('Foo', 'FOO'); Unknown = $true; ErrorLike = '*No unambiguous directory entry*' }
+        @{ Case = 'directory is inaccessible'; Names = @('Foo'); Failure = 'Enumeration'; Unknown = $true; ErrorLike = '*fixture directory access denied*' }
+        @{ Case = 'alternate spelling is missing'; Names = @('Foo'); Failure = 'Lookup'; Unknown = $true; ErrorLike = '*fixture entry missing*' }
+        @{ Case = 'lookup returns no entry'; Names = @('Foo'); Failure = 'EmptyLookup'; Unknown = $true; ErrorLike = '*Literal lookup did not identify one entry*' }
+    ) {
+        InModuleScope Shmuelie.Dsc -Parameters @{
+            Root = $TestDrive; Names = $Names; Expected = $Expected; Unknown = $Unknown; Failure = $Failure; ErrorLike = $ErrorLike
+        } {
+            param($Root, $Names, $Expected, $Unknown, $Failure, $ErrorLike)
+            $fixtureParent = $Root
+            $fixtureNames = $Names
+            $fixtureUpper = Join-Path $Root 'Foo'
+            $fixtureLower = Join-Path $Root 'foo'
+            Mock Get-ChildItem {
+                if ($Failure -eq 'Enumeration') { throw [UnauthorizedAccessException]::new('fixture directory access denied') }
+                foreach ($name in $fixtureNames) { [pscustomobject]@{ Name = $name } }
+            } -ParameterFilter { $LiteralPath -ceq $fixtureParent -and $Force }
+            Mock Get-Item {
+                if ($LiteralPath -ceq $fixtureLower -and $Failure -eq 'Lookup') { throw [IO.FileNotFoundException]::new('fixture entry missing') }
+                if ($Failure -eq 'EmptyLookup') { return }
+                [pscustomobject]@{ Name = [IO.Path]::GetFileName($LiteralPath); FullName = $LiteralPath }
+            } -ParameterFilter { ($LiteralPath -ceq $fixtureUpper -or $LiteralPath -ceq $fixtureLower) -and $Force }
+            $invoke = { Test-DscSymbolicLinkTarget -LinkPath (Join-Path $fixtureParent 'link') -ActualTarget $fixtureUpper -DesiredTarget $fixtureLower }
+            if ($Unknown) {
+                $values = [System.Collections.Generic.List[object]]::new()
+                $failureRecord = $null
+                try { & $invoke | ForEach-Object { $values.Add($_) } } catch { $failureRecord = $_ }
+                $values.Count | Should -Be 0
+                $failureRecord.FullyQualifiedErrorId | Should -BeLike 'DscSymbolicLinkComparisonUnknown*'
+                $failureRecord.Exception.Message | Should -BeLike '*Cannot determine symbolic-link target case equivalence*'
+                $failureRecord.Exception.InnerException | Should -Not -BeNullOrEmpty
+                $failureRecord.Exception.InnerException.Message | Should -BeLike $ErrorLike
+            } else {
+                & $invoke | Should -Be $Expected
+            }
+            Should -Invoke Get-ChildItem -Times 1 -Exactly -ParameterFilter { $LiteralPath -ceq $fixtureParent -and $Force }
+            Should -Invoke New-DscSymbolicLink -Times 0 -Exactly
+        }
+    }
+
+    It 'checks differing parent components instead of folding an entire path' {
+        InModuleScope Shmuelie.Dsc -Parameters @{ Root = $TestDrive } {
+            param($Root)
+            $fixtureParent = $Root
+            $fixtureUpper = Join-Path $Root 'Folder'
+            $fixtureLower = Join-Path $Root 'folder'
+            Mock Get-ChildItem { @([pscustomobject]@{ Name = 'Folder' }, [pscustomobject]@{ Name = 'folder' }) } -ParameterFilter { $LiteralPath -ceq $fixtureParent }
+            Mock Get-Item { [pscustomobject]@{ FullName = $LiteralPath } } -ParameterFilter { $LiteralPath -ceq $fixtureUpper -or $LiteralPath -ceq $fixtureLower }
+            Test-DscSymbolicLinkTarget -LinkPath (Join-Path $Root 'link') -ActualTarget (Join-Path $fixtureUpper 'same') -DesiredTarget (Join-Path $fixtureLower 'same') | Should -BeFalse
+        }
+    }
+
+    It 'normalizes Windows drive-letter syntax without assuming directory case behavior' -Skip:(-not $IsWindows) {
+        InModuleScope Shmuelie.Dsc -Parameters @{ Root = $TestDrive } {
+            param($Root)
+            $target = Join-Path $Root 'missing'
+            $lowerDrive = $target.Substring(0, 1).ToLowerInvariant() + $target.Substring(1)
+            Test-DscSymbolicLinkTarget -LinkPath (Join-Path $Root 'link') -ActualTarget $target -DesiredTarget $lowerDrive | Should -BeTrue
+            Should -Invoke Get-Item -Times 0 -Exactly
+            Should -Invoke Get-ChildItem -Times 0 -Exactly
+        }
+    }
+
+    It 'uses canonical parent spelling for subsequent case comparisons' {
+        InModuleScope Shmuelie.Dsc -Parameters @{ Root = $TestDrive } {
+            param($Root)
+            $fixtureRoot = $Root
+            $fixtureParent = Join-Path $Root 'Folder'
+            $fixtureAlias = Join-Path $Root 'folder'
+            $fixtureUpper = Join-Path $fixtureParent 'Leaf'
+            $fixtureLower = Join-Path $fixtureParent 'leaf'
+            Mock Get-ChildItem { [pscustomobject]@{ Name = 'Folder' } } -ParameterFilter { $LiteralPath -ceq $fixtureRoot }
+            Mock Get-ChildItem { [pscustomobject]@{ Name = 'Leaf' } } -ParameterFilter { $LiteralPath -ceq $fixtureParent }
+            Mock Get-Item { [pscustomobject]@{ FullName = $LiteralPath } } -ParameterFilter {
+                $LiteralPath -cin @($fixtureParent, $fixtureAlias, $fixtureUpper, $fixtureLower)
+            }
+            Test-DscSymbolicLinkTarget -LinkPath (Join-Path $Root 'link') -ActualTarget $fixtureUpper -DesiredTarget (Join-Path $fixtureAlias 'leaf') | Should -BeTrue
+            Should -Invoke Get-ChildItem -Times 2 -Exactly
+        }
+    }
+}
+
+Describe 'SymbolicLink owned filesystem' -Tag 'DscSymbolicLink' {
+    BeforeEach {
+        $script:linkFixture = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
+        $script:ownedLinks = [System.Collections.Generic.List[string]]::new()
+        $null = [IO.Directory]::CreateDirectory($script:linkFixture)
+        $script:fixtureTarget = Join-Path $script:linkFixture 'CaseTarget.txt'
+        [IO.File]::WriteAllText($script:fixtureTarget, 'owned target')
+        $script:fixtureLower = Join-Path $script:linkFixture 'casetarget.txt'
+        $script:fixtureCaseSensitive = -not [IO.File]::Exists($script:fixtureLower)
+
+        function New-OwnedFileLink {
+            param([string]$Name, [string]$Target)
+            $path = Join-Path $script:linkFixture $Name
+            $absoluteTarget = [IO.Path]::GetFullPath($Target, $script:linkFixture)
+            if (-not $absoluteTarget.StartsWith($script:linkFixture + [IO.Path]::DirectorySeparatorChar, [StringComparison]::Ordinal)) {
+                throw 'Fixture link target escaped its owned root.'
+            }
+            $script:ownedLinks.Add($path)
+            try { $null = [IO.File]::CreateSymbolicLink($path, $Target) }
+            catch {
+                $exception = $_.Exception
+                while ($exception.InnerException) { $exception = $exception.InnerException }
+                if ($IsWindows -and $exception.HResult -eq -2147023582) {
+                    Set-ItResult -Skipped -Because 'Windows denied symbolic-link creation; no elevation or settings change is allowed.'
+                } else { throw }
+            }
+            return $path
+        }
+
+        function Get-OwnedLinkCompliance {
+            param([string]$Path, [string]$Target)
+            InModuleScope Shmuelie.Dsc -Parameters @{ Path = $Path; Target = $Target } {
+                param($Path, $Target)
+                ([SymbolicLink]@{ Path = $Path; Target = $Target }).Test()
+            }
+        }
+    }
+
+    AfterEach {
+        foreach ($path in $script:ownedLinks) {
+            if ([IO.Path]::GetDirectoryName($path) -cne $script:linkFixture) { throw 'Refusing out-of-scope fixture cleanup.' }
+            [IO.File]::Delete($path)
+        }
+        foreach ($item in Get-ChildItem -LiteralPath $script:linkFixture -Recurse -Force) {
+            if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Unexpected fixture reparse point remains.' }
+        }
+        Remove-Item -LiteralPath $script:linkFixture -Recurse -Force -ErrorAction Stop
+        Test-Path -LiteralPath $script:linkFixture | Should -BeFalse
+    }
+
+    It 'accepts a real relative target and its absolute representation without changing the link' {
+        $link = New-OwnedFileLink -Name 'link' -Target 'CaseTarget.txt'
+        $before = (Get-Item -LiteralPath $link).Target
+        Get-OwnedLinkCompliance -Path $link -Target $script:fixtureTarget | Should -BeTrue
+        Get-OwnedLinkCompliance -Path $link -Target 'CaseTarget.txt' | Should -BeTrue
+        (Get-Item -LiteralPath $link).Target | Should -BeExactly $before
+        [IO.File]::ReadAllText($script:fixtureTarget) | Should -BeExactly 'owned target'
+    }
+
+    It 'proves equivalence on an actually case-insensitive directory' {
+        if ($script:fixtureCaseSensitive) { Set-ItResult -Skipped -Because 'Owned fixture is case-sensitive.' }
+        [IO.File]::ReadAllText($script:fixtureLower) | Should -BeExactly 'owned target'
+        @([IO.Directory]::EnumerateFiles($script:linkFixture)).Count | Should -Be 1
+        $link = New-OwnedFileLink -Name 'link' -Target $script:fixtureTarget
+        Get-OwnedLinkCompliance -Path $link -Target $script:fixtureLower | Should -BeTrue
+    }
+
+    It 'rejects distinct actual case-sensitive entries' -Tag 'DscSymbolicLinkCaseSensitive' {
+        if (-not $script:fixtureCaseSensitive) { Set-ItResult -Skipped -Because 'Owned fixture is case-insensitive; this case requires the portable CI filesystem.' }
+        [IO.File]::WriteAllText($script:fixtureLower, 'different owned target')
+        [IO.File]::ReadAllText($script:fixtureTarget) | Should -BeExactly 'owned target'
+        [IO.File]::ReadAllText($script:fixtureLower) | Should -BeExactly 'different owned target'
+        @([IO.Directory]::EnumerateFiles($script:linkFixture)).Count | Should -Be 2
+        $link = New-OwnedFileLink -Name 'link' -Target $script:fixtureTarget
+        Get-OwnedLinkCompliance -Path $link -Target $script:fixtureLower | Should -BeFalse
+        Get-OwnedLinkCompliance -Path $link -Target $script:fixtureTarget | Should -BeTrue
+    }
+
+    It 'errors rather than guessing when only the wrong-case target exists' -Tag 'DscSymbolicLinkCaseSensitive' {
+        if (-not $script:fixtureCaseSensitive) { Set-ItResult -Skipped -Because 'Owned fixture is case-insensitive; this case requires the portable CI filesystem.' }
+        $link = New-OwnedFileLink -Name 'link' -Target $script:fixtureTarget
+        { Get-OwnedLinkCompliance -Path $link -Target $script:fixtureLower } | Should -Throw '*Cannot determine symbolic-link target case equivalence*'
+        (Get-Item -LiteralPath $link).Target | Should -BeExactly $script:fixtureTarget
+    }
+
+    It 'accepts exact dangling names but errors for differently cased dangling names' {
+        $link = New-OwnedFileLink -Name 'link' -Target 'Missing.txt'
+        Get-OwnedLinkCompliance -Path $link -Target (Join-Path $script:linkFixture 'Missing.txt') | Should -BeTrue
+        { Get-OwnedLinkCompliance -Path $link -Target (Join-Path $script:linkFixture 'missing.txt') } | Should -Throw '*Cannot determine symbolic-link target case equivalence*'
+        (Get-Item -LiteralPath $link -Force).Target | Should -BeExactly 'Missing.txt'
+    }
+
+    It 'does not equate distinct immediate symlink chains to the same final file' {
+        $first = New-OwnedFileLink -Name 'first' -Target $script:fixtureTarget
+        $second = New-OwnedFileLink -Name 'second' -Target $script:fixtureTarget
+        $link = New-OwnedFileLink -Name 'link' -Target $first
+        Get-OwnedLinkCompliance -Path $link -Target $second | Should -BeFalse
+    }
+
+    It 'does not equate different hard-link names for the same file' {
+        $second = Join-Path $script:linkFixture 'other-name.txt'
+        $null = New-Item -ItemType HardLink -Path $second -Target $script:fixtureTarget -ErrorAction Stop
+        [IO.File]::WriteAllText($second, 'shared hard-link content')
+        [IO.File]::ReadAllText($script:fixtureTarget) | Should -BeExactly 'shared hard-link content'
+        $link = New-OwnedFileLink -Name 'link' -Target $script:fixtureTarget
+        Get-OwnedLinkCompliance -Path $link -Target $second | Should -BeFalse
     }
 }
 
