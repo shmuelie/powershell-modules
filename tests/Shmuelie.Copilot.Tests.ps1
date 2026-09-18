@@ -221,6 +221,7 @@ Describe 'Merge-CopilotSession' {
             '|---|-------|------|'
             '| 9 | Older checkpoint | checkpoint-9.json |'
         )
+        Set-Content -LiteralPath (Join-Path $earlierPath 'checkpoints' 'checkpoint-9.json') -Value '{"checkpoint":"older"}'
 
         $merged = Merge-CopilotSession -Id $laterSession, $earlierSession -Confirm:$false
 
@@ -840,6 +841,262 @@ Describe 'Merge-CopilotSession artifact collisions' {
         Get-Content -LiteralPath $canaryFile | Should -Be 'Synthetic canary'
         (Get-Item -LiteralPath $link -Force -ErrorAction Stop).LinkTarget | Should -BeExactly $target
         @(Get-ChildItem -LiteralPath $script:CollisionRoot -Directory).Name | Sort-Object | Should -Be ($script:CollisionIds | Sort-Object)
+    }
+}
+
+Describe 'Merge-CopilotSession checkpoint bodies' {
+    BeforeAll {
+        function Set-CheckpointBodyFixture {
+            param([int]$Source, [string]$FileName, [string]$Content, [int]$Number = 9)
+            $directory = Join-Path $script:CheckpointPaths[$Source] 'checkpoints'
+            $body = Join-Path $directory $FileName
+            New-Item -ItemType Directory -Path (Split-Path $body -Parent) -Force -ErrorAction Stop | Out-Null
+            Set-Content -LiteralPath $body -Value $Content -NoNewline -ErrorAction Stop
+            Set-Content -LiteralPath (Join-Path $directory 'index.md') -Value @(
+                '# Checkpoint History'
+                '| # | Title | File |'
+                '|---|-------|------|'
+                "| $Number | Checkpoint $Source | $FileName |"
+            ) -ErrorAction Stop
+        }
+    }
+
+    BeforeEach {
+        $testHome = Join-Path $TestDrive ([guid]::NewGuid().ToString())
+        $script:CheckpointRoot = Join-Path $testHome '.copilot' 'session-state'
+        $workspace = Join-Path $testHome 'workspace'
+        New-Item -ItemType Directory -Path $script:CheckpointRoot, $workspace -Force -ErrorAction Stop | Out-Null
+        Mock -ModuleName Shmuelie.Copilot Get-CopilotHome {
+            if (-not $testHome -or -not [IO.Directory]::Exists($testHome)) { throw 'Synthetic Copilot home is unavailable.' }
+            $testHome
+        }
+        Mock -ModuleName Shmuelie.Copilot Get-Command { throw 'Unexpected native command discovery.' }
+        $script:CheckpointIds = @('e1111111-1111-1111-1111-111111111111', 'f2222222-2222-2222-2222-222222222222')
+        $script:CheckpointPaths = @(
+            foreach ($i in 0, 1) {
+                $start = ([datetimeoffset]'2026-08-20T20:00:00Z').AddMinutes($i)
+                $path = New-CopilotSessionState -SessionRoot $script:CheckpointRoot -Id $script:CheckpointIds[$i] -Cwd $workspace -Summary "Checkpoint source $i" -UpdatedAt $start.ToString('o')
+                Set-CopilotTestEvents -SessionPath $path -Lines (New-CopilotTestConversationEvents -Prefix "checkpoint-$i" -SessionId $script:CheckpointIds[$i] -Count 1 -Start $start)
+                $path
+            }
+        )
+        Set-CheckpointBodyFixture -Source 0 -FileName 'checkpoint-a.md' -Content 'First checkpoint payload' -Number 9
+        Set-CheckpointBodyFixture -Source 1 -FileName 'checkpoint-b.json' -Content '{"checkpoint":"second"}' -Number 3
+    }
+
+    It 'copies bodies and preserves renumbered references with RemoveSource=<RemoveSources>' -ForEach @(
+        @{ RemoveSources = $false }
+        @{ RemoveSources = $true }
+    ) {
+        $before = Get-AtomicMergeSourceSnapshot -Path $script:CheckpointPaths
+        $expected = @(
+            @{ Name = 'checkpoint-a.md'; Hash = (Get-FileHash -LiteralPath (Join-Path $script:CheckpointPaths[0] 'checkpoints' 'checkpoint-a.md')).Hash }
+            @{ Name = 'checkpoint-b.json'; Hash = (Get-FileHash -LiteralPath (Join-Path $script:CheckpointPaths[1] 'checkpoints' 'checkpoint-b.json')).Hash }
+        )
+
+        $merged = Merge-CopilotSession -Id $script:CheckpointIds -RemoveSource:$RemoveSources -Confirm:$false -ErrorAction Continue
+
+        $index = @(Get-Content -LiteralPath (Join-Path $merged.Path 'checkpoints' 'index.md'))
+        $index | Should -Contain '| 1 | Checkpoint 0 | checkpoint-a.md |'
+        $index | Should -Contain '| 2 | Checkpoint 1 | checkpoint-b.json |'
+        foreach ($body in $expected) {
+            (Get-FileHash -LiteralPath (Join-Path $merged.Path 'checkpoints' $body.Name)).Hash | Should -BeExactly $body.Hash
+        }
+        if ($RemoveSources) {
+            foreach ($path in $script:CheckpointPaths) { Test-Path -LiteralPath $path | Should -BeFalse }
+        } else {
+            Get-AtomicMergeSourceSnapshot -Path $script:CheckpointPaths | Should -BeExactly $before
+        }
+    }
+
+    It 'preserves identical bodies without treating differing indexes as collisions' {
+        foreach ($i in 0, 1) { Set-CheckpointBodyFixture -Source $i -FileName 'shared.md' -Content 'Identical payload' -Number (9 - $i) }
+
+        $merged = Merge-CopilotSession -Id $script:CheckpointIds -RemoveSource -Confirm:$false
+
+        Get-Content -LiteralPath (Join-Path $merged.Path 'checkpoints' 'shared.md') -Raw | Should -BeExactly 'Identical payload'
+        $index = @(Get-Content -LiteralPath (Join-Path $merged.Path 'checkpoints' 'index.md'))
+        $index | Should -Contain '| 1 | Checkpoint 0 | shared.md |'
+        $index | Should -Contain '| 2 | Checkpoint 1 | shared.md |'
+        Test-Path -LiteralPath (Join-Path $merged.Path 'checkpoints' 'checkpoint-a.md') | Should -BeTrue
+        Test-Path -LiteralPath (Join-Path $merged.Path 'checkpoints' 'checkpoint-b.json') | Should -BeTrue
+    }
+
+    It 'rejects checkpoint <Kind> conflicts with sources intact' -ForEach @(
+        @{ Kind = 'different body contents' }
+        @{ Kind = 'file then directory' }
+        @{ Kind = 'directory then file' }
+        @{ Kind = 'nested index body contents' }
+    ) {
+        $name = if ($Kind -eq 'nested index body contents') { Join-Path 'nested' 'index.md' } else { 'shared.md' }
+        foreach ($i in 0, 1) { Set-CheckpointBodyFixture -Source $i -FileName $name -Content "Source $i" }
+        if ($Kind -in 'file then directory', 'directory then file') {
+            $directorySource = if ($Kind -eq 'file then directory') { 1 } else { 0 }
+            $path = Join-Path $script:CheckpointPaths[$directorySource] 'checkpoints' $name
+            Remove-Item -LiteralPath $path -ErrorAction Stop
+            New-Item -ItemType Directory -Path $path -ErrorAction Stop | Out-Null
+            Set-Content -LiteralPath (Join-Path $path 'child.txt') -Value 'Directory payload' -ErrorAction Stop
+        }
+        $before = Get-AtomicMergeSourceSnapshot -Path $script:CheckpointPaths
+
+        { Merge-CopilotSession -Id $script:CheckpointIds -RemoveSource -Confirm:$false -ErrorAction Continue } |
+            Should -Throw '*artifact path conflict*'
+
+        Get-AtomicMergeSourceSnapshot -Path $script:CheckpointPaths | Should -BeExactly $before
+        @(Get-ChildItem -LiteralPath $script:CheckpointRoot -Directory).Name | Sort-Object | Should -Be ($script:CheckpointIds | Sort-Object)
+    }
+
+    It 'preserves literal nested file references without rewriting them' {
+        Set-CheckpointBodyFixture -Source 0 -FileName 'nested/checkpoint[1].md' -Content 'Literal nested payload'
+
+        $merged = Merge-CopilotSession -Id $script:CheckpointIds -RemoveSource -Confirm:$false
+
+        @(Get-Content -LiteralPath (Join-Path $merged.Path 'checkpoints' 'index.md')) |
+            Should -Contain '| 1 | Checkpoint 0 | nested/checkpoint[1].md |'
+        Get-Content -LiteralPath (Join-Path $merged.Path 'checkpoints' 'nested' 'checkpoint[1].md') -Raw |
+            Should -BeExactly 'Literal nested payload'
+    }
+
+    It 'rejects a missing indexed body and removes only the partial destination' {
+        Remove-Item -LiteralPath (Join-Path $script:CheckpointPaths[1] 'checkpoints' 'checkpoint-b.json') -ErrorAction Stop
+        $before = Get-AtomicMergeSourceSnapshot -Path $script:CheckpointPaths
+
+        { Merge-CopilotSession -Id $script:CheckpointIds -RemoveSource -Confirm:$false -ErrorAction Continue } |
+            Should -Throw '*Checkpoint body*not found*'
+
+        Get-AtomicMergeSourceSnapshot -Path $script:CheckpointPaths | Should -BeExactly $before
+        @(Get-ChildItem -LiteralPath $script:CheckpointRoot -Directory).Name | Sort-Object | Should -Be ($script:CheckpointIds | Sort-Object)
+    }
+
+    It 'rejects unsupported reference <Reference> without reading outside the fixture' -ForEach @(
+        @{ Reference = '../escape.md' }
+        @{ Reference = '..\escape.md' }
+        @{ Reference = '.. \escape.md' }
+        @{ Reference = 'nested.\body.md' }
+        @{ Reference = '/outside.md' }
+        @{ Reference = 'C:\outside.md' }
+        @{ Reference = 'body.md:stream' }
+        @{ Reference = 'index.md' }
+        @{ Reference = '[body](body.md)' }
+    ) {
+        Set-Content -LiteralPath (Join-Path $script:CheckpointPaths[0] 'checkpoints' 'index.md') -Value "| 1 | Unsupported | $Reference |" -ErrorAction Stop
+        $before = Get-AtomicMergeSourceSnapshot -Path $script:CheckpointPaths
+
+        { Merge-CopilotSession -Id $script:CheckpointIds -RemoveSource -Confirm:$false -ErrorAction Continue } |
+            Should -Throw '*Unsupported checkpoint body reference*'
+
+        Get-AtomicMergeSourceSnapshot -Path $script:CheckpointPaths | Should -BeExactly $before
+        @(Get-ChildItem -LiteralPath $script:CheckpointRoot -Directory).Name | Sort-Object | Should -Be ($script:CheckpointIds | Sort-Object)
+    }
+
+    It 'rejects unsupported index format <Content>' -ForEach @(
+        @{ Content = '| 1 | Missing file column |' }
+        @{ Content = '| 1 | Empty file column |   |' }
+        @{ Content = '| # | Title | Different format |' }
+        @{ Content = '{"checkpoints":[]}' }
+    ) {
+        Set-Content -LiteralPath (Join-Path $script:CheckpointPaths[0] 'checkpoints' 'index.md') -Value $Content -ErrorAction Stop
+        $before = Get-AtomicMergeSourceSnapshot -Path $script:CheckpointPaths
+
+        { Merge-CopilotSession -Id $script:CheckpointIds -RemoveSource -Confirm:$false -ErrorAction Continue } |
+            Should -Throw '*Unsupported checkpoint index*'
+
+        Get-AtomicMergeSourceSnapshot -Path $script:CheckpointPaths | Should -BeExactly $before
+        @(Get-ChildItem -LiteralPath $script:CheckpointRoot -Directory).Name | Sort-Object | Should -Be ($script:CheckpointIds | Sort-Object)
+    }
+
+    It 'rejects a checkpoint <Entry> link, including the collision-excluded index' -ForEach @(
+        @{ Entry = 'checkpoint-a.md' }
+        @{ Entry = 'index.md' }
+    ) {
+        $canary = Join-Path $testHome 'canary.txt'
+        Set-Content -LiteralPath $canary -Value 'Synthetic canary' -ErrorAction Stop
+        $link = Join-Path $script:CheckpointPaths[0] 'checkpoints' $Entry
+        Remove-Item -LiteralPath $link -ErrorAction Stop
+        [IO.File]::CreateSymbolicLink($link, $canary) | Out-Null
+        $before = Get-AtomicMergeSourceSnapshot -Path $script:CheckpointPaths
+
+        { Merge-CopilotSession -Id $script:CheckpointIds -RemoveSource -Confirm:$false -ErrorAction Continue } |
+            Should -Throw '*reparse point*'
+
+        Get-AtomicMergeSourceSnapshot -Path $script:CheckpointPaths | Should -BeExactly $before
+        Get-Content -LiteralPath $canary | Should -Be 'Synthetic canary'
+    }
+
+    It 'aborts a real checkpoint-body copy failure before any source removal' -Skip:(-not $IsWindows) {
+        $before = Get-AtomicMergeSourceSnapshot -Path $script:CheckpointPaths
+        $locked = Join-Path $script:CheckpointPaths[0] 'checkpoints' 'checkpoint-a.md'
+        $handle = [IO.File]::Open($locked, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+        $failure = $null
+        try {
+            try { Merge-CopilotSession -Id $script:CheckpointIds -RemoveSource -Confirm:$false -ErrorAction Continue | Out-Null }
+            catch { $failure = $_ }
+        } finally { $handle.Dispose() }
+
+        $failure.FullyQualifiedErrorId | Should -Match 'Copy'
+        Get-AtomicMergeSourceSnapshot -Path $script:CheckpointPaths | Should -BeExactly $before
+        @(Get-ChildItem -LiteralPath $script:CheckpointRoot -Directory).Name | Sort-Object | Should -Be ($script:CheckpointIds | Sort-Object)
+    }
+
+    It 'rejects a successful-looking <CopyResult> checkpoint copy' -ForEach @(
+        @{ CopyResult = 'missing'; Message = '*Checkpoint body*not found*' }
+        @{ CopyResult = 'corrupt'; Message = '*artifact path conflict*' }
+    ) {
+        $before = Get-AtomicMergeSourceSnapshot -Path $script:CheckpointPaths
+        Mock -ModuleName Shmuelie.Copilot Copy-Item {
+            if (-not $Destination.StartsWith($script:CheckpointRoot + [IO.Path]::DirectorySeparatorChar)) { throw 'Unexpected copy destination.' }
+            if ($CopyResult -eq 'corrupt') {
+                Microsoft.PowerShell.Management\Set-Content -LiteralPath (Join-Path $Destination 'checkpoint-a.md') -Value 'Corrupt body'
+                Microsoft.PowerShell.Management\Set-Content -LiteralPath (Join-Path $Destination 'checkpoint-b.json') -Value 'Corrupt body'
+            }
+        } -ParameterFilter { [IO.Path]::GetFileName($Destination) -eq 'checkpoints' }
+
+        { Merge-CopilotSession -Id $script:CheckpointIds -RemoveSource -Confirm:$false -ErrorAction Continue } | Should -Throw $Message
+
+        Get-AtomicMergeSourceSnapshot -Path $script:CheckpointPaths | Should -BeExactly $before
+        @(Get-ChildItem -LiteralPath $script:CheckpointRoot -Directory).Name | Sort-Object | Should -Be ($script:CheckpointIds | Sort-Object)
+    }
+
+    It 'validates the generated index read-back before source deletion' {
+        $before = Get-AtomicMergeSourceSnapshot -Path $script:CheckpointPaths
+        Mock -ModuleName Shmuelie.Copilot Set-Content {
+            if (-not $LiteralPath.StartsWith($script:CheckpointRoot + [IO.Path]::DirectorySeparatorChar)) { throw 'Unexpected index destination.' }
+            Microsoft.PowerShell.Management\Set-Content -LiteralPath $LiteralPath -Value '| 1 | Changed | absent.md |'
+        } -ParameterFilter { [IO.Path]::GetFileName($LiteralPath) -eq 'index.md' }
+
+        { Merge-CopilotSession -Id $script:CheckpointIds -RemoveSource -Confirm:$false -ErrorAction Continue } |
+            Should -Throw '*checkpoint index*read-back validation*'
+
+        Get-AtomicMergeSourceSnapshot -Path $script:CheckpointPaths | Should -BeExactly $before
+        @(Get-ChildItem -LiteralPath $script:CheckpointRoot -Directory).Name | Sort-Object | Should -Be ($script:CheckpointIds | Sort-Object)
+    }
+
+    It 'rejects an incomplete copy even when only an unindexed body is missing' {
+        Set-Content -LiteralPath (Join-Path $script:CheckpointPaths[0] 'checkpoints' 'unindexed.md') -Value 'Unindexed payload' -ErrorAction Stop
+        $before = Get-AtomicMergeSourceSnapshot -Path $script:CheckpointPaths
+        Mock -ModuleName Shmuelie.Copilot Copy-Item {
+            if (-not $Destination.StartsWith($script:CheckpointRoot + [IO.Path]::DirectorySeparatorChar)) { throw 'Unexpected copy destination.' }
+            Microsoft.PowerShell.Management\Copy-Item -LiteralPath (Join-Path $script:CheckpointPaths[0] 'checkpoints' 'checkpoint-a.md') -Destination $Destination -Force -ErrorAction Stop
+            Microsoft.PowerShell.Management\Copy-Item -LiteralPath (Join-Path $script:CheckpointPaths[1] 'checkpoints' 'checkpoint-b.json') -Destination $Destination -Force -ErrorAction Stop
+        } -ParameterFilter { [IO.Path]::GetFileName($Destination) -eq 'checkpoints' }
+
+        { Merge-CopilotSession -Id $script:CheckpointIds -RemoveSource -Confirm:$false -ErrorAction Continue } |
+            Should -Throw '*Merged artifact*unindexed.md*missing*'
+
+        Get-AtomicMergeSourceSnapshot -Path $script:CheckpointPaths | Should -BeExactly $before
+        @(Get-ChildItem -LiteralPath $script:CheckpointRoot -Directory).Name | Sort-Object | Should -Be ($script:CheckpointIds | Sort-Object)
+    }
+
+    It 'does not copy or modify checkpoints during WhatIf' {
+        $before = Get-AtomicMergeSourceSnapshot -Path $script:CheckpointPaths
+        Mock -ModuleName Shmuelie.Copilot Copy-Item { throw 'Unexpected checkpoint copy.' }
+
+        $result = Merge-CopilotSession -Id $script:CheckpointIds -RemoveSource -WhatIf
+
+        $result | Should -BeNullOrEmpty
+        Should -Invoke -ModuleName Shmuelie.Copilot Copy-Item -Times 0 -Exactly
+        Get-AtomicMergeSourceSnapshot -Path $script:CheckpointPaths | Should -BeExactly $before
+        @(Get-ChildItem -LiteralPath $script:CheckpointRoot -Directory).Name | Sort-Object | Should -Be ($script:CheckpointIds | Sort-Object)
     }
 }
 

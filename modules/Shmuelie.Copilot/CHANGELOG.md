@@ -7,6 +7,11 @@ Versions change only when a release is cut; unreleased work stays under
 ## [Unreleased]
 
 ### Fixed
+- `Merge-CopilotSession` now preserves checkpoint bodies alongside the merged
+  index, retaining file references while renumbering rows. The generated root
+  index is excluded from body collision checks; differing bodies and type
+  conflicts still abort. Missing/unsupported references, failed copies, and
+  index/body read-back failures terminate before any source is removed.
 - `Merge-CopilotSession` now preflights files, research, and rewind backup paths
   and aborts conflicting merges before creating a destination or removing any
   sources. Overlapping files with different contents and file/directory conflicts

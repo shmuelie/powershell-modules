@@ -5,12 +5,23 @@ function Assert-CopilotMergeArtifactPaths {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][object[]]$Session,
-        [Parameter(Mandatory)][string[]]$RelativeDirectory
+        [Parameter(Mandatory)][string[]]$RelativeDirectory,
+        [string[]]$ExcludeRelativeFile = @(),
+        # The last session is the destination for complete read-back validation.
+        [switch]$RequireCompleteDestination
     )
 
     # Compare overlapping paths consistently, including case-only variants.
     $seen = [System.Collections.Generic.Dictionary[string, object]]::new([StringComparer]::OrdinalIgnoreCase)
+    $excluded = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($file in $ExcludeRelativeFile) { [void]$excluded.Add(($file -split '[\\/]' -join [IO.Path]::DirectorySeparatorChar)) }
+    if ($RequireCompleteDestination -and $Session.Count -lt 2) {
+        throw 'Complete artifact validation requires source sessions followed by the destination session.'
+    }
+    $destinationPaths = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    $sessionNumber = 0
     foreach ($source in $Session) {
+        $sessionNumber++
         $sessionRoot = Get-Item -LiteralPath $source.Path -Force -ErrorAction Stop
         if ($sessionRoot.Attributes -band [IO.FileAttributes]::ReparsePoint) {
             throw "Cannot inspect merge artifacts for session '$($source.Id)': '$($sessionRoot.FullName)' is a reparse point."
@@ -50,6 +61,10 @@ function Assert-CopilotMergeArtifactPaths {
                         throw "Cannot inspect merge artifact '$($entry.FullName)': it is a reparse point."
                     }
                     $relativePath = [IO.Path]::GetRelativePath($sessionRoot.FullName, $entry.FullName)
+                    if (-not $entry.PSIsContainer -and $excluded.Contains($relativePath)) { continue }
+                    if ($RequireCompleteDestination -and $sessionNumber -eq $Session.Count) {
+                        [void]$destinationPaths.Add($relativePath)
+                    }
                     if ($seen.ContainsKey($relativePath)) {
                         $previous = $seen[$relativePath]
                         $compatible = $previous.Directory -and $entry.PSIsContainer
@@ -85,6 +100,48 @@ function Assert-CopilotMergeArtifactPaths {
             }
         }
     }
+    if ($RequireCompleteDestination) {
+        foreach ($relativePath in $seen.Keys) {
+            if (-not $destinationPaths.Contains($relativePath)) {
+                throw "Merged artifact '$relativePath' is missing from destination session '$($Session[-1].Id)'."
+            }
+        }
+    }
+}
+
+function Resolve-CopilotCheckpointBodyPath {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$CheckpointDirectory,
+        [Parameter(Mandatory)][string]$Reference
+    )
+
+    $parts = $Reference -split '[\\/]'
+    if ([IO.Path]::IsPathRooted($Reference) -or $Reference.Contains(':') -or
+        '' -in $parts -or '.' -in $parts -or '..' -in $parts -or
+        ($parts | Where-Object { $_.EndsWith('.') -or $_.EndsWith(' ') }) -or
+        $Reference -match '^\[.*\]\(.*\)$' -or
+        ($parts.Count -eq 1 -and $parts[0] -ieq 'index.md')) {
+        throw "Unsupported checkpoint body reference '$Reference': use a plain relative path beneath the checkpoints directory, not the merged index."
+    }
+
+    $item = Get-Item -LiteralPath $CheckpointDirectory -Force -ErrorAction Stop
+    if (-not $item.PSIsContainer -or $item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+        throw "Unsupported checkpoint directory '$CheckpointDirectory'."
+    }
+    foreach ($part in $parts) {
+        if (-not $item.PSIsContainer) { throw "Unsupported checkpoint body reference '$Reference': a parent path is not a directory." }
+        $path = Join-Path $item.FullName $part
+        if (-not (Test-Path -LiteralPath $path -ErrorAction Stop)) {
+            throw "Checkpoint body '$Reference' was not found beneath '$CheckpointDirectory'."
+        }
+        $item = Get-Item -LiteralPath $path -Force -ErrorAction Stop
+        if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+            throw "Unsupported checkpoint body reference '$Reference': '$path' is a reparse point."
+        }
+    }
+    if ($item -isnot [IO.FileInfo]) { throw "Checkpoint body '$Reference' is not a regular file." }
+    $item.FullName
 }
 
 function Merge-CopilotSession {
@@ -107,6 +164,11 @@ function Merge-CopilotSession {
         directories with compatible descendants are allowed. Artifact links and
         reparse points are rejected rather than traversed. No artifacts are
         automatically renamed and no references are rewritten.
+
+        Checkpoint bodies are copied alongside the merged index. The existing
+        three-column checkpoint table uses plain relative file paths; only its
+        checkpoint numbers are rewritten. Missing bodies, unsupported references,
+        conflicting bodies, or failed copy/read-back validation abort the merge.
 
         Required source reads and destination operations fail the merge even with
         -ErrorAction Continue. Source removal starts only after destination
@@ -202,8 +264,8 @@ function Merge-CopilotSession {
         $ErrorActionPreference = 'Stop'
 
         Assert-CopilotMergeArtifactPaths -Session $collectedSessions -RelativeDirectory @(
-            'files', 'research', (Join-Path 'rewind-snapshots' 'backups')
-        )
+            'files', 'research', (Join-Path 'rewind-snapshots' 'backups'), 'checkpoints'
+        ) -ExcludeRelativeFile (Join-Path 'checkpoints' 'index.md')
 
         # Use the most recently updated session for workspace metadata
         $primary = $collectedSessions | Sort-Object UpdatedAt -Descending | Select-Object -First 1
@@ -294,12 +356,43 @@ function Merge-CopilotSession {
             '|---|-------|------|'
         )
         $checkpointRows = [System.Collections.Generic.List[string]]::new()
+        $checkpointReferences = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
         foreach ($s in ($collectedSessions | Sort-Object { $_.UpdatedAt })) {
-            $cpFile = Join-Path $s.Path 'checkpoints' 'index.md'
-            if (Test-Path $cpFile) {
-                Get-Content $cpFile | Where-Object { $_ -match '^\|\s*\d+' } | ForEach-Object {
-                    $checkpointRows.Add($_)
+            $checkpointDirectory = Join-Path $s.Path 'checkpoints'
+            $cpFile = Join-Path $checkpointDirectory 'index.md'
+            if (Test-Path -LiteralPath $cpFile) {
+                if ((Get-Item -LiteralPath $cpFile -Force) -isnot [IO.FileInfo]) {
+                    throw "Unsupported checkpoint index '$cpFile': expected a regular file."
                 }
+                $indexLines = @(Get-Content -LiteralPath $cpFile)
+                $recognizedIndex = $false
+                foreach ($line in $indexLines) {
+                    if ($line -match '^\|\s*#\s*\|\s*Title\s*\|\s*File\s*\|\s*$') {
+                        $recognizedIndex = $true
+                        continue
+                    }
+                    if ($line -match '^\|\s*:?-+:?\s*\|\s*:?-+:?\s*\|\s*:?-+:?\s*\|\s*$') { continue }
+                    if ($line -notmatch '^\s*\|') { continue }
+                    if ($line -notmatch '^\|\s*\d+\s*\|[^|]*\|(?<file>[^|]+)\|\s*$') {
+                        throw "Unsupported checkpoint index row in '$cpFile': expected '# | Title | File' with a plain file path."
+                    }
+                    $reference = $Matches['file'].Trim()
+                    if ([string]::IsNullOrWhiteSpace($reference)) {
+                        throw "Unsupported checkpoint index row in '$cpFile': the File path must not be empty."
+                    }
+                    Resolve-CopilotCheckpointBodyPath -CheckpointDirectory $checkpointDirectory -Reference $reference | Out-Null
+                    $checkpointRows.Add($line)
+                    [void]$checkpointReferences.Add($reference)
+                    $recognizedIndex = $true
+                }
+                if (-not $recognizedIndex -and ($indexLines | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })) {
+                    throw "Unsupported checkpoint index format in '$cpFile': expected a checkpoint table."
+                }
+            }
+            if (Test-Path -LiteralPath $checkpointDirectory) {
+                Get-ChildItem -LiteralPath $checkpointDirectory -Force |
+                    Where-Object Name -INE 'index.md' |
+                    Copy-Item -Destination (Join-Path $newSessionPath 'checkpoints') -Recurse -Force
             }
         }
         # Renumber checkpoints
@@ -309,7 +402,17 @@ function Merge-CopilotSession {
             $cpNumber++
             $_ -replace '^\|\s*\d+', "| $currentNumber"
         }
-        ($checkpointHeader + $renumbered) | Set-Content (Join-Path $newSessionPath 'checkpoints' 'index.md') -Encoding UTF8
+        $mergedCheckpointIndex = Join-Path $newSessionPath 'checkpoints' 'index.md'
+        $expectedCheckpointIndex = $checkpointHeader + @($renumbered)
+        $expectedCheckpointIndex | Set-Content -LiteralPath $mergedCheckpointIndex -Encoding UTF8
+        if ([string]::Join("`n", @(Get-Content -LiteralPath $mergedCheckpointIndex)) -cne [string]::Join("`n", $expectedCheckpointIndex)) {
+            throw "Merged checkpoint index '$mergedCheckpointIndex' failed read-back validation."
+        }
+        foreach ($reference in $checkpointReferences) {
+            Resolve-CopilotCheckpointBodyPath -CheckpointDirectory (Join-Path $newSessionPath 'checkpoints') -Reference $reference | Out-Null
+        }
+        Assert-CopilotMergeArtifactPaths -Session (@($collectedSessions.ToArray()) + [pscustomobject]@{ Id = $newId; Path = $newSessionPath }) `
+            -RelativeDirectory 'checkpoints' -ExcludeRelativeFile (Join-Path 'checkpoints' 'index.md') -RequireCompleteDestination
 
         # Merge rewind-snapshots
         Write-Progress -Activity $activity -Status 'Merging rewind snapshots' -PercentComplete 65 -Id 1
