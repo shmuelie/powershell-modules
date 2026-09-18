@@ -3,18 +3,20 @@ function Invoke-InLocation {
     [CmdletBinding()]
     param(
         [Alias('Path')]
-        [ValidateScript({ Test-Path $_ })]
+        [ValidateScript({ Test-Path -Path $_ -PathType Container })]
         [string]$Location,
         [Alias('Process')]
         [scriptblock]$ScriptBlock
     )
     begin {
-        Push-Location -Path $Location
+        $locationPushed = $false
+        Push-Location -Path $Location -ErrorAction Stop
+        $locationPushed = $true
     }
     process {
         & $ScriptBlock
     }
     clean {
-        Pop-Location
+        if ($locationPushed) { Pop-Location }
     }
 }
