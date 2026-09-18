@@ -13,6 +13,10 @@ Versions change only when a release is cut; unreleased work stays under
   dependencies remain in Windows; the AppInstallManager support hold is unchanged.
 
 ### Fixed
+- `New-SubstDrive` rejects ambiguous `-TargetPath` resolutions instead of mapping
+  the first match. Targets must resolve to exactly one FileSystem directory,
+  including under `-WhatIf`; single-match wildcards and confirmation behavior
+  are unchanged.
 - `Get-ServiceProcess` no longer resolves PIDs from stopped, start/stop-pending,
   or unknown native service states. Only the four Win32-guaranteed states use
   the PID from the same status snapshot; unavailable snapshots retain the

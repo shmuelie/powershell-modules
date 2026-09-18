@@ -164,6 +164,19 @@ Describe 'Windows-only guards' {
     }
 }
 
+Describe 'New-SubstDrive target resolution (hermetic)' -Skip:(-not $IsWindows) {
+    It 'requires one directory before reaching the fake mapping boundary' {
+        $fixture = Join-Path $PSScriptRoot 'fixtures' 'Test-SubstTarget.ps1'
+        $output = & pwsh -NoProfile -NonInteractive -File $fixture
+        $LASTEXITCODE | Should -Be 0 -Because ($output -join "`n")
+        $result = ($output -join "`n") | ConvertFrom-Json -ErrorAction Stop
+        $result.Failed | Should -Be 0
+        $result.Passed | Should -Be 28
+        @($result.Cases | Where-Object { -not $_.Passed }) | Should -HaveCount 0
+        $result.OwnedRootRemoved | Should -BeTrue
+    }
+}
+
 Describe 'New-SubstDrive validation' -Skip:(-not $IsWindows) {
     It 'rejects invalid drive letters without creating a mapping' -ForEach @(
         @{ DriveLetter = '1' }

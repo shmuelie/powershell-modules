@@ -28,6 +28,16 @@ AppInstallManager development is isolated in the repository-local
 It is not included in this module or published to the Gallery. Existing
 `Get-AppInstallerApp` and `Update-AppInstallerApp` commands remain here.
 
+## Subst target paths
+
+`New-SubstDrive -TargetPath` must resolve to exactly one existing FileSystem
+directory. Wildcards remain supported when they match a single directory;
+multiple matches produce a terminating `AmbiguousTargetPath` error instead of
+mapping the first result. This validation also applies under `-WhatIf`, before
+checking the drive letter's availability or requesting confirmation. Ambiguous
+targets create no mapping and emit no success object. Missing targets, files,
+and non-FileSystem providers remain invalid.
+
 ## Service process results
 
 `Get-ServiceProcess` uses a process ID only when the same
