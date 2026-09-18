@@ -59,6 +59,7 @@ $ExecutionContext.SessionState.Module.OnRemove = {
                 Build = Join-Path $build 'Build-Module.ps1'
                 Source = $source
                 Manifest = Join-Path $source "$Module.psd1"
+                Version = (Import-PowerShellDataFile -LiteralPath (Join-Path $source "$Module.psd1")).ModuleVersion
                 Loader = Join-Path $source "$Module.psm1"
             }
         }
@@ -114,10 +115,10 @@ $ExecutionContext.SessionState.Module.OnRemove = {
     ) {
         $fixture = New-LiteralBuildFixture -RepositoryName $RepositoryName
         $output = Join-Path $script:caseRoot $OutputName
-        $stage = Join-Path $output 'Shmuelie.Dsc' '0.1.0'
+        $stage = Join-Path $output 'Shmuelie.Dsc' $fixture.Version
         $sentinels = @(
-            New-BuildSentinel (Join-Path $script:caseRoot 'output-a' 'Shmuelie.Dsc' '0.1.0')
-            New-BuildSentinel (Join-Path $script:caseRoot 'output-b' 'Shmuelie.Dsc' '0.1.0')
+            New-BuildSentinel (Join-Path $script:caseRoot 'output-a' 'Shmuelie.Dsc' $fixture.Version)
+            New-BuildSentinel (Join-Path $script:caseRoot 'output-b' 'Shmuelie.Dsc' $fixture.Version)
             New-BuildSentinel (Join-Path $script:caseRoot 'repo-a' 'modules' 'Shmuelie.Dsc')
             New-BuildSentinel (Join-Path $script:caseRoot 'repo-b' 'modules' 'Shmuelie.Dsc')
             New-BuildSentinel (Join-Path $output 'Shmuelie.Dsc' '9.9.9')
@@ -194,7 +195,7 @@ $ExecutionContext.SessionState.Module.OnRemove = {
         $fixture = New-LiteralBuildFixture
         $output = Join-Path $script:caseRoot 'output-[ab]'
         $null = [System.IO.Directory]::CreateDirectory((Join-Path $output 'Shmuelie.Dsc'))
-        $stage = Join-Path $output 'Shmuelie.Dsc' '0.1.0'
+        $stage = Join-Path $output 'Shmuelie.Dsc' $fixture.Version
         Set-Content -LiteralPath $stage -Value 'not a build directory'
         $hash = (Get-FileHash -LiteralPath $stage).Hash
         { & $fixture.Build -Module Shmuelie.Dsc -OutputPath $output } | Should -Throw '*ordinary filesystem directory*'
@@ -206,7 +207,7 @@ $ExecutionContext.SessionState.Module.OnRemove = {
         Push-Location -LiteralPath $script:caseRoot
         try {
             $artifact = & $fixture.Build -Module Shmuelie.Dsc -OutputPath (Join-Path '.' 'output-[ab]')
-            $artifact.FullName | Should -BeExactly (Join-Path $script:caseRoot 'output-[ab]' 'Shmuelie.Dsc' '0.1.0')
+            $artifact.FullName | Should -BeExactly (Join-Path $script:caseRoot 'output-[ab]' 'Shmuelie.Dsc' $fixture.Version)
         } finally {
             Pop-Location
         }
@@ -247,7 +248,7 @@ if ((Get-Module -Name Issue257FixtureDependency).Version -ne [version]'1.2.3') {
             Join-Path $fixture.Source 'linked-content'
         } else {
             $null = [System.IO.Directory]::CreateDirectory((Join-Path $output 'Shmuelie.Dsc'))
-            Join-Path $output 'Shmuelie.Dsc' '0.1.0'
+            Join-Path $output 'Shmuelie.Dsc' $fixture.Version
         }
         $linkType = if ($IsWindows) { 'Junction' } else { 'SymbolicLink' }
         New-Item -Path $link -ItemType $linkType -Target $target -ErrorAction Stop | Out-Null
@@ -267,7 +268,7 @@ if ((Get-Module -Name Issue257FixtureDependency).Version -ne [version]'1.2.3') {
         $repositoryName = if ($Affected) { 'repo-[ab]' } else { 'repo' }
         $fixture = New-LiteralBuildFixture -RepositoryName $repositoryName
         $output = Join-Path $script:caseRoot 'output'
-        $sentinel = New-BuildSentinel (Join-Path $output 'Shmuelie.Dsc' '0.1.0')
+        $sentinel = New-BuildSentinel (Join-Path $output 'Shmuelie.Dsc' $fixture.Version)
         $temp = Join-Path $script:caseRoot 'temp-[ab]'
         $null = [System.IO.Directory]::CreateDirectory($temp)
         foreach ($name in 'TEMP', 'TMP', 'TMPDIR') {
