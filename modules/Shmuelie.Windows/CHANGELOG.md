@@ -17,6 +17,11 @@ Versions change only when a release is cut; unreleased work stays under
   the first match. Targets must resolve to exactly one FileSystem directory,
   including under `-WhatIf`; single-match wildcards and confirmation behavior
   are unchanged.
+- `Get-ServiceProcess` no longer resolves PIDs from stopped, start/stop-pending,
+  or unknown native service states. Only the four Win32-guaranteed states use
+  the PID from the same status snapshot; unavailable snapshots retain the
+  existing zero-PID/null-process result instead of exposing an actionable
+  process. Valid-state lookup, shared-host output, and configuration are unchanged.
 - `Get-InstalledApplications` now dispatches all accepted `-Scope` casing
   variants consistently. Lowercase, uppercase, and mixed-case values query the
   same scopes as their canonical spellings instead of silently returning an
