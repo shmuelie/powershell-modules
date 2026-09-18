@@ -202,6 +202,25 @@ repair, and read-back complete without errors. `-WhatIf` creates or removes
 nothing. Merge failure handling does not change the caller's error-action
 preference.
 
+### Checkpoint bodies
+
+Checkpoint files are copied with their existing relative paths, including nested
+and unindexed files. The root `checkpoints/index.md` is generated from the source
+indexes rather than copied, so it is excluded from body collisions; checkpoint
+bodies still use the same differing-content/type conflict policy.
+
+The supported index is the existing `# | Title | File` Markdown table, with a
+plain relative file path in each numbered row's File column. Only row numbers are
+renumbered; titles and file references are preserved. Markdown-link file syntax,
+rooted/parent-traversal/drive-qualified paths, components ending in dots or spaces,
+references to the generated index, missing bodies, non-file bodies, and links are
+rejected. Unsupported table rows or index formats also fail explicitly.
+
+Before source removal, the generated index is read back, each retained reference
+must resolve to a regular destination file, and all checkpoint entries (including
+unindexed files) must be present. Copied content is checked against the sources
+using the shared SHA-256 collision validation.
+
 ## MCP configuration management
 
 `Register-CopilotMcpServer` and `Unregister-CopilotMcpServer` delegate to the

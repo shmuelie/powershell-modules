@@ -6,6 +6,13 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+### Fixed
+- Recover readable manifest prerelease labels before treating numeric module
+  directories as stable when XML version metadata is missing or unreadable.
+  Preserve recoverable XML versions, repository provenance, and dynamic-manifest
+  fallback, so stable promotion and newer prereleases also report correctly
+  through the package-management adapter.
+
 ## [0.6.0] - 2026-09-10
 
 ### Added
