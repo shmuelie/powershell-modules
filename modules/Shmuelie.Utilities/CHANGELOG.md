@@ -6,6 +6,8 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-09-18
+
 ### Fixed
 - Reject non-container `Invoke-InLocation` targets and stop before invoking the
   callback if location entry fails, even under `Continue`. Pair cleanup only with

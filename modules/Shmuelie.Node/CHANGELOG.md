@@ -6,6 +6,8 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-09-18
+
 ### Fixed
 - Validate `Update-NpmPackage` registry names before native invocation, including
   local/global and property-bound pipeline input, so package-name data cannot
