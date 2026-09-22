@@ -451,6 +451,11 @@ Register-ArgumentCompleter -CommandName $gitCmdNames -Native -ScriptBlock {
     }
 
     $completions | ForEach-Object {
-        [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_)
+        $completionText = if ($_ -match '[^\w./:=+-]') {
+            "'" + [System.Management.Automation.Language.CodeGeneration]::EscapeSingleQuotedStringContent($_) + "'"
+        } else {
+            $_
+        }
+        [System.Management.Automation.CompletionResult]::new($completionText, $_, 'ParameterValue', $_)
     }
 }

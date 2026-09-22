@@ -63,6 +63,16 @@ predictor owned by the caller is left loaded and registered.
 Suggestions use substring (not prefix) matching, so a middle fragment like `wim`
 surfaces `user/alex/wim-work`.
 
+## Native Git tab completion
+
+Importing the module registers context-aware argument completion for `git`.
+File paths, refs and other values containing PowerShell-sensitive characters
+are inserted as single-quoted literal arguments, with embedded apostrophes
+escaped. Spaces, dollar signs and backticks remain part of the value rather than
+splitting arguments or introducing PowerShell expressions. Completion lists still
+display the original names; simple names and option completions remain unquoted.
+Completion only queries Git and never executes the suggested command.
+
 ## Worktree creation: navigation and migration
 
 **Breaking change:** `New-Worktree` and `Add-Worktree` now enter the successfully

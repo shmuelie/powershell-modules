@@ -6,6 +6,12 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+### Fixed
+- Native Git tab completion inserts shell-sensitive filenames and refs as one
+  literal PowerShell argument, preserving spaces, apostrophes, dollar signs and
+  backticks without evaluation. Display names, simple completions, options and
+  existing Git status parsing are unchanged. (#264)
+
 ## [0.10.2] - 2026-09-18
 
 ### Fixed
