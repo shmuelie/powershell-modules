@@ -24,6 +24,16 @@ Start-Copilot
 | Marketplaces | `Get-CopilotMarketplace`, `Register-CopilotMarketplace`, `Unregister-CopilotMarketplace`, `Get-CopilotMarketplacePlugin` |
 | MCP servers | `Get-CopilotMcpServer`, `Register-CopilotMcpServer`, `Unregister-CopilotMcpServer` (registration/removal protect symlink-managed configuration) |
 
+`Get-CopilotPlugin`, `Get-CopilotMarketplace`, and `Get-CopilotMarketplacePlugin`
+check the native exit code before parsing output. A failed discovery emits a
+PowerShell error containing the exit code and CLI diagnostics, with no objects
+from that invocation; use `-ErrorAction Stop` to terminate a pipeline. Missing or
+invalid native completion evidence is a failure, not a successful empty list. Successful
+empty inventories emit neither objects nor errors. Discovery preserves the
+caller's `$LASTEXITCODE` and console encoding. `Install-CopilotPlugin` and
+`Register-CopilotMarketplace` terminate if their existing-item discovery fails,
+even under `-ErrorAction Continue`, rather than proceeding with a mutation.
+
 Compression and file-backed event repair require a successful `.bak` backup before
 rewriting events, unless `-NoBackup` is explicitly supplied. Backup copies are
 staged beside the event file before replacing the prior backup. A failed backup
