@@ -21,7 +21,7 @@ Install-PSResource Shmuelie.Dsc
 | `SavePSResource` | `Name` | Check a saved module's manifest/layout and save missing content via `Save-PSResource` (defaults to `PSGallery`). |
 | `SymbolicLink` | `Path` | Create/verify a symbolic link to a target path. |
 | `CopilotPlugin` | `Source` | Install a GitHub Copilot CLI plugin (`owner/repo`, `plugin@marketplace`, or URL). |
-| `CopilotMarketplace` | `Name` | Register a GitHub Copilot CLI plugin marketplace (`owner/repo`). |
+| `CopilotMarketplace` | `Name` | Register a GitHub Copilot CLI plugin marketplace from `Repository` (`owner/repo`, URL, or local path), using its manifest name as the identity. |
 | `UvTool` | `Name` | Install a Python tool via `uv tool install`. |
 
 ## Usage
@@ -49,8 +49,8 @@ These are DSC v3 resources, addressed as `Shmuelie.Dsc/<ResourceName>`:
 - name: Register a Copilot marketplace
   type: Shmuelie.Dsc/CopilotMarketplace
   properties:
-    Name: dotnet-skills
-    Repository: dotnet/skills
+    Name: team-tools # The name declared in the source's marketplace.json
+    Repository: example-org/plugin-catalog
 
 - name: Install a uv tool
   type: Shmuelie.Dsc/UvTool
@@ -72,6 +72,19 @@ These are DSC v3 resources, addressed as `Shmuelie.Dsc/<ResourceName>`:
   not success.
   Native exit tracking is reset per invocation and the caller's previous value
   and color environment are restored. These checks do not install anything.
+- **`CopilotMarketplace` source and identity.** `Set()` passes `Repository`
+  unchanged as the single source in `copilot plugin marketplace add <source>`.
+  `Name` must match the actual name declared by that source's `marketplace.json`
+  and shown in the CLI's marketplace list, even when it differs from the
+  repository or directory name. The CLI does not accept a custom local name;
+  `Name` is the key for `Test()` and `Get()`, not an argument to registration.
+  For the example above, the manifest must declare `"name": "team-tools"`.
+  With that identity configured, registration makes the presence check pass.
+  A different `Name` leaves `Test()` and `Get().Installed` false after
+  registration: correct the configured identity rather than reapplying to
+  rename it. Presence does not verify repository provenance or replace the
+  source of an existing same-named registration. See the public
+  [CLI plugin reference](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-plugin-reference#cli-commands).
 - **`CopilotPlugin` URL sources.** The installed plugin name is derived from
   `Source` for `owner/repo`, `plugin@marketplace`, and `market:plugin@marketplace`
   forms. For a URL source the name cannot be derived reliably — set the optional
