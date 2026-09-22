@@ -12,6 +12,19 @@ Versions change only when a release is cut; unreleased work stays under
   replace or mask real metadata. Renaming retains the full multiline text,
   existing field indentation, and line-ending style; discovery and filters keep
   the recorded branch, working directory, and timestamps. (#285)
+- `Get-CopilotLaunchPlan` and `Start-Copilot` now apply `-ChangeDir` / `-C`
+  before session, branch, and MCP path-policy planning. Relative paths resolve
+  from the caller's location and normal plans forward an absolute native `-C`
+  path. Invalid directories terminate before launch; planning restores the
+  caller's location even on errors, without changing selection, confirmation,
+  preview, or help/update passthrough contracts. (#283)
+- Plugin and marketplace discovery now reports native failures with exit codes
+  and CLI diagnostics before parsing, supports `-ErrorAction Stop`, and preserves
+  the caller's native exit status and console encoding. Failed discovery emits no
+  inventory objects, unlike successful empty responses which remain error-free.
+  Missing or invalid native completion evidence also fails closed.
+  Install/register existence checks stop on discovery failure instead of mutating
+  based on an apparently empty inventory. (#281)
 
 ## [0.5.0] - 2026-09-18
 

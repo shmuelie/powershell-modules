@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Management.Automation;
+using System.Management.Automation.Language;
 using System.Management.Automation.Runspaces;
 using System.Management.Automation.Subsystem;
 using System.Management.Automation.Subsystem.Prediction;
@@ -129,7 +130,7 @@ public sealed class WorktreeCommandPredictor : ICommandPredictor
             // prefix (command + any switches) is preserved in the emitted suggestion.
             if (partial.Length == 0 || branch.Contains(partial, StringComparison.OrdinalIgnoreCase))
             {
-                suggestions.Add(new PredictiveSuggestion($"{prefix}{branch}"));
+                suggestions.Add(new PredictiveSuggestion($"{prefix}{FormatBranchArgument(branch)}"));
             }
         }
 
@@ -143,6 +144,24 @@ public sealed class WorktreeCommandPredictor : ICommandPredictor
     private static bool StartsWithCommand(string input, string cmd) =>
         input.StartsWith(cmd, StringComparison.OrdinalIgnoreCase) &&
         (input.Length == cmd.Length || char.IsWhiteSpace(input[cmd.Length]));
+
+    private static string FormatBranchArgument(string branch)
+    {
+        // Preserve bare words only when they parse as one unchanged string argument.
+        // This also catches numeric-looking names and PowerShell's Unicode quotes.
+        var ast = Parser.ParseInput($"_ {branch}", out _, out var errors);
+        if (errors.Length == 0 &&
+            ast.EndBlock.Statements.Count == 1 &&
+            ast.EndBlock.Statements[0] is PipelineAst { PipelineElements.Count: 1 } pipeline &&
+            pipeline.PipelineElements[0] is CommandAst { CommandElements.Count: 2, Redirections.Count: 0 } command &&
+            command.CommandElements[1] is StringConstantExpressionAst { StringConstantType: StringConstantType.BareWord } literal &&
+            string.Equals(literal.Value, branch, StringComparison.Ordinal))
+        {
+            return branch;
+        }
+
+        return $"'{CodeGeneration.EscapeSingleQuotedStringContent(branch)}'";
+    }
 
     internal void RefreshCache(string cwd)
     {
