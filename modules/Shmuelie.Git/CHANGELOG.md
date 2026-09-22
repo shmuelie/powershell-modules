@@ -6,6 +6,13 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+### Fixed
+- Worktree predictor suggestions preserve branch names as one literal PowerShell
+  argument, including apostrophes, dollar signs and other shell-sensitive or
+  numeric-looking names. Existing-worktree and checkoutable-branch suggestions
+  retain typed commands, flags, casing, substring matching and ordinary bare
+  branch names. (#266)
+
 ## [0.10.2] - 2026-09-18
 
 ### Fixed
