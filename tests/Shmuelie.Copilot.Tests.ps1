@@ -2626,6 +2626,122 @@ Describe 'Start-Copilot' {
 }
 
 Describe 'Copilot workspace.yaml helpers' {
+    It 'skips block content for exact reads and replacements: <Header>, <Ending>, <IndentName>' -ForEach @(
+        foreach ($header in '|', '|-', '|+', '>', '>-', '>+') {
+            foreach ($ending in @(
+                @{ Name = 'LF'; Value = "`n" }
+                @{ Name = 'CRLF'; Value = "`r`n" }
+                @{ Name = 'CR'; Value = "`r" }
+            )) {
+                foreach ($indent in @(
+                    @{ Name = 'none'; Value = '' }
+                    @{ Name = 'spaces'; Value = '   ' }
+                    @{ Name = 'tab'; Value = "`t" }
+                )) {
+                    @{
+                        Header = $header; NewLine = $ending.Value; Ending = $ending.Name
+                        Indent = $indent.Value; IndentName = $indent.Name
+                    }
+                }
+            }
+        }
+    ) {
+        $fields = [ordered]@{
+            name = 'Real name'
+            summary = 'Real summary'
+            branch = 'main'
+            cwd = '/synthetic/workspace'
+            created_at = '2026-09-01T12:00:00Z'
+            updated_at = '2026-09-02T12:00:00Z'
+            summary_count = '1'
+        }
+        $lines = @(
+            "${Indent}notes: $Header # block header comment"
+            ''
+            "${Indent}    branch: invented"
+            "${Indent}    cwd: /invented"
+            "${Indent}    name: |-"
+            "${Indent}      summary: invented"
+            "${Indent}    "
+            "${Indent}    created_at: not-a-date"
+            "${Indent}    updated_at: not-a-date"
+            "${Indent}    summary_count: 999"
+            "${Indent}    absent: not-metadata"
+            ''
+            foreach ($field in $fields.Keys) { "${Indent}${field}: $($fields[$field])" }
+            ''
+        )
+        $content = $lines -join $NewLine
+
+        InModuleScope Shmuelie.Copilot -Parameters @{
+            Content = $content; Fields = $fields; Indent = $Indent; NewLine = $NewLine
+        } {
+            foreach ($field in $Fields.Keys) {
+                Get-CopilotWorkspaceField -Content $Content -Field $field | Should -BeExactly $Fields[$field]
+                $updated = Set-CopilotWorkspaceField -Content $Content -Field $field -Value 'updated'
+                $updated | Should -BeExactly $Content.Replace("${Indent}${field}: $($Fields[$field])", "${Indent}${field}: updated")
+                Get-CopilotWorkspaceField -Content $updated -Field $field | Should -BeExactly 'updated'
+            }
+            Get-CopilotWorkspaceField -Content $Content -Field 'absent' | Should -BeNullOrEmpty
+            Set-CopilotWorkspaceField -Content $Content -Field 'absent' -Value 'new' | Should -BeExactly $Content
+
+            $multiline = "First line`nbranch: still text`n`nsummary: 'literal quotes'"
+            $updated = Set-CopilotWorkspaceField -Content $Content -Field 'name' -Value $multiline
+            $expectedBlock = @(
+                "${Indent}name: |-"
+                "${Indent}  First line"
+                "${Indent}  branch: still text"
+                "${Indent}  "
+                "${Indent}  summary: 'literal quotes'"
+            ) -join $NewLine
+            $updated | Should -BeExactly $Content.Replace("${Indent}name: Real name", $expectedBlock)
+            Get-CopilotWorkspaceField -Content $updated -Field 'name' | Should -BeExactly $multiline
+            Get-CopilotWorkspaceField -Content $updated -Field 'summary' | Should -BeExactly 'Real summary'
+            Get-CopilotWorkspaceField -Content $updated -Field 'branch' | Should -BeExactly 'main'
+            Set-CopilotWorkspaceField -Content $updated -Field 'name' -Value 'Real name' | Should -BeExactly $Content
+        }
+    }
+
+    It 'replaces only the actual <Header> field after a preceding block' -ForEach @(
+        @{ Header = '|' }
+        @{ Header = '|-' }
+        @{ Header = '|+' }
+        @{ Header = '>' }
+        @{ Header = '>-' }
+        @{ Header = '>+' }
+    ) {
+        $prefix = "notes: >-`n  name: leave this alone`n`n"
+        $content = "${prefix}name: $Header # comment`n`n  old name`n  summary: also old name`n`nsummary: keep`n"
+        InModuleScope Shmuelie.Copilot -Parameters @{ Content = $content; Prefix = $prefix; Header = $Header } {
+            Set-CopilotWorkspaceField -Content $Content -Field 'name' -Value 'new' |
+                Should -BeExactly "${Prefix}name: new`nsummary: keep`n"
+
+            $lastBlock = "notes: $Header`n`n  branch: only text`n"
+            Get-CopilotWorkspaceField -Content $lastBlock -Field 'branch' | Should -BeNullOrEmpty
+            Set-CopilotWorkspaceField -Content $lastBlock -Field 'branch' -Value 'new' | Should -BeExactly $lastBlock
+
+            $emptyBlock = "notes: $Header`n`nbranch: main"
+            Get-CopilotWorkspaceField -Content $emptyBlock -Field 'branch' | Should -BeExactly 'main'
+        }
+    }
+
+    It 'does not treat quoted, plain, or commented scalar indicators as blocks: <Line>' -ForEach @(
+        @{ Line = 'notes: "|-"' }
+        @{ Line = "notes: '>-'" }
+        @{ Line = 'notes: text |-' }
+        @{ Line = '# notes: |-' }
+        @{ Line = 'notes: |suffix' }
+    ) {
+        $content = "$Line`n   branch: main`nsummary: keep"
+        InModuleScope Shmuelie.Copilot -Parameters @{ Content = $content } {
+            Get-CopilotWorkspaceField -Content $Content -Field 'branch' | Should -BeExactly 'main'
+            Set-CopilotWorkspaceField -Content $Content -Field 'branch' -Value 'new' |
+                Should -BeExactly $Content.Replace('   branch: main', '   branch: new')
+            Set-CopilotWorkspaceField -Content $Content -Field 'notes' -Value 'new' |
+                Should -Match ([regex]::Escape("`n   branch: main`nsummary: keep"))
+        }
+    }
+
     It 'reads quoted and plain flow scalars with varied indentation and line endings' -ForEach @(
         @{ Content = 'name: "quoted value"'; Field = 'name'; Expected = 'quoted value' }
         @{ Content = "name: 'It''s fine'"; Field = 'name'; Expected = "It's fine" }
@@ -3136,6 +3252,111 @@ Describe 'Rename-CopilotSession' {
         $content = Get-Content $workspaceFile -Raw
         $content | Should -Match '(?m)^name: Renamed session\r?$'
         $content | Should -Match '(?m)^summary: Renamed session\r?$'
+    }
+
+    It 'preserves metadata and multiline text through rename and discovery: <Ending>, <IndentName>, summary first <SummaryFirst>' -ForEach @(
+        foreach ($ending in @(
+            @{ Name = 'LF'; Value = "`n" }
+            @{ Name = 'CRLF'; Value = "`r`n" }
+            @{ Name = 'CR'; Value = "`r" }
+        )) {
+            foreach ($indent in @(
+                @{ Name = 'none'; Value = '' }
+                @{ Name = 'spaces'; Value = '   ' }
+            )) {
+                foreach ($summaryFirst in $false, $true) {
+                    @{
+                        NewLine = $ending.Value; Ending = $ending.Name
+                        Indent = $indent.Value; IndentName = $indent.Name; SummaryFirst = $summaryFirst
+                    }
+                }
+            }
+        }
+    ) {
+        Mock -ModuleName Shmuelie.Copilot -CommandName Resume-CopilotSession -MockWith { throw 'Unexpected native resume.' }
+        Mock -ModuleName Shmuelie.Copilot -CommandName Start-Copilot -MockWith { throw 'Unexpected native launch.' }
+        $sessionId = '85858585-0000-0000-0000-000000000000'
+        $sessionPath = New-CopilotSessionState -SessionRoot $script:SessionRoot -Id $sessionId -Cwd $script:Workspace -Summary 'Original'
+        $workspaceFile = Join-Path $sessionPath 'workspace.yaml'
+        $displayFields = if ($SummaryFirst) { 'summary', 'name' } else { 'name', 'summary' }
+        $original = @(
+            "${Indent}id: $sessionId"
+            foreach ($field in $displayFields) { "${Indent}${field}: Original" }
+            "${Indent}branch: main"
+            "${Indent}cwd: $script:Workspace"
+            "${Indent}repository: owner/repo"
+            "${Indent}created_at: 2026-09-01T12:00:00Z"
+            "${Indent}updated_at: 2026-09-02T12:00:00Z"
+            "${Indent}summary_count: 1"
+            ''
+        ) -join $NewLine
+        Set-Content -LiteralPath $workspaceFile -Value $original -NoNewline
+        Set-CopilotTestEvents -SessionPath $sessionPath -Lines @(
+            (New-CopilotTestEventLine -Type 'session.start' -Id 'start' -Timestamp '2026-09-01T12:00:00Z' -Data @{ sessionId = $sessionId })
+            (New-CopilotTestEventLine -Type 'user.message' -Id 'user' -Timestamp '2026-09-02T12:00:00Z' -Data @{ content = 'Synthetic event' })
+        )
+        $eventsFile = Join-Path $sessionPath 'events.jsonl'
+        $eventsBefore = [IO.File]::ReadAllBytes($eventsFile)
+        $summaryLines = @(
+            'Review plan'
+            'branch: invented-branch'
+            ''
+            'cwd: /invented'
+            'created_at: not-a-date'
+            'updated_at: not-a-date'
+            'repository: invented/repo'
+            'summary_count: 999'
+            'name: "literal quotes"'
+            "summary: 'literal quotes'"
+            'notes: >-'
+            '  branch: still text'
+        )
+        $summary = $summaryLines -join "`n"
+        $expected = $original
+        foreach ($field in $displayFields) {
+            $block = @(
+                "${Indent}${field}: |-"
+                foreach ($line in $summaryLines) { "${Indent}  $line" }
+            ) -join $NewLine
+            $expected = $expected.Replace("${Indent}${field}: Original", $block)
+        }
+
+        $renamed = Rename-CopilotSession -Id $sessionId -Summary $summary -Confirm:$false
+        $discovered = Get-CopilotSession -Id $sessionId
+        foreach ($session in $renamed, $discovered) {
+            $session.Id | Should -BeExactly $sessionId
+            $session.Name | Should -BeExactly 'Review plan'
+            $session.Summary | Should -BeExactly 'Review plan'
+            $session.Branch | Should -BeExactly 'main'
+            $session.Cwd | Should -BeExactly $script:Workspace
+            $session.Repository | Should -BeExactly 'owner/repo'
+            $session.CreatedAt | Should -Be ([datetimeoffset]'2026-09-01T12:00:00Z')
+            $session.UpdatedAt | Should -Be ([datetimeoffset]'2026-09-02T12:00:00Z')
+            $session.EventCount | Should -Be 2
+        }
+        Get-Content -LiteralPath $workspaceFile -Raw | Should -BeExactly $expected
+        InModuleScope Shmuelie.Copilot -Parameters @{ Path = $workspaceFile; Summary = $summary } {
+            foreach ($field in 'name', 'summary') {
+                Get-CopilotWorkspaceField -Path $Path -Field $field | Should -BeExactly $Summary
+            }
+        }
+        Push-Location -LiteralPath $script:Workspace
+        try {
+            @(Get-CopilotSession).Id | Should -BeExactly $sessionId
+            @(Get-CopilotSession -All -Branch main).Id | Should -BeExactly $sessionId
+            @(Get-CopilotSession -All -Branch invented-branch) | Should -HaveCount 0
+            @(Get-CopilotSession -All -Cwd ([WildcardPattern]::Escape($script:Workspace)) -Repository owner/repo -Summary 'Review*' -UpdatedBefore '2026-09-03T00:00:00Z').Id |
+                Should -BeExactly $sessionId
+            @(Get-CopilotSession -All -Cwd /invented) | Should -HaveCount 0
+        } finally {
+            Pop-Location
+        }
+        [IO.File]::ReadAllBytes($eventsFile) | Should -Be $eventsBefore
+
+        $renamedAgain = Rename-CopilotSession -Id $sessionId -Summary 'Final name' -Confirm:$false
+        $renamedAgain.Branch | Should -BeExactly 'main'
+        Get-Content -LiteralPath $workspaceFile -Raw | Should -BeExactly $original.Replace(': Original', ': Final name')
+        [IO.File]::ReadAllBytes($eventsFile) | Should -Be $eventsBefore
     }
 
     It 'ignores a malicious InputObject Path and never rewrites an external canary' {
