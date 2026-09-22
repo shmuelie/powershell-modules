@@ -10,15 +10,22 @@ namespace Shmuelie.Windows.Cmdlets;
 /// <remarks>
 /// Discovers apps installed from <c>.appinstaller</c> files and re-registers
 /// their App Installer URI through the in-process WinRT <c>PackageManager</c>
-/// API (the equivalent of <c>Add-AppxPackage -AppInstallerFile</c>) to trigger
-/// an update check. Pass one or more package names, full names, or family names
+/// API to trigger an update check. On Windows build 22556 and later, the original
+/// App Installer URI is submitted with deferred registration for in-use main
+/// and dependency packages, taking effect at the application's next activation.
+/// Older supported builds retain the non-forcing App Installer operation and
+/// report in-use errors; they do not gain deferral. No application is implicitly
+/// force-closed or restarted, and failed requests are not retried with other options.
+/// Pass one or more package names, full names, or family names
 /// to update specific apps. A standalone invocation without a name updates
 /// every discovered App Installer app. An empty pipeline updates nothing.
 /// Objects from <c>Get-AppInstallerApp</c> can be piped in by property name;
 /// null, empty, and whitespace-only identities are rejected. Windows only.
 /// With <c>-PassThru</c>, emits a request-completion result only after the
 /// App Installer operation completes. This does not establish that an
-/// installed package version changed. Without <c>-PassThru</c>, emits nothing.
+/// installed package version changed or that registration was deferred.
+/// Completion does not mean the running app was upgraded, nor does process exit
+/// alone establish registration. Without <c>-PassThru</c>, emits nothing.
 /// </remarks>
 [Cmdlet(VerbsData.Update, "AppInstallerApp", SupportsShouldProcess = true)]
 [OutputType(typeof(AppInstallerUpdateRequestResult))]

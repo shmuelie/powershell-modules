@@ -712,6 +712,18 @@ Describe 'AppInstaller compiled selection binding (hermetic)' -Skip:(-not $IsWin
     }
 }
 
+Describe 'AppInstaller compiled deployment routing (hermetic)' -Skip:(-not $IsWindows) {
+    It 'uses the production route and options without activating WinRT' {
+        $fixture = Join-Path $PSScriptRoot 'fixtures' 'Test-AppInstallerDeployment.ps1'
+        $output = & pwsh -NoProfile -NonInteractive -File $fixture -AssemblyDirectory (Join-Path $TestDrive 'deployment')
+        $LASTEXITCODE | Should -Be 0 -Because ($output -join "`n")
+        $result = ($output -join "`n") | ConvertFrom-Json -ErrorAction Stop
+        $result.Failed | Should -Be 0
+        $result.Passed | Should -Be 40
+        @($result.Cases | Where-Object { -not $_.Passed }) | Should -HaveCount 0
+    }
+}
+
 Describe 'AppInstaller compiled request results (hermetic)' -Skip:(-not $IsWindows) {
         BeforeAll {
             if (-not ('AppInstallerTestRuntime' -as [type])) {

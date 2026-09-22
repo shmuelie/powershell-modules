@@ -3158,6 +3158,32 @@ Describe 'AppInstaller package provider' {
             }
         }
 
+        It 'keeps <Failure> explicit without claiming completion or retrying' -ForEach @(
+            @{ Failure = 'legacy application in use'; HResult = -2147009278 }
+            @{ Failure = 'unsupported modern options'; HResult = -2147024809 }
+            @{ Failure = 'asynchronous deployment failure'; HResult = -2147467259 }
+            @{ Failure = 'deployment ExtendedErrorCode'; HResult = -2147024891 }
+        ) {
+            $script:AppInstallerDeploymentError = [System.Runtime.InteropServices.COMException]::new(
+                "Synthetic $Failure.", $HResult)
+            Mock Shmuelie.Windows\Update-AppInstallerApp {
+                param($Name)
+                $script:AppInstallerCalls.Add($Name[0])
+                throw $script:AppInstallerDeploymentError
+            }
+            $result = Update-AllPackages -Provider AppInstaller -Confirm:$false
+            $result.Status | Should -BeExactly Failed
+            $result.Reason | Should -Match ([regex]::Escape($Failure))
+            [object]::ReferenceEquals($result.Error.Exception, $script:AppInstallerDeploymentError) | Should -BeTrue
+            $result.Error.Exception.HResult | Should -Be $HResult
+            $result.ResultingVersion | Should -BeNullOrEmpty
+            $result.PSObject.Properties.Name | Should -Not -Contain RequestCompleted
+            $script:AppInstallerCalls | Should -Be @($script:AppInstallerApps[0].PackageFullName)
+            Should -Invoke Shmuelie.Windows\Update-AppInstallerApp -Times 1 -Exactly -ParameterFilter {
+                $PassThru -and $PesterBoundParameters.ContainsKey('Confirm') -and -not $Confirm -and $ErrorAction -eq 'Stop'
+            }
+        }
+
         It 'preserves absent previous versions as null' {
             $script:AppInstallerApps[0].Version = $null
             $result = Update-AllPackages -Provider AppInstaller -Confirm:$false

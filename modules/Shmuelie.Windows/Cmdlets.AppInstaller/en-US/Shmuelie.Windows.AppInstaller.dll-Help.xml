@@ -1,0 +1,106 @@
+<?xml version="1.0" encoding="utf-8"?>
+<helpItems xmlns="http://msh" schema="maml">
+  <command:command xmlns:maml="http://schemas.microsoft.com/maml/2004/10"
+                   xmlns:command="http://schemas.microsoft.com/maml/dev/command/2004/10"
+                   xmlns:dev="http://schemas.microsoft.com/maml/dev/2004/10">
+    <command:details>
+      <command:name>Update-AppInstallerApp</command:name>
+      <command:verb>Update</command:verb>
+      <command:noun>AppInstallerApp</command:noun>
+      <maml:description>
+        <maml:para>Requests non-forcing updates for applications installed from App Installer files.</maml:para>
+      </maml:description>
+    </command:details>
+    <maml:description>
+      <maml:para>On Windows build 22556 and later, submits the original .appinstaller URI to Windows.Management.Deployment.PackageManager.AddPackageByUriAsync with AddPackageOptions.DeferRegistrationWhenPackagesAreInUse enabled. Windows processes the original App Installer source, update settings and dependencies; the command does not replace the source or rewrite dependency URIs.</maml:para>
+      <maml:para>Registration of in-use main or dependency packages is delayed until the application's next activation. Process exit alone does not establish registration. Both ForceAppShutdown and ForceTargetAppShutdown remain false: applications are not implicitly force-closed or restarted.</maml:para>
+      <maml:para>The API and options exist at build 19041, but support for an App Installer URI starts at build 22556. Older supported builds (19041 through 22555) use AddPackageByAppInstallerFileAsync with AddPackageByAppInstallerOptions.None. This legacy route has no deferred-registration option; ordinary successful requests remain supported, and in-use errors remain explicit. The route is selected before submitting the request. Failed modern requests are not retried through the legacy route or with destructive options.</maml:para>
+      <maml:para>Waits for request completion and propagates asynchronous failures and ExtendedErrorCode. Emits nothing by default. With PassThru, emits only completed update-check requests, preserving the selected pre-request identity and AppInstallerUri. Completion does not establish installation, an upgraded running application, a version change or deferred registration.</maml:para>
+      <maml:para>Selection is exact and case-insensitive. A standalone invocation without Name selects all discovered App Installer applications; an empty pipeline selects nothing. Supplied identities must not be null, empty or whitespace. When piping a complete application object, Name takes precedence over its aliases. Pipe only PackageFullName to select one exact registration.</maml:para>
+      <maml:para>WhatIf may enumerate applications but never submits a deployment request, stages or registers packages. Declined confirmation also submits no request. Unmatched, skipped and failed requests emit no completion result. Windows only; requires build 19041 or later.</maml:para>
+    </maml:description>
+    <command:syntax>
+      <command:syntaxItem>
+        <command:name>Update-AppInstallerApp</command:name>
+        <command:parameter required="false" globbing="false" pipelineInput="true (ByPropertyName)" position="0">
+          <maml:name>Name</maml:name>
+          <command:parameterValue required="true" variableLength="true">String[]</command:parameterValue>
+        </command:parameter>
+        <command:parameter required="false" globbing="false" pipelineInput="false" position="named">
+          <maml:name>PassThru</maml:name>
+        </command:parameter>
+        <command:parameter required="false" globbing="false" pipelineInput="false" position="named">
+          <maml:name>WhatIf</maml:name>
+        </command:parameter>
+        <command:parameter required="false" globbing="false" pipelineInput="false" position="named">
+          <maml:name>Confirm</maml:name>
+        </command:parameter>
+      </command:syntaxItem>
+    </command:syntax>
+    <command:parameters>
+      <command:parameter required="false" globbing="false" pipelineInput="true (ByPropertyName)" position="0" aliases="PackageName,PackageFullName,PackageFamilyName">
+        <maml:name>Name</maml:name>
+        <maml:description>
+          <maml:para>Exact package name, full name or family name. Accepts property-name pipeline input, with PackageName, PackageFullName and PackageFamilyName aliases. Empty pipelines select nothing.</maml:para>
+        </maml:description>
+        <command:parameterValue required="true" variableLength="true">String[]</command:parameterValue>
+        <dev:type><maml:name>System.String[]</maml:name></dev:type>
+        <dev:defaultValue>All discovered applications for standalone calls only</dev:defaultValue>
+      </command:parameter>
+      <command:parameter required="false" globbing="false" pipelineInput="false" position="named">
+        <maml:name>PassThru</maml:name>
+        <maml:description>
+          <maml:para>Emits a request-only result after successful completion: Name, PackageFullName, PackageFamilyName, AppInstallerUri, Operation=UpdateCheck and RequestCompleted=true. No installed version or deferred-status claim is made.</maml:para>
+        </maml:description>
+        <dev:type><maml:name>System.Management.Automation.SwitchParameter</maml:name></dev:type>
+        <dev:defaultValue>False</dev:defaultValue>
+      </command:parameter>
+      <command:parameter required="false" globbing="false" pipelineInput="false" position="named">
+        <maml:name>WhatIf</maml:name>
+        <maml:description><maml:para>Shows the selected requests without submitting them.</maml:para></maml:description>
+        <dev:type><maml:name>System.Management.Automation.SwitchParameter</maml:name></dev:type>
+        <dev:defaultValue>False</dev:defaultValue>
+      </command:parameter>
+      <command:parameter required="false" globbing="false" pipelineInput="false" position="named">
+        <maml:name>Confirm</maml:name>
+        <maml:description><maml:para>Prompts before submitting each selected request.</maml:para></maml:description>
+        <dev:type><maml:name>System.Management.Automation.SwitchParameter</maml:name></dev:type>
+        <dev:defaultValue>False</dev:defaultValue>
+      </command:parameter>
+    </command:parameters>
+    <command:inputTypes>
+      <command:inputType>
+        <dev:type><maml:name>System.Object</maml:name></dev:type>
+        <maml:description><maml:para>Objects with a Name, PackageName, PackageFullName or PackageFamilyName property.</maml:para></maml:description>
+      </command:inputType>
+    </command:inputTypes>
+    <command:returnValues>
+      <command:returnValue>
+        <dev:type><maml:name>Shmuelie.Windows.AppInstallerUpdateRequestResult</maml:name></dev:type>
+        <maml:description><maml:para>Only with PassThru. Request completion is not proof of installation, version change or deferred registration. Without PassThru, no output is emitted.</maml:para></maml:description>
+      </command:returnValue>
+    </command:returnValues>
+    <command:examples>
+      <command:example>
+        <maml:title>Example 1: Preview requests for exact registrations</maml:title>
+        <dev:code>Get-AppInstallerApp | Select-Object PackageFullName | Update-AppInstallerApp -PassThru -WhatIf</dev:code>
+        <dev:remarks><maml:para>Performs read-only discovery, but submits no deployment requests and emits no completion results.</maml:para></dev:remarks>
+      </command:example>
+      <command:example>
+        <maml:title>Example 2: Request a non-forcing update</maml:title>
+        <dev:code>Update-AppInstallerApp -Name Example.App -PassThru</dev:code>
+        <dev:remarks><maml:para>Uses deferred registration for in-use packages on build 22556+. Older supported builds retain explicit in-use errors. Output reports request completion only, not when the new version takes effect.</maml:para></dev:remarks>
+      </command:example>
+    </command:examples>
+    <command:relatedLinks>
+      <maml:navigationLink>
+        <maml:linkText>PackageManager.AddPackageByUriAsync</maml:linkText>
+        <maml:uri>https://learn.microsoft.com/uwp/api/windows.management.deployment.packagemanager.addpackagebyuriasync</maml:uri>
+      </maml:navigationLink>
+      <maml:navigationLink>
+        <maml:linkText>AddPackageOptions.DeferRegistrationWhenPackagesAreInUse</maml:linkText>
+        <maml:uri>https://learn.microsoft.com/uwp/api/windows.management.deployment.addpackageoptions.deferregistrationwhenpackagesareinuse</maml:uri>
+      </maml:navigationLink>
+    </command:relatedLinks>
+  </command:command>
+</helpItems>

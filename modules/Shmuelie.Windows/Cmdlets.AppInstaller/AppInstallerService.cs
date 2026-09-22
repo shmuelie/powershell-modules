@@ -64,22 +64,37 @@ internal static class AppInstallerService
     }
 
     /// <summary>
-    /// Re-registers an App Installer file to trigger an update check, the
-    /// in-process equivalent of <c>Add-AppxPackage -AppInstallerFile &lt;uri&gt;</c>.
-    /// Blocks until the deployment operation completes and surfaces any failure
-    /// as an exception.
+    /// Submits the original App Installer file for an update check without
+    /// forcing applications to close. On Windows build 22556 and later, in-use
+    /// package registration is deferred until the application's next activation.
+    /// Blocks until the request completes and surfaces any failure as an exception.
     /// </summary>
     /// <param name="appInstallerUri">The App Installer update URI.</param>
     public static void Update(string appInstallerUri)
+        => Update(appInstallerUri, Environment.OSVersion.Version);
+
+    internal static void Update(string appInstallerUri, Version windowsVersion)
     {
+        if (windowsVersion < new Version(10, 0, 19041))
+        {
+            throw new PlatformNotSupportedException("App Installer updates require Windows build 19041 or later.");
+        }
+
         var manager = new PackageManager();
         var uri = new Uri(appInstallerUri);
 
-        DeploymentResult result = manager
-            .AddPackageByAppInstallerFileAsync(uri, AddPackageByAppInstallerOptions.None, targetVolume: null)
-            .AsTask()
-            .GetAwaiter()
-            .GetResult();
+        // The API exists at 19041, but accepts App Installer URIs only at 22556+.
+        // https://learn.microsoft.com/uwp/api/windows.management.deployment.packagemanager.addpackagebyuriasync
+        var operation = windowsVersion >= new Version(10, 0, 22556)
+            ? manager.AddPackageByUriAsync(uri, new AddPackageOptions
+            {
+                DeferRegistrationWhenPackagesAreInUse = true,
+                ForceAppShutdown = false,
+                ForceTargetAppShutdown = false,
+            })
+            : manager.AddPackageByAppInstallerFileAsync(uri, AddPackageByAppInstallerOptions.None, targetVolume: null);
+
+        DeploymentResult result = operation.AsTask().GetAwaiter().GetResult();
 
         if (result.ExtendedErrorCode is not null)
         {
