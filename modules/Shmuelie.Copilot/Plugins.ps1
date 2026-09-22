@@ -5,6 +5,9 @@ function Get-CopilotPlugin {
     .DESCRIPTION
         Parses the output of 'copilot plugin list' into typed CopilotPlugin objects
         with Name, Marketplace, and Version properties.
+        Native failures write a PowerShell error with the exit code and diagnostics
+        and emit no plugins. Use -ErrorAction Stop to terminate on failure.
+        A successful empty list emits no plugins and no error.
     .PARAMETER Name
         Filter by plugin name. Supports wildcards.
     .EXAMPLE
@@ -23,8 +26,7 @@ function Get-CopilotPlugin {
         [Parameter(Position = 0)]
         [string]$Name = '*'
     )
-    $exe = Resolve-CliExe -Name copilot
-    $output = Invoke-WithUtf8Console { & $exe plugin list 2>&1 }
+    $output = Invoke-CopilotDiscovery -Arguments 'plugin', 'list'
     foreach ($line in $output) {
         if ($line -match '^\s+[•]\s+(.+?)\s+\(v(.+?)\)\s*$') {
             $fullName = $Matches[1]
@@ -144,6 +146,7 @@ function Install-CopilotPlugin {
         Install a Copilot CLI plugin.
     .DESCRIPTION
         Installs a plugin from a GitHub repository, marketplace, or direct URL.
+        If discovery of already-installed plugins fails, terminates without installing.
     .PARAMETER Source
         The plugin source: owner/repo (GitHub), plugin@marketplace, or a URL.
     .PARAMETER InputObject
@@ -184,7 +187,7 @@ function Install-CopilotPlugin {
             $checkName = if ($installSource -match '^(.+)@') { $Matches[1] }
                          elseif ($installSource -match '/([^/#]+)(?:#|$)') { $Matches[1] }
                          else { $installSource }
-            $existing = Get-CopilotPlugin | Where-Object { $_.Name -eq $checkName -or $_.FullName -eq $installSource }
+            $existing = Get-CopilotPlugin -ErrorAction Stop | Where-Object { $_.Name -eq $checkName -or $_.FullName -eq $installSource }
             if ($existing) {
                 Write-Verbose "Plugin '$($existing.FullName)' is already installed."
                 return

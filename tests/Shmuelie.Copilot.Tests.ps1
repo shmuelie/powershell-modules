@@ -1601,6 +1601,404 @@ Describe 'Copilot CLI UTF-8 output parsing' {
     }
 }
 
+Describe 'Copilot discovery native status' -Tag 'CopilotDiscovery' {
+    BeforeAll {
+        $script:DiscoveryRoot = Join-Path $TestDrive 'discovery-native'
+        New-Item -ItemType Directory -Path $script:DiscoveryRoot -Force | Out-Null
+        $script:DiscoveryControl = Join-Path $script:DiscoveryRoot 'responses.json'
+        $script:DiscoveryLog = Join-Path $script:DiscoveryRoot 'calls.log'
+        $handler = Join-Path $script:DiscoveryRoot 'discovery.ps1'
+        Set-Content -LiteralPath $handler -Value @'
+$ErrorActionPreference = 'Stop'
+$command = $args -join ' '
+[IO.File]::AppendAllText((Join-Path $PSScriptRoot 'calls.log'), $command + [Environment]::NewLine)
+$responses = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'responses.json') -Raw | ConvertFrom-Json -AsHashtable
+if (-not $responses.ContainsKey($command)) {
+    [Console]::Error.WriteLine("Unexpected native invocation: $command")
+    exit 97
+}
+$response = $responses[$command]
+[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+[Console]::Out.Write([string]$response.Output)
+[Console]::Error.Write([string]$response.Diagnostics)
+exit $response.ExitCode
+'@
+        $pwsh = (Get-Process -Id $PID).Path
+        if ($IsWindows) {
+            $script:DiscoveryExe = Join-Path $script:DiscoveryRoot 'copilot.cmd'
+            Set-Content -LiteralPath $script:DiscoveryExe -Value @(
+                '@echo off'
+                "`"$($pwsh -replace '"', '""')`" -NoLogo -NoProfile -NonInteractive -File `"$($handler -replace '"', '""')`" %*"
+                'exit /b %ERRORLEVEL%'
+            )
+        } else {
+            $script:DiscoveryExe = Join-Path $script:DiscoveryRoot 'copilot'
+            Set-Content -LiteralPath $script:DiscoveryExe -Value @(
+                '#!/usr/bin/env sh'
+                "exec '$($pwsh -replace '''', '''\''''')' -NoLogo -NoProfile -NonInteractive -File '$($handler -replace '''', '''\''''')' `"`$@`""
+            )
+            & chmod +x $script:DiscoveryExe
+            if ($LASTEXITCODE -ne 0) { throw 'Unable to make the isolated native stub executable.' }
+        }
+
+        function Set-DiscoveryResponses {
+            param([hashtable]$Responses)
+            $Responses | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $script:DiscoveryControl
+        }
+    }
+
+    BeforeEach {
+        $script:DiscoveryPreviousExit = Get-Variable LASTEXITCODE -Scope Global -ErrorAction Ignore
+        $script:DiscoveryPreviousExitValue = if ($script:DiscoveryPreviousExit) { $script:DiscoveryPreviousExit.Value }
+        $script:DiscoveryPreviousNativePreference = $global:PSNativeCommandUseErrorActionPreference
+        $script:DiscoveryPreviousEncoding = [Console]::OutputEncoding
+        $global:LASTEXITCODE = 123
+        $global:PSNativeCommandUseErrorActionPreference = $false
+        [Console]::OutputEncoding = [Text.Encoding]::GetEncoding(28591)
+        Remove-Item -LiteralPath $script:DiscoveryLog -Force -ErrorAction SilentlyContinue
+        Set-DiscoveryResponses @{}
+        Mock -ModuleName Shmuelie.Copilot Resolve-CliExe { $script:DiscoveryExe } -ParameterFilter { $Name -eq 'copilot' }
+        Mock -ModuleName Shmuelie.Copilot Get-CopilotHome { throw 'Discovery must not inspect user configuration.' }
+    }
+
+    AfterEach {
+        [Console]::OutputEncoding = $script:DiscoveryPreviousEncoding
+        $global:PSNativeCommandUseErrorActionPreference = $script:DiscoveryPreviousNativePreference
+        if ($script:DiscoveryPreviousExit) {
+            $global:LASTEXITCODE = $script:DiscoveryPreviousExitValue
+        } else {
+            Remove-Variable LASTEXITCODE -Scope Global -WhatIf:$false -Confirm:$false -ErrorAction SilentlyContinue
+        }
+    }
+
+    Context '<Reader>' -ForEach @(
+        @{
+            Reader = 'Get-CopilotPlugin'; ReaderParameters = @{}; NativeArguments = 'plugin list'
+            Listing = "  • synthetic@curated (v1.2.3)`n"; ResultType = 'CopilotPlugin'
+        }
+        @{
+            Reader = 'Get-CopilotMarketplace'; ReaderParameters = @{}; NativeArguments = 'plugin marketplace list'
+            Listing = "  ◆ synthetic (GitHub: example/marketplace)`n"; ResultType = 'CopilotMarketplace'
+        }
+        @{
+            Reader = 'Get-CopilotMarketplacePlugin'; ReaderParameters = @{ Name = 'curated' }; NativeArguments = 'plugin marketplace browse curated'
+            Listing = "  • synthetic - Synthetic description`n"; ResultType = 'CopilotMarketplaceEntry'
+        }
+    ) {
+        It 'reports failure before parsing with native error preference <NativePreference>' -ForEach @(
+            @{ NativePreference = $false }
+            @{ NativePreference = $true }
+        ) {
+            $global:PSNativeCommandUseErrorActionPreference = $NativePreference
+            Set-DiscoveryResponses @{ $NativeArguments = @{
+                ExitCode = 17; Output = $Listing + "synthetic stdout diagnostic`n"; Diagnostics = "synthetic stderr diagnostic`n"
+            } }
+            $discoveryErrors = @()
+
+            $results = @(& $Reader @ReaderParameters -ErrorAction Continue -ErrorVariable discoveryErrors 2>$null)
+
+            $results | Should -HaveCount 0
+            $discoveryErrors | Should -HaveCount 1
+            $discoveryErrors[0].FullyQualifiedErrorId | Should -BeLike 'CopilotDiscoveryFailed,*'
+            $discoveryErrors[0].Exception.Message | Should -Match ([regex]::Escape("copilot $NativeArguments failed with exit code 17"))
+            $discoveryErrors[0].Exception.Message | Should -Match 'synthetic stdout diagnostic'
+            $discoveryErrors[0].Exception.Message | Should -Match 'synthetic stderr diagnostic'
+            $discoveryErrors[0].TargetObject.ExitCode | Should -Be 17
+            $global:LASTEXITCODE | Should -Be 123
+            $global:PSNativeCommandUseErrorActionPreference | Should -Be $NativePreference
+            [Console]::OutputEncoding.CodePage | Should -Be 28591
+            @(Get-Content -LiteralPath $script:DiscoveryLog) | Should -Be @($NativeArguments)
+        }
+
+        It 'honors ErrorAction Stop with native error preference <NativePreference>' -ForEach @(
+            @{ NativePreference = $false }
+            @{ NativePreference = $true }
+        ) {
+            $global:PSNativeCommandUseErrorActionPreference = $NativePreference
+            Set-DiscoveryResponses @{ $NativeArguments = @{ ExitCode = 17; Output = $Listing; Diagnostics = 'synthetic failure' } }
+
+            { & $Reader @ReaderParameters -ErrorAction Stop } | Should -Throw '*exit code 17*synthetic failure*'
+
+            $global:LASTEXITCODE | Should -Be 123
+            $global:PSNativeCommandUseErrorActionPreference | Should -Be $NativePreference
+            [Console]::OutputEncoding.CodePage | Should -Be 28591
+            @(Get-Content -LiteralPath $script:DiscoveryLog) | Should -Be @($NativeArguments)
+        }
+
+        It 'keeps successful empty output error-free: <OutputKind>' -ForEach @(
+            @{ OutputKind = 'no output'; EmptyOutput = '' }
+            @{ OutputKind = 'empty-list message'; EmptyOutput = 'No entries found.' }
+        ) {
+            Set-DiscoveryResponses @{ $NativeArguments = @{ ExitCode = 0; Output = $EmptyOutput } }
+            $discoveryErrors = @()
+
+            $results = @(& $Reader @ReaderParameters -ErrorAction Stop -ErrorVariable discoveryErrors)
+
+            $results | Should -HaveCount 0
+            $discoveryErrors | Should -HaveCount 0
+            $global:LASTEXITCODE | Should -Be 123
+            [Console]::OutputEncoding.CodePage | Should -Be 28591
+            @(Get-Content -LiteralPath $script:DiscoveryLog) | Should -Be @($NativeArguments)
+        }
+
+        It 'preserves successful typed UTF-8 parsing and the caller exit code' {
+            Set-DiscoveryResponses @{ $NativeArguments = @{ ExitCode = 0; Output = $Listing } }
+
+            $results = @(& $Reader @ReaderParameters -ErrorAction Stop)
+
+            $results | Should -HaveCount 1
+            $results[0].PSTypeNames | Should -Contain $ResultType
+            $results[0].Name | Should -Be 'synthetic'
+            switch ($Reader) {
+                'Get-CopilotPlugin' {
+                    $results[0].FullName | Should -Be 'synthetic@curated'
+                    $results[0].Marketplace | Should -Be 'curated'
+                    $results[0].Version | Should -Be '1.2.3'
+                }
+                'Get-CopilotMarketplace' { $results[0].Repository | Should -Be 'example/marketplace' }
+                'Get-CopilotMarketplacePlugin' {
+                    $results[0].Description | Should -Be 'Synthetic description'
+                    $results[0].Marketplace | Should -Be 'curated'
+                }
+            }
+            $global:LASTEXITCODE | Should -Be 123
+            [Console]::OutputEncoding.CodePage | Should -Be 28591
+        }
+
+        It 'restores an absent global exit code under inherited WhatIf after exit <ExitCode> with <Action>' -ForEach @(
+            @{ ExitCode = 0; Action = 'Continue' }
+            @{ ExitCode = 17; Action = 'Continue' }
+            @{ ExitCode = 0; Action = 'Stop' }
+            @{ ExitCode = 17; Action = 'Stop' }
+        ) {
+            Set-DiscoveryResponses @{ $NativeArguments = @{ ExitCode = $ExitCode; Diagnostics = 'synthetic diagnostic' } }
+            Remove-Variable LASTEXITCODE -Scope Global -WhatIf:$false -Confirm:$false
+
+            $invoke = {
+                $WhatIfPreference = $true
+                $discoveryErrors = @()
+                & $Reader @ReaderParameters -ErrorAction $Action -ErrorVariable discoveryErrors 2>$null
+                $discoveryErrors | Should -HaveCount $(if ($ExitCode -eq 0) { 0 } else { 1 })
+            }
+            if ($ExitCode -ne 0 -and $Action -eq 'Stop') {
+                $invoke | Should -Throw '*exit code 17*synthetic diagnostic*'
+            } else {
+                & $invoke
+            }
+
+            Get-Variable LASTEXITCODE -Scope Global -ErrorAction Ignore | Should -BeNullOrEmpty
+            [Console]::OutputEncoding.CodePage | Should -Be 28591
+            @(Get-Content -LiteralPath $script:DiscoveryLog) | Should -Be @($NativeArguments)
+        }
+
+        It 'reports failures without diagnostics using the exit code' {
+            Set-DiscoveryResponses @{ $NativeArguments = @{ ExitCode = 17 } }
+
+            { & $Reader @ReaderParameters -ErrorAction Stop } | Should -Throw '*failed with exit code 17.*'
+
+            $global:LASTEXITCODE | Should -Be 123
+        }
+
+        It 'rejects <StatusKind> completion evidence before parsing' -ForEach @(
+            @{ StatusKind = 'missing'; NativeStatus = $null }
+            @{ StatusKind = 'string zero'; NativeStatus = '0' }
+            @{ StatusKind = 'Boolean false'; NativeStatus = $false }
+        ) {
+            Mock -ModuleName Shmuelie.Copilot Invoke-WithUtf8Console {
+                [pscustomobject]@{ ExitCode = $NativeStatus; Output = @($Listing, 'synthetic completion diagnostic') }
+            }
+            $discoveryErrors = @()
+
+            @(& $Reader @ReaderParameters -ErrorAction Continue -ErrorVariable discoveryErrors 2>$null) |
+                Should -HaveCount 0
+            $discoveryErrors | Should -HaveCount 1
+            $discoveryErrors[0].FullyQualifiedErrorId | Should -BeLike 'CopilotDiscoveryFailed,*'
+            $discoveryErrors[0].Exception.Message | Should -Match 'unknown native exit status.*'
+            { & $Reader @ReaderParameters -ErrorAction Stop } |
+                Should -Throw '*unknown native exit status*synthetic completion diagnostic*'
+
+            $global:LASTEXITCODE | Should -Be 123
+            Test-Path -LiteralPath $script:DiscoveryLog | Should -BeFalse
+        }
+
+        It 'fails closed and restores state when the resolved executable is missing' {
+            Mock -ModuleName Shmuelie.Copilot Resolve-CliExe {
+                Join-Path $script:DiscoveryRoot 'missing-copilot.exe'
+            } -ParameterFilter { $Name -eq 'copilot' }
+
+            { & $Reader @ReaderParameters -ErrorAction Continue } | Should -Throw '*missing-copilot.exe*'
+
+            $global:LASTEXITCODE | Should -Be 123
+            [Console]::OutputEncoding.CodePage | Should -Be 28591
+            Test-Path -LiteralPath $script:DiscoveryLog | Should -BeFalse
+        }
+
+        It 'restores a present null global exit code without removing the variable' {
+            Set-DiscoveryResponses @{ $NativeArguments = @{ ExitCode = 0 } }
+            $global:LASTEXITCODE = $null
+
+            & $Reader @ReaderParameters -ErrorAction Stop
+
+            $variable = Get-Variable LASTEXITCODE -Scope Global -ErrorAction Stop
+            $variable.Value | Should -BeNullOrEmpty
+        }
+
+        It 'does not confuse a caller-local success status with the native global failure' {
+            Set-DiscoveryResponses @{ $NativeArguments = @{ ExitCode = 17; Diagnostics = 'synthetic failure' } }
+
+            {
+                InModuleScope Shmuelie.Copilot -Parameters @{ Reader = $Reader; ReaderParameters = $ReaderParameters } {
+                    $LASTEXITCODE = 0
+                    & $Reader @ReaderParameters -ErrorAction Stop
+                }
+            } | Should -Throw '*exit code 17*synthetic failure*'
+
+            $global:LASTEXITCODE | Should -Be 123
+        }
+    }
+
+    It 'resets a stale global exit code before invoking the discovery boundary' {
+        Mock -ModuleName Shmuelie.Copilot Invoke-WithUtf8Console {
+            if ($null -ne $global:LASTEXITCODE) { throw 'Discovery did not clear the stale exit code.' }
+            [pscustomobject]@{ ExitCode = 0; Output = @() }
+        }
+
+        @(Get-CopilotPlugin -ErrorAction Stop) | Should -HaveCount 0
+
+        $global:LASTEXITCODE | Should -Be 123
+        Test-Path -LiteralPath $script:DiscoveryLog | Should -BeFalse
+        Should -Invoke -ModuleName Shmuelie.Copilot Invoke-WithUtf8Console -Times 1 -Exactly
+    }
+
+    It 'restores an absent exit code on invocation exceptions under inherited WhatIf' {
+        Mock -ModuleName Shmuelie.Copilot Resolve-CliExe {
+            Join-Path $script:DiscoveryRoot 'missing-copilot.exe'
+        } -ParameterFilter { $Name -eq 'copilot' }
+        Remove-Variable LASTEXITCODE -Scope Global -WhatIf:$false -Confirm:$false
+
+        {
+            $WhatIfPreference = $true
+            Get-CopilotPlugin -ErrorAction Continue
+        } | Should -Throw '*missing-copilot.exe*'
+
+        Get-Variable LASTEXITCODE -Scope Global -ErrorAction Ignore | Should -BeNullOrEmpty
+        [Console]::OutputEncoding.CodePage | Should -Be 28591
+        Test-Path -LiteralPath $script:DiscoveryLog | Should -BeFalse
+    }
+
+    It 'keeps successful discovery-to-update pipelines working' {
+        Set-DiscoveryResponses @{
+            'plugin list' = @{ ExitCode = 0; Output = "  • synthetic@curated (v1.2.3)`n" }
+            'plugin update synthetic@curated' = @{ ExitCode = 0 }
+        }
+
+        $results = @(Get-CopilotPlugin -ErrorAction Stop | Update-CopilotPlugin -Confirm:$false -ErrorAction Stop)
+
+        $results | Should -HaveCount 1
+        $results[0].Name | Should -Be 'synthetic@curated'
+        $results[0].Success | Should -BeTrue
+        @(Get-Content -LiteralPath $script:DiscoveryLog) | Should -Be @('plugin list', 'plugin update synthetic@curated')
+    }
+
+    It 'keeps successful marketplace-to-install pipelines working' {
+        Set-DiscoveryResponses @{
+            'plugin marketplace list' = @{ ExitCode = 0; Output = "  ◆ curated (GitHub: example/marketplace)`n" }
+            'plugin marketplace browse curated' = @{ ExitCode = 0; Output = "  • synthetic - Synthetic description`n" }
+            'plugin list' = @{ ExitCode = 0 }
+            'plugin install synthetic@curated' = @{ ExitCode = 0 }
+        }
+
+        Get-CopilotMarketplace -ErrorAction Stop |
+            Get-CopilotMarketplacePlugin -ErrorAction Stop |
+            Install-CopilotPlugin -Confirm:$false -ErrorAction Stop
+
+        @(Get-Content -LiteralPath $script:DiscoveryLog) | Should -Be @(
+            'plugin marketplace list', 'plugin marketplace browse curated', 'plugin list', 'plugin install synthetic@curated'
+        )
+    }
+
+    It 'never exports its private discovery helper' {
+        (Get-Module Shmuelie.Copilot).ExportedCommands.Keys | Should -Not -Contain 'Invoke-CopilotDiscovery'
+    }
+
+    It 'does not invoke <Consumer> after <Reader> fails' -ForEach @(
+        @{
+            Reader = 'Get-CopilotPlugin'; ReaderParameters = @{}; NativeArguments = 'plugin list'
+            Listing = "  • synthetic@curated (v1.2.3)`n"
+            Consumer = 'Update-CopilotPlugin'; ConsumerParameters = @{ Confirm = $false }
+        }
+        @{
+            Reader = 'Get-CopilotPlugin'; ReaderParameters = @{}; NativeArguments = 'plugin list'
+            Listing = "  • synthetic@curated (v1.2.3)`n"
+            Consumer = 'Uninstall-CopilotPlugin'; ConsumerParameters = @{ Confirm = $false }
+        }
+        @{
+            Reader = 'Get-CopilotMarketplace'; ReaderParameters = @{}; NativeArguments = 'plugin marketplace list'
+            Listing = "  ◆ synthetic (GitHub: example/marketplace)`n"
+            Consumer = 'Get-CopilotMarketplacePlugin'; ConsumerParameters = @{}
+        }
+        @{
+            Reader = 'Get-CopilotMarketplace'; ReaderParameters = @{}; NativeArguments = 'plugin marketplace list'
+            Listing = "  ◆ synthetic (GitHub: example/marketplace)`n"
+            Consumer = 'Unregister-CopilotMarketplace'; ConsumerParameters = @{ Confirm = $false }
+        }
+        @{
+            Reader = 'Get-CopilotMarketplacePlugin'; ReaderParameters = @{ Name = 'curated' }; NativeArguments = 'plugin marketplace browse curated'
+            Listing = "  • synthetic - Synthetic description`n"
+            Consumer = 'Install-CopilotPlugin'; ConsumerParameters = @{ Confirm = $false }
+        }
+    ) {
+        Set-DiscoveryResponses @{ $NativeArguments = @{ ExitCode = 17; Output = $Listing; Diagnostics = 'synthetic failure' } }
+        $discoveryErrors = @()
+
+        $results = @(& $Reader @ReaderParameters -ErrorAction Continue -ErrorVariable discoveryErrors 2>$null |
+            & $Consumer @ConsumerParameters)
+
+        $results | Should -HaveCount 0
+        $discoveryErrors | Should -HaveCount 1
+        @(Get-Content -LiteralPath $script:DiscoveryLog) | Should -Be @($NativeArguments)
+    }
+
+    Context '<Mutation> existence precheck' -ForEach @(
+        @{ Mutation = 'Install-CopilotPlugin'; Discovery = 'plugin list'; NativeMutation = 'plugin install example/marketplace'; Existing = "  • marketplace (v1.0.0)`n" }
+        @{ Mutation = 'Register-CopilotMarketplace'; Discovery = 'plugin marketplace list'; NativeMutation = 'plugin marketplace add example/marketplace'; Existing = "  ◆ synthetic (GitHub: example/marketplace)`n" }
+    ) {
+        It 'terminates on discovery failure even with ErrorAction Continue' {
+            Set-DiscoveryResponses @{ $Discovery = @{ ExitCode = 17; Diagnostics = 'synthetic precheck failure' } }
+
+            { & $Mutation -Source 'example/marketplace' -Confirm:$false -ErrorAction Continue } |
+                Should -Throw '*exit code 17*synthetic precheck failure*'
+
+            @(Get-Content -LiteralPath $script:DiscoveryLog) | Should -Be @($Discovery)
+        }
+
+        It 'still mutates after successful empty discovery' {
+            Set-DiscoveryResponses @{
+                $Discovery = @{ ExitCode = 0 }
+                $NativeMutation = @{ ExitCode = 0 }
+            }
+
+            & $Mutation -Source 'example/marketplace' -Confirm:$false -ErrorAction Stop
+
+            @(Get-Content -LiteralPath $script:DiscoveryLog) | Should -Be @($Discovery, $NativeMutation)
+        }
+
+        It 'still skips an already-present item' {
+            Set-DiscoveryResponses @{ $Discovery = @{ ExitCode = 0; Output = $Existing } }
+
+            & $Mutation -Source 'example/marketplace' -Confirm:$false -ErrorAction Stop
+
+            @(Get-Content -LiteralPath $script:DiscoveryLog) | Should -Be @($Discovery)
+        }
+
+        It 'does not discover or mutate under WhatIf' {
+            & $Mutation -Source 'example/marketplace' -WhatIf -ErrorAction Stop
+
+            Test-Path -LiteralPath $script:DiscoveryLog | Should -BeFalse
+        }
+    }
+}
+
 Describe 'Get-CopilotLaunchPlan' {
     BeforeEach {
         $testHome = Join-Path $TestDrive 'home'
