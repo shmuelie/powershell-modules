@@ -643,18 +643,26 @@ class CopilotPlugin {
 
 .DESCRIPTION
     DSC resource that ensures a Copilot CLI plugin marketplace is registered.
+    Registers Repository as the single source argument to
+    'copilot plugin marketplace add'. The source's marketplace.json name becomes
+    its registered identity; the CLI does not support a custom local name.
     Tests by checking whether the marketplace name appears as a whole token in
-    'copilot plugin marketplace list' output.
+    'copilot plugin marketplace list' output. This is a presence check, not a
+    comparison or replacement of an existing registration's source.
     Failed discovery or unknown native completion raises an error instead of
     reporting the marketplace as registered or absent.
 
     Depends only on the public GitHub Copilot CLI (copilot) on PATH.
 
 .PROPERTY Name
-    The name to register the marketplace under. This is the key property.
+    The actual marketplace name declared in the source's marketplace.json and
+    shown by 'copilot plugin marketplace list'. This is the key property used by
+    Test() and Get(), not a custom alias or a name derived from Repository.
+    If it differs from the source's identity, Test() remains false after Set().
 
 .PROPERTY Repository
-    The GitHub repository hosting the marketplace (owner/repo format).
+    The marketplace source (GitHub owner/repo, URL, or local path). Passed
+    unchanged as the single source argument to 'copilot plugin marketplace add'.
 
 .PROPERTY Installed
     Read-only. Reports whether the marketplace is registered.
@@ -663,8 +671,10 @@ class CopilotPlugin {
     - name: Register a marketplace
       type: Shmuelie.Dsc/CopilotMarketplace
       properties:
-        Name: dotnet-skills
-        Repository: dotnet/skills
+        Name: team-tools
+        Repository: example-org/plugin-catalog
+
+    The source's marketplace.json must declare its name as 'team-tools'.
 #>
 [DscResource()]
 class CopilotMarketplace {
@@ -695,7 +705,7 @@ class CopilotMarketplace {
     [void] Set() {
         Assert-DscSafeArgument -Value $this.Name -Name 'Name'
         Assert-DscSafeArgument -Value $this.Repository -Name 'Repository'
-        $result = Invoke-DscCopilot -Arguments @('plugin', 'marketplace', 'add', $this.Name, $this.Repository)
+        $result = Invoke-DscCopilot -Arguments @('plugin', 'marketplace', 'add', $this.Repository)
         if ($result.ExitCode -ne 0) {
             throw "Failed to register Copilot marketplace '$($this.Name)': $($result.Output -join '; ')"
         }

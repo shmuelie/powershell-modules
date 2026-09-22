@@ -1601,6 +1601,404 @@ Describe 'Copilot CLI UTF-8 output parsing' {
     }
 }
 
+Describe 'Copilot discovery native status' -Tag 'CopilotDiscovery' {
+    BeforeAll {
+        $script:DiscoveryRoot = Join-Path $TestDrive 'discovery-native'
+        New-Item -ItemType Directory -Path $script:DiscoveryRoot -Force | Out-Null
+        $script:DiscoveryControl = Join-Path $script:DiscoveryRoot 'responses.json'
+        $script:DiscoveryLog = Join-Path $script:DiscoveryRoot 'calls.log'
+        $handler = Join-Path $script:DiscoveryRoot 'discovery.ps1'
+        Set-Content -LiteralPath $handler -Value @'
+$ErrorActionPreference = 'Stop'
+$command = $args -join ' '
+[IO.File]::AppendAllText((Join-Path $PSScriptRoot 'calls.log'), $command + [Environment]::NewLine)
+$responses = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'responses.json') -Raw | ConvertFrom-Json -AsHashtable
+if (-not $responses.ContainsKey($command)) {
+    [Console]::Error.WriteLine("Unexpected native invocation: $command")
+    exit 97
+}
+$response = $responses[$command]
+[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+[Console]::Out.Write([string]$response.Output)
+[Console]::Error.Write([string]$response.Diagnostics)
+exit $response.ExitCode
+'@
+        $pwsh = (Get-Process -Id $PID).Path
+        if ($IsWindows) {
+            $script:DiscoveryExe = Join-Path $script:DiscoveryRoot 'copilot.cmd'
+            Set-Content -LiteralPath $script:DiscoveryExe -Value @(
+                '@echo off'
+                "`"$($pwsh -replace '"', '""')`" -NoLogo -NoProfile -NonInteractive -File `"$($handler -replace '"', '""')`" %*"
+                'exit /b %ERRORLEVEL%'
+            )
+        } else {
+            $script:DiscoveryExe = Join-Path $script:DiscoveryRoot 'copilot'
+            Set-Content -LiteralPath $script:DiscoveryExe -Value @(
+                '#!/usr/bin/env sh'
+                "exec '$($pwsh -replace '''', '''\''''')' -NoLogo -NoProfile -NonInteractive -File '$($handler -replace '''', '''\''''')' `"`$@`""
+            )
+            & chmod +x $script:DiscoveryExe
+            if ($LASTEXITCODE -ne 0) { throw 'Unable to make the isolated native stub executable.' }
+        }
+
+        function Set-DiscoveryResponses {
+            param([hashtable]$Responses)
+            $Responses | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $script:DiscoveryControl
+        }
+    }
+
+    BeforeEach {
+        $script:DiscoveryPreviousExit = Get-Variable LASTEXITCODE -Scope Global -ErrorAction Ignore
+        $script:DiscoveryPreviousExitValue = if ($script:DiscoveryPreviousExit) { $script:DiscoveryPreviousExit.Value }
+        $script:DiscoveryPreviousNativePreference = $global:PSNativeCommandUseErrorActionPreference
+        $script:DiscoveryPreviousEncoding = [Console]::OutputEncoding
+        $global:LASTEXITCODE = 123
+        $global:PSNativeCommandUseErrorActionPreference = $false
+        [Console]::OutputEncoding = [Text.Encoding]::GetEncoding(28591)
+        Remove-Item -LiteralPath $script:DiscoveryLog -Force -ErrorAction SilentlyContinue
+        Set-DiscoveryResponses @{}
+        Mock -ModuleName Shmuelie.Copilot Resolve-CliExe { $script:DiscoveryExe } -ParameterFilter { $Name -eq 'copilot' }
+        Mock -ModuleName Shmuelie.Copilot Get-CopilotHome { throw 'Discovery must not inspect user configuration.' }
+    }
+
+    AfterEach {
+        [Console]::OutputEncoding = $script:DiscoveryPreviousEncoding
+        $global:PSNativeCommandUseErrorActionPreference = $script:DiscoveryPreviousNativePreference
+        if ($script:DiscoveryPreviousExit) {
+            $global:LASTEXITCODE = $script:DiscoveryPreviousExitValue
+        } else {
+            Remove-Variable LASTEXITCODE -Scope Global -WhatIf:$false -Confirm:$false -ErrorAction SilentlyContinue
+        }
+    }
+
+    Context '<Reader>' -ForEach @(
+        @{
+            Reader = 'Get-CopilotPlugin'; ReaderParameters = @{}; NativeArguments = 'plugin list'
+            Listing = "  • synthetic@curated (v1.2.3)`n"; ResultType = 'CopilotPlugin'
+        }
+        @{
+            Reader = 'Get-CopilotMarketplace'; ReaderParameters = @{}; NativeArguments = 'plugin marketplace list'
+            Listing = "  ◆ synthetic (GitHub: example/marketplace)`n"; ResultType = 'CopilotMarketplace'
+        }
+        @{
+            Reader = 'Get-CopilotMarketplacePlugin'; ReaderParameters = @{ Name = 'curated' }; NativeArguments = 'plugin marketplace browse curated'
+            Listing = "  • synthetic - Synthetic description`n"; ResultType = 'CopilotMarketplaceEntry'
+        }
+    ) {
+        It 'reports failure before parsing with native error preference <NativePreference>' -ForEach @(
+            @{ NativePreference = $false }
+            @{ NativePreference = $true }
+        ) {
+            $global:PSNativeCommandUseErrorActionPreference = $NativePreference
+            Set-DiscoveryResponses @{ $NativeArguments = @{
+                ExitCode = 17; Output = $Listing + "synthetic stdout diagnostic`n"; Diagnostics = "synthetic stderr diagnostic`n"
+            } }
+            $discoveryErrors = @()
+
+            $results = @(& $Reader @ReaderParameters -ErrorAction Continue -ErrorVariable discoveryErrors 2>$null)
+
+            $results | Should -HaveCount 0
+            $discoveryErrors | Should -HaveCount 1
+            $discoveryErrors[0].FullyQualifiedErrorId | Should -BeLike 'CopilotDiscoveryFailed,*'
+            $discoveryErrors[0].Exception.Message | Should -Match ([regex]::Escape("copilot $NativeArguments failed with exit code 17"))
+            $discoveryErrors[0].Exception.Message | Should -Match 'synthetic stdout diagnostic'
+            $discoveryErrors[0].Exception.Message | Should -Match 'synthetic stderr diagnostic'
+            $discoveryErrors[0].TargetObject.ExitCode | Should -Be 17
+            $global:LASTEXITCODE | Should -Be 123
+            $global:PSNativeCommandUseErrorActionPreference | Should -Be $NativePreference
+            [Console]::OutputEncoding.CodePage | Should -Be 28591
+            @(Get-Content -LiteralPath $script:DiscoveryLog) | Should -Be @($NativeArguments)
+        }
+
+        It 'honors ErrorAction Stop with native error preference <NativePreference>' -ForEach @(
+            @{ NativePreference = $false }
+            @{ NativePreference = $true }
+        ) {
+            $global:PSNativeCommandUseErrorActionPreference = $NativePreference
+            Set-DiscoveryResponses @{ $NativeArguments = @{ ExitCode = 17; Output = $Listing; Diagnostics = 'synthetic failure' } }
+
+            { & $Reader @ReaderParameters -ErrorAction Stop } | Should -Throw '*exit code 17*synthetic failure*'
+
+            $global:LASTEXITCODE | Should -Be 123
+            $global:PSNativeCommandUseErrorActionPreference | Should -Be $NativePreference
+            [Console]::OutputEncoding.CodePage | Should -Be 28591
+            @(Get-Content -LiteralPath $script:DiscoveryLog) | Should -Be @($NativeArguments)
+        }
+
+        It 'keeps successful empty output error-free: <OutputKind>' -ForEach @(
+            @{ OutputKind = 'no output'; EmptyOutput = '' }
+            @{ OutputKind = 'empty-list message'; EmptyOutput = 'No entries found.' }
+        ) {
+            Set-DiscoveryResponses @{ $NativeArguments = @{ ExitCode = 0; Output = $EmptyOutput } }
+            $discoveryErrors = @()
+
+            $results = @(& $Reader @ReaderParameters -ErrorAction Stop -ErrorVariable discoveryErrors)
+
+            $results | Should -HaveCount 0
+            $discoveryErrors | Should -HaveCount 0
+            $global:LASTEXITCODE | Should -Be 123
+            [Console]::OutputEncoding.CodePage | Should -Be 28591
+            @(Get-Content -LiteralPath $script:DiscoveryLog) | Should -Be @($NativeArguments)
+        }
+
+        It 'preserves successful typed UTF-8 parsing and the caller exit code' {
+            Set-DiscoveryResponses @{ $NativeArguments = @{ ExitCode = 0; Output = $Listing } }
+
+            $results = @(& $Reader @ReaderParameters -ErrorAction Stop)
+
+            $results | Should -HaveCount 1
+            $results[0].PSTypeNames | Should -Contain $ResultType
+            $results[0].Name | Should -Be 'synthetic'
+            switch ($Reader) {
+                'Get-CopilotPlugin' {
+                    $results[0].FullName | Should -Be 'synthetic@curated'
+                    $results[0].Marketplace | Should -Be 'curated'
+                    $results[0].Version | Should -Be '1.2.3'
+                }
+                'Get-CopilotMarketplace' { $results[0].Repository | Should -Be 'example/marketplace' }
+                'Get-CopilotMarketplacePlugin' {
+                    $results[0].Description | Should -Be 'Synthetic description'
+                    $results[0].Marketplace | Should -Be 'curated'
+                }
+            }
+            $global:LASTEXITCODE | Should -Be 123
+            [Console]::OutputEncoding.CodePage | Should -Be 28591
+        }
+
+        It 'restores an absent global exit code under inherited WhatIf after exit <ExitCode> with <Action>' -ForEach @(
+            @{ ExitCode = 0; Action = 'Continue' }
+            @{ ExitCode = 17; Action = 'Continue' }
+            @{ ExitCode = 0; Action = 'Stop' }
+            @{ ExitCode = 17; Action = 'Stop' }
+        ) {
+            Set-DiscoveryResponses @{ $NativeArguments = @{ ExitCode = $ExitCode; Diagnostics = 'synthetic diagnostic' } }
+            Remove-Variable LASTEXITCODE -Scope Global -WhatIf:$false -Confirm:$false
+
+            $invoke = {
+                $WhatIfPreference = $true
+                $discoveryErrors = @()
+                & $Reader @ReaderParameters -ErrorAction $Action -ErrorVariable discoveryErrors 2>$null
+                $discoveryErrors | Should -HaveCount $(if ($ExitCode -eq 0) { 0 } else { 1 })
+            }
+            if ($ExitCode -ne 0 -and $Action -eq 'Stop') {
+                $invoke | Should -Throw '*exit code 17*synthetic diagnostic*'
+            } else {
+                & $invoke
+            }
+
+            Get-Variable LASTEXITCODE -Scope Global -ErrorAction Ignore | Should -BeNullOrEmpty
+            [Console]::OutputEncoding.CodePage | Should -Be 28591
+            @(Get-Content -LiteralPath $script:DiscoveryLog) | Should -Be @($NativeArguments)
+        }
+
+        It 'reports failures without diagnostics using the exit code' {
+            Set-DiscoveryResponses @{ $NativeArguments = @{ ExitCode = 17 } }
+
+            { & $Reader @ReaderParameters -ErrorAction Stop } | Should -Throw '*failed with exit code 17.*'
+
+            $global:LASTEXITCODE | Should -Be 123
+        }
+
+        It 'rejects <StatusKind> completion evidence before parsing' -ForEach @(
+            @{ StatusKind = 'missing'; NativeStatus = $null }
+            @{ StatusKind = 'string zero'; NativeStatus = '0' }
+            @{ StatusKind = 'Boolean false'; NativeStatus = $false }
+        ) {
+            Mock -ModuleName Shmuelie.Copilot Invoke-WithUtf8Console {
+                [pscustomobject]@{ ExitCode = $NativeStatus; Output = @($Listing, 'synthetic completion diagnostic') }
+            }
+            $discoveryErrors = @()
+
+            @(& $Reader @ReaderParameters -ErrorAction Continue -ErrorVariable discoveryErrors 2>$null) |
+                Should -HaveCount 0
+            $discoveryErrors | Should -HaveCount 1
+            $discoveryErrors[0].FullyQualifiedErrorId | Should -BeLike 'CopilotDiscoveryFailed,*'
+            $discoveryErrors[0].Exception.Message | Should -Match 'unknown native exit status.*'
+            { & $Reader @ReaderParameters -ErrorAction Stop } |
+                Should -Throw '*unknown native exit status*synthetic completion diagnostic*'
+
+            $global:LASTEXITCODE | Should -Be 123
+            Test-Path -LiteralPath $script:DiscoveryLog | Should -BeFalse
+        }
+
+        It 'fails closed and restores state when the resolved executable is missing' {
+            Mock -ModuleName Shmuelie.Copilot Resolve-CliExe {
+                Join-Path $script:DiscoveryRoot 'missing-copilot.exe'
+            } -ParameterFilter { $Name -eq 'copilot' }
+
+            { & $Reader @ReaderParameters -ErrorAction Continue } | Should -Throw '*missing-copilot.exe*'
+
+            $global:LASTEXITCODE | Should -Be 123
+            [Console]::OutputEncoding.CodePage | Should -Be 28591
+            Test-Path -LiteralPath $script:DiscoveryLog | Should -BeFalse
+        }
+
+        It 'restores a present null global exit code without removing the variable' {
+            Set-DiscoveryResponses @{ $NativeArguments = @{ ExitCode = 0 } }
+            $global:LASTEXITCODE = $null
+
+            & $Reader @ReaderParameters -ErrorAction Stop
+
+            $variable = Get-Variable LASTEXITCODE -Scope Global -ErrorAction Stop
+            $variable.Value | Should -BeNullOrEmpty
+        }
+
+        It 'does not confuse a caller-local success status with the native global failure' {
+            Set-DiscoveryResponses @{ $NativeArguments = @{ ExitCode = 17; Diagnostics = 'synthetic failure' } }
+
+            {
+                InModuleScope Shmuelie.Copilot -Parameters @{ Reader = $Reader; ReaderParameters = $ReaderParameters } {
+                    $LASTEXITCODE = 0
+                    & $Reader @ReaderParameters -ErrorAction Stop
+                }
+            } | Should -Throw '*exit code 17*synthetic failure*'
+
+            $global:LASTEXITCODE | Should -Be 123
+        }
+    }
+
+    It 'resets a stale global exit code before invoking the discovery boundary' {
+        Mock -ModuleName Shmuelie.Copilot Invoke-WithUtf8Console {
+            if ($null -ne $global:LASTEXITCODE) { throw 'Discovery did not clear the stale exit code.' }
+            [pscustomobject]@{ ExitCode = 0; Output = @() }
+        }
+
+        @(Get-CopilotPlugin -ErrorAction Stop) | Should -HaveCount 0
+
+        $global:LASTEXITCODE | Should -Be 123
+        Test-Path -LiteralPath $script:DiscoveryLog | Should -BeFalse
+        Should -Invoke -ModuleName Shmuelie.Copilot Invoke-WithUtf8Console -Times 1 -Exactly
+    }
+
+    It 'restores an absent exit code on invocation exceptions under inherited WhatIf' {
+        Mock -ModuleName Shmuelie.Copilot Resolve-CliExe {
+            Join-Path $script:DiscoveryRoot 'missing-copilot.exe'
+        } -ParameterFilter { $Name -eq 'copilot' }
+        Remove-Variable LASTEXITCODE -Scope Global -WhatIf:$false -Confirm:$false
+
+        {
+            $WhatIfPreference = $true
+            Get-CopilotPlugin -ErrorAction Continue
+        } | Should -Throw '*missing-copilot.exe*'
+
+        Get-Variable LASTEXITCODE -Scope Global -ErrorAction Ignore | Should -BeNullOrEmpty
+        [Console]::OutputEncoding.CodePage | Should -Be 28591
+        Test-Path -LiteralPath $script:DiscoveryLog | Should -BeFalse
+    }
+
+    It 'keeps successful discovery-to-update pipelines working' {
+        Set-DiscoveryResponses @{
+            'plugin list' = @{ ExitCode = 0; Output = "  • synthetic@curated (v1.2.3)`n" }
+            'plugin update synthetic@curated' = @{ ExitCode = 0 }
+        }
+
+        $results = @(Get-CopilotPlugin -ErrorAction Stop | Update-CopilotPlugin -Confirm:$false -ErrorAction Stop)
+
+        $results | Should -HaveCount 1
+        $results[0].Name | Should -Be 'synthetic@curated'
+        $results[0].Success | Should -BeTrue
+        @(Get-Content -LiteralPath $script:DiscoveryLog) | Should -Be @('plugin list', 'plugin update synthetic@curated')
+    }
+
+    It 'keeps successful marketplace-to-install pipelines working' {
+        Set-DiscoveryResponses @{
+            'plugin marketplace list' = @{ ExitCode = 0; Output = "  ◆ curated (GitHub: example/marketplace)`n" }
+            'plugin marketplace browse curated' = @{ ExitCode = 0; Output = "  • synthetic - Synthetic description`n" }
+            'plugin list' = @{ ExitCode = 0 }
+            'plugin install synthetic@curated' = @{ ExitCode = 0 }
+        }
+
+        Get-CopilotMarketplace -ErrorAction Stop |
+            Get-CopilotMarketplacePlugin -ErrorAction Stop |
+            Install-CopilotPlugin -Confirm:$false -ErrorAction Stop
+
+        @(Get-Content -LiteralPath $script:DiscoveryLog) | Should -Be @(
+            'plugin marketplace list', 'plugin marketplace browse curated', 'plugin list', 'plugin install synthetic@curated'
+        )
+    }
+
+    It 'never exports its private discovery helper' {
+        (Get-Module Shmuelie.Copilot).ExportedCommands.Keys | Should -Not -Contain 'Invoke-CopilotDiscovery'
+    }
+
+    It 'does not invoke <Consumer> after <Reader> fails' -ForEach @(
+        @{
+            Reader = 'Get-CopilotPlugin'; ReaderParameters = @{}; NativeArguments = 'plugin list'
+            Listing = "  • synthetic@curated (v1.2.3)`n"
+            Consumer = 'Update-CopilotPlugin'; ConsumerParameters = @{ Confirm = $false }
+        }
+        @{
+            Reader = 'Get-CopilotPlugin'; ReaderParameters = @{}; NativeArguments = 'plugin list'
+            Listing = "  • synthetic@curated (v1.2.3)`n"
+            Consumer = 'Uninstall-CopilotPlugin'; ConsumerParameters = @{ Confirm = $false }
+        }
+        @{
+            Reader = 'Get-CopilotMarketplace'; ReaderParameters = @{}; NativeArguments = 'plugin marketplace list'
+            Listing = "  ◆ synthetic (GitHub: example/marketplace)`n"
+            Consumer = 'Get-CopilotMarketplacePlugin'; ConsumerParameters = @{}
+        }
+        @{
+            Reader = 'Get-CopilotMarketplace'; ReaderParameters = @{}; NativeArguments = 'plugin marketplace list'
+            Listing = "  ◆ synthetic (GitHub: example/marketplace)`n"
+            Consumer = 'Unregister-CopilotMarketplace'; ConsumerParameters = @{ Confirm = $false }
+        }
+        @{
+            Reader = 'Get-CopilotMarketplacePlugin'; ReaderParameters = @{ Name = 'curated' }; NativeArguments = 'plugin marketplace browse curated'
+            Listing = "  • synthetic - Synthetic description`n"
+            Consumer = 'Install-CopilotPlugin'; ConsumerParameters = @{ Confirm = $false }
+        }
+    ) {
+        Set-DiscoveryResponses @{ $NativeArguments = @{ ExitCode = 17; Output = $Listing; Diagnostics = 'synthetic failure' } }
+        $discoveryErrors = @()
+
+        $results = @(& $Reader @ReaderParameters -ErrorAction Continue -ErrorVariable discoveryErrors 2>$null |
+            & $Consumer @ConsumerParameters)
+
+        $results | Should -HaveCount 0
+        $discoveryErrors | Should -HaveCount 1
+        @(Get-Content -LiteralPath $script:DiscoveryLog) | Should -Be @($NativeArguments)
+    }
+
+    Context '<Mutation> existence precheck' -ForEach @(
+        @{ Mutation = 'Install-CopilotPlugin'; Discovery = 'plugin list'; NativeMutation = 'plugin install example/marketplace'; Existing = "  • marketplace (v1.0.0)`n" }
+        @{ Mutation = 'Register-CopilotMarketplace'; Discovery = 'plugin marketplace list'; NativeMutation = 'plugin marketplace add example/marketplace'; Existing = "  ◆ synthetic (GitHub: example/marketplace)`n" }
+    ) {
+        It 'terminates on discovery failure even with ErrorAction Continue' {
+            Set-DiscoveryResponses @{ $Discovery = @{ ExitCode = 17; Diagnostics = 'synthetic precheck failure' } }
+
+            { & $Mutation -Source 'example/marketplace' -Confirm:$false -ErrorAction Continue } |
+                Should -Throw '*exit code 17*synthetic precheck failure*'
+
+            @(Get-Content -LiteralPath $script:DiscoveryLog) | Should -Be @($Discovery)
+        }
+
+        It 'still mutates after successful empty discovery' {
+            Set-DiscoveryResponses @{
+                $Discovery = @{ ExitCode = 0 }
+                $NativeMutation = @{ ExitCode = 0 }
+            }
+
+            & $Mutation -Source 'example/marketplace' -Confirm:$false -ErrorAction Stop
+
+            @(Get-Content -LiteralPath $script:DiscoveryLog) | Should -Be @($Discovery, $NativeMutation)
+        }
+
+        It 'still skips an already-present item' {
+            Set-DiscoveryResponses @{ $Discovery = @{ ExitCode = 0; Output = $Existing } }
+
+            & $Mutation -Source 'example/marketplace' -Confirm:$false -ErrorAction Stop
+
+            @(Get-Content -LiteralPath $script:DiscoveryLog) | Should -Be @($Discovery)
+        }
+
+        It 'does not discover or mutate under WhatIf' {
+            & $Mutation -Source 'example/marketplace' -WhatIf -ErrorAction Stop
+
+            Test-Path -LiteralPath $script:DiscoveryLog | Should -BeFalse
+        }
+    }
+}
+
 Describe 'Get-CopilotLaunchPlan' {
     BeforeEach {
         $testHome = Join-Path $TestDrive 'home'
@@ -1683,6 +2081,301 @@ Describe 'Get-CopilotLaunchPlan' {
         $sessionIdArg | Should -BeGreaterOrEqual 0
         $plan.Args[$sessionIdArg + 1] | Should -Be $sessionId
         $plan.Args | Should -Not -Contain '--resume'
+    }
+}
+
+Describe 'Copilot effective launch directory' -Tag 'EffectiveLaunchDirectory' {
+    BeforeAll {
+        $script:DirectoryPlanCommand = Get-Command 'Shmuelie.Copilot\Get-CopilotLaunchPlan' -ListImported -ErrorAction Stop
+        & (Get-Module Shmuelie.Copilot) {
+            function script:Invoke-CopilotDirectoryTestEngine {
+                $script:DirectoryNativeCalls.Add([pscustomobject]@{
+                    Args = @($args | ForEach-Object { $_ })
+                    Cwd = (Get-Location).Path
+                })
+                if ($script:DirectoryEngineFailure) { throw 'Synthetic launch failure.' }
+                $global:LASTEXITCODE = 0
+            }
+        }
+
+        function Invoke-DirectoryTestPlan {
+            param([string]$Entry, [hashtable]$Options)
+            if ($Entry -eq 'Start-Copilot') {
+                Start-Copilot -PassThru @Options
+            } else {
+                Get-CopilotLaunchPlan @Options
+            }
+        }
+    }
+
+    BeforeEach {
+        $caseRoot = Join-Path $TestDrive ([guid]::NewGuid().ToString())
+        $testHome = Join-Path $caseRoot 'home'
+        $directoryA = Join-Path $caseRoot 'A'
+        $relativeB = 'B [target]'
+        $directoryB = Join-Path $directoryA $relativeB
+        $sessionRoot = Join-Path $testHome '.copilot' 'session-state'
+        New-Item -ItemType Directory -Path $directoryB -Force -ErrorAction Stop | Out-Null
+        $null = New-CopilotSessionState -SessionRoot $sessionRoot -Id 'session-a' -Cwd $directoryA -Summary 'Session A'
+        $sessionB = New-CopilotSessionState -SessionRoot $sessionRoot -Id 'session-b' -Cwd $directoryB -Summary 'Session B'
+        $otherB = New-CopilotSessionState -SessionRoot $sessionRoot -Id 'other-b' -Cwd $directoryB -Summary 'Other branch B' -UpdatedAt '2026-08-13T22:00:00Z'
+        Add-Content -LiteralPath (Join-Path $sessionRoot 'session-a' 'workspace.yaml') -Value 'branch: branch-a'
+        Add-Content -LiteralPath (Join-Path $sessionB 'workspace.yaml') -Value 'branch: branch-b'
+        Add-Content -LiteralPath (Join-Path $otherB 'workspace.yaml') -Value 'branch: branch-a'
+        $mcpPath = Join-Path $testHome '.copilot' 'mcp-config.json'
+        @{
+            mcpServers = @{
+                'only-a' = @{ autoConnect = @([WildcardPattern]::Escape($directoryA)) }
+                'only-b' = @{ autoConnect = @([WildcardPattern]::Escape($directoryB) + '*') }
+                'lazy' = @{ autoConnect = $false }
+                'always' = @{ autoConnect = $true }
+            }
+        } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $mcpPath
+        $originalMcp = Get-Content -LiteralPath $mcpPath -Raw
+        $script:DirectoryGitLocations = [System.Collections.Generic.List[string]]::new()
+        $script:DirectoryDiscoveryLocations = [System.Collections.Generic.List[string]]::new()
+        Mock -ModuleName Shmuelie.Copilot Get-CopilotHome { $testHome }
+        Mock -ModuleName Shmuelie.Copilot Get-Command { throw "Unexpected discovery: $Name" }
+        Mock -ModuleName Shmuelie.Copilot Get-Command {
+            $script:DirectoryDiscoveryLocations.Add((Get-Location).Path)
+            [pscustomobject]@{ Source = 'Invoke-CopilotDirectoryTestEngine' }
+        } -ParameterFilter { $Name.Count -eq 1 -and $Name[0] -eq 'copilot' -and $CommandType -eq 'Application' }
+        Mock -ModuleName Shmuelie.Copilot Get-Command {
+            $script:DirectoryPlanCommand
+        } -ParameterFilter { $Name.Count -eq 1 -and $Name[0] -eq 'Get-CopilotLaunchPlan' }
+        Mock -ModuleName Shmuelie.Copilot git {
+            $script:DirectoryGitLocations.Add((Get-Location).Path)
+            if (($args -join ' ') -ne 'symbolic-ref --short HEAD') { throw 'Unexpected git arguments.' }
+            if ((Get-Location).Path -eq $directoryB) { 'branch-b' }
+            elseif ((Get-Location).Path -eq $directoryA) { 'branch-a' }
+            else { throw 'Unexpected git directory.' }
+        }
+        Mock -ModuleName Shmuelie.Copilot Invoke-CopilotSessionChoice { throw 'Unexpected host input.' }
+        Mock -ModuleName Shmuelie.Copilot Read-Host { throw 'Unexpected console input.' }
+        & (Get-Module Shmuelie.Copilot) {
+            $script:DirectoryNativeCalls = [System.Collections.Generic.List[object]]::new()
+            $script:DirectoryEngineFailure = $false
+        }
+        $callerLocation = Get-Location
+        Set-Location -LiteralPath $directoryA
+    }
+
+    AfterEach {
+        try {
+            (Get-Location).Path | Should -Be $directoryA
+            Get-Content -LiteralPath $mcpPath -Raw | Should -BeExactly $originalMcp
+            Should -Invoke -ModuleName Shmuelie.Copilot Invoke-CopilotSessionChoice -Times 0 -Exactly
+            Should -Invoke -ModuleName Shmuelie.Copilot Read-Host -Times 0 -Exactly
+        } finally {
+            Set-Location -LiteralPath $callerLocation.Path
+        }
+    }
+
+    AfterAll {
+        & (Get-Module Shmuelie.Copilot) {
+            Remove-Item -LiteralPath Function:Invoke-CopilotDirectoryTestEngine
+            Remove-Variable -Name DirectoryNativeCalls, DirectoryEngineFailure -Scope Script
+        }
+    }
+
+    Context '<Entry>' -ForEach @(
+        @{ Entry = 'Get-CopilotLaunchPlan' }
+        @{ Entry = 'Start-Copilot' }
+    ) {
+        It 'uses B for discovery, branch preference and MCP globs with <Kind>' -ForEach @(
+            @{ Kind = 'absolute ChangeDir'; Relative = $false; Alias = $false }
+            @{ Kind = 'relative ChangeDir'; Relative = $true; Alias = $false }
+            @{ Kind = 'absolute C alias'; Relative = $false; Alias = $true }
+            @{ Kind = 'relative C alias'; Relative = $true; Alias = $true }
+        ) {
+            $options = @{ SessionSelector = { throw 'Branch preference should leave one candidate.' } }
+            $options[$(if ($Alias) { 'C' } else { 'ChangeDir' })] = if ($Relative) { $relativeB } else { $directoryB }
+            $plan = Invoke-DirectoryTestPlan -Entry $Entry -Options $options
+            $plan.Args[[array]::IndexOf($plan.Args, '--resume') + 1] | Should -Be 'session-b'
+            $plan.Args[[array]::IndexOf($plan.Args, '-C') + 1] | Should -Be $directoryB
+            @($plan.Args | Where-Object { $_ -eq '-C' }) | Should -HaveCount 1
+            $plan.Args | Should -Contain 'only-a'
+            $plan.Args | Should -Not -Contain 'only-b'
+            $plan.Args | Should -Not -Contain 'lazy'
+            $plan.Args | Should -Not -Contain 'always'
+            Should -Invoke -ModuleName Shmuelie.Copilot git -Times 1 -Exactly
+            $script:DirectoryGitLocations.ToArray() | Should -Be @($directoryB)
+            Should -Invoke -ModuleName Shmuelie.Copilot Get-Command -Times 1 -Exactly -ParameterFilter {
+                $Name[0] -eq 'copilot'
+            }
+            $script:DirectoryDiscoveryLocations.ToArray() | Should -Be @($directoryB)
+        }
+
+        It 'keeps current-directory behavior when ChangeDir is omitted' {
+            $plan = Invoke-DirectoryTestPlan -Entry $Entry -Options @{}
+            $plan.Args[[array]::IndexOf($plan.Args, '--resume') + 1] | Should -Be 'session-a'
+            $plan.Args | Should -Not -Contain '-C'
+            $plan.Args | Should -Contain 'only-b'
+            $plan.Args | Should -Not -Contain 'only-a'
+        }
+
+        It 'runs a forced selector in B with canonical candidates and preserves arguments' {
+            $options = @{
+                ChangeDir = $relativeB
+                NoAutoResume = $true
+                Model = 'test-model'
+                Prompt = 'test prompt'
+                AddDir = './extra'
+                AdditionalMcpConfig = '@./extra-mcp.json'
+                RemainingArgs = @('--custom-flag', 'literal value')
+                EnableMcpServer = 'only-a'
+                DisableMcpServer = 'only-b'
+                SessionSelector = {
+                    param([object[]]$Sessions)
+                    (Get-Location).Path | Should -Be $directoryB
+                    $Sessions | Should -HaveCount 1
+                    $Sessions[0].Id | Should -Be 'session-b'
+                    $Sessions[0].Cwd | Should -Be $directoryB
+                    $Sessions[0].Cwd = 'ignored metadata'
+                    $Sessions[0]
+                }
+            }
+            $plan = Invoke-DirectoryTestPlan -Entry $Entry -Options $options
+            $options.Remove('NoAutoResume')
+            $options.Remove('SessionSelector')
+            $options.ResumeSession = 'session-b'
+            $baseline = Invoke-DirectoryTestPlan -Entry $Entry -Options $options
+            $plan.Args | Should -Be $baseline.Args
+            $plan.Args[[array]::IndexOf($plan.Args, '--add-dir') + 1] | Should -Be './extra'
+            $plan.Args[[array]::IndexOf($plan.Args, '--additional-mcp-config') + 1] | Should -Be '@./extra-mcp.json'
+            $plan.Args[-2..-1] | Should -Be @('--custom-flag', 'literal value')
+        }
+
+        It 'preserves <Kind> without calling the selector' -ForEach @(
+            @{ Kind = 'explicit resume'; Options = @{ ResumeSession = 'explicit session' }; Resume = 'explicit session' }
+            @{ Kind = 'explicit resume with deferred selection'; Options = @{ ResumeSession = 'explicit session'; DeferResume = $true }; Resume = 'explicit session' }
+            @{ Kind = 'NoResume'; Options = @{ NoResume = $true }; Resume = $null }
+            @{ Kind = 'DeferResume'; Options = @{ DeferResume = $true }; Resume = $null }
+            @{ Kind = 'SessionId'; Options = @{ SessionId = 'assigned-id' }; Resume = $null }
+            @{ Kind = 'ResumeLatest'; Options = @{ ResumeLatest = $true }; Resume = 'session-b' }
+        ) {
+            $options = $Options.Clone()
+            $options.ChangeDir = $relativeB
+            $options.SessionSelector = { throw 'Unexpected selector.' }
+            $plan = Invoke-DirectoryTestPlan -Entry $Entry -Options $options
+            if ($Resume) { $plan.Args[[array]::IndexOf($plan.Args, '--resume') + 1] | Should -Be $Resume }
+            else { $plan.Args | Should -Not -Contain '--resume' }
+            $plan.Args | Should -Contain 'only-a'
+            $plan.Args | Should -Not -Contain 'only-b'
+        }
+
+        It 'preserves <Prompt> passthrough arguments' -ForEach @(
+            @{ Prompt = 'help' }
+            @{ Prompt = 'update' }
+        ) {
+            $plan = Invoke-DirectoryTestPlan -Entry $Entry -Options @{
+                ChangeDir = $relativeB; Prompt = $Prompt; RemainingArgs = @('--native-option', 'value')
+                SessionSelector = { throw 'Unexpected selector.' }
+            }
+            $plan.Passthrough | Should -BeTrue
+            $plan.Args | Should -Be @($Prompt, '--native-option', 'value')
+            Should -Invoke -ModuleName Shmuelie.Copilot git -Times 0 -Exactly
+        }
+
+        It 'preserves null selector new-session semantics and restores the location' {
+            $plan = Invoke-DirectoryTestPlan -Entry $Entry -Options @{
+                ChangeDir = $relativeB; NoAutoResume = $true; Name = 'New session'
+                SessionSelector = { (Get-Location).Path | Should -Be $directoryB; $null }
+            }
+            $plan.Args | Should -Not -Contain '--resume'
+            $plan.Args[[array]::IndexOf($plan.Args, '--name') + 1] | Should -Be 'New session'
+        }
+
+        It 'retains B candidates in newest-first order when no branch matches' {
+            Mock -ModuleName Shmuelie.Copilot git { 'unmatched-branch' }
+            $plan = Invoke-DirectoryTestPlan -Entry $Entry -Options @{
+                ChangeDir = $relativeB
+                SessionSelector = {
+                    param([object[]]$Sessions)
+                    (Get-Location).Path | Should -Be $directoryB
+                    $Sessions.Id | Should -Be @('other-b', 'session-b')
+                    $Sessions[1]
+                }
+            }
+            $plan.Args[[array]::IndexOf($plan.Args, '--resume') + 1] | Should -Be 'session-b'
+        }
+
+        It 'restores the location after <Kind> selection failure under Continue' -ForEach @(
+            @{ Kind = 'exception'; Selector = { throw 'Selector failure.' } }
+            @{ Kind = 'invalid result'; Selector = { 'not a candidate' } }
+            @{ Kind = 'nonterminating error'; Selector = { Write-Error 'Selector failure.' -ErrorAction Continue } }
+        ) {
+            { Invoke-DirectoryTestPlan -Entry $Entry -Options @{
+                ChangeDir = $relativeB; NoAutoResume = $true; SessionSelector = $Selector; ErrorAction = 'Continue'
+            } } | Should -Throw
+            @(& (Get-Module Shmuelie.Copilot) { $script:DirectoryNativeCalls.ToArray() }) | Should -HaveCount 0
+        }
+
+        It 'restores the location after executable discovery fails' {
+            Mock -ModuleName Shmuelie.Copilot Get-Command { throw 'Synthetic discovery failure.' } -ParameterFilter { $Name[0] -eq 'copilot' }
+            { Invoke-DirectoryTestPlan -Entry $Entry -Options @{ ChangeDir = $relativeB; ErrorAction = 'Continue' } } |
+                Should -Throw '*Synthetic discovery failure*'
+        }
+
+        It 'restores the location after MCP configuration reading fails' {
+            Mock -ModuleName Shmuelie.Copilot Get-Content { throw 'Synthetic MCP read failure.' } -ParameterFilter { $Path -eq $mcpPath }
+            { Invoke-DirectoryTestPlan -Entry $Entry -Options @{ ChangeDir = $relativeB; ErrorAction = 'Continue' } } |
+                Should -Throw '*Synthetic MCP read failure*'
+        }
+    }
+
+    It 'rejects <Kind> before planning or launching under Continue' -ForEach @(
+        @{ Kind = 'missing directory'; Target = 'missing' }
+        @{ Kind = 'file'; Target = 'file' }
+        @{ Kind = 'provider path'; Target = 'provider' }
+        @{ Kind = 'empty path'; Target = 'empty' }
+        @{ Kind = 'null path'; Target = 'null' }
+    ) {
+        $invalidPath = switch ($Target) {
+            missing { Join-Path $directoryA 'missing' }
+            file { $mcpPath }
+            provider { 'Env:' }
+            empty { '' }
+            null { $null }
+        }
+        foreach ($entry in 'Get-CopilotLaunchPlan', 'Start-Copilot') {
+            { & $entry -ChangeDir $invalidPath -ErrorAction Continue } | Should -Throw
+        }
+        Should -Invoke -ModuleName Shmuelie.Copilot Get-CopilotHome -Times 0 -Exactly
+        Should -Invoke -ModuleName Shmuelie.Copilot Get-Command -Times 0 -Exactly -ParameterFilter { $Name[0] -eq 'copilot' }
+        @(& (Get-Module Shmuelie.Copilot) { $script:DirectoryNativeCalls.ToArray() }) | Should -HaveCount 0
+    }
+
+    It 'keeps WhatIf noninteractive while applying B MCP policy' {
+        $plan = Start-Copilot -C $relativeB -WhatIf -PassThru -NoAutoResume -SessionSelector { throw 'Unexpected selector.' }
+        $plan.Args | Should -Not -Contain '--resume'
+        $plan.Args | Should -Contain 'only-a'
+        $plan.Args | Should -Not -Contain 'only-b'
+        $explicit = Start-Copilot -C $relativeB -WhatIf -PassThru -ResumeSession 'explicit-id'
+        $explicit.Args[[array]::IndexOf($explicit.Args, '--resume') + 1] | Should -Be 'explicit-id'
+        Start-Copilot -C $relativeB -WhatIf -NoAutoResume -SessionSelector { throw 'Unexpected selector.' }
+        Should -Invoke -ModuleName Shmuelie.Copilot git -Times 0 -Exactly
+        @(& (Get-Module Shmuelie.Copilot) { $script:DirectoryNativeCalls.ToArray() }) | Should -HaveCount 0
+    }
+
+    It 'launches only the capture helper with one absolute C on <Outcome>' -ForEach @(
+        @{ Outcome = 'success'; Failure = $false }
+        @{ Outcome = 'error'; Failure = $true }
+    ) {
+        & (Get-Module Shmuelie.Copilot) { param($Failure) $script:DirectoryEngineFailure = $Failure } $Failure
+        if ($Failure) {
+            { Start-Copilot -C $relativeB -Confirm:$false } | Should -Throw '*Synthetic launch failure*'
+        } else {
+            Start-Copilot -C $relativeB -Confirm:$false
+        }
+        $calls = @(& (Get-Module Shmuelie.Copilot) { $script:DirectoryNativeCalls.ToArray() })
+        $calls | Should -HaveCount 1
+        $calls[0].Cwd | Should -Be $directoryA
+        $calls[0].Args[[array]::IndexOf($calls[0].Args, '--resume') + 1] | Should -Be 'session-b'
+        @($calls[0].Args | Where-Object { $_ -eq '-C' }) | Should -HaveCount 1
+        $nativeDirectory = $calls[0].Args[[array]::IndexOf($calls[0].Args, '-C') + 1]
+        [IO.Path]::IsPathFullyQualified($nativeDirectory) | Should -BeTrue
+        [IO.Path]::GetFullPath($nativeDirectory, $calls[0].Cwd) | Should -Be $directoryB
     }
 }
 
@@ -2562,6 +3255,65 @@ Describe 'Copilot native host selection' -Tag 'NativeHostSelection' {
         $confirmation | Should -HaveCount 1
         $confirmation[0].Choices.Label | Should -Contain '&No'
         $confirmation[0].Message | Should -Match 'Execute|Resume Copilot'
+    }
+
+    It 'restores ChangeDir after host <Label> in both planning entrypoints' -ForEach @(
+        @{ Label = 'new session'; Answers = @(2); Failure = $null; ExpectedError = $false }
+        @{ Label = 'invalid choice'; Answers = @(-1); Failure = $null; ExpectedError = $true }
+        @{ Label = 'unavailable input'; Answers = @(); Failure = $null; ExpectedError = $true }
+        @{ Label = 'cancellation'; Answers = @(); Failure = [OperationCanceledException]::new('Synthetic cancellation.'); ExpectedError = $true }
+    ) {
+        foreach ($command in @(
+            {
+                $destination = Join-Path $Scratch 'child [folder]'
+                $null = [IO.Directory]::CreateDirectory($destination)
+                Get-CopilotLaunchPlan -C 'child [folder]' -NoAutoResume -ErrorAction Continue
+            },
+            {
+                $destination = Join-Path $Scratch 'child [folder]'
+                $null = [IO.Directory]::CreateDirectory($destination)
+                Start-Copilot -PassThru -C 'child [folder]' -NoAutoResume -ErrorAction Continue
+            }
+        )) {
+            $result = Invoke-CopilotPromptCase -Command $command -Answers $Answers -Failure $Failure
+            $result.Location | Should -Be $TestDrive
+            $result.NativeCalls | Should -HaveCount 0
+            $result.HostUI.Calls | Should -HaveCount 1
+            $result.HostUI.OtherInputCalls | Should -Be 0
+            if ($ExpectedError) {
+                $result.Error | Should -Not -BeNullOrEmpty
+                $result.Output | Should -HaveCount 0
+            } else {
+                $result.Error | Should -BeNullOrEmpty
+                $result.Output[0].Args | Should -Not -Contain '--resume'
+                $result.Output[0].Args[[array]::IndexOf($result.Output[0].Args, '-C') + 1] |
+                    Should -Be (Join-Path $TestDrive 'child [folder]')
+            }
+        }
+    }
+
+    It 'restores ChangeDir around <Label> confirmation and replanning' -ForEach @(
+        @{ Label = 'declined'; Answers = @(2); ExpectedCalls = 1; NativeCount = 0 }
+        @{ Label = 'approved'; Answers = @(0, 1); ExpectedCalls = 2; NativeCount = 1 }
+    ) {
+        $result = Invoke-CopilotPromptCase -Answers $Answers -Command {
+            $destination = Join-Path $Scratch 'child [folder]'
+            $null = [IO.Directory]::CreateDirectory($destination)
+            Start-Copilot -C 'child [folder]' -Confirm
+        }
+        $result.Location | Should -Be $TestDrive
+        $result.HostUI.Calls | Should -HaveCount $ExpectedCalls
+        $result.HostUI.Calls[0].Choices.Label | Should -Contain '&Yes'
+        $result.NativeCalls | Should -HaveCount $NativeCount
+        if ($NativeCount) {
+            $result.Error.Exception.Message | Should -Be 'Native execution blocked by fixture.'
+            $result.NativeCalls[0].Cwd | Should -Be $TestDrive
+            $result.NativeCalls[0].Args | Should -Contain 'older-id'
+            $result.NativeCalls[0].Args[[array]::IndexOf($result.NativeCalls[0].Args, '-C') + 1] |
+                Should -Be (Join-Path $TestDrive 'child [folder]')
+        } else {
+            $result.Error | Should -BeNullOrEmpty
+        }
     }
 }
 

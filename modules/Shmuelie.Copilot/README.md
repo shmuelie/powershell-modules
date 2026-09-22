@@ -17,12 +17,22 @@ Start-Copilot
 
 | Area | Commands |
 |---|---|
-| Launcher | `Start-Copilot`, `Get-CopilotLaunchPlan` (native host choices; optional `-SessionSelector`) |
+| Launcher | `Start-Copilot`, `Get-CopilotLaunchPlan` (directory-aware planning with `-ChangeDir` / `-C`; native host choices; optional `-SessionSelector`) |
 | Sessions | `Get-CopilotSession` / `Select-CopilotSession` (composable metadata and age filters; native host choices or `-SessionSelector` on selection), `Resume-CopilotSession`, `Rename-CopilotSession`, `Remove-CopilotSession` |
 | Session maintenance | `Merge-CopilotSession`, `Compress-CopilotSession`, `Repair-CopilotSessionEvents` |
 | Plugins | `Get-CopilotPlugin`, `Install-CopilotPlugin`, `Update-CopilotPlugin`, `Uninstall-CopilotPlugin` |
 | Marketplaces | `Get-CopilotMarketplace`, `Register-CopilotMarketplace`, `Unregister-CopilotMarketplace`, `Get-CopilotMarketplacePlugin` |
 | MCP servers | `Get-CopilotMcpServer`, `Register-CopilotMcpServer`, `Unregister-CopilotMcpServer` (registration/removal protect symlink-managed configuration) |
+
+`Get-CopilotPlugin`, `Get-CopilotMarketplace`, and `Get-CopilotMarketplacePlugin`
+check the native exit code before parsing output. A failed discovery emits a
+PowerShell error containing the exit code and CLI diagnostics, with no objects
+from that invocation; use `-ErrorAction Stop` to terminate a pipeline. Missing or
+invalid native completion evidence is a failure, not a successful empty list. Successful
+empty inventories emit neither objects nor errors. Discovery preserves the
+caller's `$LASTEXITCODE` and console encoding. `Install-CopilotPlugin` and
+`Register-CopilotMarketplace` terminate if their existing-item discovery fails,
+even under `-ErrorAction Continue`, rather than proceeding with a mutation.
 
 Compression and file-backed event repair require a successful `.bak` backup before
 rewriting events, unless `-NoBackup` is explicitly supplied. Backup copies are
@@ -46,6 +56,16 @@ repair without reading or writing session files.
   automatically, multiple sessions show a picker, and a lone named session
   auto-resumes. Control it with `-NoResume`, `-ResumeLatest`, `-ResumeSession`,
   `-NoAutoResume`, and `-IncludeUnnamed`.
+- **Effective launch directory** via `-ChangeDir` (alias `-C`) on both
+  `Start-Copilot` and `Get-CopilotLaunchPlan`. Session candidates, branch
+  preference, selectors, and MCP path policy use that directory, including
+  `-PassThru` and `-WhatIf`. Relative paths resolve from the caller's location;
+  the target must be an existing filesystem directory (literal paths, including
+  spaces and brackets, are supported). Planning restores the caller's location
+  before returning, confirmation, or execution, including on errors. Normal
+  plans forward one absolute native `-C` path, avoiding a second relative
+  directory change. Explicit resume, selection bypasses, and help/update
+  passthrough arguments are unchanged.
 - **Sensible defaults** (`--allow-all --experimental`), each disablable with
   `-NoAllowAll` / `-NoExperimental`. Use `-AllowAllTools` for a middle ground
   that auto-approves tools while keeping file-path and URL verification.
@@ -74,6 +94,7 @@ repair without reading or writing session files.
 Start-Copilot "Add unit tests for the auth module"
 Start-Copilot -Model claude-opus-4.7 -ReasoningEffort high
 Start-Copilot -ResumeLatest
+Start-Copilot -C ..\another-repo -ResumeLatest
 Start-Copilot -NoResume -WhatIf   # preview the command line without launching
 ```
 
@@ -280,7 +301,7 @@ interpreted by `Start-Copilot`, not by `copilot` itself.
 |---|---|
 | `true` or omitted | Server is always enabled. |
 | `false` | Left to the CLI's native lazy/dormant handling (not force-disabled). |
-| `["glob", ...]` | Enabled **only** when the current directory matches one of the path globs; otherwise disabled for this launch. |
+| `["glob", ...]` | Enabled **only** when the effective launch directory (`-ChangeDir` / `-C`, or the current directory when omitted) matches one of the path globs; otherwise disabled for this launch. |
 
 The path-glob form is useful for MCP servers that are only relevant in certain
 repositories. For example, a server configured with

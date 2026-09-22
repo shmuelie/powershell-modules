@@ -329,8 +329,13 @@ function Get-CopilotLaunchPlan {
         experimental features; use this switch to run with them off.
 
     .PARAMETER ChangeDir
-        Change the working directory before doing anything else (maps to -C).
-        Aliased as -C.
+        Use this directory for session/branch selection and MCP path policy.
+        Aliased as -C. Relative paths resolve from the caller's location; the
+        directory must exist in the filesystem. Planning temporarily uses that
+        location and restores the caller's location on success or error.
+        Normal launch arguments include -C with the absolute filesystem path,
+        so the native CLI does not apply a relative directory change twice.
+        Help/update passthrough arguments remain unchanged.
 
     .PARAMETER DeferResume
         Skip the automatic session-resume decision entirely: no interactive
@@ -557,6 +562,7 @@ function Get-CopilotLaunchPlan {
         [switch]$NoExperimental,
 
         [Alias('C')]
+        [ValidateNotNullOrEmpty()]
         [string]$ChangeDir,
 
         [switch]$DeferResume,
@@ -565,241 +571,261 @@ function Get-CopilotLaunchPlan {
         [string[]]$RemainingArgs
     )
 
-    $copilotExe = (Get-Command copilot -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
-
-    $copilotArgs = @()
-    if (-not $NoExperimental) { $copilotArgs += '--experimental' }
-    if (-not $NoAllowAll -and -not $AllowAllTools) { $copilotArgs += '--allow-all' }
-    if ($AllowAllTools) { $copilotArgs += '--allow-all-tools' }
-
-    # Block destructive git force operations (--deny-tool takes precedence over --allow-all)
-    if (-not $NoDefaultDenyTools) {
-        $copilotArgs += @(
-            '--deny-tool', 'shell(git push --force)',
-            '--deny-tool', 'shell(git push -f)',
-            '--deny-tool', 'shell(git push --force-with-lease)',
-            '--deny-tool', 'shell(git checkout --force)',
-            '--deny-tool', 'shell(git checkout -f)',
-            '--deny-tool', 'shell(git clean --force)',
-            '--deny-tool', 'shell(git clean -f)',
-            '--deny-tool', 'shell(git reset --hard)',
-            '--deny-tool', 'shell(git commit --amend)',
-            '--deny-tool', 'shell(git commit -a --amend)',
-            '--deny-tool', 'shell(git rebase)',
-            '--deny-tool', 'shell(git rebase -i)',
-            '--deny-tool', 'shell(git rebase --interactive)',
-            '--deny-tool', 'shell(git pull)'
-        )
+    $originalLocation = $null
+    if ($PSBoundParameters.ContainsKey('ChangeDir')) {
+        $directory = Get-Item -LiteralPath $ChangeDir -Force -ErrorAction Stop
+        if ($directory.PSProvider.Name -ne 'FileSystem' -or -not $directory.PSIsContainer) {
+            throw "ChangeDir must be an existing filesystem directory: '$ChangeDir'."
+        }
+        $ChangeDir = $directory.FullName
+        $originalLocation = Get-Location
     }
 
-    # Disable MCP servers based on autoConnect policy:
-    #   false        -> handled natively by the CLI (lazy/dormant)
-    #   true/absent  -> always enabled
-    #   [path globs] -> enabled only when CWD matches a pattern (custom extension)
-    # Manual overrides from -DisableMcpServer and -EnableMcpServer apply after.
-    $enableSet = [System.Collections.Generic.HashSet[string]]::new(
-        [StringComparer]::OrdinalIgnoreCase)
-    if ($EnableMcpServer) { foreach ($s in $EnableMcpServer) { [void]$enableSet.Add($s) } }
+    try {
+        if ($null -ne $originalLocation) {
+            Set-Location -LiteralPath $ChangeDir -ErrorAction Stop
+        }
 
-    $mcpConfigPath = Join-Path (Get-CopilotHome) '.copilot' 'mcp-config.json'
-    if (Test-Path $mcpConfigPath) {
-        $mcpConfig = Get-Content $mcpConfigPath -Raw | ConvertFrom-Json
-        $cwd = (Get-Location).Path
-        foreach ($server in $mcpConfig.mcpServers.PSObject.Properties) {
-            if ($enableSet.Contains($server.Name)) { continue }
-            $autoConnect = $server.Value.autoConnect
-            # Only handle path-glob arrays -- boolean false is native lazy loading
-            if ($autoConnect -is [array]) {
-                if (-not ($autoConnect | Where-Object { $cwd -like $_ })) {
-                    $copilotArgs += '--disable-mcp-server', $server.Name
+        $copilotExe = (Get-Command copilot -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
+
+        $copilotArgs = @()
+        if (-not $NoExperimental) { $copilotArgs += '--experimental' }
+        if (-not $NoAllowAll -and -not $AllowAllTools) { $copilotArgs += '--allow-all' }
+        if ($AllowAllTools) { $copilotArgs += '--allow-all-tools' }
+
+        # Block destructive git force operations (--deny-tool takes precedence over --allow-all)
+        if (-not $NoDefaultDenyTools) {
+            $copilotArgs += @(
+                '--deny-tool', 'shell(git push --force)',
+                '--deny-tool', 'shell(git push -f)',
+                '--deny-tool', 'shell(git push --force-with-lease)',
+                '--deny-tool', 'shell(git checkout --force)',
+                '--deny-tool', 'shell(git checkout -f)',
+                '--deny-tool', 'shell(git clean --force)',
+                '--deny-tool', 'shell(git clean -f)',
+                '--deny-tool', 'shell(git reset --hard)',
+                '--deny-tool', 'shell(git commit --amend)',
+                '--deny-tool', 'shell(git commit -a --amend)',
+                '--deny-tool', 'shell(git rebase)',
+                '--deny-tool', 'shell(git rebase -i)',
+                '--deny-tool', 'shell(git rebase --interactive)',
+                '--deny-tool', 'shell(git pull)'
+            )
+        }
+
+        # Disable MCP servers based on autoConnect policy:
+        #   false        -> handled natively by the CLI (lazy/dormant)
+        #   true/absent  -> always enabled
+        #   [path globs] -> enabled only when CWD matches a pattern (custom extension)
+        # Manual overrides from -DisableMcpServer and -EnableMcpServer apply after.
+        $enableSet = [System.Collections.Generic.HashSet[string]]::new(
+            [StringComparer]::OrdinalIgnoreCase)
+        if ($EnableMcpServer) { foreach ($s in $EnableMcpServer) { [void]$enableSet.Add($s) } }
+
+        $mcpConfigPath = Join-Path (Get-CopilotHome) '.copilot' 'mcp-config.json'
+        if (Test-Path $mcpConfigPath) {
+            $mcpConfig = Get-Content $mcpConfigPath -Raw | ConvertFrom-Json
+            $cwd = (Get-Location).Path
+            foreach ($server in $mcpConfig.mcpServers.PSObject.Properties) {
+                if ($enableSet.Contains($server.Name)) { continue }
+                $autoConnect = $server.Value.autoConnect
+                # Only handle path-glob arrays -- boolean false is native lazy loading
+                if ($autoConnect -is [array]) {
+                    if (-not ($autoConnect | Where-Object { $cwd -like $_ })) {
+                        $copilotArgs += '--disable-mcp-server', $server.Name
+                    }
                 }
             }
         }
-    }
 
-    if ($DisableMcpServer) {
-        foreach ($s in $DisableMcpServer) {
-            $copilotArgs += '--disable-mcp-server', $s
+        if ($DisableMcpServer) {
+            foreach ($s in $DisableMcpServer) {
+                $copilotArgs += '--disable-mcp-server', $s
+            }
         }
-    }
 
-    # Re-enable servers disabled in the CLI's own settings for this run only.
-    if ($EnableMcpServer) {
-        foreach ($s in $EnableMcpServer) {
-            $copilotArgs += '--enable-mcp-server', $s
+        # Re-enable servers disabled in the CLI's own settings for this run only.
+        if ($EnableMcpServer) {
+            foreach ($s in $EnableMcpServer) {
+                $copilotArgs += '--enable-mcp-server', $s
+            }
         }
-    }
 
-    # Named parameters mapped to CLI flags
-    if ($Model) { $copilotArgs += '--model', $Model }
-    if ($Version) { $copilotArgs += '--prefer-version', $Version; if ($copilotArgs -notcontains '--no-auto-update') { $copilotArgs += '--no-auto-update' } }
-    if ($Agent) { $copilotArgs += '--agent', $Agent }
-    if ($ReasoningEffort) { $copilotArgs += '--reasoning-effort', $ReasoningEffort }
-    if ($AddDir) { foreach ($d in $AddDir) { $copilotArgs += '--add-dir', $d } }
-    if ($MaxAutopilotContinues) { $copilotArgs += '--max-autopilot-continues', $MaxAutopilotContinues }
-    if ($Silent) { $copilotArgs += '--silent' }
-    if ($PSBoundParameters.ContainsKey('Share')) {
-        if ($Share) { $copilotArgs += '--share', $Share } else { $copilotArgs += '--share' }
-    }
-    if ($ShareGist) { $copilotArgs += '--share-gist' }
-    if ($NoCustomInstructions) { $copilotArgs += '--no-custom-instructions' }
-    if ($AdditionalMcpConfig) { foreach ($c in $AdditionalMcpConfig) { $copilotArgs += '--additional-mcp-config', $c } }
-    if ($AllowTool) { foreach ($t in $AllowTool) { $copilotArgs += '--allow-tool', $t } }
-    if ($DenyTool) { foreach ($t in $DenyTool) { $copilotArgs += '--deny-tool', $t } }
-    if ($AllowUrl) { foreach ($u in $AllowUrl) { $copilotArgs += '--allow-url', $u } }
-    if ($DenyUrl) { foreach ($u in $DenyUrl) { $copilotArgs += '--deny-url', $u } }
-    if ($OutputFormat) { $copilotArgs += '--output-format', $OutputFormat }
-    if ($LogLevel) { $copilotArgs += '--log-level', $LogLevel }
-    if ($NoAskUser) { $copilotArgs += '--no-ask-user' }
-    if ($PluginDir) { foreach ($p in $PluginDir) { $copilotArgs += '--plugin-dir', $p } }
-    if ($SecretEnvVars) { $copilotArgs += '--secret-env-vars', ($SecretEnvVars -join ',') }
-    if ($ScreenReader) { $copilotArgs += '--screen-reader' }
-    if ($AssistedApproval) {
-        if ($NoExperimental) {
-            Write-Warning '-AssistedApproval requires experimental mode; -NoExperimental will likely prevent the assisted-approval judge from engaging.'
+        # Named parameters mapped to CLI flags
+        if ($Model) { $copilotArgs += '--model', $Model }
+        if ($Version) { $copilotArgs += '--prefer-version', $Version; if ($copilotArgs -notcontains '--no-auto-update') { $copilotArgs += '--no-auto-update' } }
+        if ($Agent) { $copilotArgs += '--agent', $Agent }
+        if ($ReasoningEffort) { $copilotArgs += '--reasoning-effort', $ReasoningEffort }
+        if ($AddDir) { foreach ($d in $AddDir) { $copilotArgs += '--add-dir', $d } }
+        if ($MaxAutopilotContinues) { $copilotArgs += '--max-autopilot-continues', $MaxAutopilotContinues }
+        if ($Silent) { $copilotArgs += '--silent' }
+        if ($PSBoundParameters.ContainsKey('Share')) {
+            if ($Share) { $copilotArgs += '--share', $Share } else { $copilotArgs += '--share' }
         }
-        $copilotArgs += '--assisted-approval'
-    }
-    if ($UsageOutputFile) { $copilotArgs += '--usage-output-file', $UsageOutputFile }
-    if ($PlainDiff) { $copilotArgs += '--plain-diff' }
-    if ($Stream) { $copilotArgs += '--stream', $Stream }
-    if ($AvailableTool) { foreach ($t in $AvailableTool) { $copilotArgs += '--available-tools', $t } }
-    if ($ExcludedTool) { foreach ($t in $ExcludedTool) { $copilotArgs += '--excluded-tools', $t } }
-    if ($LogDir) { $copilotArgs += '--log-dir', $LogDir }
-    if ($AddGitHubMcpTool) { foreach ($t in $AddGitHubMcpTool) { $copilotArgs += '--add-github-mcp-tool', $t } }
-    if ($AddGitHubMcpToolset) { foreach ($t in $AddGitHubMcpToolset) { $copilotArgs += '--add-github-mcp-toolset', $t } }
-    if ($EnableAllGitHubMcpTools) { $copilotArgs += '--enable-all-github-mcp-tools' }
-    if ($DisableBuiltinMcps) { $copilotArgs += '--disable-builtin-mcps' }
-    if ($EnableReasoningSummaries) { $copilotArgs += '--enable-reasoning-summaries' }
-    if ($SessionId) { $copilotArgs += '--session-id', $SessionId }
-    if ($NoColor) { $copilotArgs += '--no-color' }
-    if ($Banner) { $copilotArgs += '--banner' }
-    if ($NoAutoUpdate) { $copilotArgs += '--no-auto-update' }
-    if ($DisallowTempDir) { $copilotArgs += '--disallow-temp-dir' }
-    if ($Context) { $copilotArgs += '--context', $Context }
-    if ($AllowAllPaths) { $copilotArgs += '--allow-all-paths' }
-    if ($AllowAllUrls) { $copilotArgs += '--allow-all-urls' }
-    if ($EnableMemory) { $copilotArgs += '--enable-memory' }
-    if ($ChangeDir) { $copilotArgs += '-C', $ChangeDir }
-    if ($Attachment) { foreach ($a in $Attachment) { $copilotArgs += '--attachment', $a } }
-    if ($Remote) { $copilotArgs += '--remote' }
-    if ($NoRemote) { $copilotArgs += '--no-remote' }
-    if ($Mouse) { $copilotArgs += '--mouse', $Mouse }
-    if ($PSBoundParameters.ContainsKey('Connect')) {
-        if ($Connect) { $copilotArgs += '--connect', $Connect } else { $copilotArgs += '--connect' }
-    }
-    if ($MaxAiCredits) { $copilotArgs += '--max-ai-credits', $MaxAiCredits }
-    if ($AllowAllMcpServerInstructions) { $copilotArgs += '--allow-all-mcp-server-instructions' }
-    if ($BashEnv) { $copilotArgs += '--bash-env', $BashEnv }
-    if ($NoBashEnv) { $copilotArgs += '--no-bash-env' }
-    if ($RemoteExport) { $copilotArgs += '--remote-export' }
-    if ($NoRemoteExport) { $copilotArgs += '--no-remote-export' }
-    if ($ExtensionSdkPath) { $copilotArgs += '--extension-sdk-path', $ExtensionSdkPath }
-    if ($Acp) { $copilotArgs += '--acp' }
+        if ($ShareGist) { $copilotArgs += '--share-gist' }
+        if ($NoCustomInstructions) { $copilotArgs += '--no-custom-instructions' }
+        if ($AdditionalMcpConfig) { foreach ($c in $AdditionalMcpConfig) { $copilotArgs += '--additional-mcp-config', $c } }
+        if ($AllowTool) { foreach ($t in $AllowTool) { $copilotArgs += '--allow-tool', $t } }
+        if ($DenyTool) { foreach ($t in $DenyTool) { $copilotArgs += '--deny-tool', $t } }
+        if ($AllowUrl) { foreach ($u in $AllowUrl) { $copilotArgs += '--allow-url', $u } }
+        if ($DenyUrl) { foreach ($u in $DenyUrl) { $copilotArgs += '--deny-url', $u } }
+        if ($OutputFormat) { $copilotArgs += '--output-format', $OutputFormat }
+        if ($LogLevel) { $copilotArgs += '--log-level', $LogLevel }
+        if ($NoAskUser) { $copilotArgs += '--no-ask-user' }
+        if ($PluginDir) { foreach ($p in $PluginDir) { $copilotArgs += '--plugin-dir', $p } }
+        if ($SecretEnvVars) { $copilotArgs += '--secret-env-vars', ($SecretEnvVars -join ',') }
+        if ($ScreenReader) { $copilotArgs += '--screen-reader' }
+        if ($AssistedApproval) {
+            if ($NoExperimental) {
+                Write-Warning '-AssistedApproval requires experimental mode; -NoExperimental will likely prevent the assisted-approval judge from engaging.'
+            }
+            $copilotArgs += '--assisted-approval'
+        }
+        if ($UsageOutputFile) { $copilotArgs += '--usage-output-file', $UsageOutputFile }
+        if ($PlainDiff) { $copilotArgs += '--plain-diff' }
+        if ($Stream) { $copilotArgs += '--stream', $Stream }
+        if ($AvailableTool) { foreach ($t in $AvailableTool) { $copilotArgs += '--available-tools', $t } }
+        if ($ExcludedTool) { foreach ($t in $ExcludedTool) { $copilotArgs += '--excluded-tools', $t } }
+        if ($LogDir) { $copilotArgs += '--log-dir', $LogDir }
+        if ($AddGitHubMcpTool) { foreach ($t in $AddGitHubMcpTool) { $copilotArgs += '--add-github-mcp-tool', $t } }
+        if ($AddGitHubMcpToolset) { foreach ($t in $AddGitHubMcpToolset) { $copilotArgs += '--add-github-mcp-toolset', $t } }
+        if ($EnableAllGitHubMcpTools) { $copilotArgs += '--enable-all-github-mcp-tools' }
+        if ($DisableBuiltinMcps) { $copilotArgs += '--disable-builtin-mcps' }
+        if ($EnableReasoningSummaries) { $copilotArgs += '--enable-reasoning-summaries' }
+        if ($SessionId) { $copilotArgs += '--session-id', $SessionId }
+        if ($NoColor) { $copilotArgs += '--no-color' }
+        if ($Banner) { $copilotArgs += '--banner' }
+        if ($NoAutoUpdate) { $copilotArgs += '--no-auto-update' }
+        if ($DisallowTempDir) { $copilotArgs += '--disallow-temp-dir' }
+        if ($Context) { $copilotArgs += '--context', $Context }
+        if ($AllowAllPaths) { $copilotArgs += '--allow-all-paths' }
+        if ($AllowAllUrls) { $copilotArgs += '--allow-all-urls' }
+        if ($EnableMemory) { $copilotArgs += '--enable-memory' }
+        if ($ChangeDir) { $copilotArgs += '-C', $ChangeDir }
+        if ($Attachment) { foreach ($a in $Attachment) { $copilotArgs += '--attachment', $a } }
+        if ($Remote) { $copilotArgs += '--remote' }
+        if ($NoRemote) { $copilotArgs += '--no-remote' }
+        if ($Mouse) { $copilotArgs += '--mouse', $Mouse }
+        if ($PSBoundParameters.ContainsKey('Connect')) {
+            if ($Connect) { $copilotArgs += '--connect', $Connect } else { $copilotArgs += '--connect' }
+        }
+        if ($MaxAiCredits) { $copilotArgs += '--max-ai-credits', $MaxAiCredits }
+        if ($AllowAllMcpServerInstructions) { $copilotArgs += '--allow-all-mcp-server-instructions' }
+        if ($BashEnv) { $copilotArgs += '--bash-env', $BashEnv }
+        if ($NoBashEnv) { $copilotArgs += '--no-bash-env' }
+        if ($RemoteExport) { $copilotArgs += '--remote-export' }
+        if ($NoRemoteExport) { $copilotArgs += '--no-remote-export' }
+        if ($ExtensionSdkPath) { $copilotArgs += '--extension-sdk-path', $ExtensionSdkPath }
+        if ($Acp) { $copilotArgs += '--acp' }
 
-    # -Mode supersedes -Plan (backward compat: -Plan maps to -Mode plan)
-    if ($Mode) {
-        $copilotArgs += '--mode', $Mode
-    } elseif ($Plan) {
-        $copilotArgs += '--plan'
-    }
+        # -Mode supersedes -Plan (backward compat: -Plan maps to -Mode plan)
+        if ($Mode) {
+            $copilotArgs += '--mode', $Mode
+        } elseif ($Plan) {
+            $copilotArgs += '--plan'
+        }
 
-    # -Name only applies to new sessions, not resumed ones
-    $applyName = $false
-    if ($Name) {
-        if ($NoResume) {
+        # -Name only applies to new sessions, not resumed ones
+        $applyName = $false
+        if ($Name) {
+            if ($NoResume) {
+                $copilotArgs += '--name', $Name
+            } else {
+                # Defer -- only apply if we don't end up resuming
+                $applyName = $true
+            }
+        }
+
+        $isPassthrough = $Prompt -in @('update', 'help')
+        if ($isPassthrough) {
+            $passthroughArgs = @($Prompt) + @($RemainingArgs | Where-Object { $_ })
+            $Prompt = $null
+        }
+
+        # Resume-mode flags derived from the active parameter set.
+        $isNoResume     = $PSCmdlet.ParameterSetName -like '*NoResume'
+        $isResumeLatest = $PSCmdlet.ParameterSetName -like '*ResumeLatest'
+        # User-facing switch is -NoAutoResume (back-compat alias -ShowPicker); the internal
+        # parameter-set name is kept as *ShowPicker, so this match covers both.
+        $isShowPicker   = $PSCmdlet.ParameterSetName -like '*ShowPicker'
+
+        if ($ResumeSession) {
+            # Resume a specific session directly (id / id-prefix / name).
+            Write-Verbose "Resuming session: $ResumeSession"
+            $copilotArgs += '--resume', $ResumeSession
+        }
+        elseif (-not $isNoResume -and -not $isPassthrough -and -not $DeferResume -and -not $SessionId) {
+            $sessions = @(Get-CopilotResumeCandidate)
+            if ($sessions.Count -gt 0) {
+                # Named sessions are those with a real display name (not the
+                # '(no summary)' placeholder, and not blank). When a lone named
+                # session is the only real candidate, auto-resume it instead of
+                # dropping into the picker.
+                $namedSessions = @($sessions | Where-Object { -not [string]::IsNullOrWhiteSpace($_.Summary) -and $_.Summary -ne '(no summary)' })
+
+                # Sessions to list in the picker. Hide unnamed '(no summary)' stubs when
+                # named sessions exist, unless -IncludeUnnamed is set. Never empty: with
+                # no named sessions, fall back to the full list.
+                $pickerSessions = if (-not $IncludeUnnamed -and $namedSessions.Count -gt 0) { $namedSessions } else { $sessions }
+
+                $chosen = $null
+                if ($isShowPicker -and $sessions.Count -ge 1) {
+                    # -NoAutoResume (alias -ShowPicker) forces the picker whenever any session exists.
+                    $chosen = Invoke-CopilotLaunchSessionPicker -Sessions $pickerSessions -SessionSelector $SessionSelector
+                }
+                elseif ($sessions.Count -eq 1) {
+                    $chosen = $sessions[0]
+                    Write-Verbose "Resuming session: $($chosen.Summary) (last updated $($chosen.UpdatedAt.LocalDateTime))"
+                }
+                elseif ($sessions.Count -gt 1 -and $isResumeLatest) {
+                    $chosen = $sessions[0]
+                    Write-Verbose "Resuming latest session: $($chosen.Summary) (last updated $($chosen.UpdatedAt.LocalDateTime))"
+                }
+                elseif ($sessions.Count -gt 1 -and $namedSessions.Count -eq 1) {
+                    $chosen = $namedSessions[0]
+                    Write-Verbose "Resuming the only named session: $($chosen.Summary) (last updated $($chosen.UpdatedAt.LocalDateTime))"
+                }
+                elseif ($sessions.Count -gt 1) {
+                    $chosen = Invoke-CopilotLaunchSessionPicker -Sessions $pickerSessions -SessionSelector $SessionSelector
+                }
+
+                if ($chosen) { $copilotArgs += '--resume', $chosen.Id }
+            }
+        }
+
+        # Apply deferred -Name if we didn't end up resuming a session
+        if ($applyName -and $copilotArgs -notcontains '--resume') {
             $copilotArgs += '--name', $Name
+        }
+
+        # Compute the final argument vector for both the passthrough (update/help) and
+        # normal launch paths, so -PassThru and the launcher share one code path.
+        if ($isPassthrough) {
+            $finalArgs = $passthroughArgs
         } else {
-            # Defer -- only apply if we don't end up resuming
-            $applyName = $true
-        }
-    }
-
-    $isPassthrough = $Prompt -in @('update', 'help')
-    if ($isPassthrough) {
-        $passthroughArgs = @($Prompt) + @($RemainingArgs | Where-Object { $_ })
-        $Prompt = $null
-    }
-
-    # Resume-mode flags derived from the active parameter set.
-    $isNoResume     = $PSCmdlet.ParameterSetName -like '*NoResume'
-    $isResumeLatest = $PSCmdlet.ParameterSetName -like '*ResumeLatest'
-    # User-facing switch is -NoAutoResume (back-compat alias -ShowPicker); the internal
-    # parameter-set name is kept as *ShowPicker, so this match covers both.
-    $isShowPicker   = $PSCmdlet.ParameterSetName -like '*ShowPicker'
-
-    if ($ResumeSession) {
-        # Resume a specific session directly (id / id-prefix / name).
-        Write-Verbose "Resuming session: $ResumeSession"
-        $copilotArgs += '--resume', $ResumeSession
-    }
-    elseif (-not $isNoResume -and -not $isPassthrough -and -not $DeferResume -and -not $SessionId) {
-        $sessions = @(Get-CopilotResumeCandidate)
-        if ($sessions.Count -gt 0) {
-            # Named sessions are those with a real display name (not the
-            # '(no summary)' placeholder, and not blank). When a lone named
-            # session is the only real candidate, auto-resume it instead of
-            # dropping into the picker.
-            $namedSessions = @($sessions | Where-Object { -not [string]::IsNullOrWhiteSpace($_.Summary) -and $_.Summary -ne '(no summary)' })
-
-            # Sessions to list in the picker. Hide unnamed '(no summary)' stubs when
-            # named sessions exist, unless -IncludeUnnamed is set. Never empty: with
-            # no named sessions, fall back to the full list.
-            $pickerSessions = if (-not $IncludeUnnamed -and $namedSessions.Count -gt 0) { $namedSessions } else { $sessions }
-
-            $chosen = $null
-            if ($isShowPicker -and $sessions.Count -ge 1) {
-                # -NoAutoResume (alias -ShowPicker) forces the picker whenever any session exists.
-                $chosen = Invoke-CopilotLaunchSessionPicker -Sessions $pickerSessions -SessionSelector $SessionSelector
-            }
-            elseif ($sessions.Count -eq 1) {
-                $chosen = $sessions[0]
-                Write-Verbose "Resuming session: $($chosen.Summary) (last updated $($chosen.UpdatedAt.LocalDateTime))"
-            }
-            elseif ($sessions.Count -gt 1 -and $isResumeLatest) {
-                $chosen = $sessions[0]
-                Write-Verbose "Resuming latest session: $($chosen.Summary) (last updated $($chosen.UpdatedAt.LocalDateTime))"
-            }
-            elseif ($sessions.Count -gt 1 -and $namedSessions.Count -eq 1) {
-                $chosen = $namedSessions[0]
-                Write-Verbose "Resuming the only named session: $($chosen.Summary) (last updated $($chosen.UpdatedAt.LocalDateTime))"
-            }
-            elseif ($sessions.Count -gt 1) {
-                $chosen = Invoke-CopilotLaunchSessionPicker -Sessions $pickerSessions -SessionSelector $SessionSelector
+            if ($Prompt) {
+                $copilotArgs += '--autopilot', '-p', $Prompt
+            } elseif ($Interactive) {
+                $copilotArgs += '--interactive', $Interactive
             }
 
-            if ($chosen) { $copilotArgs += '--resume', $chosen.Id }
-        }
-    }
+            if ($RemainingArgs) {
+                $copilotArgs += $RemainingArgs
+            }
 
-    # Apply deferred -Name if we didn't end up resuming a session
-    if ($applyName -and $copilotArgs -notcontains '--resume') {
-        $copilotArgs += '--name', $Name
-    }
-
-    # Compute the final argument vector for both the passthrough (update/help) and
-    # normal launch paths, so -PassThru and the launcher share one code path.
-    if ($isPassthrough) {
-        $finalArgs = $passthroughArgs
-    } else {
-        if ($Prompt) {
-            $copilotArgs += '--autopilot', '-p', $Prompt
-        } elseif ($Interactive) {
-            $copilotArgs += '--interactive', $Interactive
+            $finalArgs = $copilotArgs
         }
 
-        if ($RemainingArgs) {
-            $copilotArgs += $RemainingArgs
+        # Always return the resolved launch plan; this helper never launches.
+        return [pscustomobject]@{
+            PSTypeName  = 'CopilotLaunchPlan'
+            Exe         = $copilotExe
+            Args        = $finalArgs
+            Passthrough = [bool]$isPassthrough
         }
-
-        $finalArgs = $copilotArgs
-    }
-
-    # Always return the resolved launch plan; this helper never launches.
-    return [pscustomobject]@{
-        PSTypeName  = 'CopilotLaunchPlan'
-        Exe         = $copilotExe
-        Args        = $finalArgs
-        Passthrough = [bool]$isPassthrough
+    } finally {
+        if ($null -ne $originalLocation) {
+            Set-Location -LiteralPath $originalLocation.Path -ErrorAction Stop
+        }
     }
 }

@@ -313,8 +313,14 @@ function Start-Copilot {
         experimental features; use this switch to run with them off.
 
     .PARAMETER ChangeDir
-        Change the working directory before doing anything else (maps to -C).
-        Aliased as -C.
+        Use this directory for session/branch selection and MCP path policy,
+        including -PassThru and -WhatIf. Aliased as -C. Relative paths resolve
+        from the caller's location; invalid/non-filesystem directories terminate
+        before launch. Planning restores the caller's location before returning,
+        confirmation, or execution, including on selection errors.
+        Normal launches pass the absolute filesystem path as native -C without
+        changing the caller's location. Help/update passthrough arguments remain
+        unchanged.
 
     .PARAMETER PassThru
         Do not launch. Compute the full launch plan — including the resolved
@@ -570,6 +576,7 @@ function Start-Copilot {
         [switch]$NoExperimental,
 
         [Alias('C')]
+        [ValidateNotNullOrEmpty()]
         [string]$ChangeDir,
 
         [switch]$PassThru,
