@@ -94,6 +94,57 @@ BeforeAll {
     }
 }
 
+Describe 'Worktree predictor literal arguments' -Tag 'PredictorLiteralArguments' {
+    BeforeAll {
+        $predictionRoot = (New-Item -ItemType Directory -Path (
+            Join-Path $TestDrive "predictor-literals-$([guid]::NewGuid().ToString('N'))"
+        ) -ErrorAction Stop).FullName
+        $predictionSource = Join-Path $repoRoot 'modules' 'Shmuelie.Git' 'Predictor'
+        Copy-Item -LiteralPath @(
+            Join-Path $predictionSource 'WorktreePredictor.cs'
+            Join-Path $predictionSource 'WorktreePredictor.csproj'
+        ) -Destination $predictionRoot -ErrorAction Stop
+        $predictionBin = Join-Path $predictionRoot 'bin'
+        $dotnet = (Get-Command dotnet -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
+        $previousBuildLogPath = $env:MSBUILDDEBUGPATH
+        try {
+            $env:MSBUILDDEBUGPATH = Join-Path $predictionRoot 'build-logs'
+            $buildOutput = & $dotnet build (Join-Path $predictionRoot 'WorktreePredictor.csproj') `
+                -c Release -o $predictionBin --nologo -v q --disable-build-servers -p:UseSharedCompilation=false 2>&1
+            $buildExitCode = $LASTEXITCODE
+        } finally {
+            $env:MSBUILDDEBUGPATH = $previousBuildLogPath
+        }
+        if ($buildExitCode -ne 0) {
+            throw "Predictor source build failed (exit $buildExitCode): $($buildOutput -join [Environment]::NewLine)"
+        }
+        $predictionPwsh = (Get-Command pwsh -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
+    }
+
+    AfterAll {
+        if ($predictionRoot -and (Test-Path -LiteralPath $predictionRoot)) {
+            if ((Split-Path $predictionRoot -Parent) -cne $TestDrive) {
+                throw 'Refusing cleanup outside the owned prediction TestDrive.'
+            }
+            Remove-Item -LiteralPath $predictionRoot -Recurse -Force -ErrorAction Stop
+        }
+    }
+
+    It 'parses real cached-branch predictions as unchanged literal arguments without executing them' {
+        $output = & $predictionPwsh -NoProfile -NonInteractive -File (
+            Join-Path $PSScriptRoot 'fixtures' 'Test-WorktreePrediction.ps1'
+        ) -AssemblyPath (Join-Path $predictionBin 'WorktreePredictor.dll') 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            throw "Isolated prediction test failed (exit $LASTEXITCODE): $($output -join [Environment]::NewLine)"
+        }
+        $result = ($output -join "`n") | ConvertFrom-Json
+        $result.Failed | Should -Be 0
+        $result.LiteralCases | Should -Be 175
+        $result.CompatibilityCases | Should -Be 17
+        $result.Passed | Should -Be 192
+    }
+}
+
 Describe 'Worktree predictor event ownership' -Tag 'PredictorEventOwnership' {
     BeforeAll {
         $lifecycleRoot = (New-Item -ItemType Directory -Path (
