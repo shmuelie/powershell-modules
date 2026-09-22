@@ -95,9 +95,14 @@ Highlights:
 - `Start-Copilot -PassThru` returns the resolved launch plan without launching,
   so other tools can reuse the built arguments (`-DeferResume` also skips the
   resume picker so an overlay owns session selection).
+- `-ChangeDir` / `-C` on `Start-Copilot` and `Get-CopilotLaunchPlan` selects the
+  effective directory for sessions, branch preference, and MCP policy before
+  planning. Relative paths resolve from the caller; normal plans forward an
+  absolute native `-C`. Invalid directories fail before launch, and the caller's
+  location is restored on success, errors, and declined confirmation.
 - Path-aware MCP startup: a server's `autoConnect` value (`true`/absent, `false`,
   or an array of path globs) decides whether `Start-Copilot` enables it for the
-  current directory. See the module README.
+  effective launch directory. See the module README.
 - Session tools: `Get-CopilotSession`, `Resume-CopilotSession`,
   `Merge-CopilotSession`, `Compress-CopilotSession`, `Repair-CopilotSessionEvents`.
 - Plugin, marketplace, and MCP management wrap the public `copilot` CLI.

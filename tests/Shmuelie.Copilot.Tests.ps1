@@ -2084,6 +2084,301 @@ Describe 'Get-CopilotLaunchPlan' {
     }
 }
 
+Describe 'Copilot effective launch directory' -Tag 'EffectiveLaunchDirectory' {
+    BeforeAll {
+        $script:DirectoryPlanCommand = Get-Command 'Shmuelie.Copilot\Get-CopilotLaunchPlan' -ListImported -ErrorAction Stop
+        & (Get-Module Shmuelie.Copilot) {
+            function script:Invoke-CopilotDirectoryTestEngine {
+                $script:DirectoryNativeCalls.Add([pscustomobject]@{
+                    Args = @($args | ForEach-Object { $_ })
+                    Cwd = (Get-Location).Path
+                })
+                if ($script:DirectoryEngineFailure) { throw 'Synthetic launch failure.' }
+                $global:LASTEXITCODE = 0
+            }
+        }
+
+        function Invoke-DirectoryTestPlan {
+            param([string]$Entry, [hashtable]$Options)
+            if ($Entry -eq 'Start-Copilot') {
+                Start-Copilot -PassThru @Options
+            } else {
+                Get-CopilotLaunchPlan @Options
+            }
+        }
+    }
+
+    BeforeEach {
+        $caseRoot = Join-Path $TestDrive ([guid]::NewGuid().ToString())
+        $testHome = Join-Path $caseRoot 'home'
+        $directoryA = Join-Path $caseRoot 'A'
+        $relativeB = 'B [target]'
+        $directoryB = Join-Path $directoryA $relativeB
+        $sessionRoot = Join-Path $testHome '.copilot' 'session-state'
+        New-Item -ItemType Directory -Path $directoryB -Force -ErrorAction Stop | Out-Null
+        $null = New-CopilotSessionState -SessionRoot $sessionRoot -Id 'session-a' -Cwd $directoryA -Summary 'Session A'
+        $sessionB = New-CopilotSessionState -SessionRoot $sessionRoot -Id 'session-b' -Cwd $directoryB -Summary 'Session B'
+        $otherB = New-CopilotSessionState -SessionRoot $sessionRoot -Id 'other-b' -Cwd $directoryB -Summary 'Other branch B' -UpdatedAt '2026-08-13T22:00:00Z'
+        Add-Content -LiteralPath (Join-Path $sessionRoot 'session-a' 'workspace.yaml') -Value 'branch: branch-a'
+        Add-Content -LiteralPath (Join-Path $sessionB 'workspace.yaml') -Value 'branch: branch-b'
+        Add-Content -LiteralPath (Join-Path $otherB 'workspace.yaml') -Value 'branch: branch-a'
+        $mcpPath = Join-Path $testHome '.copilot' 'mcp-config.json'
+        @{
+            mcpServers = @{
+                'only-a' = @{ autoConnect = @([WildcardPattern]::Escape($directoryA)) }
+                'only-b' = @{ autoConnect = @([WildcardPattern]::Escape($directoryB) + '*') }
+                'lazy' = @{ autoConnect = $false }
+                'always' = @{ autoConnect = $true }
+            }
+        } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $mcpPath
+        $originalMcp = Get-Content -LiteralPath $mcpPath -Raw
+        $script:DirectoryGitLocations = [System.Collections.Generic.List[string]]::new()
+        $script:DirectoryDiscoveryLocations = [System.Collections.Generic.List[string]]::new()
+        Mock -ModuleName Shmuelie.Copilot Get-CopilotHome { $testHome }
+        Mock -ModuleName Shmuelie.Copilot Get-Command { throw "Unexpected discovery: $Name" }
+        Mock -ModuleName Shmuelie.Copilot Get-Command {
+            $script:DirectoryDiscoveryLocations.Add((Get-Location).Path)
+            [pscustomobject]@{ Source = 'Invoke-CopilotDirectoryTestEngine' }
+        } -ParameterFilter { $Name.Count -eq 1 -and $Name[0] -eq 'copilot' -and $CommandType -eq 'Application' }
+        Mock -ModuleName Shmuelie.Copilot Get-Command {
+            $script:DirectoryPlanCommand
+        } -ParameterFilter { $Name.Count -eq 1 -and $Name[0] -eq 'Get-CopilotLaunchPlan' }
+        Mock -ModuleName Shmuelie.Copilot git {
+            $script:DirectoryGitLocations.Add((Get-Location).Path)
+            if (($args -join ' ') -ne 'symbolic-ref --short HEAD') { throw 'Unexpected git arguments.' }
+            if ((Get-Location).Path -eq $directoryB) { 'branch-b' }
+            elseif ((Get-Location).Path -eq $directoryA) { 'branch-a' }
+            else { throw 'Unexpected git directory.' }
+        }
+        Mock -ModuleName Shmuelie.Copilot Invoke-CopilotSessionChoice { throw 'Unexpected host input.' }
+        Mock -ModuleName Shmuelie.Copilot Read-Host { throw 'Unexpected console input.' }
+        & (Get-Module Shmuelie.Copilot) {
+            $script:DirectoryNativeCalls = [System.Collections.Generic.List[object]]::new()
+            $script:DirectoryEngineFailure = $false
+        }
+        $callerLocation = Get-Location
+        Set-Location -LiteralPath $directoryA
+    }
+
+    AfterEach {
+        try {
+            (Get-Location).Path | Should -Be $directoryA
+            Get-Content -LiteralPath $mcpPath -Raw | Should -BeExactly $originalMcp
+            Should -Invoke -ModuleName Shmuelie.Copilot Invoke-CopilotSessionChoice -Times 0 -Exactly
+            Should -Invoke -ModuleName Shmuelie.Copilot Read-Host -Times 0 -Exactly
+        } finally {
+            Set-Location -LiteralPath $callerLocation.Path
+        }
+    }
+
+    AfterAll {
+        & (Get-Module Shmuelie.Copilot) {
+            Remove-Item -LiteralPath Function:Invoke-CopilotDirectoryTestEngine
+            Remove-Variable -Name DirectoryNativeCalls, DirectoryEngineFailure -Scope Script
+        }
+    }
+
+    Context '<Entry>' -ForEach @(
+        @{ Entry = 'Get-CopilotLaunchPlan' }
+        @{ Entry = 'Start-Copilot' }
+    ) {
+        It 'uses B for discovery, branch preference and MCP globs with <Kind>' -ForEach @(
+            @{ Kind = 'absolute ChangeDir'; Relative = $false; Alias = $false }
+            @{ Kind = 'relative ChangeDir'; Relative = $true; Alias = $false }
+            @{ Kind = 'absolute C alias'; Relative = $false; Alias = $true }
+            @{ Kind = 'relative C alias'; Relative = $true; Alias = $true }
+        ) {
+            $options = @{ SessionSelector = { throw 'Branch preference should leave one candidate.' } }
+            $options[$(if ($Alias) { 'C' } else { 'ChangeDir' })] = if ($Relative) { $relativeB } else { $directoryB }
+            $plan = Invoke-DirectoryTestPlan -Entry $Entry -Options $options
+            $plan.Args[[array]::IndexOf($plan.Args, '--resume') + 1] | Should -Be 'session-b'
+            $plan.Args[[array]::IndexOf($plan.Args, '-C') + 1] | Should -Be $directoryB
+            @($plan.Args | Where-Object { $_ -eq '-C' }) | Should -HaveCount 1
+            $plan.Args | Should -Contain 'only-a'
+            $plan.Args | Should -Not -Contain 'only-b'
+            $plan.Args | Should -Not -Contain 'lazy'
+            $plan.Args | Should -Not -Contain 'always'
+            Should -Invoke -ModuleName Shmuelie.Copilot git -Times 1 -Exactly
+            $script:DirectoryGitLocations.ToArray() | Should -Be @($directoryB)
+            Should -Invoke -ModuleName Shmuelie.Copilot Get-Command -Times 1 -Exactly -ParameterFilter {
+                $Name[0] -eq 'copilot'
+            }
+            $script:DirectoryDiscoveryLocations.ToArray() | Should -Be @($directoryB)
+        }
+
+        It 'keeps current-directory behavior when ChangeDir is omitted' {
+            $plan = Invoke-DirectoryTestPlan -Entry $Entry -Options @{}
+            $plan.Args[[array]::IndexOf($plan.Args, '--resume') + 1] | Should -Be 'session-a'
+            $plan.Args | Should -Not -Contain '-C'
+            $plan.Args | Should -Contain 'only-b'
+            $plan.Args | Should -Not -Contain 'only-a'
+        }
+
+        It 'runs a forced selector in B with canonical candidates and preserves arguments' {
+            $options = @{
+                ChangeDir = $relativeB
+                NoAutoResume = $true
+                Model = 'test-model'
+                Prompt = 'test prompt'
+                AddDir = './extra'
+                AdditionalMcpConfig = '@./extra-mcp.json'
+                RemainingArgs = @('--custom-flag', 'literal value')
+                EnableMcpServer = 'only-a'
+                DisableMcpServer = 'only-b'
+                SessionSelector = {
+                    param([object[]]$Sessions)
+                    (Get-Location).Path | Should -Be $directoryB
+                    $Sessions | Should -HaveCount 1
+                    $Sessions[0].Id | Should -Be 'session-b'
+                    $Sessions[0].Cwd | Should -Be $directoryB
+                    $Sessions[0].Cwd = 'ignored metadata'
+                    $Sessions[0]
+                }
+            }
+            $plan = Invoke-DirectoryTestPlan -Entry $Entry -Options $options
+            $options.Remove('NoAutoResume')
+            $options.Remove('SessionSelector')
+            $options.ResumeSession = 'session-b'
+            $baseline = Invoke-DirectoryTestPlan -Entry $Entry -Options $options
+            $plan.Args | Should -Be $baseline.Args
+            $plan.Args[[array]::IndexOf($plan.Args, '--add-dir') + 1] | Should -Be './extra'
+            $plan.Args[[array]::IndexOf($plan.Args, '--additional-mcp-config') + 1] | Should -Be '@./extra-mcp.json'
+            $plan.Args[-2..-1] | Should -Be @('--custom-flag', 'literal value')
+        }
+
+        It 'preserves <Kind> without calling the selector' -ForEach @(
+            @{ Kind = 'explicit resume'; Options = @{ ResumeSession = 'explicit session' }; Resume = 'explicit session' }
+            @{ Kind = 'explicit resume with deferred selection'; Options = @{ ResumeSession = 'explicit session'; DeferResume = $true }; Resume = 'explicit session' }
+            @{ Kind = 'NoResume'; Options = @{ NoResume = $true }; Resume = $null }
+            @{ Kind = 'DeferResume'; Options = @{ DeferResume = $true }; Resume = $null }
+            @{ Kind = 'SessionId'; Options = @{ SessionId = 'assigned-id' }; Resume = $null }
+            @{ Kind = 'ResumeLatest'; Options = @{ ResumeLatest = $true }; Resume = 'session-b' }
+        ) {
+            $options = $Options.Clone()
+            $options.ChangeDir = $relativeB
+            $options.SessionSelector = { throw 'Unexpected selector.' }
+            $plan = Invoke-DirectoryTestPlan -Entry $Entry -Options $options
+            if ($Resume) { $plan.Args[[array]::IndexOf($plan.Args, '--resume') + 1] | Should -Be $Resume }
+            else { $plan.Args | Should -Not -Contain '--resume' }
+            $plan.Args | Should -Contain 'only-a'
+            $plan.Args | Should -Not -Contain 'only-b'
+        }
+
+        It 'preserves <Prompt> passthrough arguments' -ForEach @(
+            @{ Prompt = 'help' }
+            @{ Prompt = 'update' }
+        ) {
+            $plan = Invoke-DirectoryTestPlan -Entry $Entry -Options @{
+                ChangeDir = $relativeB; Prompt = $Prompt; RemainingArgs = @('--native-option', 'value')
+                SessionSelector = { throw 'Unexpected selector.' }
+            }
+            $plan.Passthrough | Should -BeTrue
+            $plan.Args | Should -Be @($Prompt, '--native-option', 'value')
+            Should -Invoke -ModuleName Shmuelie.Copilot git -Times 0 -Exactly
+        }
+
+        It 'preserves null selector new-session semantics and restores the location' {
+            $plan = Invoke-DirectoryTestPlan -Entry $Entry -Options @{
+                ChangeDir = $relativeB; NoAutoResume = $true; Name = 'New session'
+                SessionSelector = { (Get-Location).Path | Should -Be $directoryB; $null }
+            }
+            $plan.Args | Should -Not -Contain '--resume'
+            $plan.Args[[array]::IndexOf($plan.Args, '--name') + 1] | Should -Be 'New session'
+        }
+
+        It 'retains B candidates in newest-first order when no branch matches' {
+            Mock -ModuleName Shmuelie.Copilot git { 'unmatched-branch' }
+            $plan = Invoke-DirectoryTestPlan -Entry $Entry -Options @{
+                ChangeDir = $relativeB
+                SessionSelector = {
+                    param([object[]]$Sessions)
+                    (Get-Location).Path | Should -Be $directoryB
+                    $Sessions.Id | Should -Be @('other-b', 'session-b')
+                    $Sessions[1]
+                }
+            }
+            $plan.Args[[array]::IndexOf($plan.Args, '--resume') + 1] | Should -Be 'session-b'
+        }
+
+        It 'restores the location after <Kind> selection failure under Continue' -ForEach @(
+            @{ Kind = 'exception'; Selector = { throw 'Selector failure.' } }
+            @{ Kind = 'invalid result'; Selector = { 'not a candidate' } }
+            @{ Kind = 'nonterminating error'; Selector = { Write-Error 'Selector failure.' -ErrorAction Continue } }
+        ) {
+            { Invoke-DirectoryTestPlan -Entry $Entry -Options @{
+                ChangeDir = $relativeB; NoAutoResume = $true; SessionSelector = $Selector; ErrorAction = 'Continue'
+            } } | Should -Throw
+            @(& (Get-Module Shmuelie.Copilot) { $script:DirectoryNativeCalls.ToArray() }) | Should -HaveCount 0
+        }
+
+        It 'restores the location after executable discovery fails' {
+            Mock -ModuleName Shmuelie.Copilot Get-Command { throw 'Synthetic discovery failure.' } -ParameterFilter { $Name[0] -eq 'copilot' }
+            { Invoke-DirectoryTestPlan -Entry $Entry -Options @{ ChangeDir = $relativeB; ErrorAction = 'Continue' } } |
+                Should -Throw '*Synthetic discovery failure*'
+        }
+
+        It 'restores the location after MCP configuration reading fails' {
+            Mock -ModuleName Shmuelie.Copilot Get-Content { throw 'Synthetic MCP read failure.' } -ParameterFilter { $Path -eq $mcpPath }
+            { Invoke-DirectoryTestPlan -Entry $Entry -Options @{ ChangeDir = $relativeB; ErrorAction = 'Continue' } } |
+                Should -Throw '*Synthetic MCP read failure*'
+        }
+    }
+
+    It 'rejects <Kind> before planning or launching under Continue' -ForEach @(
+        @{ Kind = 'missing directory'; Target = 'missing' }
+        @{ Kind = 'file'; Target = 'file' }
+        @{ Kind = 'provider path'; Target = 'provider' }
+        @{ Kind = 'empty path'; Target = 'empty' }
+        @{ Kind = 'null path'; Target = 'null' }
+    ) {
+        $invalidPath = switch ($Target) {
+            missing { Join-Path $directoryA 'missing' }
+            file { $mcpPath }
+            provider { 'Env:' }
+            empty { '' }
+            null { $null }
+        }
+        foreach ($entry in 'Get-CopilotLaunchPlan', 'Start-Copilot') {
+            { & $entry -ChangeDir $invalidPath -ErrorAction Continue } | Should -Throw
+        }
+        Should -Invoke -ModuleName Shmuelie.Copilot Get-CopilotHome -Times 0 -Exactly
+        Should -Invoke -ModuleName Shmuelie.Copilot Get-Command -Times 0 -Exactly -ParameterFilter { $Name[0] -eq 'copilot' }
+        @(& (Get-Module Shmuelie.Copilot) { $script:DirectoryNativeCalls.ToArray() }) | Should -HaveCount 0
+    }
+
+    It 'keeps WhatIf noninteractive while applying B MCP policy' {
+        $plan = Start-Copilot -C $relativeB -WhatIf -PassThru -NoAutoResume -SessionSelector { throw 'Unexpected selector.' }
+        $plan.Args | Should -Not -Contain '--resume'
+        $plan.Args | Should -Contain 'only-a'
+        $plan.Args | Should -Not -Contain 'only-b'
+        $explicit = Start-Copilot -C $relativeB -WhatIf -PassThru -ResumeSession 'explicit-id'
+        $explicit.Args[[array]::IndexOf($explicit.Args, '--resume') + 1] | Should -Be 'explicit-id'
+        Start-Copilot -C $relativeB -WhatIf -NoAutoResume -SessionSelector { throw 'Unexpected selector.' }
+        Should -Invoke -ModuleName Shmuelie.Copilot git -Times 0 -Exactly
+        @(& (Get-Module Shmuelie.Copilot) { $script:DirectoryNativeCalls.ToArray() }) | Should -HaveCount 0
+    }
+
+    It 'launches only the capture helper with one absolute C on <Outcome>' -ForEach @(
+        @{ Outcome = 'success'; Failure = $false }
+        @{ Outcome = 'error'; Failure = $true }
+    ) {
+        & (Get-Module Shmuelie.Copilot) { param($Failure) $script:DirectoryEngineFailure = $Failure } $Failure
+        if ($Failure) {
+            { Start-Copilot -C $relativeB -Confirm:$false } | Should -Throw '*Synthetic launch failure*'
+        } else {
+            Start-Copilot -C $relativeB -Confirm:$false
+        }
+        $calls = @(& (Get-Module Shmuelie.Copilot) { $script:DirectoryNativeCalls.ToArray() })
+        $calls | Should -HaveCount 1
+        $calls[0].Cwd | Should -Be $directoryA
+        $calls[0].Args[[array]::IndexOf($calls[0].Args, '--resume') + 1] | Should -Be 'session-b'
+        @($calls[0].Args | Where-Object { $_ -eq '-C' }) | Should -HaveCount 1
+        $nativeDirectory = $calls[0].Args[[array]::IndexOf($calls[0].Args, '-C') + 1]
+        [IO.Path]::IsPathFullyQualified($nativeDirectory) | Should -BeTrue
+        [IO.Path]::GetFullPath($nativeDirectory, $calls[0].Cwd) | Should -Be $directoryB
+    }
+}
+
 Describe 'Copilot pluggable session selector' {
     BeforeAll {
         $script:SelectorLaunchPlanCommand = Get-Command 'Shmuelie.Copilot\Get-CopilotLaunchPlan' -ListImported -ErrorAction Stop
@@ -2960,6 +3255,65 @@ Describe 'Copilot native host selection' -Tag 'NativeHostSelection' {
         $confirmation | Should -HaveCount 1
         $confirmation[0].Choices.Label | Should -Contain '&No'
         $confirmation[0].Message | Should -Match 'Execute|Resume Copilot'
+    }
+
+    It 'restores ChangeDir after host <Label> in both planning entrypoints' -ForEach @(
+        @{ Label = 'new session'; Answers = @(2); Failure = $null; ExpectedError = $false }
+        @{ Label = 'invalid choice'; Answers = @(-1); Failure = $null; ExpectedError = $true }
+        @{ Label = 'unavailable input'; Answers = @(); Failure = $null; ExpectedError = $true }
+        @{ Label = 'cancellation'; Answers = @(); Failure = [OperationCanceledException]::new('Synthetic cancellation.'); ExpectedError = $true }
+    ) {
+        foreach ($command in @(
+            {
+                $destination = Join-Path $Scratch 'child [folder]'
+                $null = [IO.Directory]::CreateDirectory($destination)
+                Get-CopilotLaunchPlan -C 'child [folder]' -NoAutoResume -ErrorAction Continue
+            },
+            {
+                $destination = Join-Path $Scratch 'child [folder]'
+                $null = [IO.Directory]::CreateDirectory($destination)
+                Start-Copilot -PassThru -C 'child [folder]' -NoAutoResume -ErrorAction Continue
+            }
+        )) {
+            $result = Invoke-CopilotPromptCase -Command $command -Answers $Answers -Failure $Failure
+            $result.Location | Should -Be $TestDrive
+            $result.NativeCalls | Should -HaveCount 0
+            $result.HostUI.Calls | Should -HaveCount 1
+            $result.HostUI.OtherInputCalls | Should -Be 0
+            if ($ExpectedError) {
+                $result.Error | Should -Not -BeNullOrEmpty
+                $result.Output | Should -HaveCount 0
+            } else {
+                $result.Error | Should -BeNullOrEmpty
+                $result.Output[0].Args | Should -Not -Contain '--resume'
+                $result.Output[0].Args[[array]::IndexOf($result.Output[0].Args, '-C') + 1] |
+                    Should -Be (Join-Path $TestDrive 'child [folder]')
+            }
+        }
+    }
+
+    It 'restores ChangeDir around <Label> confirmation and replanning' -ForEach @(
+        @{ Label = 'declined'; Answers = @(2); ExpectedCalls = 1; NativeCount = 0 }
+        @{ Label = 'approved'; Answers = @(0, 1); ExpectedCalls = 2; NativeCount = 1 }
+    ) {
+        $result = Invoke-CopilotPromptCase -Answers $Answers -Command {
+            $destination = Join-Path $Scratch 'child [folder]'
+            $null = [IO.Directory]::CreateDirectory($destination)
+            Start-Copilot -C 'child [folder]' -Confirm
+        }
+        $result.Location | Should -Be $TestDrive
+        $result.HostUI.Calls | Should -HaveCount $ExpectedCalls
+        $result.HostUI.Calls[0].Choices.Label | Should -Contain '&Yes'
+        $result.NativeCalls | Should -HaveCount $NativeCount
+        if ($NativeCount) {
+            $result.Error.Exception.Message | Should -Be 'Native execution blocked by fixture.'
+            $result.NativeCalls[0].Cwd | Should -Be $TestDrive
+            $result.NativeCalls[0].Args | Should -Contain 'older-id'
+            $result.NativeCalls[0].Args[[array]::IndexOf($result.NativeCalls[0].Args, '-C') + 1] |
+                Should -Be (Join-Path $TestDrive 'child [folder]')
+        } else {
+            $result.Error | Should -BeNullOrEmpty
+        }
     }
 }
 
