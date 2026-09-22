@@ -67,6 +67,16 @@ stay unchanged, while names needing quotes are single-quoted with embedded quote
 escaped. For example, `feature/quote'branch` is suggested as
 `'feature/quote''branch'`, and `$` in a branch name stays literal.
 
+## Native Git tab completion
+
+Importing the module registers context-aware argument completion for `git`.
+File paths, refs and other values containing PowerShell-sensitive characters
+are inserted as single-quoted literal arguments, with embedded apostrophes
+escaped. Spaces, dollar signs and backticks remain part of the value rather than
+splitting arguments or introducing PowerShell expressions. Completion lists still
+display the original names; simple names and option completions remain unquoted.
+Completion only queries Git and never executes the suggested command.
+
 ## Worktree creation: navigation and migration
 
 **Breaking change:** `New-Worktree` and `Add-Worktree` now enter the successfully

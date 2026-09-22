@@ -12,6 +12,10 @@ Versions change only when a release is cut; unreleased work stays under
   numeric-looking names. Existing-worktree and checkoutable-branch suggestions
   retain typed commands, flags, casing, substring matching and ordinary bare
   branch names. (#266)
+- Native Git tab completion inserts shell-sensitive filenames and refs as one
+  literal PowerShell argument, preserving spaces, apostrophes, dollar signs and
+  backticks without evaluation. Display names, simple completions, options and
+  existing Git status parsing are unchanged. (#264)
 
 ## [0.10.2] - 2026-09-18
 
