@@ -6,6 +6,14 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+### Fixed
+- `Get-CopilotLaunchPlan` and `Start-Copilot` now apply `-ChangeDir` / `-C`
+  before session, branch, and MCP path-policy planning. Relative paths resolve
+  from the caller's location and normal plans forward an absolute native `-C`
+  path. Invalid directories terminate before launch; planning restores the
+  caller's location even on errors, without changing selection, confirmation,
+  preview, or help/update passthrough contracts. (#283)
+
 ## [0.5.0] - 2026-09-18
 
 ### Changed
