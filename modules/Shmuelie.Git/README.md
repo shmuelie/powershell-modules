@@ -61,7 +61,11 @@ predictor binary imported by this module is removed with it; an already register
 predictor owned by the caller is left loaded and registered.
 
 Suggestions use substring (not prefix) matching, so a middle fragment like `wim`
-surfaces `user/alex/wim-work`.
+surfaces `user/alex/wim-work`. The typed command, flags and casing are preserved.
+Branch names are emitted as one literal PowerShell argument: ordinary bare names
+stay unchanged, while names needing quotes are single-quoted with embedded quotes
+escaped. For example, `feature/quote'branch` is suggested as
+`'feature/quote''branch'`, and `$` in a branch name stays literal.
 
 ## Native Git tab completion
 
