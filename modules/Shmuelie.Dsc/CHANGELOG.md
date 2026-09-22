@@ -6,6 +6,14 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+### Fixed
+- `CopilotMarketplace.Set()` passes only `Repository` to the native
+  `copilot plugin marketplace add <source>` command. `Name` is the source
+  manifest's actual registered identity used by `Test()` and `Get()`, not a
+  custom registration alias. Document source formats and presence-only
+  convergence; retain shell-safe validation and native failure handling.
+  (Fixes #261.)
+
 ## [0.1.1] - 2026-09-18
 
 ### Fixed

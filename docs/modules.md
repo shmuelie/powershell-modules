@@ -187,7 +187,9 @@ Highlights:
 - `SavePSResource` saves a PowerShell module to a local path; `SymbolicLink`
   creates and verifies symbolic links.
 - `CopilotPlugin` and `CopilotMarketplace` install GitHub Copilot CLI plugins
-  and register marketplaces.
+  and register marketplaces. `CopilotMarketplace.Repository` is the single
+  registration source; `Name` must match that source's marketplace manifest
+  name for `Test()` and `Get()` presence checks, not a custom alias.
 - `UvTool` installs a Python tool via `uv tool install`.
 
 ## Shmuelie.VisualStudio
