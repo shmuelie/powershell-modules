@@ -4,6 +4,16 @@ BeforeAll {
     $repoRoot = Split-Path (Split-Path $PSCommandPath -Parent) -Parent
     $script:ModuleManifest = [System.IO.Path]::Combine($repoRoot, 'modules', 'Shmuelie.Dsc', 'Shmuelie.Dsc.psd1')
     Import-Module $script:ModuleManifest -Force
+    InModuleScope Shmuelie.Dsc {
+        function script:copilot {
+            param([Parameter(ValueFromRemainingArguments)][string[]]$Arguments)
+            throw 'Real Copilot invocation is forbidden.'
+        }
+        function script:uv {
+            param([Parameter(ValueFromRemainingArguments)][string[]]$Arguments)
+            throw 'Real uv invocation is forbidden.'
+        }
+    }
 }
 
 AfterAll {
@@ -692,32 +702,115 @@ Describe 'CopilotPlugin' -Tag 'DscDiscovery' {
 }
 
 Describe 'CopilotMarketplace' -Tag 'DscDiscovery' {
+    BeforeEach {
+        Mock -ModuleName Shmuelie.Dsc copilot { throw "Unexpected Copilot operation: $($Arguments -join ' ')" }
+    }
+
     It 'detects a registered marketplace by whole-token match and avoids substring false positives' {
         InModuleScope Shmuelie.Dsc {
-            Mock Invoke-DscCopilot { [pscustomobject]@{ Output = @('dotnet-skills  dotnet/skills'); ExitCode = 0 } }
-            ([CopilotMarketplace]@{ Name = 'dotnet-skills'; Repository = 'dotnet/skills' }).Test() | Should -BeTrue
-            ([CopilotMarketplace]@{ Name = 'dotnet'; Repository = 'dotnet/skills' }).Test() | Should -BeFalse
-        }
-    }
-
-    It 'registers the marketplace and throws (with output) on a non-zero exit code' {
-        InModuleScope Shmuelie.Dsc {
-            Mock Invoke-DscCopilot { [pscustomobject]@{ Output = 'ok'; ExitCode = 0 } }
-            { ([CopilotMarketplace]@{ Name = 'dotnet-skills'; Repository = 'dotnet/skills' }).Set() } | Should -Not -Throw
-            Should -Invoke Invoke-DscCopilot -ParameterFilter {
-                $Arguments -join ' ' -eq 'plugin marketplace add dotnet-skills dotnet/skills'
+            Mock copilot {
+                $global:LASTEXITCODE = 0
+                'team-tools  example-org/plugin-catalog'
+            } -ParameterFilter {
+                $Arguments.Count -eq 3 -and ($Arguments -join ' ') -eq 'plugin marketplace list'
             }
-
-            Mock Invoke-DscCopilot { [pscustomobject]@{ Output = 'nope'; ExitCode = 2 } }
-            { ([CopilotMarketplace]@{ Name = 'dotnet-skills'; Repository = 'dotnet/skills' }).Set() } | Should -Throw '*nope*'
+            foreach ($name in 'team-tools', 'team', 'plugin-catalog', 'custom-alias') {
+                $resource = [CopilotMarketplace]@{ Name = $name; Repository = 'example-org/plugin-catalog' }
+                $expected = $name -eq 'team-tools'
+                $resource.Test() | Should -Be $expected
+                $state = $resource.Get()
+                $state.Installed | Should -Be $expected
+                $state.Name | Should -BeExactly $name
+                $state.Repository | Should -BeExactly $resource.Repository
+            }
+            Should -Invoke copilot -Times 8 -Exactly
         }
     }
 
-    It 'rejects shell-unsafe Name or Repository before invoking the CLI' {
-        InModuleScope Shmuelie.Dsc {
-            Mock Invoke-DscCopilot { [pscustomobject]@{ Output = 'ok'; ExitCode = 0 } }
-            { ([CopilotMarketplace]@{ Name = 'bad&name'; Repository = 'x/y' }).Set() } | Should -Throw '*not allowed*'
-            Should -Invoke Invoke-DscCopilot -Times 0
+    It 'passes one <SourceKind> source unchanged and converges on its manifest identity' -ForEach @(
+        @{ SourceKind = 'GitHub'; Repository = 'example-org/plugin-catalog' }
+        @{ SourceKind = 'GitHub ref'; Repository = 'example-org/plugin-catalog#stable' }
+        @{ SourceKind = 'HTTPS URL'; Repository = 'https://example.com/plugin-catalog.git' }
+        @{ SourceKind = 'SSH URL'; Repository = 'ssh://git@example.com/plugin-catalog.git' }
+        @{ SourceKind = 'local path with spaces'; Repository = [IO.Path]::Combine('.', 'plugin catalog') }
+    ) {
+        InModuleScope Shmuelie.Dsc -Parameters @{ Repository = $Repository } {
+            param($Repository)
+            $fixture = @{
+                Source = $Repository
+                Manifest = '{"name":"team-tools","plugins":[]}' | ConvertFrom-Json
+                Registered = $false
+                Captured = [System.Collections.Generic.List[object]]::new()
+            }
+            Mock copilot {
+                $global:LASTEXITCODE = 0
+                if ($fixture.Registered) { "$($fixture.Manifest.name)  $($fixture.Source)" }
+            } -ParameterFilter {
+                $Arguments.Count -eq 3 -and ($Arguments -join ' ') -eq 'plugin marketplace list'
+            }
+            Mock copilot {
+                $fixture.Captured.Add([string[]]$Arguments)
+                $fixture.Registered = $true
+                $global:LASTEXITCODE = 0
+                "Registered $($fixture.Manifest.name)"
+            } -ParameterFilter {
+                $Arguments.Count -eq 4 -and ($Arguments[0..2] -join ' ') -eq 'plugin marketplace add' -and
+                $Arguments[3] -ceq $fixture.Source
+            }
+            $resource = [CopilotMarketplace]@{ Name = 'team-tools'; Repository = $Repository }
+            $resource.Test() | Should -BeFalse
+            $resource.Get().Installed | Should -BeFalse
+            $resource.Set()
+            $fixture.Captured.Count | Should -Be 1
+            $fixture.Captured[0] | Should -Be @('plugin', 'marketplace', 'add', $Repository)
+            $resource.Test() | Should -BeTrue
+            $state = $resource.Get()
+            $state.Installed | Should -BeTrue
+            $state.Name | Should -BeExactly 'team-tools'
+            $state.Repository | Should -BeExactly $Repository
+
+            if (-not $resource.Test()) { $resource.Set() }
+            $fixture.Captured.Count | Should -Be 1
+            $alias = [CopilotMarketplace]@{ Name = 'custom-alias'; Repository = $Repository }
+            $alias.Test() | Should -BeFalse
+            $alias.Get().Installed | Should -BeFalse
+            Should -Invoke copilot -Times 1 -Exactly -ParameterFilter { $Arguments.Count -eq 4 }
+            Should -Invoke copilot -Times 7 -Exactly -ParameterFilter { $Arguments.Count -eq 3 }
+        }
+    }
+
+    It 'preserves registration failure output for native exit <ExitCode>' -ForEach @(
+        @{ ExitCode = 1 }
+        @{ ExitCode = 2 }
+        @{ ExitCode = -7 }
+    ) {
+        InModuleScope Shmuelie.Dsc -Parameters @{ ExitCode = $ExitCode } {
+            param($ExitCode)
+            Mock copilot {
+                $global:LASTEXITCODE = $ExitCode
+                'team-tools registration failed'
+                'fixture diagnostic'
+            } -ParameterFilter {
+                $Arguments.Count -eq 4 -and
+                ($Arguments -join ' ') -eq 'plugin marketplace add example-org/plugin-catalog'
+            }
+            $ErrorActionPreference = 'Continue'
+            { ([CopilotMarketplace]@{ Name = 'team-tools'; Repository = 'example-org/plugin-catalog' }).Set() } |
+                Should -Throw "*Failed to register Copilot marketplace 'team-tools':*team-tools registration failed*fixture diagnostic*"
+            Should -Invoke copilot -Times 1 -Exactly
+        }
+    }
+
+    It 'rejects shell-unsafe <Case> before invoking the CLI' -ForEach @(
+        @{ Case = 'Name'; Name = 'bad&name'; Repository = 'example-org/plugin-catalog' }
+        @{ Case = 'repository'; Name = 'team-tools'; Repository = 'example-org/plugin-catalog&other' }
+        @{ Case = 'URL'; Name = 'team-tools'; Repository = 'https://example.com/catalog?ref="%PATH%"' }
+        @{ Case = 'local path'; Name = 'team-tools'; Repository = "plugin`ncatalog" }
+    ) {
+        InModuleScope Shmuelie.Dsc -Parameters @{ Name = $Name; Repository = $Repository } {
+            param($Name, $Repository)
+            { ([CopilotMarketplace]@{ Name = $Name; Repository = $Repository }).Set() } | Should -Throw '*not allowed*'
+            Should -Invoke copilot -Times 0 -Exactly
         }
     }
 }
@@ -847,19 +940,6 @@ Describe 'DSC CLI discovery validation' -Tag 'DscDiscovery' {
 }
 
 Describe 'DSC CLI native completion capture' -Tag 'DscDiscovery' {
-    BeforeAll {
-        InModuleScope Shmuelie.Dsc {
-            function script:copilot {
-                param([Parameter(ValueFromRemainingArguments)][string[]]$Arguments)
-                throw 'Real Copilot invocation is forbidden.'
-            }
-            function script:uv {
-                param([Parameter(ValueFromRemainingArguments)][string[]]$Arguments)
-                throw 'Real uv invocation is forbidden.'
-            }
-        }
-    }
-
     BeforeEach {
         $script:originalExitVariable = Get-Variable LASTEXITCODE -Scope Global -ErrorAction Ignore
         $script:originalExitValue = if ($script:originalExitVariable) { $script:originalExitVariable.Value } else { $null }
@@ -942,7 +1022,7 @@ Describe 'DSC CLI native completion capture' -Tag 'DscDiscovery' {
 
     It '<Resource>.Set rejects unknown completion through the shared wrapper' -ForEach @(
         @{ Resource = 'CopilotPlugin'; Command = 'copilot'; Arguments = 'plugin install owner/example' }
-        @{ Resource = 'CopilotMarketplace'; Command = 'copilot'; Arguments = 'plugin marketplace add example owner/repository' }
+        @{ Resource = 'CopilotMarketplace'; Command = 'copilot'; Arguments = 'plugin marketplace add owner/repository' }
         @{ Resource = 'UvTool'; Command = 'uv'; Arguments = 'tool install example' }
     ) {
         InModuleScope Shmuelie.Dsc -Parameters @{ Resource = $Resource; Command = $Command; ExpectedArguments = $Arguments } {
