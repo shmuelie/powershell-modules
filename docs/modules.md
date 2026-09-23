@@ -33,7 +33,7 @@ no longer eagerly imports PSReadLine before registering the predictor.
 ## Shmuelie.Git
 
 Git repository, worktree, status, completion, and PSReadLine prediction helpers.
-**Version 0.10.2.**
+**Version 0.10.3.**
 [README](https://github.com/shmuelie/powershell-modules/blob/main/modules/Shmuelie.Git/README.md)
 
 Highlights:
@@ -85,7 +85,7 @@ bypassing confirmation or escalating after a failure.
 ## Shmuelie.Copilot
 
 GitHub Copilot CLI sessions, plugins, marketplaces, MCP servers, and the
-`Start-Copilot` launcher. **Version 0.5.0.**
+`Start-Copilot` launcher. **Version 0.5.1.**
 [README](https://github.com/shmuelie/powershell-modules/blob/main/modules/Shmuelie.Copilot/README.md)
 
 Highlights:
@@ -162,7 +162,7 @@ Highlights:
 ## Shmuelie.Windows
 
 Windows-only developer utilities for installed applications, Windows Terminal,
-Windows Performance Recorder, and service host processes. **Version 0.2.1.**
+Windows Performance Recorder, and service host processes. **Version 0.2.2.**
 [README](https://github.com/shmuelie/powershell-modules/blob/main/modules/Shmuelie.Windows/README.md)
 
 Highlights:
@@ -184,7 +184,7 @@ unchanged private-capability restriction and #233 release hold.
 ## Shmuelie.Dsc
 
 Class-based [DSC v3](https://learn.microsoft.com/powershell/dsc/overview)
-resources for developer machine setup. **Version 0.1.1.**
+resources for developer machine setup. **Version 0.1.2.**
 [README](https://github.com/shmuelie/powershell-modules/blob/main/modules/Shmuelie.Dsc/README.md)
 
 Highlights:
