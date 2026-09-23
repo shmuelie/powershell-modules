@@ -347,7 +347,10 @@ $ExecutionContext.SessionState.Module.OnRemove = {
             }
             (Join-Path $fixture.Source 'Cmdlets.AppInstaller' 'Shmuelie.Windows.AppInstaller.csproj') = @{
                 Operation = 'publish'; Directory = '.windows-appinstaller-build'
-                Files = @('Shmuelie.Windows.AppInstaller.dll', 'Microsoft.Windows.SDK.NET.dll', 'WinRT.Runtime.dll')
+                Files = @(
+                    'Shmuelie.Windows.AppInstaller.dll', 'Microsoft.Windows.SDK.NET.dll', 'WinRT.Runtime.dll',
+                    (Join-Path 'en-US' 'Shmuelie.Windows.AppInstaller.dll-Help.xml')
+                )
             }
         }
         $windowsCalls = [System.Collections.Generic.List[string]]::new()
@@ -392,7 +395,9 @@ $ExecutionContext.SessionState.Module.OnRemove = {
                 (Get-Content -LiteralPath (Join-Path $artifact.FullName 'bin' $file) -Raw).Trim() | Should -Be "fixture $file"
             }
             Test-Path -LiteralPath (Join-Path $artifact.FullName 'bin' 'Shmuelie.Windows.AppInstall.dll') | Should -BeFalse
-            Test-Path -LiteralPath (Join-Path $artifact.FullName 'bin' 'en-US') | Should -BeFalse
+            Test-Path -LiteralPath (Join-Path $artifact.FullName 'bin' 'en-US' 'Shmuelie.Windows.AppInstall.dll-Help.xml') | Should -BeFalse
+            @(Get-ChildItem -LiteralPath (Join-Path $artifact.FullName 'bin' 'en-US') -File).Name |
+                Should -Be @('Shmuelie.Windows.AppInstaller.dll-Help.xml')
             foreach ($directory in '.windows-cmdlets-build', '.windows-appinstaller-build') {
                 Test-Path -LiteralPath (Join-Path $windowsOutput $directory) | Should -BeFalse
             }
