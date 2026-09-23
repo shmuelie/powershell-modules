@@ -6,6 +6,8 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+## [0.10.3] - 2026-09-22
+
 ### Fixed
 - Worktree predictor suggestions preserve branch names as one literal PowerShell
   argument, including apostrophes, dollar signs and other shell-sensitive or

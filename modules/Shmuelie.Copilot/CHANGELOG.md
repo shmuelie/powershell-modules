@@ -6,6 +6,8 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-09-22
+
 ### Fixed
 - Workspace field lookup and replacement now skip literal and folded block
   bodies, so field-looking text in a multiline session name or summary cannot

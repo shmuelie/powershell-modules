@@ -6,6 +6,8 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-09-22
+
 ### Fixed
 - `CopilotMarketplace.Set()` passes only `Repository` to the native
   `copilot plugin marketplace add <source>` command. `Name` is the source

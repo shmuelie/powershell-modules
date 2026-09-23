@@ -6,7 +6,7 @@ implementing `Get()`, `Test()`, and `Set()`, exported via
 `DscResourcesToExport`. The Copilot and uv resources depend only on the public
 `copilot` and `uv` CLIs; the others use built-in PowerShell only.
 
-**Version:** 0.1.1
+**Version:** 0.1.2
 
 ## Install
 
