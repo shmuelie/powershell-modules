@@ -16,7 +16,7 @@ Import-Module Shmuelie.Windows
 
 | Area | Commands |
 |---|---|
-| App Installer | `Get-AppInstallerApp`, `Update-AppInstallerApp` (compiled, Windows-only; opt-in `-PassThru` request outcomes) |
+| App Installer | `Get-AppInstallerApp`, `Update-AppInstallerApp` (compiled, Windows-only; non-forcing updates, in-use registration deferral on build 22556+; opt-in `-PassThru` request outcomes) |
 | Inventory | `Get-InstalledApplications` (compiled binary cmdlet) |
 | Services | `Get-ServiceProcess` (compiled binary cmdlet) |
 | Virtual drives | `Get-SubstDrive`, `New-SubstDrive`, `Remove-SubstDrive` (compiled binary cmdlets) |
@@ -74,6 +74,26 @@ See the [Win32 PID-validity contract](https://learn.microsoft.com/windows/win32/
 
 ## App Installer request results
 
+On **Windows build 22556 and later**, `Update-AppInstallerApp` passes the original
+`.appinstaller` URI to
+[`Windows.Management.Deployment.PackageManager.AddPackageByUriAsync`](https://learn.microsoft.com/uwp/api/windows.management.deployment.packagemanager.addpackagebyuriasync)
+with `AddPackageOptions.DeferRegistrationWhenPackagesAreInUse = true`.
+The API and options exist at build 19041, but App Installer URI support starts
+at **22556**, so the route is selected by OS version before any request.
+Windows processes the original App Installer document, including its source,
+update settings and dependencies; the command does not extract or replace it
+with package/dependency download URIs.
+
+If the main or dependency packages are in use, the documented
+[registration point](https://learn.microsoft.com/uwp/api/windows.management.deployment.addpackageoptions.deferregistrationwhenpackagesareinuse)
+is the application's **next activation**, not an immediate update on process
+exit. Both force-shutdown options remain false; the command does not terminate
+or restart applications or retry a failed modern request through another route.
+On older supported builds (19041 through 22555), it retains
+`AddPackageByAppInstallerFileAsync` with `AddPackageByAppInstallerOptions.None`.
+That route has no deferred-registration option: ordinary successful requests
+remain supported, and in-use or other errors remain explicit.
+
 `Update-AppInstallerApp` still emits nothing by default. Opt in to typed
 request-completion output when an orchestrator needs evidence:
 
@@ -93,9 +113,12 @@ Each `Shmuelie.Windows.AppInstallerUpdateRequestResult` has `Name`,
 `PackageFullName`, `PackageFamilyName`, `AppInstallerUri`,
 `Operation = UpdateCheck`, and `RequestCompleted = true`. It is emitted only
 after the App Installer service operation completes without an error.
-It does **not** assert installation success or an installed-version change,
-and contains no resulting version. Earlier completed results remain visible
-if a later request fails; failures retain the command's existing error behavior.
+It does **not** assert installation success, an upgraded running application,
+an installed-version change, or that registration was deferred, and contains
+no resulting version. The same request-only meaning applies to
+`Update-AllPackages -Provider AppInstaller`: its `Updated` status retains the
+explicit installation/version-change disclaimer. Earlier completed results remain
+visible if a later request fails; failures retain the command's existing error behavior.
 
 Unmatched/disappeared registrations, missing URIs, `-WhatIf`, and declined
 confirmation emit no completion result. `-WhatIf` still performs read-only

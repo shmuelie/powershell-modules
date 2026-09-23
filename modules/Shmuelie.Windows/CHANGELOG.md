@@ -6,6 +6,15 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+### Fixed
+- `Update-AppInstallerApp` uses the original App Installer URI with deferred
+  registration for in-use main/dependency packages on Windows build 22556+.
+  Registration occurs at next activation without forcing applications to close
+  or restart. Older supported builds keep the non-forcing legacy operation and
+  explicit in-use errors; failed modern requests are not retried through it.
+  Default void output and opt-in request-completion results remain unchanged,
+  including the aggregate AppInstaller provider's request-only meaning. (#256)
+
 ## [0.2.1] - 2026-09-18
 
 ### Changed

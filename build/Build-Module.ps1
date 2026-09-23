@@ -203,6 +203,7 @@ if ($Module -eq 'Shmuelie.Windows') {
     foreach ($dll in 'Shmuelie.Windows.AppInstaller.dll', 'Microsoft.Windows.SDK.NET.dll', 'WinRT.Runtime.dll') {
         Copy-Item -LiteralPath (Join-Path $appInstallerBuild $dll) -Destination (Join-Path $bin $dll)
     }
+    Copy-Item -LiteralPath (Join-Path $appInstallerBuild 'en-US') -Destination (Join-Path $bin 'en-US') -Recurse
     Remove-Item -LiteralPath $appInstallerBuild -Recurse -Force
 }
 
