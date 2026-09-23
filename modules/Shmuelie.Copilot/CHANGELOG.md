@@ -7,6 +7,11 @@ Versions change only when a release is cut; unreleased work stays under
 ## [Unreleased]
 
 ### Fixed
+- Workspace field lookup and replacement now skip literal and folded block
+  bodies, so field-looking text in a multiline session name or summary cannot
+  replace or mask real metadata. Renaming retains the full multiline text,
+  existing field indentation, and line-ending style; discovery and filters keep
+  the recorded branch, working directory, and timestamps. (#285)
 - `Get-CopilotLaunchPlan` and `Start-Copilot` now apply `-ChangeDir` / `-C`
   before session, branch, and MCP path-policy planning. Relative paths resolve
   from the caller's location and normal plans forward an absolute native `-C`

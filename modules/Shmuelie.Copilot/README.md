@@ -196,6 +196,17 @@ Missing or empty Repository, Branch, or Cwd does not match even `'*'`.
 Summary matches the displayed value: `name`, then legacy `summary`, then
 `'(no summary)'` for unnamed sessions.
 
+Workspace metadata readers and writers share block boundaries: field-looking
+text inside a literal (`|`, `|-`) or folded (`>`, `>-`) scalar remains text,
+not session metadata. Renaming preserves the full multiline name and summary
+in `workspace.yaml`, without changing the recorded branch, working directory,
+or timestamps; discovery retains its existing first-line display-name behavior.
+Rewrites target only the actual field, retaining its indentation and the file's
+line-ending style. These helpers handle the CLI's simple flat workspace shape,
+not general YAML: existing `+` headers and header comments are recognized, but
+explicit indentation indicators, nested mappings, and full YAML
+folding/chomping semantics are not supported.
+
 | Date filter | Meaning |
 |---|---|
 | `-UpdatedBefore <DateTimeOffset>` | `UpdatedAt` is strictly before the given instant. Prefer ISO 8601 with `Z` or an explicit offset. Offset-less input means local time; date-only input means local midnight, not the end of the day. |
