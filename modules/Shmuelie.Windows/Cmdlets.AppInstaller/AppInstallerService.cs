@@ -65,8 +65,8 @@ internal static class AppInstallerService
 
     /// <summary>
     /// Submits the original App Installer file for an update check without
-    /// forcing applications to close. On Windows build 22556 and later, in-use
-    /// package registration is deferred until the application's next activation.
+    /// forcing applications to close. In-use failures remain explicit; this
+    /// App Installer operation does not request deferred registration.
     /// Blocks until the request completes and surfaces any failure as an exception.
     /// </summary>
     /// <param name="appInstallerUri">The App Installer update URI.</param>
@@ -83,16 +83,11 @@ internal static class AppInstallerService
         var manager = new PackageManager();
         var uri = new Uri(appInstallerUri);
 
-        // The API exists at 19041, but accepts App Installer URIs only at 22556+.
-        // https://learn.microsoft.com/uwp/api/windows.management.deployment.packagemanager.addpackagebyuriasync
-        var operation = windowsVersion >= new Version(10, 0, 22556)
-            ? manager.AddPackageByUriAsync(uri, new AddPackageOptions
-            {
-                DeferRegistrationWhenPackagesAreInUse = true,
-                ForceAppShutdown = false,
-                ForceTargetAppShutdown = false,
-            })
-            : manager.AddPackageByAppInstallerFileAsync(uri, AddPackageByAppInstallerOptions.None, targetVolume: null);
+        // App Installer URI support does not imply support for the generic
+        // DeferRegistrationWhenPackagesAreInUse option; that combination can
+        // fail synchronously with E_INVALIDARG before returning an operation.
+        var operation = manager.AddPackageByAppInstallerFileAsync(
+            uri, AddPackageByAppInstallerOptions.None, targetVolume: null);
 
         DeploymentResult result = operation.AsTask().GetAwaiter().GetResult();
 

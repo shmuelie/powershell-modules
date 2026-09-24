@@ -39,8 +39,9 @@ $results = [System.Collections.Generic.List[object]]::new()
 if ($AssemblyDirectory) {
     $help = Get-Help Update-AppInstallerApp -Full -ErrorAction Stop
     $description = $help.description.Text -join "`n"
-    foreach ($expected in '22556', '19041', 'next activation', 'in-use errors', 'ForceAppShutdown',
-        'ForceTargetAppShutdown', 'ExtendedErrorCode', 'Completion does not establish', 'WhatIf') {
+    foreach ($expected in '19041', 'AddPackageByAppInstallerFileAsync', 'AddPackageByAppInstallerOptions.None',
+        'does not request deferred registration', 'in-use errors', '0x80070057',
+        'not retried', 'ExtendedErrorCode', 'Completion does not establish', 'WhatIf') {
         if ($description -notmatch [regex]::Escape($expected)) { throw "Missing help contract: $expected" }
     }
     if ($help.parameters.parameter.name -notcontains 'PassThru' -or
@@ -49,36 +50,28 @@ if ($AssemblyDirectory) {
     }
     $results.Add([pscustomobject]@{ Name = 'user-facing help from managed-only assembly'; Passed = $true })
 }
-$platforms = @(
-    @{ Build = 19041; Modern = $false }
-    @{ Build = 22000; Modern = $false }
-    @{ Build = 22555; Modern = $false }
-    @{ Build = 22556; Modern = $true }
-    @{ Build = 22621; Modern = $true }
-    @{ Build = 26100; Modern = $true }
-)
-$cases = foreach ($platform in $platforms) {
+$cases = foreach ($build in 19041, 22000, 22555, 22556, 22621, 26100) {
     foreach ($registered in $true, $false) {
         foreach ($passThru in $true, $false) {
             @{
-                Name = "build $($platform.Build), registered=$registered, PassThru=$passThru"
-                Version = [version]"10.0.$($platform.Build).0"
-                Modern = $platform.Modern; Registered = $registered; PassThru = $passThru
-                Failure = $(if (-not $registered -and -not $platform.Modern) { 'LegacyInUse' } else { '' })
+                Name = "build $build, registered=$registered, PassThru=$passThru"
+                Version = [version]"10.0.$build.0"
+                Registered = $registered; PassThru = $passThru
+                Failure = $(if (-not $registered) { 'InUse' } else { '' })
             }
         }
     }
 }
-foreach ($modern in $true, $false) {
-    foreach ($failure in 'Async', 'Extended', 'UnsupportedOptions') {
+foreach ($build in 19041, 26100) {
+    foreach ($failure in 'Async', 'Extended', 'Submission') {
         $cases += @{
-            Name = "modern=$modern, $failure"; Version = [version]$(if ($modern) { '10.0.22556.0' } else { '10.0.22555.0' })
-            Modern = $modern; Registered = $false; PassThru = $true; Failure = $failure
+            Name = "build $build, $failure"; Version = [version]"10.0.$build.0"
+            Registered = $false; PassThru = $true; Failure = $failure
         }
     }
 }
 foreach ($case in $cases) {
-    [AppInstallerDeploymentFixture]::Reset($case.Version, $case.Modern, $case.Registered, $case.Failure)
+    [AppInstallerDeploymentFixture]::Reset($case.Version, $case.Registered, $case.Failure)
     $runtime = [AppInstallerTestRuntime]::new()
     $command = [AppInstallerDeploymentFixture]::CreateCommand($runtime)
     $command.PassThru = $case.PassThru
@@ -100,11 +93,11 @@ foreach ($case in $cases) {
     }
     elseif ($caught) { throw $caught }
     $expectedOutput = [int]($case.PassThru -and -not $case.Failure)
-    $expectedAwait = [int]($case.Failure -ne 'UnsupportedOptions')
+    $expectedAwait = [int]($case.Failure -ne 'Submission')
     if ($runtime.Output.Count -ne $expectedOutput -or $runtime.PromptCount -ne 1 -or
         [AppInstallerDeploymentFixture]::Requests.Count -ne 1 -or
         [AppInstallerDeploymentFixture]::ManagerCount -ne 1 -or
-        [AppInstallerDeploymentFixture]::OptionsCount -ne [int]$case.Modern -or
+        [AppInstallerDeploymentFixture]::OptionsCount -ne 0 -or
         [AppInstallerDeploymentFixture]::AwaitCount -ne $expectedAwait -or
         [AppInstallerDeploymentFixture]::RegistrationReads -ne 0) {
         throw "$($case.Name): wrong request count, option construction, await, confirmation, or output."
@@ -124,7 +117,7 @@ foreach ($case in $cases) {
 }
 
 foreach ($version in '0.0', '10.0', '10.0.19040.0') {
-    [AppInstallerDeploymentFixture]::Reset([version]$version, $false, $false, '')
+    [AppInstallerDeploymentFixture]::Reset([version]$version, $false, '')
     $caught = $null
     try { [AppInstallerDeploymentFixture]::Update() }
     catch {
@@ -138,17 +131,17 @@ foreach ($version in '0.0', '10.0', '10.0.19040.0') {
     $results.Add([pscustomobject]@{ Name = "unsupported platform $version"; Passed = $true })
 }
 
-foreach ($modern in $true, $false) {
-    $version = [version]$(if ($modern) { '10.0.22556.0' } else { '10.0.22555.0' })
+foreach ($build in 19041, 26100) {
+    $version = [version]"10.0.$build.0"
     foreach ($fail in $true, $false) {
-        [AppInstallerDeploymentFixture]::Reset($version, $modern, $false, '')
+        [AppInstallerDeploymentFixture]::Reset($version, $false, '')
         [AppInstallerDeploymentFixture]::VerifyPendingRequest($fail)
         if ([AppInstallerDeploymentFixture]::Requests.Count -ne 1 -or [AppInstallerDeploymentFixture]::AwaitCount -ne 1) {
             throw 'Pending request was not awaited exactly once.'
         }
-        $results.Add([pscustomobject]@{ Name = "pending modern=$modern fail=$fail"; Passed = $true })
+        $results.Add([pscustomobject]@{ Name = "pending build $build fail=$fail"; Passed = $true })
     }
-    [AppInstallerDeploymentFixture]::Reset($version, $modern, $false, '')
+    [AppInstallerDeploymentFixture]::Reset($version, $false, '')
     $runtime = [AppInstallerTestRuntime]::new()
     $runtime.Approve = $false
     $command = [AppInstallerDeploymentFixture]::CreateCommand($runtime)
@@ -160,7 +153,7 @@ foreach ($modern in $true, $false) {
         [AppInstallerDeploymentFixture]::ManagerCount -ne 0 -or [AppInstallerDeploymentFixture]::Requests.Count -ne 0) {
         throw 'Declined confirmation reached the deployment boundary.'
     }
-    $results.Add([pscustomobject]@{ Name = "declined confirmation modern=$modern"; Passed = $true })
+    $results.Add([pscustomobject]@{ Name = "declined confirmation build $build"; Passed = $true })
 }
 
 if ([AppDomain]::CurrentDomain.GetAssemblies().GetName().Name -contains 'Microsoft.Windows.SDK.NET' -or

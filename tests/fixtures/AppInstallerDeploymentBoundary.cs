@@ -45,7 +45,11 @@ namespace Windows.Management.Deployment
 
     public sealed class AddPackageOptions
     {
-        public AddPackageOptions() => AppInstallerDeploymentFixture.OptionsCount++;
+        public AddPackageOptions()
+        {
+            AppInstallerDeploymentFixture.OptionsCount++;
+            throw new InvalidOperationException("Generic deployment options are forbidden for App Installer updates.");
+        }
         public bool DeferRegistrationWhenPackagesAreInUse { get; set; }
         public bool ForceAppShutdown { get; set; }
         public bool ForceTargetAppShutdown { get; set; }
@@ -92,11 +96,11 @@ namespace Windows.Management.Deployment
             throw new NotSupportedException("Native inventory is forbidden.");
 
         public FakeDeploymentOperation AddPackageByUriAsync(Uri uri, AddPackageOptions options) =>
-            AppInstallerDeploymentFixture.Submit(uri, true, options, null, null);
+            throw new COMException("App Installer URI deferral is not supported.", unchecked((int)0x80070057));
 
         public FakeDeploymentOperation AddPackageByAppInstallerFileAsync(
             Uri uri, AddPackageByAppInstallerOptions options, PackageVolume? targetVolume) =>
-            AppInstallerDeploymentFixture.Submit(uri, false, null, options, targetVolume);
+            AppInstallerDeploymentFixture.Submit(uri, options, targetVolume);
     }
 }
 
@@ -106,20 +110,19 @@ public static class AppInstallerDeploymentFixture
     public static readonly List<string> Requests = new();
     public static readonly ManualResetEventSlim Awaiting = new();
     public static Version WindowsVersion = new(10, 0, 22556);
-    public static bool ExpectedModern, Registered;
+    public static bool Registered;
     public static int ManagerCount, OptionsCount, AwaitCount, RegistrationReads, DiscoveryCount;
     public static string FailureKind = "";
     public static Exception? Failure;
     public static TaskCompletionSource<Windows.Management.Deployment.DeploymentResult>? Pending;
 
-    public static void Reset(Version version, bool modern, bool registered, string failureKind)
+    public static void Reset(Version version, bool registered, string failureKind)
     {
         WindowsVersion = version;
-        ExpectedModern = modern;
         Registered = registered;
         FailureKind = failureKind;
         Failure = failureKind.Length == 0 ? null : new COMException(
-            $"Synthetic {failureKind} failure.", failureKind == "LegacyInUse" ? unchecked((int)0x80073D02) : unchecked((int)0x80070057));
+            $"Synthetic {failureKind} failure.", failureKind == "InUse" ? unchecked((int)0x80073D02) : unchecked((int)0x80070057));
         Requests.Clear();
         ManagerCount = OptionsCount = AwaitCount = RegistrationReads = DiscoveryCount = 0;
         Pending = null;
@@ -127,23 +130,16 @@ public static class AppInstallerDeploymentFixture
     }
 
     public static Windows.Management.Deployment.FakeDeploymentOperation Submit(
-        Uri uri, bool modern, Windows.Management.Deployment.AddPackageOptions? options,
-        Windows.Management.Deployment.AddPackageByAppInstallerOptions? legacyOptions,
+        Uri uri, Windows.Management.Deployment.AddPackageByAppInstallerOptions options,
         Windows.Management.Deployment.PackageVolume? volume)
     {
         Requests.Add(uri.OriginalString);
-        if (Requests.Count != 1 || uri.OriginalString != OriginalUri || modern != ExpectedModern || volume is not null)
+        if (Requests.Count != 1 || uri.OriginalString != OriginalUri || volume is not null)
             throw new InvalidOperationException("Unexpected route, rewritten source, volume, or retry.");
-        if (modern)
-        {
-            if (options is null || !options.DeferRegistrationWhenPackagesAreInUse ||
-                options.ForceAppShutdown || options.ForceTargetAppShutdown || legacyOptions is not null)
-                throw new InvalidOperationException("Incorrect modern deployment options.");
-        }
-        else if (options is not null || legacyOptions != Windows.Management.Deployment.AddPackageByAppInstallerOptions.None)
-            throw new InvalidOperationException("Legacy deployment must remain non-forcing None.");
+        if (options != Windows.Management.Deployment.AddPackageByAppInstallerOptions.None)
+            throw new InvalidOperationException("App Installer deployment must remain non-forcing None.");
 
-        if (FailureKind == "UnsupportedOptions")
+        if (FailureKind == "Submission")
             throw Failure!;
 
         Task<Windows.Management.Deployment.DeploymentResult> task = Pending?.Task ??

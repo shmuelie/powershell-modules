@@ -12,9 +12,9 @@
       </maml:description>
     </command:details>
     <maml:description>
-      <maml:para>On Windows build 22556 and later, submits the original .appinstaller URI to Windows.Management.Deployment.PackageManager.AddPackageByUriAsync with AddPackageOptions.DeferRegistrationWhenPackagesAreInUse enabled. Windows processes the original App Installer source, update settings and dependencies; the command does not replace the source or rewrite dependency URIs.</maml:para>
-      <maml:para>Registration of in-use main or dependency packages is delayed until the application's next activation. Process exit alone does not establish registration. Both ForceAppShutdown and ForceTargetAppShutdown remain false: applications are not implicitly force-closed or restarted.</maml:para>
-      <maml:para>The API and options exist at build 19041, but support for an App Installer URI starts at build 22556. Older supported builds (19041 through 22555) use AddPackageByAppInstallerFileAsync with AddPackageByAppInstallerOptions.None. This legacy route has no deferred-registration option; ordinary successful requests remain supported, and in-use errors remain explicit. The route is selected before submitting the request. Failed modern requests are not retried through the legacy route or with destructive options.</maml:para>
+      <maml:para>On every supported Windows build (19041 and later), submits the original .appinstaller URI to Windows.Management.Deployment.PackageManager.AddPackageByAppInstallerFileAsync with AddPackageByAppInstallerOptions.None. Windows processes the original App Installer source, update settings and dependencies; the command does not replace the source or rewrite dependency URIs.</maml:para>
+      <maml:para>This operation does not request deferred registration. In-use errors remain explicit; applications are not implicitly force-closed or restarted, and registration at the next activation is not promised. No force-shutdown option is enabled.</maml:para>
+      <maml:para>This corrects the 0.2.2 route, where AddPackageByUriAsync with DeferRegistrationWhenPackagesAreInUse enabled can reject an App Installer URI synchronously with 0x80070057 (The parameter is incorrect). The App Installer-specific operation is selected before submitting the request. Failed requests are not retried through another route or with destructive options.</maml:para>
       <maml:para>Waits for request completion and propagates asynchronous failures and ExtendedErrorCode. Emits nothing by default. With PassThru, emits only completed update-check requests, preserving the selected pre-request identity and AppInstallerUri. Completion does not establish installation, an upgraded running application, a version change or deferred registration.</maml:para>
       <maml:para>Selection is exact and case-insensitive. A standalone invocation without Name selects all discovered App Installer applications; an empty pipeline selects nothing. Supplied identities must not be null, empty or whitespace. When piping a complete application object, Name takes precedence over its aliases. Pipe only PackageFullName to select one exact registration.</maml:para>
       <maml:para>WhatIf may enumerate applications but never submits a deployment request, stages or registers packages. Declined confirmation also submits no request. Unmatched, skipped and failed requests emit no completion result. Windows only; requires build 19041 or later.</maml:para>
@@ -89,17 +89,17 @@
       <command:example>
         <maml:title>Example 2: Request a non-forcing update</maml:title>
         <dev:code>Update-AppInstallerApp -Name Example.App -PassThru</dev:code>
-        <dev:remarks><maml:para>Uses deferred registration for in-use packages on build 22556+. Older supported builds retain explicit in-use errors. Output reports request completion only, not when the new version takes effect.</maml:para></dev:remarks>
+        <dev:remarks><maml:para>Uses the non-forcing App Installer-specific operation on every supported build. In-use errors remain explicit; no deferred registration is requested. Output reports request completion only, not when a new version takes effect.</maml:para></dev:remarks>
       </command:example>
     </command:examples>
     <command:relatedLinks>
       <maml:navigationLink>
-        <maml:linkText>PackageManager.AddPackageByUriAsync</maml:linkText>
-        <maml:uri>https://learn.microsoft.com/uwp/api/windows.management.deployment.packagemanager.addpackagebyuriasync</maml:uri>
+        <maml:linkText>PackageManager.AddPackageByAppInstallerFileAsync</maml:linkText>
+        <maml:uri>https://learn.microsoft.com/uwp/api/windows.management.deployment.packagemanager.addpackagebyappinstallerfileasync</maml:uri>
       </maml:navigationLink>
       <maml:navigationLink>
-        <maml:linkText>AddPackageOptions.DeferRegistrationWhenPackagesAreInUse</maml:linkText>
-        <maml:uri>https://learn.microsoft.com/uwp/api/windows.management.deployment.addpackageoptions.deferregistrationwhenpackagesareinuse</maml:uri>
+        <maml:linkText>AddPackageByAppInstallerOptions</maml:linkText>
+        <maml:uri>https://learn.microsoft.com/uwp/api/windows.management.deployment.addpackagebyappinstalleroptions</maml:uri>
       </maml:navigationLink>
     </command:relatedLinks>
   </command:command>
