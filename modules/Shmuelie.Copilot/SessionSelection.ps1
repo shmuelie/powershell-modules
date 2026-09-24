@@ -103,47 +103,69 @@ function Invoke-CopilotSessionChoice {
             }
         }
     )
-    $choices = [System.Collections.ObjectModel.Collection[System.Management.Automation.Host.ChoiceDescription]]::new()
-    $messageLines = [System.Collections.Generic.List[string]]::new()
-    $messageLines.Add($Message)
-    $messageLines.Add('')
-    for ($i = 0; $i -lt $Sessions.Count; $i++) {
-        $session = $Sessions[$i]
-        $display = $displaySessions[$i]
-        $number = ($i + 1).ToString([System.Globalization.CultureInfo]::InvariantCulture)
-        $branchSuffix = if ($nameCounts[$display.DisplayName] -gt 1 -and -not [string]::IsNullOrWhiteSpace($display.Branch)) {
-            " ($($display.Branch))"
-        } else {
-            ''
-        }
-        $messageLines.Add("$number. $($display.DisplayName)$branchSuffix")
-        $updatedAt = if ($session.UpdatedAt) { $session.UpdatedAt.ToString('o') } else { '(unknown)' }
-        $help = "Id: $($session.Id)`nName: $($display.Name)`nRepository: $($session.Repository)`nBranch: $($display.Branch)`nCwd: $($session.Cwd)`nUpdated: $updatedAt`nEvents: $($session.EventCount)"
-        # Full numeric labels, without '&', also work beyond nine choices.
-        $choices.Add([System.Management.Automation.Host.ChoiceDescription]::new($number, $help))
-    }
-    $choices.Add([System.Management.Automation.Host.ChoiceDescription]::new($ExitLabel, $ExitHelp))
-    $messageLines.Add('')
-    $messageLines.Add('Choose a number. Use choice help for full names, IDs, and workspace details.')
-
+    # C/M/N/P are reserved for Cancel, Next page, New session, and Previous page.
+    $sessionKeys = 'ABDEFGHIJKLOQRSTUVWXYZ'
+    $pageSize = $sessionKeys.Length
+    $pageStart = 0
+    $pageCount = [int][Math]::Ceiling($Sessions.Count / [double]$pageSize)
     # A method failure must terminate even when the caller uses Continue.
     $ErrorActionPreference = 'Stop'
-    try {
-        if ($null -eq $Host.UI) {
-            throw [System.NotSupportedException]::new('The active host has no user interface.')
+    while ($true) {
+        $choices = [System.Collections.ObjectModel.Collection[System.Management.Automation.Host.ChoiceDescription]]::new()
+        $sessionCount = [Math]::Min($pageSize, $Sessions.Count - $pageStart)
+        $pageEnd = $pageStart + $sessionCount
+        for ($i = $pageStart; $i -lt $pageEnd; $i++) {
+            $session = $Sessions[$i]
+            $display = $displaySessions[$i]
+            $branchSuffix = if ($nameCounts[$display.DisplayName] -gt 1 -and -not [string]::IsNullOrWhiteSpace($display.Branch)) {
+                " ($($display.Branch))"
+            } else {
+                ''
+            }
+            $updatedAt = if ($session.UpdatedAt) { $session.UpdatedAt.ToString('o') } else { '(unknown)' }
+            $help = "Id: $($session.Id)`nName: $($display.Name)`nRepository: $($session.Repository)`nBranch: $($display.Branch)`nCwd: $($session.Cwd)`nUpdated: $updatedAt`nEvents: $($session.EventCount)"
+            # The host consumes the first '&'; later ampersands stay session data.
+            $label = "&$($sessionKeys[$i - $pageStart]) - $($display.DisplayName)$branchSuffix"
+            $choices.Add([System.Management.Automation.Host.ChoiceDescription]::new($label, $help))
         }
-        $selected = $Host.UI.PromptForChoice(
-            $Caption, ($messageLines -join "`n"), $choices, -1)
-    } catch {
-        throw [System.InvalidOperationException]::new(
-            "Session selection requires a host with working PromptForChoice input. Supply -SessionSelector or choose a session explicitly. Host error: $($_.Exception.Message)",
-            $_.Exception)
+        $previousChoice = -1
+        $nextChoice = -1
+        if ($pageStart -gt 0) {
+            $previousChoice = $choices.Count
+            $choices.Add([System.Management.Automation.Host.ChoiceDescription]::new(
+                '&P - Previous page', 'Show the previous sessions without selecting one.'))
+        }
+        if ($pageEnd -lt $Sessions.Count) {
+            $nextChoice = $choices.Count
+            $choices.Add([System.Management.Automation.Host.ChoiceDescription]::new(
+                '&M - Next page', 'Show the next sessions without selecting one.'))
+        }
+        $choices.Add([System.Management.Automation.Host.ChoiceDescription]::new($ExitLabel, $ExitHelp))
+        $pageNumber = [int]($pageStart / $pageSize) + 1
+        $promptMessage = "$Message`n`nSessions $($pageStart + 1)-$pageEnd of $($Sessions.Count) (page $pageNumber of $pageCount).`nChoose a session key or an action. Use choice help for full names, IDs, and workspace details."
+
+        try {
+            if ($null -eq $Host.UI) {
+                throw [System.NotSupportedException]::new('The active host has no user interface.')
+            }
+            $selected = $Host.UI.PromptForChoice($Caption, $promptMessage, $choices, -1)
+        } catch {
+            throw [System.InvalidOperationException]::new(
+                "Session selection requires a host with working PromptForChoice input. Supply -SessionSelector or choose a session explicitly. Host error: $($_.Exception.Message)",
+                $_.Exception)
+        }
+        if ($selected -isnot [int] -or $selected -lt 0 -or $selected -ge $choices.Count) {
+            throw "The host returned an invalid session choice '$selected'. Supply -SessionSelector or choose a session explicitly."
+        }
+        if ($selected -lt $sessionCount) { return $Sessions[$pageStart + $selected] }
+        if ($selected -eq $previousChoice) {
+            $pageStart -= $pageSize
+        } elseif ($selected -eq $nextChoice) {
+            $pageStart = $pageEnd
+        } else {
+            return $null
+        }
     }
-    if ($selected -isnot [int] -or $selected -lt 0 -or $selected -ge $choices.Count) {
-        throw "The host returned an invalid session choice '$selected'. Supply -SessionSelector or choose a session explicitly."
-    }
-    if ($selected -eq $Sessions.Count) { return $null }
-    return $Sessions[$selected]
 }
 
 function Invoke-CopilotLaunchSessionPicker {

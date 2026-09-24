@@ -22,12 +22,16 @@ function Select-CopilotSession {
         Resumes the selected session by delegating to Resume-CopilotSession.
         When filters and -First resolve to exactly one session, the picker is
         skipped. Otherwise, the active PowerShell host presents PromptForChoice
-        with numbered names in its initial message and an explicit Cancel option.
+        with descriptive session labels, 22 sessions per page, and an explicit
+        Cancel option on every page. M selects Next page and P selects Previous
+        page when available; C cancels. Session keys are unique within each page.
         Names are capped at 80 Unicode text elements (including '...' when
-        truncated); branches appear only for duplicated displayed names.
+        truncated); branches appear only for displayed names duplicated anywhere
+        in the candidate set.
         Full names and context remain in choice help. Names/branches have terminal
-        controls sanitized; numeric labels preserve exact selection even for
-        duplicate names. No default choice or grid-view dependency is required.
+        controls sanitized; assigned keys preserve exact selection even for
+        duplicate names and literal ampersands. All matching sessions remain
+        reachable, with no default choice or grid-view dependency.
 
         By default the resume runs from the session's recorded Cwd so sessions
         from other directories restore their original workspace context. Use

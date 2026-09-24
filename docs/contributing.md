@@ -47,13 +47,22 @@ options. Supply meaningful captions, messages, labels/help, and intentional
 defaults. Keep candidate identity/order exact and cancellation explicit.
 Do not automatically select grid-view packages, render custom menus, parse
 numbered responses, or read console keys. Preserve explicit selector callbacks.
-A descriptive numbered list inside the host prompt's **message** is appropriate:
-keep useful context visible upfront while leaving rendering and input to the
-host. For session choices, use unique numeric labels without `&`, sanitized
-normalized names capped at 80 Unicode text elements including `...`, and branch
-suffixes only for duplicates after sanitization/truncation. Keep full sanitized
-names and identity/context in help. Do not truncate UTF-16 code units or remove
-Unicode joiners/combining sequences; do not depend on console width or RawUI.
+For session choices, put descriptive names in the actual `ChoiceDescription`
+labels rather than duplicating a numbered list in the message. Use 22 sessions
+per page with unique single-character keys; reserve `M`/`P` for Next/Previous
+page and `N`/`C` for New session/Cancel. Keep every candidate reachable in its
+original order, with the appropriate exit action and no default on every page.
+Navigation repeats native `PromptForChoice`, not custom key reading or parsing.
+Put the assigned `&` accelerator before all session data: ConsoleHost consumes
+only the first marker, preserving later literal ampersands. Do not double data
+ampersands or assume `&10` defines a multi-character accelerator.
+
+Keep sanitized normalized names capped at 80 Unicode text elements including
+`...`, with keys and branch suffixes outside that cap. Add branch suffixes only
+for duplicates after sanitization/truncation across the **entire** candidate set,
+not just one page. Keep full sanitized names and identity/context in help.
+Do not truncate UTF-16 code units or remove Unicode joiners/combining sequences;
+do not depend on console width or RawUI.
 Rely on the host's prompting capability, not console availability or
 `Environment.UserInteractive`; surface unsupported input, errors, and invalid
 choice indices without silently selecting or proceeding. Method-call failures
@@ -68,8 +77,12 @@ Mandatory-parameter prompting already belongs to PowerShell; do not duplicate it
 Test prompts with a controlled `PSHostUserInterface` in an isolated runspace,
 synthetic candidates, and fail-closed native boundaries. Cover exact mapping,
 metadata/defaults, cancellation, host errors, unavailable input, explicit
-bypasses, callbacks, and standard confirmation separately. No real UI, user
-session data, optional picker installations, or native launches are needed.
+bypasses, callbacks, and standard confirmation separately. Complement queued
+host answers with bounded, profile-free ConsoleHost child-process tests using
+synthetic stdin to verify real key acceptance, navigation, and overflow
+reachability. Stop only owned child PIDs on timeout and dispose their resources.
+No user session data, optional picker installations, or real Copilot launches
+are needed.
 
 ## Running git from module commands
 

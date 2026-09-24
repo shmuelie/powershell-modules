@@ -89,12 +89,14 @@ function Start-Copilot {
         -WhatIf bypass it.
         Zero candidates start a new session without calling the selector.
         Custom selectors need no interactive console and own their UI requirements.
-        The default picker uses the active host's PromptForChoice with numbered
-        names in the initial message, full details in choice help, an explicit
-        New session option, and no default choice. Names are capped at 80 Unicode
-        text elements including '...'; branches appear only for duplicated
-        displayed names. Names/branches have terminal controls sanitized and
-        numeric labels preserve exact selection. Unavailable input, host errors,
+        The default picker uses the active host's PromptForChoice with descriptive
+        labels and 22 sessions per page. M selects Next page and P selects Previous
+        page when available; N starts a New session from any page. All candidates
+        remain reachable, with unique session keys per page and no default choice.
+        Names are capped at 80 Unicode text elements including '...'; branches
+        appear only for displayed names duplicated anywhere in the candidate set.
+        Full details remain in choice help. Names/branches have terminal controls
+        sanitized; literal ampersands do not assign keys. Unavailable input, host errors,
         and invalid responses terminate without choosing a session or falling
         back to another UI. Execution
         confirmation remains managed by PowerShell's -Confirm and -WhatIf.

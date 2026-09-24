@@ -6,6 +6,15 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+### Changed
+- Native session pickers now put descriptive summaries in the actual choice
+  labels, with 22 sessions per page and unique session keys. Next/Previous page
+  actions keep every candidate reachable; New session/Cancel remain available
+  on every page with no default selection. Names retain the 80-Unicode-text-element
+  limit, full identity help, and duplicate-only branch suffixes across pages.
+  Literal ampersands cannot claim session or action keys. Selection, callbacks,
+  automatic-resume policy, and confirmation/preview behavior are unchanged. (#313)
+
 ## [0.5.1] - 2026-09-22
 
 ### Fixed

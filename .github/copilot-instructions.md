@@ -72,11 +72,16 @@ docs/                             # Markdown docs site (contributing, modules, i
   `$Host.UI.PromptForChoice(...)` / `ChoiceDescription` for defined options.
   Supply meaningful captions, messages, labels/help and intentional defaults;
   preserve exact candidate mapping, cancellation, and explicit selector hooks.
-- Put useful session names in a descriptive numbered list in the host prompt
-  message, with unique numeric choice labels (no `&` markers). Sanitize controls,
-  cap normalized names at 80 Unicode text elements including `...`, and append
-  available branches only for names duplicated after sanitization/truncation.
-  Keep full sanitized names and identity/context in help; no RawUI/width logic.
+- Put descriptive session names in actual choice labels, with 22 sessions per
+  page and unique single-character session keys. Reserve `M`/`P` for Next/Previous
+  page and `N`/`C` for New session/Cancel; keep every candidate reachable in order,
+  with an exit action and no default on every page. Navigate through native
+  `PromptForChoice` calls, not key-reading or number-parsing loops. Put the assigned
+  `&` marker before session data so literal ampersands cannot assign keys.
+  Sanitize controls, cap normalized names at 80 Unicode text elements including
+  `...`, and append available branches only for names duplicated after
+  sanitization/truncation across the full candidate set. Keep full sanitized
+  names and identity/context in help; no duplicated message list or RawUI/width logic.
 - No automatic grid dependencies, custom menu rendering, number-parsing loops,
   or console key reads. Host capability, not `Environment.UserInteractive` or
   console availability, determines whether prompting works. Host errors and
@@ -86,7 +91,8 @@ docs/                             # Markdown docs site (contributing, modules, i
   `ShouldContinue`, and mandatory-parameter prompts framework managed.
   Preview and explicit noninteractive paths must not acquire input prompts.
 - Use controlled host UI tests with synthetic input and fail-closed native
-  boundaries; see [Interactive input and confirmation](../docs/contributing.md#interactive-input-and-confirmation).
+  boundaries, plus bounded profile-free ConsoleHost tests for real key acceptance
+  and pagination; see [Interactive input and confirmation](../docs/contributing.md#interactive-input-and-confirmation).
 
 ## .NET tool compatibility
 

@@ -151,22 +151,34 @@ your launch selector must cancel the entire operation.
 Without a custom callback, both pickers use the active PowerShell host's
 `PSHostUserInterface.PromptForChoice`, without grid dependencies or console input
 loops. The host renders and handles the choices, including in hosts without a
-conventional console. The initial prompt message lists numbered session names,
-using the existing normalized `Summary` (name, legacy summary, or unnamed
-placeholder). Each displayed name is capped at **80 Unicode text elements**,
-including `...` when truncated; surrogate pairs and combining sequences remain
-intact. Numbers and branch suffixes are outside the cap. Branches appear only
+conventional console. Actual choice labels contain a selection key and the
+existing normalized `Summary` (name, legacy summary, or unnamed placeholder),
+without a separate duplicate list in the prompt message. Each displayed name is
+capped at **80 Unicode text elements**, including `...` when truncated;
+surrogate pairs and combining sequences remain
+intact. Keys and branch suffixes are outside the cap. Branches appear only
 beside duplicated displayed names, including truncation/sanitization collisions,
-and only when available. Identical names and branches still have distinct numbers.
+and only when available. Duplicates are detected across all pages, so branch
+suffixes do not change when navigating.
 
-Choice labels are the full numbers (`1`, `2`, ..., `10`, ...), without accelerator
-markers. Enter the number in ConsoleHost; names and literal ampersands in the
-message cannot become choice hotkeys. Choice help (`?` in ConsoleHost) contains
+Each page contains **up to 22 sessions**, with unique keys
+`A B D E F G H I J K L O Q R S T U V W X Y Z`. ConsoleHost displays choices such as
+`[A] A - Fix Git completion quoting`; enter `A` to select that session.
+`M` selects **Next page**, and `P` selects **Previous page**, when available.
+The message gives the current page and session range. Every candidate remains
+reachable; keys are reused only on another page, and always map to the exact
+original session rather than its displayed name. Identical names and branches
+therefore remain unambiguous.
+
+`C` is reserved for global **Cancel** and `N` for launcher **New session**;
+the appropriate action appears on every page. Navigation and action keys are
+never assigned to sessions. Session labels put the assigned accelerator before
+the name, so literal ampersands in names/branches cannot become ConsoleHost
+hotkeys and remain visible as data. Choice help (`?` in ConsoleHost) contains
 the full, untruncated normalized name, exact ID, repository, branch, working
 directory, update timestamp, and event count when available. Terminal control
 characters and Unicode line/paragraph separators in names and branches are
-replaced with spaces in the message and help; ordinary Unicode is preserved.
-Selection still maps to the original object, not the displayed name.
+replaced with spaces in labels and help; ordinary Unicode is preserved.
 
 There is **no default choice** (`defaultChoice = -1`); blank input is not an
 implicit resume or new-session request. `Select-CopilotSession` offers **Cancel**
