@@ -6,6 +6,14 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+### Fixed
+- `Update-AppInstallerApp` uses the non-forcing App Installer-specific request
+  on every supported Windows build. This fixes 0.2.2's synchronous
+  `0x80070057` failure when the generic URI API receives an App Installer URI
+  with deferred registration enabled. Correct the deferral documentation:
+  in-use errors remain explicit; no application is force-closed, no failed
+  request is retried, and request-completion output remains unchanged. (#322)
+
 ## [0.2.2] - 2026-09-22
 
 ### Fixed
