@@ -16,7 +16,7 @@ Import-Module Shmuelie.Windows
 
 | Area | Commands |
 |---|---|
-| App Installer | `Get-AppInstallerApp`, `Update-AppInstallerApp` (compiled, Windows-only; non-forcing updates, in-use registration deferral on build 22556+; opt-in `-PassThru` request outcomes) |
+| App Installer | `Get-AppInstallerApp`, `Update-AppInstallerApp` (compiled, Windows-only; non-forcing updates with explicit in-use errors; opt-in `-PassThru` request outcomes) |
 | Inventory | `Get-InstalledApplications` (compiled binary cmdlet) |
 | Services | `Get-ServiceProcess` (compiled binary cmdlet) |
 | Virtual drives | `Get-SubstDrive`, `New-SubstDrive`, `Remove-SubstDrive` (compiled binary cmdlets) |
@@ -74,25 +74,25 @@ See the [Win32 PID-validity contract](https://learn.microsoft.com/windows/win32/
 
 ## App Installer request results
 
-On **Windows build 22556 and later**, `Update-AppInstallerApp` passes the original
+On all supported Windows builds (**19041 and later**), `Update-AppInstallerApp` passes the original
 `.appinstaller` URI to
-[`Windows.Management.Deployment.PackageManager.AddPackageByUriAsync`](https://learn.microsoft.com/uwp/api/windows.management.deployment.packagemanager.addpackagebyuriasync)
-with `AddPackageOptions.DeferRegistrationWhenPackagesAreInUse = true`.
-The API and options exist at build 19041, but App Installer URI support starts
-at **22556**, so the route is selected by OS version before any request.
+[`Windows.Management.Deployment.PackageManager.AddPackageByAppInstallerFileAsync`](https://learn.microsoft.com/uwp/api/windows.management.deployment.packagemanager.addpackagebyappinstallerfileasync)
+with `AddPackageByAppInstallerOptions.None`.
 Windows processes the original App Installer document, including its source,
 update settings and dependencies; the command does not extract or replace it
 with package/dependency download URIs.
 
-If the main or dependency packages are in use, the documented
-[registration point](https://learn.microsoft.com/uwp/api/windows.management.deployment.addpackageoptions.deferregistrationwhenpackagesareinuse)
-is the application's **next activation**, not an immediate update on process
-exit. Both force-shutdown options remain false; the command does not terminate
-or restart applications or retry a failed modern request through another route.
-On older supported builds (19041 through 22555), it retains
-`AddPackageByAppInstallerFileAsync` with `AddPackageByAppInstallerOptions.None`.
-That route has no deferred-registration option: ordinary successful requests
-remain supported, and in-use or other errors remain explicit.
+This route has **no deferred-registration option**. The command does not force
+applications to close or restart, retry a failed request through another route,
+or promise registration at the next activation. In-use and other errors remain
+explicit.
+
+This corrects the 0.2.2 behavior: passing an App Installer URI to the generic
+`AddPackageByUriAsync` API with `DeferRegistrationWhenPackagesAreInUse = true`
+can fail immediately with `0x80070057` ("The parameter is incorrect").
+Support for App Installer URIs does not establish support for that option
+combination. The App Installer-specific route is selected before submission,
+not used as a fallback after failure.
 
 `Update-AppInstallerApp` still emits nothing by default. Opt in to typed
 request-completion output when an orchestrator needs evidence:

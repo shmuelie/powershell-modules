@@ -713,7 +713,7 @@ Describe 'AppInstaller compiled selection binding (hermetic)' -Skip:(-not $IsWin
 }
 
 Describe 'AppInstaller compiled deployment routing (hermetic)' -Skip:(-not $IsWindows) {
-    It 'uses the production route and options without activating WinRT' {
+    It 'uses only the non-forcing App Installer route on all supported builds without activating WinRT' {
         $fixture = Join-Path $PSScriptRoot 'fixtures' 'Test-AppInstallerDeployment.ps1'
         $output = & pwsh -NoProfile -NonInteractive -File $fixture -AssemblyDirectory (Join-Path $TestDrive 'deployment')
         $LASTEXITCODE | Should -Be 0 -Because ($output -join "`n")
