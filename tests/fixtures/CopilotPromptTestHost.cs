@@ -36,12 +36,13 @@ public sealed class CopilotPromptTestUI : PSHostUserInterface
     public readonly Queue<int> Answers = new();
     public readonly List<CopilotPromptCall> Calls = new();
     public Exception Failure;
+    public int FailureAfterCalls;
     public int OtherInputCalls;
     public override PSHostRawUserInterface RawUI => null;
     public override int PromptForChoice(string caption, string message, Collection<ChoiceDescription> choices, int defaultChoice)
     {
         Calls.Add(new CopilotPromptCall { Caption = caption, Message = message, Choices = choices, DefaultChoice = defaultChoice });
-        if (Failure != null) throw Failure;
+        if (Failure != null && Calls.Count > FailureAfterCalls) throw Failure;
         if (Answers.Count == 0) throw new NotSupportedException("No prompt input is available.");
         return Answers.Dequeue();
     }
