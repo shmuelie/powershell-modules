@@ -16,11 +16,11 @@ install and upgrade each module on its own.
 | Module | Description | Version |
 |---|---|---|
 | [Shmuelie.Git](modules.md#shmuelie-git) | Git worktrees, layout, status, completion, and prediction | 0.10.3 |
-| [Shmuelie.Copilot](modules.md#shmuelie-copilot) | Copilot CLI sessions, plugins, marketplaces, MCP, and launcher | 0.5.1 |
+| [Shmuelie.Copilot](modules.md#shmuelie-copilot) | Copilot CLI sessions, plugins, marketplaces, MCP, and launcher | 0.6.0 |
 | [Shmuelie.Node](modules.md#shmuelie-node) | Node.js, nvm-windows, npm, and ADO npm credentials | 0.1.5 |
 | [Shmuelie.DotNet](modules.md#shmuelie-dotnet) | User-local .NET SDK installation and tool management | 0.2.1 |
 | [Shmuelie.Utilities](modules.md#shmuelie-utilities) | Python, VS Code, terminal helpers, and legacy .NET tool entry points | 0.6.1 |
-| [Shmuelie.Windows](modules.md#shmuelie-windows) | Windows-only installed-apps, Terminal, WPR, and service helpers | 0.2.2 |
+| [Shmuelie.Windows](modules.md#shmuelie-windows) | Windows-only installed-apps, Terminal, WPR, and service helpers | 0.2.3 |
 | [Shmuelie.Dsc](modules.md#shmuelie-dsc) | DSC v3 resources for setup: modules, symlinks, Copilot plugins/marketplaces, uv tools | 0.1.2 |
 | [Shmuelie.VisualStudio](modules.md#shmuelie-visualstudio) | Visual Studio discovery, MSBuild resolution, and developer shell launch helpers | 0.2.0 |
 | [Shmuelie.PackageManagement](modules.md#shmuelie-packagemanagement) | Package update orchestration; see the module README for provider availability | 0.3.0 |

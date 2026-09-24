@@ -6,6 +6,8 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-24
+
 ### Changed
 - Native session pickers now put descriptive summaries in the actual choice
   labels, with 22 sessions per page and unique session keys. Next/Previous page
