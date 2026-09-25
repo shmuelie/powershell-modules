@@ -85,7 +85,7 @@ bypassing confirmation or escalating after a failure.
 ## Shmuelie.Copilot
 
 GitHub Copilot CLI sessions, plugins, marketplaces, MCP servers, and the
-`Start-Copilot` launcher. **Version 0.5.1.**
+`Start-Copilot` launcher. **Version 0.6.0.**
 [README](https://github.com/shmuelie/powershell-modules/blob/main/modules/Shmuelie.Copilot/README.md)
 
 Highlights:
@@ -162,7 +162,7 @@ Highlights:
 ## Shmuelie.Windows
 
 Windows-only developer utilities for installed applications, Windows Terminal,
-Windows Performance Recorder, and service host processes. **Version 0.2.2.**
+Windows Performance Recorder, and service host processes. **Version 0.2.3.**
 [README](https://github.com/shmuelie/powershell-modules/blob/main/modules/Shmuelie.Windows/README.md)
 
 Highlights:

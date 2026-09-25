@@ -6,6 +6,8 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-09-24
+
 ### Fixed
 - `Update-AppInstallerApp` uses the non-forcing App Installer-specific request
   on every supported Windows build. This fixes 0.2.2's synchronous
