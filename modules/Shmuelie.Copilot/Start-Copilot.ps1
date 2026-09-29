@@ -9,7 +9,11 @@ function Start-Copilot {
         and sensible defaults (--allow-all --experimental), each of which can be
         turned off with -NoAllowAll / -NoExperimental. Destructive git operations
         (force push, hard reset, rebase, amend, and similar) are denied by
-        default; pass -NoDefaultDenyTools to opt out of those deny rules.
+        default; pass -NoDefaultDenyTools to opt out of those deny rules. Typed
+        mappings track the current printed CLI surface, while compatibility
+        switches such as -Version (--prefer-version) and
+        -EnableReasoningSummaries (--enable-reasoning-summaries) remain
+        available even though the current native help text omits them.
 
         When a Prompt is provided, runs in non-interactive autopilot mode (-p --autopilot).
         When no Prompt is provided, starts interactively.
@@ -36,6 +40,10 @@ function Start-Copilot {
     .PARAMETER Interactive
         Start interactive mode and automatically execute this prompt. Unlike -Prompt,
         the session remains interactive after the initial prompt completes.
+
+    .PARAMETER Fleet
+        Run the initial prompt in fleet mode (parallel subagent orchestration).
+        When using this wrapper, combine it with -Prompt or -Interactive.
 
     .PARAMETER NoResume
         Skip session resume even if a matching session exists.
@@ -111,6 +119,10 @@ function Start-Copilot {
 
     .PARAMETER ReasoningEffort
         Set the reasoning effort level.
+
+    .PARAMETER AutoTier
+        Set the Auto routing preference: efficiency, balance, or intelligence.
+        If combined with -Model, the model must be 'auto'.
 
     .PARAMETER AddDir
         One or more directories to grant file access to.
@@ -220,6 +232,10 @@ function Start-Copilot {
     .PARAMETER Mouse
         Enable or disable mouse support in alt screen mode ('on' or 'off').
 
+    .PARAMETER NoMouse
+        Disable mouse support in alt screen mode. Native compatibility switch
+        alongside -Mouse on|off; cannot be combined with -Mouse.
+
     .PARAMETER PlainDiff
         Disable rich diff rendering (syntax highlighting via git's diff tool).
 
@@ -281,6 +297,13 @@ function Start-Copilot {
         Enable the memory tools in prompt (-Prompt) mode. Memory is disabled by
         default in non-interactive mode.
 
+    .PARAMETER DynamicRetrieval
+        Persistently enable or disable embeddings-based dynamic retrieval per
+        category, using values such as 'skills=off'. Unlike ordinary session
+        flags, this updates Copilot's saved setting when the CLI actually starts.
+        Start-Copilot -PassThru, Get-CopilotLaunchPlan, and -WhatIf only preview
+        the native arguments and do not persist anything.
+
     .PARAMETER MaxAiCredits
         Set the maximum AI credits to spend in this session.
 
@@ -301,6 +324,10 @@ function Start-Copilot {
     .PARAMETER NoRemoteExport
         Disable exporting the session to GitHub web and mobile (also disables
         remote control).
+
+    .PARAMETER NoEagerPowerShellResolution
+        On Windows, disable background PowerShell prompt resolution. This native
+        switch is Windows-only; passing it on another platform is an error.
 
     .PARAMETER ExtensionSdkPath
         Override the bundled @github/copilot-sdk injected into extension
@@ -393,6 +420,8 @@ function Start-Copilot {
 
         [string]$Interactive,
 
+        [switch]$Fleet,
+
         [Parameter(ParameterSetName = 'CopilotNoResume', Mandatory)]
         [switch]$NoResume,
 
@@ -438,6 +467,7 @@ function Start-Copilot {
         [ArgumentCompleter({
             param($commandName, $parameterName, $wordToComplete)
             @(
+                'auto',
                 'claude-sonnet-4.6', 'claude-sonnet-4.5', 'claude-haiku-4.5',
                 'claude-opus-4.7', 'claude-opus-4.7-1m', 'claude-opus-4.6', 'claude-opus-4.5', 'claude-sonnet-4',
                 'gpt-5.5', 'gpt-5.4', 'gpt-5.3-codex', 'gpt-5.2-codex', 'gpt-5.2',
@@ -452,6 +482,9 @@ function Start-Copilot {
 
         [ValidateSet('none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max')]
         [string]$ReasoningEffort,
+
+        [ValidateSet('efficiency', 'balance', 'intelligence')]
+        [string]$AutoTier,
 
         [string[]]$AddDir,
 
@@ -518,6 +551,8 @@ function Start-Copilot {
         [ValidateSet('on', 'off')]
         [string]$Mouse,
 
+        [switch]$NoMouse,
+
         [switch]$PlainDiff,
 
         [ValidateSet('on', 'off')]
@@ -558,6 +593,18 @@ function Start-Copilot {
 
         [switch]$EnableMemory,
 
+        [ArgumentCompleter({
+            param($commandName, $parameterName, $wordToComplete)
+            @('skills=on', 'skills=off') | Where-Object { $_ -like "$wordToComplete*" }
+        })]
+        [ValidateScript({
+            if ($_ -isnot [string] -or $_ -notmatch '^skills=(on|off)$') {
+                throw "DynamicRetrieval values must match the current native help, e.g. 'skills=on' or 'skills=off'."
+            }
+            $true
+        })]
+        [string[]]$DynamicRetrieval,
+
         [int]$MaxAiCredits,
 
         [switch]$AllowAllMcpServerInstructions,
@@ -570,6 +617,8 @@ function Start-Copilot {
         [switch]$RemoteExport,
 
         [switch]$NoRemoteExport,
+
+        [switch]$NoEagerPowerShellResolution,
 
         [string]$ExtensionSdkPath,
 
