@@ -5482,6 +5482,145 @@ Describe 'Get-CopilotMcpServer' {
     }
 }
 
+Describe 'Copilot scoped GitHub MCP authentication planning' {
+    BeforeEach {
+        $testHome = Join-Path $TestDrive ([guid]::NewGuid().ToString())
+        New-Item -ItemType Directory -Path $testHome -Force | Out-Null
+        Mock -ModuleName Shmuelie.Copilot Get-CopilotHome { $testHome }
+        Add-FakeCopilot -Path (Join-Path $TestDrive 'bin')
+        $script:AuthConfig = '{"mcpServers":{"first":{"type":"http","url":"https://one.example.org/mcp"},"second":{"type":"sse","url":"https://two.example.org/events"}}}'
+    }
+
+    It 'scopes one server without sending a credential value or enabling others' {
+        $plan = Get-CopilotLaunchPlan -DeferResume -AdditionalMcpConfig $script:AuthConfig -McpGitHubAuth 'first=https://one.example.org'
+        $index = [array]::IndexOf($plan.Args, '--mcp-github-auth')
+        $index | Should -BeGreaterOrEqual 0
+        $plan.Args[$index + 1] | Should -BeExactly 'first=https://one.example.org'
+        @($plan.Args | Where-Object { $_ -eq '--mcp-github-auth' }) | Should -HaveCount 1
+        $plan.Args | Should -Not -Contain '--enable-mcp-server'
+        ($plan.Args -join ' ') | Should -Not -Match 'credential|token'
+    }
+
+    It 'forwards independent scopes through Start-Copilot -PassThru and -WhatIf without launching' {
+        $entries = @('first=https://one.example.org', 'second=https://two.example.org')
+        $firstConfig = '{"mcpServers":{"first":{"type":"http","url":"https://one.example.org/mcp"}}}'
+        $secondConfig = '{"mcpServers":{"second":{"type":"sse","url":"https://two.example.org/events"}}}'
+        $plan = Start-Copilot -DeferResume -PassThru -WhatIf -AdditionalMcpConfig $firstConfig, $secondConfig -McpGitHubAuth $entries
+        $scopes = for ($i = 0; $i -lt $plan.Args.Count - 1; $i++) {
+            if ($plan.Args[$i] -eq '--mcp-github-auth') { $plan.Args[$i + 1] }
+        }
+        $scopes | Should -BeExactly $entries
+        @($plan.Args | Where-Object { $_ -eq '--additional-mcp-config' }) | Should -HaveCount 2
+    }
+
+    It 'resolves an explicit @file relative to -ChangeDir without modifying it' {
+        $configPath = Join-Path $TestDrive 'auth-mcp.json'
+        Set-Content -LiteralPath $configPath -Value $script:AuthConfig
+        $plan = Get-CopilotLaunchPlan -DeferResume -ChangeDir $TestDrive -AdditionalMcpConfig '@./auth-mcp.json' -McpGitHubAuth 'second=https://two.example.org'
+        $plan.Args | Should -Contain 'second=https://two.example.org'
+        Get-Content -LiteralPath $configPath -Raw | Should -BeExactly ($script:AuthConfig + [Environment]::NewLine)
+    }
+
+    It 'accepts literal loopback HTTP for both IP families' -ForEach @(
+        @{ Origin = 'http://127.0.0.1:3000'; Url = 'http://127.0.0.1:3000/mcp' }
+        @{ Origin = 'http://[::1]:3000'; Url = 'http://[::1]:3000/mcp' }
+    ) {
+        $config = @{ mcpServers = @{ local = @{ type = 'http'; url = $Url } } } | ConvertTo-Json -Depth 5 -Compress
+        $plan = Get-CopilotLaunchPlan -DeferResume -AdditionalMcpConfig $config -McpGitHubAuth "local=$Origin"
+        $plan.Args | Should -Contain "local=$Origin"
+    }
+
+    It 'rejects an implicit-only server even when a user MCP configuration exists' {
+        $configDirectory = Join-Path $testHome '.copilot'
+        New-Item -ItemType Directory -Path $configDirectory -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $configDirectory 'mcp-config.json') -Value $script:AuthConfig
+        { Get-CopilotLaunchPlan -DeferResume -McpGitHubAuth 'first=https://one.example.org' -ErrorAction Continue } |
+            Should -Throw '*requires -AdditionalMcpConfig*'
+    }
+
+    It 'rejects invalid entry shapes without echoing supplied values' -ForEach @(
+        @{ Entry = 'first' }
+        @{ Entry = '=https://one.example.org' }
+        @{ Entry = 'bad&name=https://one.example.org' }
+        @{ Entry = 'first=https://one.example.org/path' }
+        @{ Entry = 'first=https://user:password@one.example.org' }
+        @{ Entry = 'first=https://one.example.org?token=fake-secret-value' }
+        @{ Entry = 'first=http://localhost:3000' }
+        @{ Entry = 'first=http://192.168.1.1' }
+        @{ Entry = 'first=https://one.example.org:99999' }
+        @{ Entry = "first=https://one.example.org`n" }
+    ) {
+        $message = ''
+        try {
+            Get-CopilotLaunchPlan -DeferResume -AdditionalMcpConfig $script:AuthConfig -McpGitHubAuth $Entry -ErrorAction Continue | Out-Null
+        } catch {
+            $message = $_.Exception.Message
+        }
+        $message | Should -Match 'Invalid -McpGitHubAuth'
+        $message | Should -Not -Match 'fake-secret-value|password'
+    }
+
+    It 'rejects missing or mismatched explicit remote servers' -ForEach @(
+        @{ Entry = 'unknown=https://one.example.org'; Config = '{"mcpServers":{"first":{"url":"https://one.example.org/mcp"}}}' }
+        @{ Entry = 'first=https://two.example.org'; Config = '{"mcpServers":{"first":{"url":"https://one.example.org/mcp"}}}' }
+        @{ Entry = 'first=https://one.example.org:8443'; Config = '{"mcpServers":{"first":{"url":"https://one.example.org/mcp"}}}' }
+        @{ Entry = 'first=https://one.example.org'; Config = '{"mcpServers":{"first":{"type":"stdio","command":"echo","url":"https://one.example.org/mcp"}}}' }
+        @{ Entry = 'first=https://one.example.org'; Config = '{"mcpServers":{"first":{"url":"https://user:password@one.example.org/mcp"}}}' }
+    ) {
+        { Get-CopilotLaunchPlan -DeferResume -AdditionalMcpConfig $Config -McpGitHubAuth $Entry -ErrorAction Continue } |
+            Should -Throw '*MCP server*'
+    }
+
+    It 'rejects ambiguous duplicate auth scopes and duplicate explicit config names' {
+        { Get-CopilotLaunchPlan -DeferResume -AdditionalMcpConfig $script:AuthConfig `
+            -McpGitHubAuth 'first=https://one.example.org', 'first=https://one.example.org:443' } |
+            Should -Throw '*more than one*'
+        { Get-CopilotLaunchPlan -DeferResume -AdditionalMcpConfig $script:AuthConfig, $script:AuthConfig `
+            -McpGitHubAuth 'first=https://one.example.org' } |
+            Should -Throw '*Duplicate explicit MCP server*'
+    }
+
+    It 'fails closed for unreadable or malformed explicit configuration without leaking its contents' {
+        { Get-CopilotLaunchPlan -DeferResume -AdditionalMcpConfig '@./missing-mcp.json' -McpGitHubAuth 'first=https://one.example.org' } |
+            Should -Throw '*Cannot read or parse*'
+        $message = ''
+        try {
+            Get-CopilotLaunchPlan -DeferResume -AdditionalMcpConfig '{"fake-secret-value":' -McpGitHubAuth 'first=https://one.example.org' | Out-Null
+        } catch {
+            $message = $_.Exception.Message
+        }
+        $message | Should -Match 'Cannot read or parse'
+        $message | Should -Not -Match 'fake-secret-value'
+    }
+
+    It 'redacts inline MCP configuration in WhatIf diagnostics while preserving the plan' {
+        $config = $script:AuthConfig.Replace('"type":"http"', '"header":"fake-secret-value","type":"http"')
+        $plan = Start-Copilot -PassThru -DeferResume -AdditionalMcpConfig $config -McpGitHubAuth 'first=https://one.example.org'
+        $plan.Args | Should -Contain $config
+        $transcriptPath = Join-Path $TestDrive 'scoped-auth-preview.txt'
+        Start-Transcript -Path $transcriptPath | Out-Null
+        try {
+            Start-Copilot -WhatIf -DeferResume -AdditionalMcpConfig $config -McpGitHubAuth 'first=https://one.example.org'
+        } finally {
+            Stop-Transcript | Out-Null
+        }
+        $output = Get-Content -LiteralPath $transcriptPath -Raw
+        $output | Should -Match '<redacted inline MCP config>'
+        $output | Should -Match 'first=https://one.example.org'
+        $output | Should -Not -Match 'fake-secret-value'
+    }
+
+    It 'keeps MCP enable and disable behavior independent from authentication' {
+        $plan = Get-CopilotLaunchPlan -DeferResume -AdditionalMcpConfig $script:AuthConfig `
+            -McpGitHubAuth 'first=https://one.example.org' -EnableMcpServer 'second' -DisableMcpServer 'other'
+        $plan.Args | Should -Contain '--enable-mcp-server'
+        $plan.Args | Should -Contain '--disable-mcp-server'
+        $plan.Args | Should -Contain 'second'
+        $plan.Args | Should -Contain 'other'
+        @($plan.Args | Where-Object { $_ -eq '--mcp-github-auth' }) | Should -HaveCount 1
+    }
+}
+
 Describe 'Get-CopilotLaunchPlan additional flag mappings' {
     BeforeEach {
         $testHome = Join-Path $TestDrive 'home'
