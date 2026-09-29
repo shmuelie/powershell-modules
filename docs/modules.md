@@ -128,7 +128,7 @@ Highlights:
 
 User-local .NET SDK installation and canonical tool management for Windows,
 Linux, and macOS.
-**Version 0.2.1.**
+**Version 0.2.2.**
 [README](https://github.com/shmuelie/powershell-modules/blob/main/modules/Shmuelie.DotNet/README.md)
 
 Highlights:
