@@ -4804,7 +4804,7 @@ Describe 'Copilot MCP configuration link protection' {
 
         @(Get-Content -LiteralPath $script:CopilotTestLog) | Should -Be @(
             'mcp add --transport stdio --tools * --timeout 1 all-tools -- node'
-            'mcp add --transport stdio --tools  --timeout 4294967295 no-tools -- node'
+            'mcp add --transport stdio --tools= --timeout 4294967295 no-tools -- node'
             'mcp add --transport sse --tools resolve,fetch-item some-tools https://example.com/sse'
             'mcp add --transport http --tools resolve --timeout 30000 remote-tools https://example.com/mcp'
         )

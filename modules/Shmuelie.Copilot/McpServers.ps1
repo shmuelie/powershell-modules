@@ -322,7 +322,10 @@ function Register-CopilotMcpServer {
         $addArgs = @('mcp', 'add', '--transport', $Transport)
         if ($Env) { foreach ($e in $Env) { $addArgs += '--env', $e } }
         if ($Header) { foreach ($h in $Header) { $addArgs += '--header', $h } }
-        if ($PSBoundParameters.ContainsKey('Tools')) { $addArgs += '--tools', $Tools }
+        if ($PSBoundParameters.ContainsKey('Tools')) {
+            # An empty native argument can disappear when copilot resolves to a .cmd shim.
+            if ($Tools -eq '') { $addArgs += '--tools=' } else { $addArgs += '--tools', $Tools }
+        }
         if ($PSBoundParameters.ContainsKey('TimeoutMilliseconds')) { $addArgs += '--timeout', "$TimeoutMilliseconds" }
         $addArgs += $Name
         if ($Transport -eq 'stdio') {
