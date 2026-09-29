@@ -21,6 +21,10 @@ Versions change only when a release is cut; unreleased work stays under
   `-EnableReasoningSummaries` (`--enable-reasoning-summaries`) stay supported. (#329)
 
 ### Fixed
+- `Get-CopilotSession` applies metadata and age filters before reading event
+  files. Unrelated locked or large event histories no longer block selective
+  global queries; matched sessions still report accurate counts and failures.
+  (#333)
 - A malformed session `created_at` or `updated_at` no longer prevents
   discovery of unrelated healthy sessions. The affected session is skipped
   with a visible error; `-ErrorAction Stop` aborts the listing for safe
