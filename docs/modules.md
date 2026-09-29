@@ -85,7 +85,7 @@ bypassing confirmation or escalating after a failure.
 ## Shmuelie.Copilot
 
 GitHub Copilot CLI sessions, plugins, marketplaces, MCP servers, and the
-`Start-Copilot` launcher. **Version 0.6.0.**
+`Start-Copilot` launcher. **Version 0.7.0.**
 [README](https://github.com/shmuelie/powershell-modules/blob/main/modules/Shmuelie.Copilot/README.md)
 
 Highlights:
@@ -128,7 +128,7 @@ Highlights:
 
 User-local .NET SDK installation and canonical tool management for Windows,
 Linux, and macOS.
-**Version 0.2.1.**
+**Version 0.2.2.**
 [README](https://github.com/shmuelie/powershell-modules/blob/main/modules/Shmuelie.DotNet/README.md)
 
 Highlights:
