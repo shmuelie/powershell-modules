@@ -5,6 +5,8 @@ Versions change only when a release is cut; pending work lives under [Unreleased
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-09-29
+
 ### Fixed
 
 - Report native discovery and update failures from `Get-DotNetTool` and
