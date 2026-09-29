@@ -4461,6 +4461,55 @@ Describe 'Get-CopilotSession rich filters' {
         $unnamed[0].EventCount | Should -Be 0
     }
 
+    It 'skips only a malformed <Field> session with a visible error and fails closed under Stop' -ForEach @(
+        @{ Field = 'updated_at' }
+        @{ Field = 'created_at' }
+    ) {
+        $badId = "z-corrupt-$Field"
+        $badPath = New-CopilotSessionState -SessionRoot $script:FilterSessionRoot -Id $badId -Cwd $script:FilterWorkspace -Summary 'Damaged metadata'
+        $workspaceFile = Join-Path $badPath 'workspace.yaml'
+        $original = Get-Content -LiteralPath $workspaceFile -Raw
+        $damaged = $original -replace "(?m)^${Field}:.*$", "${Field}: not-a-date"
+        Set-Content -LiteralPath $workspaceFile -Value $damaged -NoNewline
+        $healthyId = 'b-healthy'
+        New-CopilotSessionState -SessionRoot $script:FilterSessionRoot -Id $healthyId -Cwd $script:FilterWorkspace -Summary 'Healthy' | Out-Null
+
+        $errors = @()
+        $sessions = @(Get-CopilotSession -All -ErrorAction Continue -ErrorVariable +errors)
+        $dated = @(Get-CopilotSession -All -UpdatedBefore '2026-08-20T00:00:00Z' -ErrorAction Continue)
+
+        $sessions.Id | Should -Contain $healthyId
+        $sessions.Id | Should -Not -Contain $badId
+        $sessions[0].Id | Should -Be 'recent-local'
+        $dated.Id | Should -Contain $healthyId
+        $dated.Id | Should -Not -Contain $badId
+        $errors | Should -HaveCount 1
+        $errors[0].ToString() | Should -Match ([regex]::Escape($badId))
+        $errors[0].ToString() | Should -Match $Field
+        (Get-CopilotSession -Id $healthyId).Id | Should -Be $healthyId
+        Get-Content -LiteralPath $workspaceFile -Raw | Should -Be $damaged
+
+        $seen = [System.Collections.Generic.List[string]]::new()
+        { Get-CopilotSession -All -ErrorAction Stop | ForEach-Object { $seen.Add($_.Id) } } | Should -Throw "*$badId*"
+        $seen | Should -HaveCount 0
+    }
+
+    It 'keeps missing optional timestamps nullable and out of age-filtered results' {
+        $id = 'no-timestamps'
+        $path = New-CopilotSessionState -SessionRoot $script:FilterSessionRoot -Id $id -Cwd $script:FilterWorkspace -Summary 'Undated'
+        $workspaceFile = Join-Path $path 'workspace.yaml'
+        $withoutTimestamps = @(Get-Content -LiteralPath $workspaceFile) |
+            Where-Object { $_ -notmatch '^(?:created_at|updated_at):' }
+        Set-Content -LiteralPath $workspaceFile -Value $withoutTimestamps
+
+        $session = Get-CopilotSession -Id $id -ErrorAction Stop
+
+        $session.CreatedAt | Should -BeNullOrEmpty
+        $session.UpdatedAt | Should -BeNullOrEmpty
+        @(Get-CopilotSession -All -ErrorAction Stop).Id | Should -Contain $id
+        @(Get-CopilotSession -All -OlderThan ([timespan]::FromDays(1)) -ErrorAction Stop).Id | Should -Not -Contain $id
+    }
+
     It 'excludes empty strings just like missing metadata' {
         $workspaceFile = Join-Path $script:FilterSessionRoot 'missing-metadata' 'workspace.yaml'
         Add-Content -LiteralPath $workspaceFile -Value @("repository: ''", "branch: ''", "cwd: ''", "updated_at: ''") -ErrorAction Stop

@@ -21,6 +21,10 @@ Versions change only when a release is cut; unreleased work stays under
   `-EnableReasoningSummaries` (`--enable-reasoning-summaries`) stay supported. (#329)
 
 ### Fixed
+- A malformed session `created_at` or `updated_at` no longer prevents
+  discovery of unrelated healthy sessions. The affected session is skipped
+  with a visible error; `-ErrorAction Stop` aborts the listing for safe
+  cleanup pipelines. (#332)
 - Both launcher commands now suggest native `auto` model routing and use a
   shared, non-exhaustive list for `-Model` completion. Explicit values are
   forwarded unchanged. (#330)
