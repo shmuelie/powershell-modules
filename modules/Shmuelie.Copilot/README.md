@@ -52,10 +52,24 @@ repair without reading or writing session files.
 
 `Start-Copilot` wraps the `copilot` executable and adds:
 
-- **Automatic session resume** for the current folder — a single session resumes
+- **Automatic session resume** for the current repository and branch — a single session resumes
   automatically, multiple sessions show a picker, and a lone named session
   auto-resumes. Control it with `-NoResume`, `-ResumeLatest`, `-ResumeSession`,
   `-NoAutoResume`, and `-IncludeUnnamed`.
+- **Worktree moves** retain eligibility: a GitHub `origin` remote supplies the
+  case-insensitive `owner/repository` identity, paired with the exact checked-out
+  branch. Both fields must match, so another repository's same-named branch or
+  another worktree's branch cannot take its place. A session missing one or both
+  fields falls back only when its recorded directory is the current directory
+  and any known field agrees; complete but conflicting metadata never falls
+  back. A non-Git directory, detached branch, missing or ambiguous origin, or
+  unsupported remote uses exact recorded-directory matching instead. The
+  launcher prefers complete identity matches over legacy directory-only
+  candidates; multiple matching sessions retain newest-first selection.
+  `-ResumeSession` completion uses the same scope, including `-ChangeDir`.
+  `Get-CopilotSession` defaults to this scope; `-All` still searches globally,
+  explicit `-Cwd` replaces it with the recorded-path wildcard filter, and `-Id`
+  remains an exact global lookup. Other filters narrow rather than expand it.
 - **Effective launch directory** via `-ChangeDir` (alias `-C`) on both
   `Start-Copilot` and `Get-CopilotLaunchPlan`. Session candidates, branch
   preference, selectors, and MCP path policy use that directory, including
@@ -118,7 +132,7 @@ The callback receives **one array argument**, ordered newest first, of
 `Branch`, `UpdatedAt`, and `Cwd`. `UpdatedAt` is a `DateTimeOffset`, or may be
 null for sessions discovered by `Select-CopilotSession`. `Get-CopilotSession`
 remains available for discovery without rendering or launching; the launcher's
-existing folder, maintenance-session, and branch-preference policy is separate
+existing eligibility, maintenance-session, and branch-preference policy is separate
 from its renderer and does not change the general discovery command's results.
 
 Return exactly one typed candidate, or a typed copy with the **same exact ID**.

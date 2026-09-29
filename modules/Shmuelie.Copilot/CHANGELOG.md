@@ -11,6 +11,11 @@ Versions change only when a release is cut; unreleased work stays under
   directory contains literal wildcard characters, including exact ID lookup.
   Session filesystem paths no longer use wildcard matching; metadata filters
   retain their documented wildcard behavior. (#334)
+- Resume discovery, selection, `-ResumeSession` completion, and default session
+  listing now recognize a moved GitHub worktree by repository and branch
+  metadata. Legacy sessions use the recorded directory only when known identity
+  fields do not conflict; explicit global and directory filters retain their
+  existing behavior. (#326)
 
 ## [0.6.0] - 2026-09-24
 
