@@ -6,6 +6,8 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-09-29
+
 ### Added
 - `Register-CopilotMcpServer` now supports native MCP tool filters via `-Tools`
   (`'*'`, `''`, or a comma-separated list) and bounded millisecond timeouts via
