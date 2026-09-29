@@ -52,6 +52,12 @@ The runner fails on any failing test. CI runs it in
 `.github/workflows/ci.yml`, and it gates publishing in
 `.github/workflows/publish-module.yml`.
 
+The Copilot test file includes one **live, read-only compatibility smoke test**
+for `copilot plugin list --json`. It is **opt-in only** so the default suite
+stays hermetic and deterministic. To run it explicitly, set
+`SHMUELIE_COPILOT_LIVE_COMPATIBILITY_TEST=1` for the test process before
+invoking `./build/Invoke-Tests.ps1`.
+
 Draft pull requests skip automated build/test jobs. Marking a PR ready for review
 starts the required checks; do not do so while validation is on hold.
 

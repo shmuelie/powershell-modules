@@ -8,9 +8,13 @@ function Get-CopilotSession {
         parses each workspace.yaml to extract session metadata. Includes
         EventCount and EventSize for diagnosing oversized sessions.
 
-        By default only sessions matching the current working directory are returned.
+        By default, in a GitHub worktree with an origin remote and a checked-out
+        branch, sessions with matching repository and branch metadata are returned
+        even after the worktree moves. Sessions missing either field fall back to
+        an exact recorded working-directory match, provided any known field does
+        not conflict. Without a resolvable identity, use the directory match.
         Use -All to search every directory, or -Cwd to replace the implicit current
-        directory scope. Repository, Branch, and Summary do not broaden that scope.
+        scope. Repository, Branch, and Summary filter within that scope.
         All supplied filters must match. String filters use case-insensitive
         PowerShell wildcards against recorded metadata, without resolving paths.
         Results remain sorted by UpdatedAt descending.
@@ -62,7 +66,7 @@ function Get-CopilotSession {
 
     .EXAMPLE
         Get-CopilotSession
-        # Lists sessions for the current directory.
+        # Lists sessions for the current repository and branch, or current directory.
 
     .EXAMPLE
         Get-CopilotSession -All
@@ -126,23 +130,25 @@ function Get-CopilotSession {
         }
     }
     $sessionStateDir = Join-Path (Get-CopilotHome) '.copilot' 'session-state'
-    if (-not (Test-Path $sessionStateDir)) {
+    if (-not (Test-Path -LiteralPath $sessionStateDir -PathType Container -ErrorAction Stop)) {
         return
     }
 
-    $currentDirectory = (Get-Location).Path
+    $scope = if (-not $Id -and -not $All -and -not $filters.ContainsKey('Cwd')) {
+        Get-CopilotSessionScope
+    } else { $null }
 
     $dirs = if ($Id) {
         $target = Resolve-CopilotSessionPath -Id $Id
-        if ($target) { Get-Item -LiteralPath $target } else { return }
+        if ($target) { Get-Item -LiteralPath $target -ErrorAction Stop } else { return }
     } else {
-        Get-ChildItem $sessionStateDir -Directory
+        Get-ChildItem -LiteralPath $sessionStateDir -Directory -ErrorAction Stop
     }
 
     $dirs | ForEach-Object {
         $wsFile = Join-Path $_.FullName 'workspace.yaml'
-        if (Test-Path $wsFile) {
-            $content = Get-Content $wsFile -Raw
+        if (Test-Path -LiteralPath $wsFile -ErrorAction Stop) {
+            $content = Get-Content -LiteralPath $wsFile -Raw -ErrorAction Stop
             $sessionCwd        = Get-CopilotWorkspaceField -Content $content -Field 'cwd'
             $updatedAt         = Get-CopilotWorkspaceField -Content $content -Field 'updated_at'
             $sessionSummary    = Get-CopilotWorkspaceField -Content $content -Field 'summary'
@@ -175,11 +181,12 @@ function Get-CopilotSession {
                 }
             }
 
-            if ($All -or $Id -or $filters.ContainsKey('Cwd') -or $sessionCwd -eq $currentDirectory) {
+            if ($All -or $Id -or $filters.ContainsKey('Cwd') -or
+                (Test-CopilotSessionScope -Scope $scope -Cwd $sessionCwd -Repository $sessionRepository -Branch $sessionBranch)) {
                 $eventsFile = Join-Path $_.FullName 'events.jsonl'
                 $eventCount = 0
                 $eventSize  = [long]0
-                if (Test-Path $eventsFile) {
+                if (Test-Path -LiteralPath $eventsFile -ErrorAction Stop) {
                     $fi = [System.IO.FileInfo]::new($eventsFile)
                     $eventSize = $fi.Length
                     # Stream-count lines without allocating the full string array
@@ -340,7 +347,7 @@ function Rename-CopilotSession {
         }
 
         $wsFile = Join-Path $session.Path 'workspace.yaml'
-        if (-not (Test-Path $wsFile)) {
+        if (-not (Test-Path -LiteralPath $wsFile -ErrorAction Stop)) {
             Write-Error "workspace.yaml not found for session $($session.Id)."
             return
         }
@@ -349,7 +356,7 @@ function Rename-CopilotSession {
             return
         }
 
-        $content = Get-Content $wsFile -Raw
+        $content = Get-Content -LiteralPath $wsFile -Raw -ErrorAction Stop
 
         $content = Set-CopilotWorkspaceField -Content $content -Field 'name' -Value $Summary
         $content = Set-CopilotWorkspaceField -Content $content -Field 'summary' -Value $Summary
