@@ -6,6 +6,12 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+### Fixed
+- A malformed session `created_at` or `updated_at` no longer prevents
+  discovery of unrelated healthy sessions. The affected session is skipped
+  with a visible error; `-ErrorAction Stop` aborts the listing for safe
+  cleanup pipelines. (#332)
+
 ## [0.6.0] - 2026-09-24
 
 ### Changed

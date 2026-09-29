@@ -228,6 +228,10 @@ Both date filters can be combined; the earlier cutoff wins. Sessions with missin
 UpdatedAt are excluded when either is supplied, without falling back to CreatedAt
 or filesystem timestamps. Sessions without workspace metadata are still skipped.
 Output remains sorted by UpdatedAt descending.
+Malformed `created_at` or `updated_at` skips only that session and writes an
+error identifying its ID and field; no timestamp is invented and no files are
+changed. Use `-ErrorAction Stop` when feeding a listing into cleanup so any
+malformed session aborts the operation rather than producing a partial inventory.
 
 `-Id` remains an exact, directory-independent lookup, cannot be combined with
 filters or `-All`, and retains the session-root guard. `Select-CopilotSession`
