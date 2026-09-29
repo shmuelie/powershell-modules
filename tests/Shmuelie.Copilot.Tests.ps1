@@ -4805,6 +4805,11 @@ Describe 'Get-CopilotPlugin read-only CLI compatibility' -Tag 'CopilotCompatibil
     }
 
     It 'matches the current CLI JSON inventory when copilot is available' {
+        if ($env:SHMUELIE_COPILOT_LIVE_COMPATIBILITY_TEST -notin @('1', 'true', 'TRUE', 'yes', 'YES')) {
+            Set-ItResult -Skipped -Because 'Set SHMUELIE_COPILOT_LIVE_COMPATIBILITY_TEST=1 to opt in to the live read-only Copilot CLI smoke test.'
+            return
+        }
+
         $realCopilot = Get-Command copilot -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
         if (-not $realCopilot) {
             Set-ItResult -Skipped -Because 'copilot is not available'
