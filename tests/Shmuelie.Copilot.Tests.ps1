@@ -3972,6 +3972,20 @@ Describe 'Copilot maintenance-session auto-resume exclusion' {
 }
 
 Describe 'Copilot model completion' {
+    BeforeEach {
+        $testHome = Join-Path $TestDrive ([guid]::NewGuid().ToString())
+        New-Item -ItemType Directory -Path $testHome -Force | Out-Null
+        Mock -ModuleName Shmuelie.Copilot Get-CopilotHome { $testHome }
+        Add-FakeCopilot -Path (Join-Path $TestDrive 'model-completion-bin')
+        $script:ModelOriginalTestLog = $env:COPILOT_TEST_LOG
+        $env:COPILOT_TEST_LOG = Join-Path $TestDrive 'model-completion.log'
+    }
+
+    AfterEach {
+        $env:PATH = $script:OriginalPath
+        $env:COPILOT_TEST_LOG = $script:ModelOriginalTestLog
+    }
+
     It 'suggests auto and filters common models for <Command>' -ForEach @(
         @{ Command = 'Get-CopilotLaunchPlan' }
         @{ Command = 'Start-Copilot' }
@@ -3996,6 +4010,7 @@ Describe 'Copilot model completion' {
 
         $auto.Args[[array]::IndexOf($auto.Args, '--model') + 1] | Should -Be 'auto'
         $custom.Args[[array]::IndexOf($custom.Args, '--model') + 1] | Should -Be 'custom-model-not-in-suggestions'
+        Test-Path -LiteralPath $env:COPILOT_TEST_LOG | Should -BeFalse
     }
 }
 
