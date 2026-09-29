@@ -6,6 +6,37 @@ BeforeAll {
 
     $script:OriginalUserProfile = $env:USERPROFILE
     $script:OriginalPath = $env:PATH
+    $script:CopilotFixtureRoot = Join-Path (Split-Path $PSCommandPath -Parent) 'fixtures'
+
+    function Get-CopilotFixtureText {
+        param([Parameter(Mandatory)][string]$Name)
+
+        Get-Content -LiteralPath (Join-Path $script:CopilotFixtureRoot $Name) -Raw
+    }
+
+    function Get-ExpectedCopilotPluginsFromJson {
+        param([Parameter(Mandatory)][string]$Json)
+
+        $entries = $Json | ConvertFrom-Json -AsHashtable -NoEnumerate
+        if ($entries -isnot [System.Collections.IList]) {
+            $entries = @($entries)
+        }
+
+        @(
+            foreach ($entry in $entries) {
+                [pscustomobject]@{
+                    Name          = [string]$entry.name
+                    FullName      = if ($entry.marketplace) { "$($entry.name)@$($entry.marketplace)" } else { [string]$entry.name }
+                    Marketplace   = [string]$entry.marketplace
+                    Version       = [string]$entry.version
+                    Enabled       = [bool]$entry.enabled
+                    Source        = [string]$entry.source
+                    InstalledFrom = [string]$entry.installedFrom
+                    Managed       = $entry.source -notin @('builtin', 'plugin-dir')
+                }
+            }
+        )
+    }
 
     function Add-FakeCopilot {
         param(
@@ -1566,15 +1597,15 @@ Describe 'Copilot CLI UTF-8 output parsing' {
     }
 
     It 'parses plugin list output emitted as UTF-8 while the console starts non-UTF-8' {
-        $env:COPILOT_TEST_STDOUT = "  • dotnet@test-market (v1.2.3)$([Environment]::NewLine)"
+        $env:COPILOT_TEST_STDOUT = Get-CopilotFixtureText -Name 'CopilotPluginList.Mixed.json'
+        $expected = Get-ExpectedCopilotPluginsFromJson -Json $env:COPILOT_TEST_STDOUT
 
         $plugins = @(Get-CopilotPlugin)
+        $actual = @($plugins | Select-Object Name, FullName, Marketplace, Version, Enabled, Source, InstalledFrom, Managed)
 
-        $plugins | Should -HaveCount 1
-        $plugins[0].Name | Should -Be 'dotnet'
-        $plugins[0].FullName | Should -Be 'dotnet@test-market'
-        $plugins[0].Marketplace | Should -Be 'test-market'
-        $plugins[0].Version | Should -Be '1.2.3'
+        $plugins | Should -HaveCount 4
+        (ConvertTo-Json -InputObject $actual -Depth 4 -Compress) |
+            Should -Be (ConvertTo-Json -InputObject $expected -Depth 4 -Compress)
     }
 
     It 'parses marketplace list output emitted as UTF-8 while the console starts non-UTF-8' {
@@ -1673,8 +1704,8 @@ exit $response.ExitCode
 
     Context '<Reader>' -ForEach @(
         @{
-            Reader = 'Get-CopilotPlugin'; ReaderParameters = @{}; NativeArguments = 'plugin list'
-            Listing = "  • synthetic@curated (v1.2.3)`n"; ResultType = 'CopilotPlugin'
+            Reader = 'Get-CopilotPlugin'; ReaderParameters = @{}; NativeArguments = 'plugin list --json'
+            Fixture = 'CopilotPluginList.SingleMarketed.json'; ResultType = 'CopilotPlugin'
         }
         @{
             Reader = 'Get-CopilotMarketplace'; ReaderParameters = @{}; NativeArguments = 'plugin marketplace list'
@@ -1690,8 +1721,9 @@ exit $response.ExitCode
             @{ NativePreference = $true }
         ) {
             $global:PSNativeCommandUseErrorActionPreference = $NativePreference
+            $listingText = if ($Fixture) { Get-CopilotFixtureText -Name $Fixture } else { $Listing }
             Set-DiscoveryResponses @{ $NativeArguments = @{
-                ExitCode = 17; Output = $Listing + "synthetic stdout diagnostic`n"; Diagnostics = "synthetic stderr diagnostic`n"
+                ExitCode = 17; Output = $listingText + "synthetic stdout diagnostic`n"; Diagnostics = "synthetic stderr diagnostic`n"
             } }
             $discoveryErrors = @()
 
@@ -1715,7 +1747,8 @@ exit $response.ExitCode
             @{ NativePreference = $true }
         ) {
             $global:PSNativeCommandUseErrorActionPreference = $NativePreference
-            Set-DiscoveryResponses @{ $NativeArguments = @{ ExitCode = 17; Output = $Listing; Diagnostics = 'synthetic failure' } }
+            $listingText = if ($Fixture) { Get-CopilotFixtureText -Name $Fixture } else { $Listing }
+            Set-DiscoveryResponses @{ $NativeArguments = @{ ExitCode = 17; Output = $listingText; Diagnostics = 'synthetic failure' } }
 
             { & $Reader @ReaderParameters -ErrorAction Stop } | Should -Throw '*exit code 17*synthetic failure*'
 
@@ -1729,7 +1762,8 @@ exit $response.ExitCode
             @{ OutputKind = 'no output'; EmptyOutput = '' }
             @{ OutputKind = 'empty-list message'; EmptyOutput = 'No entries found.' }
         ) {
-            Set-DiscoveryResponses @{ $NativeArguments = @{ ExitCode = 0; Output = $EmptyOutput } }
+            $emptyOutput = if ($Reader -eq 'Get-CopilotPlugin' -and $OutputKind -eq 'empty-list message') { '[]' } else { $EmptyOutput }
+            Set-DiscoveryResponses @{ $NativeArguments = @{ ExitCode = 0; Output = $emptyOutput } }
             $discoveryErrors = @()
 
             $results = @(& $Reader @ReaderParameters -ErrorAction Stop -ErrorVariable discoveryErrors)
@@ -1742,7 +1776,8 @@ exit $response.ExitCode
         }
 
         It 'preserves successful typed UTF-8 parsing and the caller exit code' {
-            Set-DiscoveryResponses @{ $NativeArguments = @{ ExitCode = 0; Output = $Listing } }
+            $listingText = if ($Fixture) { Get-CopilotFixtureText -Name $Fixture } else { $Listing }
+            Set-DiscoveryResponses @{ $NativeArguments = @{ ExitCode = 0; Output = $listingText } }
 
             $results = @(& $Reader @ReaderParameters -ErrorAction Stop)
 
@@ -1754,6 +1789,10 @@ exit $response.ExitCode
                     $results[0].FullName | Should -Be 'synthetic@curated'
                     $results[0].Marketplace | Should -Be 'curated'
                     $results[0].Version | Should -Be '1.2.3'
+                    $results[0].Enabled | Should -BeTrue
+                    $results[0].Source | Should -Be 'marketplace'
+                    $results[0].InstalledFrom | Should -Be 'synthetic@curated'
+                    $results[0].Managed | Should -BeTrue
                 }
                 'Get-CopilotMarketplace' { $results[0].Repository | Should -Be 'example/marketplace' }
                 'Get-CopilotMarketplacePlugin' {
@@ -1771,7 +1810,12 @@ exit $response.ExitCode
             @{ ExitCode = 0; Action = 'Stop' }
             @{ ExitCode = 17; Action = 'Stop' }
         ) {
-            Set-DiscoveryResponses @{ $NativeArguments = @{ ExitCode = $ExitCode; Diagnostics = 'synthetic diagnostic' } }
+            $response = if ($Reader -eq 'Get-CopilotPlugin' -and $ExitCode -eq 0) {
+                @{ ExitCode = 0; Output = '[]' }
+            } else {
+                @{ ExitCode = $ExitCode; Diagnostics = 'synthetic diagnostic' }
+            }
+            Set-DiscoveryResponses @{ $NativeArguments = $response }
             Remove-Variable LASTEXITCODE -Scope Global -WhatIf:$false -Confirm:$false
 
             $invoke = {
@@ -1804,8 +1848,9 @@ exit $response.ExitCode
             @{ StatusKind = 'string zero'; NativeStatus = '0' }
             @{ StatusKind = 'Boolean false'; NativeStatus = $false }
         ) {
+            $listingText = if ($Fixture) { Get-CopilotFixtureText -Name $Fixture } else { $Listing }
             Mock -ModuleName Shmuelie.Copilot Invoke-WithUtf8Console {
-                [pscustomobject]@{ ExitCode = $NativeStatus; Output = @($Listing, 'synthetic completion diagnostic') }
+                [pscustomobject]@{ ExitCode = $NativeStatus; Output = @($listingText, 'synthetic completion diagnostic') }
             }
             $discoveryErrors = @()
 
@@ -1888,7 +1933,7 @@ exit $response.ExitCode
 
     It 'keeps successful discovery-to-update pipelines working' {
         Set-DiscoveryResponses @{
-            'plugin list' = @{ ExitCode = 0; Output = "  • synthetic@curated (v1.2.3)`n" }
+            'plugin list --json' = @{ ExitCode = 0; Output = (Get-CopilotFixtureText -Name 'CopilotPluginList.SingleMarketed.json') }
             'plugin update synthetic@curated' = @{ ExitCode = 0 }
         }
 
@@ -1897,14 +1942,14 @@ exit $response.ExitCode
         $results | Should -HaveCount 1
         $results[0].Name | Should -Be 'synthetic@curated'
         $results[0].Success | Should -BeTrue
-        @(Get-Content -LiteralPath $script:DiscoveryLog) | Should -Be @('plugin list', 'plugin update synthetic@curated')
+        @(Get-Content -LiteralPath $script:DiscoveryLog) | Should -Be @('plugin list --json', 'plugin update synthetic@curated')
     }
 
     It 'keeps successful marketplace-to-install pipelines working' {
         Set-DiscoveryResponses @{
             'plugin marketplace list' = @{ ExitCode = 0; Output = "  ◆ curated (GitHub: example/marketplace)`n" }
             'plugin marketplace browse curated' = @{ ExitCode = 0; Output = "  • synthetic - Synthetic description`n" }
-            'plugin list' = @{ ExitCode = 0 }
+            'plugin list --json' = @{ ExitCode = 0; Output = '[]' }
             'plugin install synthetic@curated' = @{ ExitCode = 0 }
         }
 
@@ -1913,7 +1958,7 @@ exit $response.ExitCode
             Install-CopilotPlugin -Confirm:$false -ErrorAction Stop
 
         @(Get-Content -LiteralPath $script:DiscoveryLog) | Should -Be @(
-            'plugin marketplace list', 'plugin marketplace browse curated', 'plugin list', 'plugin install synthetic@curated'
+            'plugin marketplace list', 'plugin marketplace browse curated', 'plugin list --json', 'plugin install synthetic@curated'
         )
     }
 
@@ -1923,13 +1968,13 @@ exit $response.ExitCode
 
     It 'does not invoke <Consumer> after <Reader> fails' -ForEach @(
         @{
-            Reader = 'Get-CopilotPlugin'; ReaderParameters = @{}; NativeArguments = 'plugin list'
-            Listing = "  • synthetic@curated (v1.2.3)`n"
+            Reader = 'Get-CopilotPlugin'; ReaderParameters = @{}; NativeArguments = 'plugin list --json'
+            Fixture = 'CopilotPluginList.SingleMarketed.json'
             Consumer = 'Update-CopilotPlugin'; ConsumerParameters = @{ Confirm = $false }
         }
         @{
-            Reader = 'Get-CopilotPlugin'; ReaderParameters = @{}; NativeArguments = 'plugin list'
-            Listing = "  • synthetic@curated (v1.2.3)`n"
+            Reader = 'Get-CopilotPlugin'; ReaderParameters = @{}; NativeArguments = 'plugin list --json'
+            Fixture = 'CopilotPluginList.SingleMarketed.json'
             Consumer = 'Uninstall-CopilotPlugin'; ConsumerParameters = @{ Confirm = $false }
         }
         @{
@@ -1948,7 +1993,8 @@ exit $response.ExitCode
             Consumer = 'Install-CopilotPlugin'; ConsumerParameters = @{ Confirm = $false }
         }
     ) {
-        Set-DiscoveryResponses @{ $NativeArguments = @{ ExitCode = 17; Output = $Listing; Diagnostics = 'synthetic failure' } }
+        $listingText = if ($Fixture) { Get-CopilotFixtureText -Name $Fixture } else { $Listing }
+        Set-DiscoveryResponses @{ $NativeArguments = @{ ExitCode = 17; Output = $listingText; Diagnostics = 'synthetic failure' } }
         $discoveryErrors = @()
 
         $results = @(& $Reader @ReaderParameters -ErrorAction Continue -ErrorVariable discoveryErrors 2>$null |
@@ -1960,7 +2006,7 @@ exit $response.ExitCode
     }
 
     Context '<Mutation> existence precheck' -ForEach @(
-        @{ Mutation = 'Install-CopilotPlugin'; Discovery = 'plugin list'; NativeMutation = 'plugin install example/marketplace'; Existing = "  • marketplace (v1.0.0)`n" }
+        @{ Mutation = 'Install-CopilotPlugin'; Discovery = 'plugin list --json'; NativeMutation = 'plugin install example/marketplace'; Existing = '[]' }
         @{ Mutation = 'Register-CopilotMarketplace'; Discovery = 'plugin marketplace list'; NativeMutation = 'plugin marketplace add example/marketplace'; Existing = "  ◆ synthetic (GitHub: example/marketplace)`n" }
     ) {
         It 'terminates on discovery failure even with ErrorAction Continue' {
@@ -1984,9 +2030,10 @@ exit $response.ExitCode
         }
 
         It 'still skips an already-present item' {
-            Set-DiscoveryResponses @{ $Discovery = @{ ExitCode = 0; Output = $Existing } }
+            $existingOutput = if ($Mutation -eq 'Install-CopilotPlugin') { Get-CopilotFixtureText -Name 'CopilotPluginList.SingleMarketed.json' } else { $Existing }
+            Set-DiscoveryResponses @{ $Discovery = @{ ExitCode = 0; Output = $existingOutput } }
 
-            & $Mutation -Source 'example/marketplace' -Confirm:$false -ErrorAction Stop
+            & $Mutation -Source $(if ($Mutation -eq 'Install-CopilotPlugin') { 'synthetic@curated' } else { 'example/marketplace' }) -Confirm:$false -ErrorAction Stop
 
             @(Get-Content -LiteralPath $script:DiscoveryLog) | Should -Be @($Discovery)
         }
@@ -1996,6 +2043,53 @@ exit $response.ExitCode
 
             Test-Path -LiteralPath $script:DiscoveryLog | Should -BeFalse
         }
+    }
+
+    It 'fails closed when plugin JSON discovery returns invalid schema' {
+        Set-DiscoveryResponses @{
+            'plugin list --json' = @{ ExitCode = 0; Output = (Get-CopilotFixtureText -Name 'CopilotPluginList.InvalidSchema.json') }
+        }
+        $discoveryErrors = @()
+
+        $results = @(Get-CopilotPlugin -ErrorAction Continue -ErrorVariable discoveryErrors 2>$null)
+
+        $results | Should -HaveCount 0
+        $discoveryErrors | Should -Not -BeNullOrEmpty
+        $discoveryErrors[-1].FullyQualifiedErrorId | Should -BeLike 'CopilotDiscoveryInvalidResult,*'
+        $discoveryErrors[-1].Exception.Message | Should -Match "Property 'enabled' must be a Boolean"
+        @(Get-Content -LiteralPath $script:DiscoveryLog) | Should -Be @('plugin list --json')
+    }
+
+    It 'does not confuse another marketplace with the requested plugin identity' {
+        Set-DiscoveryResponses @{
+            'plugin list --json' = @{ ExitCode = 0; Output = (Get-CopilotFixtureText -Name 'CopilotPluginList.SingleMarketed.json') }
+            'plugin install synthetic@other-curated' = @{ ExitCode = 0 }
+        }
+
+        Install-CopilotPlugin -Source 'synthetic@other-curated' -Confirm:$false -ErrorAction Stop
+
+        @(Get-Content -LiteralPath $script:DiscoveryLog) | Should -Be @('plugin list --json', 'plugin install synthetic@other-curated')
+    }
+
+    It 'does not confuse a plugin-dir mount with a managed install target' {
+        Set-DiscoveryResponses @{
+            'plugin list --json' = @{ ExitCode = 0; Output = (Get-CopilotFixtureText -Name 'CopilotPluginList.Mixed.json') }
+            'plugin install local-plugin@curated' = @{ ExitCode = 0 }
+        }
+
+        Install-CopilotPlugin -Source 'local-plugin@curated' -Confirm:$false -ErrorAction Stop
+
+        @(Get-Content -LiteralPath $script:DiscoveryLog) | Should -Be @('plugin list --json', 'plugin install local-plugin@curated')
+    }
+
+    It 'skips an exact direct-source match reported by installedFrom' {
+        Set-DiscoveryResponses @{
+            'plugin list --json' = @{ ExitCode = 0; Output = (Get-CopilotFixtureText -Name 'CopilotPluginList.Mixed.json') }
+        }
+
+        Install-CopilotPlugin -Source 'https://example.test/plugins/direct-plugin.zip' -Confirm:$false -ErrorAction Stop
+
+        @(Get-Content -LiteralPath $script:DiscoveryLog) | Should -Be @('plugin list --json')
     }
 }
 
@@ -2145,6 +2239,7 @@ Describe 'Copilot effective launch directory' -Tag 'EffectiveLaunchDirectory' {
         } -ParameterFilter { $Name.Count -eq 1 -and $Name[0] -eq 'Get-CopilotLaunchPlan' }
         Mock -ModuleName Shmuelie.Copilot git {
             $script:DirectoryGitLocations.Add((Get-Location).Path)
+            if (($args -join ' ') -eq 'config --get-all remote.origin.url') { return }
             if (($args -join ' ') -ne 'symbolic-ref --short HEAD') { throw 'Unexpected git arguments.' }
             if ((Get-Location).Path -eq $directoryB) { 'branch-b' }
             elseif ((Get-Location).Path -eq $directoryA) { 'branch-a' }
@@ -2198,8 +2293,8 @@ Describe 'Copilot effective launch directory' -Tag 'EffectiveLaunchDirectory' {
             $plan.Args | Should -Not -Contain 'only-b'
             $plan.Args | Should -Not -Contain 'lazy'
             $plan.Args | Should -Not -Contain 'always'
-            Should -Invoke -ModuleName Shmuelie.Copilot git -Times 1 -Exactly
-            $script:DirectoryGitLocations.ToArray() | Should -Be @($directoryB)
+            Should -Invoke -ModuleName Shmuelie.Copilot git -Times 2 -Exactly
+            $script:DirectoryGitLocations.ToArray() | Should -Be @($directoryB, $directoryB)
             Should -Invoke -ModuleName Shmuelie.Copilot Get-Command -Times 1 -Exactly -ParameterFilter {
                 $Name[0] -eq 'copilot'
             }
@@ -3971,6 +4066,246 @@ Describe 'Copilot maintenance-session auto-resume exclusion' {
     }
 }
 
+Describe 'Copilot model completion' {
+    BeforeEach {
+        $testHome = Join-Path $TestDrive ([guid]::NewGuid().ToString())
+        New-Item -ItemType Directory -Path $testHome -Force | Out-Null
+        Mock -ModuleName Shmuelie.Copilot Get-CopilotHome { $testHome }
+        Add-FakeCopilot -Path (Join-Path $TestDrive 'model-completion-bin')
+        $script:ModelOriginalTestLog = $env:COPILOT_TEST_LOG
+        $env:COPILOT_TEST_LOG = Join-Path $TestDrive 'model-completion.log'
+    }
+
+    AfterEach {
+        $env:PATH = $script:OriginalPath
+        $env:COPILOT_TEST_LOG = $script:ModelOriginalTestLog
+    }
+
+    It 'suggests auto and filters common models for <Command>' -ForEach @(
+        @{ Command = 'Get-CopilotLaunchPlan' }
+        @{ Command = 'Start-Copilot' }
+    ) {
+        $autoInput = "$Command -Model au"
+        $auto = [System.Management.Automation.CommandCompletion]::CompleteInput($autoInput, $autoInput.Length, $null)
+        @($auto.CompletionMatches.CompletionText) | Should -Be @('auto')
+
+        $modelInput = "$Command -Model gpt-5.4"
+        $models = [System.Management.Automation.CommandCompletion]::CompleteInput($modelInput, $modelInput.Length, $null)
+        @($models.CompletionMatches.CompletionText) | Should -Contain 'gpt-5.4'
+        @($models.CompletionMatches.CompletionText) | Should -Contain 'gpt-5.4-mini'
+
+        $unknownInput = "$Command -Model no-such-model"
+        $unknown = [System.Management.Automation.CommandCompletion]::CompleteInput($unknownInput, $unknownInput.Length, $null)
+        @($unknown.CompletionMatches) | Should -HaveCount 0
+    }
+
+    It 'passes auto and custom model strings through without rewriting them' {
+        $auto = Get-CopilotLaunchPlan -NoResume -Model auto
+        $custom = Start-Copilot -PassThru -NoResume -Model 'custom-model-not-in-suggestions'
+
+        $auto.Args[[array]::IndexOf($auto.Args, '--model') + 1] | Should -Be 'auto'
+        $custom.Args[[array]::IndexOf($custom.Args, '--model') + 1] | Should -Be 'custom-model-not-in-suggestions'
+        Test-Path -LiteralPath $env:COPILOT_TEST_LOG | Should -BeFalse
+    }
+}
+
+Describe 'Copilot repository and branch session scope' -Tag 'StableSessionScope' {
+    BeforeAll {
+        $script:ScopePlanCommand = Get-Command Shmuelie.Copilot\Get-CopilotLaunchPlan -ErrorAction Stop
+
+        function Add-ScopeSession {
+            param(
+                [string]$Id, [string]$Cwd, [string]$Repository, [string]$Branch,
+                [string]$UpdatedAt = '2026-08-12T22:00:00Z'
+            )
+            $path = New-CopilotSessionState -SessionRoot $script:ScopeSessionRoot -Id $Id -Cwd $Cwd -Summary $Id -UpdatedAt $UpdatedAt
+            if ($Repository) { Add-Content -LiteralPath (Join-Path $path 'workspace.yaml') -Value "repository: $Repository" }
+            if ($Branch) { Add-Content -LiteralPath (Join-Path $path 'workspace.yaml') -Value "branch: $Branch" }
+        }
+
+        function New-ScopeRepository {
+            param([string]$Path, [string]$Remote)
+            & git init -q -b main $Path
+            if ($LASTEXITCODE -ne 0) { throw 'Could not initialize test repository.' }
+            & git -C $Path -c user.name=Test -c user.email=test@example.test commit -q --allow-empty -m initial
+            if ($LASTEXITCODE -ne 0) { throw 'Could not commit in test repository.' }
+            & git -C $Path remote add origin $Remote
+            if ($LASTEXITCODE -ne 0) { throw 'Could not add test remote.' }
+        }
+    }
+
+    BeforeEach {
+        $root = Join-Path $TestDrive ([guid]::NewGuid().ToString())
+        $testHome = Join-Path $root 'home'
+        $script:ScopeSessionRoot = Join-Path $testHome '.copilot' 'session-state'
+        $script:ScopeOriginal = Join-Path $root 'original [topic]'
+        $script:ScopeMoved = Join-Path $root 'moved [topic]'
+        $script:ScopeOtherBranch = Join-Path $root 'other-branch'
+        $script:ScopeOtherRepo = Join-Path $root 'same-branch-other-repo'
+        $script:ScopePlain = Join-Path $root 'plain'
+        New-Item -ItemType Directory -Path $script:ScopePlain -Force | Out-Null
+        $repoA = Join-Path $root 'repo-a'
+        $repoB = Join-Path $root 'repo-b'
+        New-ScopeRepository -Path $repoA -Remote 'git@github.com:owner/repo-a.git'
+        New-ScopeRepository -Path $repoB -Remote 'https://github.com/other/repo-b.git'
+        & git -C $repoA worktree add -q -b feature/topic $script:ScopeOriginal
+        if ($LASTEXITCODE -ne 0) { throw 'Could not add topic worktree.' }
+        & git -C $repoA worktree add -q -b feature/other $script:ScopeOtherBranch
+        if ($LASTEXITCODE -ne 0) { throw 'Could not add other-branch worktree.' }
+        & git -C $repoB worktree add -q -b feature/topic $script:ScopeOtherRepo
+        if ($LASTEXITCODE -ne 0) { throw 'Could not add other-repo worktree.' }
+        & git -C $repoA worktree move $script:ScopeOriginal $script:ScopeMoved
+        if ($LASTEXITCODE -ne 0) { throw 'Could not move topic worktree.' }
+        Mock -ModuleName Shmuelie.Copilot Get-CopilotHome { $testHome }
+        Mock -ModuleName Shmuelie.Copilot Get-Command { [pscustomobject]@{ Source = 'unused-copilot' } } -ParameterFilter {
+            $Name.Count -eq 1 -and $Name[0] -eq 'copilot'
+        }
+        Mock -ModuleName Shmuelie.Copilot Get-Command { $script:ScopePlanCommand } -ParameterFilter {
+            $Name.Count -eq 1 -and $Name[0] -eq 'Get-CopilotLaunchPlan'
+        }
+        Mock -ModuleName Shmuelie.Copilot Invoke-CopilotSessionChoice { throw 'Unexpected session picker.' }
+        $script:ScopeCaller = Get-Location
+        Set-Location -LiteralPath $script:ScopeMoved
+    }
+
+    AfterEach {
+        Set-Location -LiteralPath $script:ScopeCaller.Path
+    }
+
+    It 'finds moved worktree sessions by both identity fields and keeps newest order and multiple candidates' {
+        Add-ScopeSession -Id older -Cwd $script:ScopeOriginal -Repository 'OWNER/REPO-A' -Branch feature/topic -UpdatedAt '2026-08-11T22:00:00Z'
+        Add-ScopeSession -Id newest -Cwd $script:ScopeOriginal -Repository owner/repo-a -Branch feature/topic -UpdatedAt '2026-08-13T22:00:00Z'
+        Add-ScopeSession -Id wrong-branch -Cwd $script:ScopeMoved -Repository owner/repo-a -Branch feature/other -UpdatedAt '2026-08-14T22:00:00Z'
+        Add-ScopeSession -Id wrong-repo -Cwd $script:ScopeMoved -Repository other/repo-b -Branch feature/topic
+        @(Get-CopilotSession).Id | Should -Be @('newest', 'older')
+        @(& (Get-Module Shmuelie.Copilot) { Get-CopilotResumeCandidate }).Id | Should -Be @('newest', 'older')
+        $latest = Get-CopilotLaunchPlan -ResumeLatest
+        $latest.Args[[array]::IndexOf($latest.Args, '--resume') + 1] | Should -Be 'newest'
+        $plan = Get-CopilotLaunchPlan -SessionSelector {
+            param($Sessions)
+            $Sessions.Id | Should -Be @('newest', 'older')
+            $Sessions[1]
+        }
+        $plan.Args[[array]::IndexOf($plan.Args, '--resume') + 1] | Should -Be 'older'
+    }
+
+    It 'isolates worktrees on different branches and distinct repositories with the same branch' {
+        Add-ScopeSession -Id first -Cwd $script:ScopeOriginal -Repository owner/repo-a -Branch feature/topic
+        Add-ScopeSession -Id second -Cwd $script:ScopeOtherBranch -Repository owner/repo-a -Branch feature/other
+        Add-ScopeSession -Id third -Cwd $script:ScopeOtherRepo -Repository other/repo-b -Branch feature/topic
+        @(Get-CopilotSession).Id | Should -Be @('first')
+        Set-Location -LiteralPath $script:ScopeOtherBranch
+        @(Get-CopilotSession).Id | Should -Be @('second')
+        Set-Location -LiteralPath $script:ScopeOtherRepo
+        @(Get-CopilotSession).Id | Should -Be @('third')
+    }
+
+    It 'falls back only for incomplete metadata at the same path with no conflicting known field' {
+        Add-ScopeSession -Id exact -Cwd $script:ScopeOriginal -Repository owner/repo-a -Branch feature/topic
+        Add-ScopeSession -Id legacy -Cwd $script:ScopeMoved
+        Add-ScopeSession -Id partial -Cwd $script:ScopeMoved -Repository owner/repo-a
+        Add-ScopeSession -Id conflicting-repo -Cwd $script:ScopeMoved -Repository other/repo-b
+        Add-ScopeSession -Id conflicting-branch -Cwd $script:ScopeMoved -Branch feature/other
+        Add-ScopeSession -Id old-path-legacy -Cwd $script:ScopeOriginal
+        @(Get-CopilotSession).Id | Should -Contain 'exact'
+        @(Get-CopilotSession).Id | Should -Contain 'legacy'
+        @(Get-CopilotSession).Id | Should -Contain 'partial'
+        @(Get-CopilotSession).Id | Should -Not -Contain 'conflicting-repo'
+        @(Get-CopilotSession).Id | Should -Not -Contain 'conflicting-branch'
+        @(Get-CopilotSession).Id | Should -Not -Contain 'old-path-legacy'
+        (Get-CopilotLaunchPlan -SessionSelector { throw 'Full identity must win over legacy candidates.' }).Args |
+            Should -Contain 'exact'
+        @(Get-CopilotSession -All).Id | Should -Contain 'conflicting-repo'
+        @(Get-CopilotSession -Cwd ([WildcardPattern]::Escape($script:ScopeMoved))).Id | Should -Contain 'conflicting-repo'
+        (Get-CopilotSession -Id old-path-legacy).Id | Should -Be 'old-path-legacy'
+    }
+
+    It 'uses exact directory fallback outside Git and does not conflate matching branch names' {
+        Add-ScopeSession -Id local -Cwd $script:ScopePlain -Repository owner/repo-a -Branch feature/other
+        Add-ScopeSession -Id distant -Cwd $script:ScopeOriginal -Repository owner/repo-a -Branch feature/topic
+        Set-Location -LiteralPath $script:ScopePlain
+        @(Get-CopilotSession).Id | Should -Be @('local')
+        (Get-CopilotLaunchPlan).Args | Should -Contain 'local'
+    }
+
+    It 'does not use a folder name or an ambiguous origin as a repository identity' {
+        Add-ScopeSession -Id local -Cwd $script:ScopeMoved -Repository other/repo-b -Branch feature/topic
+        Add-ScopeSession -Id distant -Cwd $script:ScopeOriginal -Repository owner/repo-a -Branch feature/topic
+        & git -C $script:ScopeMoved config --add remote.origin.url https://github.com/third/repo-c.git
+        if ($LASTEXITCODE -ne 0) { throw 'Could not add ambiguous remote.' }
+        @(Get-CopilotSession).Id | Should -Be @('local')
+    }
+
+    It 'resolves ChangeDir before matching for both launch entrypoints' -ForEach @(
+        @{ Entry = 'Get-CopilotLaunchPlan' }
+        @{ Entry = 'Start-Copilot' }
+    ) {
+        Add-ScopeSession -Id topic -Cwd $script:ScopeOriginal -Repository owner/repo-a -Branch feature/topic
+        Add-ScopeSession -Id other -Cwd $script:ScopeOriginal -Repository owner/repo-a -Branch feature/other
+        $entrypoint = Get-Command "Shmuelie.Copilot\$Entry"
+        $options = @{ ChangeDir = $script:ScopeOtherBranch; ResumeLatest = $true; ErrorAction = 'Stop' }
+        if ($Entry -eq 'Start-Copilot') { $options.PassThru = $true }
+        $plan = & $entrypoint @options
+        $plan.Args[[array]::IndexOf($plan.Args, '--resume') + 1] | Should -Be 'other'
+        (Get-Location).Path | Should -Be $script:ScopeMoved
+    }
+
+    It 'completes only scoped IDs for both entrypoints including ChangeDir' -ForEach @(
+        @{ Entry = 'Get-CopilotLaunchPlan' }
+        @{ Entry = 'Start-Copilot' }
+    ) {
+        Add-ScopeSession -Id topic -Cwd $script:ScopeOriginal -Repository owner/repo-a -Branch feature/topic
+        Add-ScopeSession -Id other -Cwd $script:ScopeOriginal -Repository owner/repo-a -Branch feature/other
+        Add-ScopeSession -Id legacy -Cwd $script:ScopeMoved
+        $attribute = (Get-Command "Shmuelie.Copilot\$Entry").Parameters['ResumeSession'].Attributes |
+            Where-Object { $_ -is [System.Management.Automation.ArgumentCompleterAttribute] }
+        $results = @(& $attribute.ScriptBlock $Entry 'ResumeSession' '' $null @{}).CompletionText
+        $results | Should -Contain 'topic'
+        $results | Should -Contain 'legacy'
+        $results | Should -Not -Contain 'other'
+        $results = @(& $attribute.ScriptBlock $Entry 'ResumeSession' '' $null @{ ChangeDir = $script:ScopeOtherBranch }).CompletionText
+        $results | Should -Contain 'other'
+        $results | Should -Not -Contain 'topic'
+        $results | Should -Not -Contain 'legacy'
+    }
+
+    It 'completes matching IDs without opening unrelated locked metadata or event histories for <Entry>' -ForEach @(
+        @{ Entry = 'Get-CopilotLaunchPlan' }
+        @{ Entry = 'Start-Copilot' }
+    ) {
+        Add-ScopeSession -Id topic -Cwd $script:ScopeOriginal -Repository owner/repo-a -Branch feature/topic
+        Add-ScopeSession -Id other -Cwd $script:ScopeOriginal -Repository owner/repo-a -Branch feature/other
+        Add-ScopeSession -Id locked-topic -Cwd $script:ScopeOriginal -Repository owner/repo-a -Branch feature/topic
+        Add-ScopeSession -Id locked-other -Cwd $script:ScopeOriginal -Repository owner/repo-a -Branch feature/other
+        Mock -ModuleName Shmuelie.Copilot Get-CopilotSession { throw 'Completion must not enumerate session event histories.' }
+        $attribute = (Get-Command "Shmuelie.Copilot\$Entry").Parameters['ResumeSession'].Attributes |
+            Where-Object { $_ -is [System.Management.Automation.ArgumentCompleterAttribute] }
+        $locks = [System.Collections.Generic.List[IO.FileStream]]::new()
+        try {
+            foreach ($id in 'topic', 'other', 'locked-topic', 'locked-other') {
+                $events = Join-Path $script:ScopeSessionRoot $id 'events.jsonl'
+                Set-Content -LiteralPath $events -Value '{"type":"synthetic"}'
+                $locks.Add([IO.File]::Open($events, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None))
+            }
+            foreach ($id in 'locked-topic', 'locked-other') {
+                $workspace = Join-Path $script:ScopeSessionRoot $id 'workspace.yaml'
+                $locks.Add([IO.File]::Open($workspace, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None))
+            }
+
+            $results = @(& $attribute.ScriptBlock $Entry 'ResumeSession' 'top' $null @{}).CompletionText
+            $results | Should -Be @('topic')
+            $results = @(& $attribute.ScriptBlock $Entry 'ResumeSession' 'oth' $null @{ ChangeDir = $script:ScopeOtherBranch }).CompletionText
+            $results | Should -Be @('other')
+            $results = @(& $attribute.ScriptBlock $Entry 'ResumeSession' 'oth' $null @{ C = $script:ScopeOtherBranch }).CompletionText
+            $results | Should -Be @('other')
+            (Get-Location).Path | Should -Be $script:ScopeMoved
+        } finally {
+            foreach ($lock in $locks) { $lock.Dispose() }
+        }
+        Should -Invoke -ModuleName Shmuelie.Copilot Get-CopilotSession -Times 0 -Exactly
+    }
+}
+
 Describe 'Get-CopilotSession' {
     BeforeEach {
         $testHome = Join-Path $TestDrive 'home'
@@ -4278,6 +4613,50 @@ Describe 'Get-CopilotSession ID path traversal guard' {
         New-Item -ItemType Directory -Path $rooted -Force | Out-Null
 
         { Get-CopilotSession -Id $rooted } | Should -Throw
+    }
+}
+
+Describe 'Get-CopilotSession literal filesystem paths' {
+    BeforeEach {
+        $testHome = Join-Path $TestDrive 'home [literal]'
+        $script:SessionRoot = Join-Path $testHome '.copilot' 'session-state'
+        [System.IO.Directory]::CreateDirectory($script:SessionRoot) | Out-Null
+        Mock -ModuleName Shmuelie.Copilot -CommandName Get-CopilotHome -MockWith { $testHome }
+    }
+
+    It 'discovers and counts a session beneath literal wildcard home and session names' {
+        $id = 'session[1]'
+        $sessionPath = Join-Path $script:SessionRoot $id
+        [System.IO.Directory]::CreateDirectory($sessionPath) | Out-Null
+        $cwd = Join-Path $TestDrive 'workspace[1]'
+        Set-Content -LiteralPath (Join-Path $sessionPath 'workspace.yaml') -Value @(
+            "id: $id"
+            "cwd: $cwd"
+            'updated_at: 2026-08-20T18:00:00Z'
+            'created_at: 2026-08-20T17:00:00Z'
+            'name: Literal session'
+        )
+        Set-Content -LiteralPath (Join-Path $sessionPath 'events.jsonl') -Value '{"type":"session.start"}'
+
+        $all = @(Get-CopilotSession -All -ErrorAction Stop)
+        $exact = Get-CopilotSession -Id $id -ErrorAction Stop
+        $filtered = @(Get-CopilotSession -Cwd ([WildcardPattern]::Escape($cwd)) -ErrorAction Stop)
+
+        $all | Should -HaveCount 1
+        $all[0].Id | Should -Be $id
+        $all[0].EventCount | Should -Be 1
+        $all[0].EventSize | Should -BeGreaterThan 0
+        $all[0].Path | Should -Be $sessionPath
+        $exact.Id | Should -Be $id
+        $exact.EventCount | Should -Be 1
+        $filtered.Id | Should -Be $id
+    }
+
+    It 'reports a truly missing session root as empty without inventing sessions' {
+        [System.IO.Directory]::Delete($script:SessionRoot, $true)
+
+        @(Get-CopilotSession -All -ErrorAction Stop) | Should -HaveCount 0
+        @(Get-CopilotSession -Id 'session[1]' -ErrorAction Stop) | Should -HaveCount 0
     }
 }
 
@@ -4689,6 +5068,51 @@ Describe 'Copilot plugin, marketplace, and MCP removal cmdlets' {
         { Unregister-CopilotMcpServer -Name 'bad&server' -Confirm:$false } | Should -Throw '*Unsafe Name value*'
         Test-Path $script:CopilotTestLog | Should -BeFalse
     }
+
+    It 'rejects plugin-dir pipeline removals without invoking copilot' {
+        $env:COPILOT_TEST_STDOUT = Get-CopilotFixtureText -Name 'CopilotPluginList.Mixed.json'
+
+        {
+            Get-CopilotPlugin local-plugin | Uninstall-CopilotPlugin -Confirm:$false -ErrorAction Stop
+        } | Should -Throw '*--plugin-dir*'
+
+        @(Get-Content $script:CopilotTestLog) | Should -Be @('plugin list --json')
+    }
+}
+
+Describe 'Get-CopilotPlugin read-only CLI compatibility' -Tag 'CopilotCompatibility' {
+    BeforeEach {
+        $env:PATH = $script:OriginalPath
+    }
+
+    AfterEach {
+        $env:PATH = $script:OriginalPath
+    }
+
+    It 'matches the current CLI JSON inventory when copilot is available' {
+        if ($env:SHMUELIE_COPILOT_LIVE_COMPATIBILITY_TEST -notin @('1', 'true', 'TRUE', 'yes', 'YES')) {
+            Set-ItResult -Skipped -Because 'Set SHMUELIE_COPILOT_LIVE_COMPATIBILITY_TEST=1 to opt in to the live read-only Copilot CLI smoke test.'
+            return
+        }
+
+        $realCopilot = Get-Command copilot -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+        if (-not $realCopilot) {
+            Set-ItResult -Skipped -Because 'copilot is not available'
+            return
+        }
+
+        $rawJson = & $realCopilot.Source plugin list --json 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            throw "copilot plugin list --json failed with exit code ${LASTEXITCODE}: $($rawJson -join '; ')"
+        }
+
+        $expected = Get-ExpectedCopilotPluginsFromJson -Json (($rawJson | ForEach-Object { "$_" }) -join [Environment]::NewLine)
+        $actual = @(Get-CopilotPlugin -ErrorAction Stop)
+        $normalizedActual = @($actual | Select-Object Name, FullName, Marketplace, Version, Enabled, Source, InstalledFrom, Managed)
+
+        (ConvertTo-Json -InputObject @($normalizedActual) -Depth 4 -Compress) |
+            Should -Be (ConvertTo-Json -InputObject @($expected) -Depth 4 -Compress)
+    }
 }
 
 Describe 'Copilot MCP configuration link protection' {
@@ -4885,17 +5309,27 @@ Describe 'Update-CopilotPlugin' {
     }
 
     It 'accepts pipeline input from Get-CopilotPlugin' {
-        $env:COPILOT_TEST_STDOUT = "  • dotnet@test-market (v1.2.3)$([Environment]::NewLine)"
+        $env:COPILOT_TEST_STDOUT = Get-CopilotFixtureText -Name 'CopilotPluginList.SingleMarketed.json'
 
         $results = @(Get-CopilotPlugin | Update-CopilotPlugin -Confirm:$false)
 
         $results | Should -HaveCount 1
-        $results[0].Name | Should -Be 'dotnet@test-market'
+        $results[0].Name | Should -Be 'synthetic@curated'
         $results[0].Success | Should -BeTrue
         $results[0].Error | Should -BeNullOrEmpty
         $lines = @(Get-Content $script:CopilotTestLog)
-        $lines | Should -Contain 'plugin list'
-        $lines | Should -Contain 'plugin update dotnet@test-market'
+        $lines | Should -Contain 'plugin list --json'
+        $lines | Should -Contain 'plugin update synthetic@curated'
+    }
+
+    It 'returns a failure result instead of updating a plugin-dir mount from the pipeline' {
+        $env:COPILOT_TEST_STDOUT = Get-CopilotFixtureText -Name 'CopilotPluginList.Mixed.json'
+
+        $result = Get-CopilotPlugin local-plugin | Update-CopilotPlugin -Confirm:$false -WarningAction SilentlyContinue
+
+        $result.Success | Should -BeFalse
+        $result.Error | Should -Match '--plugin-dir'
+        @(Get-Content $script:CopilotTestLog) | Should -Be @('plugin list --json')
     }
 
     It 'retries once when a plugin update initially fails with EBUSY' {

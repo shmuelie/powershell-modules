@@ -749,6 +749,231 @@ Describe 'SDK native process lifecycle' {
     }
 }
 
+Describe 'DotNet native tool failures' {
+    BeforeAll {
+        $script:NativeModule = Get-Module Shmuelie.DotNet
+        $script:HadUtilities = [bool](Get-Module Shmuelie.Utilities)
+        $script:NativeUtilities = Import-Module (Join-Path $script:repoRoot 'modules' 'Shmuelie.Utilities' 'Shmuelie.Utilities.psd1') -PassThru
+        $script:OriginalNativePreference = & $script:NativeModule { Get-Variable PSNativeCommandUseErrorActionPreference -Scope Script -ErrorAction Ignore }
+        & $script:NativeModule {
+            function script:dotnet {
+                $script:NativeToolCalls.Add($args -join '|')
+                if ($args[0] -ne 'tool' -or $args[1] -notin 'list', 'update' -or $args[-1] -notin '-g', '--local') {
+                    throw 'Only synthetic tool list/update operations are allowed.'
+                }
+                if ($args[1] -eq 'update' -and $args[2] -notin 'example.tool', 'first-tool', 'second-tool') {
+                    throw 'Unexpected synthetic tool name.'
+                }
+                $child = (Get-Process -Id $PID).Path
+                switch ($script:NativeToolMode) {
+                    'Failure' {
+                        & $child -NoProfile -NonInteractive -Command "'Package Id      Version      Commands'; '-------------------------------------'; 'example.tool    1.0.0        example'; 'synthetic stdout'; [Console]::Error.WriteLine('synthetic stderr'); exit 7"
+                    }
+                    'Empty' { & $child -NoProfile -NonInteractive -Command 'exit 0' }
+                    'Unchanged' {
+                        & $child -NoProfile -NonInteractive -Command "`"Tool 'example.tool' was successfully reinstalled (version '1.0.0').`"; exit 0"
+                    }
+                    'ListWithStderr' {
+                        & $child -NoProfile -NonInteractive -Command "[Console]::Error.WriteLine('diagnostic    9.9.9    not-a-tool'); 'Package Id      Version      Commands'; '-------------------------------------'; 'example.tool    1.0.0        example'; exit 0"
+                    }
+                    'Pipeline' {
+                        if ($args[2] -eq 'first-tool') {
+                            & $child -NoProfile -NonInteractive -Command "[Console]::Error.WriteLine('first failed'); exit 7"
+                        } else {
+                            & $child -NoProfile -NonInteractive -Command "`"Tool 'second-tool' was successfully updated from version '1.0.0' to version '2.0.0'.`"; exit 0"
+                        }
+                    }
+                    'NoExitCode' { 'No native completion.' }
+                    default { throw 'Unexpected synthetic mode.' }
+                }
+            }
+        }
+    }
+
+    BeforeEach {
+        & $script:NativeModule {
+            $script:NativeToolCalls = [System.Collections.Generic.List[string]]::new()
+            $script:NativeToolMode = 'Failure'
+            $script:PSNativeCommandUseErrorActionPreference = $false
+        }
+    }
+
+    AfterAll {
+        & $script:NativeModule {
+            param($Original)
+            function script:dotnet { throw 'Unexpected native tool operation.' }
+            Remove-Variable NativeToolCalls, NativeToolMode -Scope Script -ErrorAction Ignore
+            if ($Original) { $script:PSNativeCommandUseErrorActionPreference = $Original.Value }
+            else { Remove-Variable PSNativeCommandUseErrorActionPreference -Scope Script -ErrorAction Ignore }
+        } $script:OriginalNativePreference
+        if (-not $script:HadUtilities) { Remove-Module -ModuleInfo $script:NativeUtilities -Force }
+    }
+
+    It 'honors ErrorAction Stop for <Module> <Command> local <Local> with native preference <NativePreference>' -ForEach @(
+        foreach ($module in 'Shmuelie.DotNet', 'Shmuelie.Utilities') {
+            foreach ($command in 'Get-DotNetTool', 'Update-DotNetTool') {
+                foreach ($local in $false, $true) {
+                    foreach ($nativePreference in $false, $true) {
+                        @{ Module = $module; Command = $command; Local = $local; NativePreference = $nativePreference }
+                    }
+                }
+            }
+        }
+    ) {
+        & $script:NativeModule { param($Value) $script:PSNativeCommandUseErrorActionPreference = $Value } $NativePreference
+        $parameters = @{ Name = 'example.tool'; Local = $Local; ErrorAction = 'Stop' }
+        if ($Command -eq 'Update-DotNetTool') { $parameters.Confirm = $false }
+        $global:LASTEXITCODE = 37
+        $seen = [System.Collections.Generic.List[object]]::new()
+        $caught = $null
+        Push-Location $TestDrive
+        try {
+            try { & "$Module\$Command" @parameters | ForEach-Object { $seen.Add($_) } } catch { $caught = $_ }
+            (Get-Location).Path | Should -Be $TestDrive
+        } finally { Pop-Location }
+        $caught | Should -Not -BeNullOrEmpty
+        $caught.FullyQualifiedErrorId | Should -BeLike 'DotNetToolCommandFailed,*'
+        $caught.Exception.Message | Should -Match 'exit code 7'
+        $caught.Exception.Message | Should -Match 'synthetic stdout'
+        $caught.Exception.Message | Should -Match 'synthetic stderr'
+        $caught.TargetObject.ExitCode | Should -Be 7
+        $seen | Should -HaveCount 0
+        $global:LASTEXITCODE | Should -Be 7
+        (& $script:NativeModule { $PSNativeCommandUseErrorActionPreference }) | Should -Be $NativePreference
+    }
+
+    It 'emits one error and no ordinary output for <Module> <Command> with native preference <NativePreference>' -ForEach @(
+        foreach ($module in 'Shmuelie.DotNet', 'Shmuelie.Utilities') {
+            foreach ($command in 'Get-DotNetTool', 'Update-DotNetTool') {
+                foreach ($nativePreference in $false, $true) {
+                    @{ Module = $module; Command = $command; NativePreference = $nativePreference }
+                }
+            }
+        }
+    ) {
+        & $script:NativeModule { param($Value) $script:PSNativeCommandUseErrorActionPreference = $Value } $NativePreference
+        $parameters = @{ Name = 'example.tool'; ErrorAction = 'Continue' }
+        if ($Command -eq 'Update-DotNetTool') { $parameters.Confirm = $false }
+        $output = @(& "$Module\$Command" @parameters 2>&1)
+        $output | Should -HaveCount 1
+        $output[0] | Should -BeOfType ([System.Management.Automation.ErrorRecord])
+        $output[0].TargetObject.ExitCode | Should -Be 7
+        $output[0].Exception.Message | Should -Match 'synthetic stderr'
+        $global:LASTEXITCODE | Should -Be 7
+    }
+
+    It 'forwards identical captured errors for <Command>' -ForEach @(
+        @{ Command = 'Get-DotNetTool' }
+        @{ Command = 'Update-DotNetTool' }
+    ) {
+        $parameters = @{ Name = 'example.tool'; ErrorAction = 'SilentlyContinue' }
+        if ($Command -eq 'Update-DotNetTool') { $parameters.Confirm = $false }
+        $canonicalErrors = @()
+        $wrapperErrors = @()
+        @(& "Shmuelie.DotNet\$Command" @parameters -ErrorVariable canonicalErrors) | Should -HaveCount 0
+        @(& "Shmuelie.Utilities\$Command" @parameters -ErrorVariable wrapperErrors) | Should -HaveCount 0
+        $canonicalErrors | Should -HaveCount 1
+        $wrapperErrors | Should -HaveCount 1
+        $wrapperErrors[0].FullyQualifiedErrorId | Should -BeExactly $canonicalErrors[0].FullyQualifiedErrorId
+        $wrapperErrors[0].Exception.Message | Should -BeExactly $canonicalErrors[0].Exception.Message
+        $wrapperErrors[0].CategoryInfo.Category | Should -Be $canonicalErrors[0].CategoryInfo.Category
+        $wrapperErrors[0].TargetObject.ExitCode | Should -Be 7
+    }
+
+    It 'preserves successful empty or unchanged output for <Module> <Command> <Mode>' -ForEach @(
+        foreach ($module in 'Shmuelie.DotNet', 'Shmuelie.Utilities') {
+            @{ Module = $module; Command = 'Get-DotNetTool'; Mode = 'Empty' }
+            @{ Module = $module; Command = 'Update-DotNetTool'; Mode = 'Empty' }
+            @{ Module = $module; Command = 'Update-DotNetTool'; Mode = 'Unchanged' }
+        }
+    ) {
+        & $script:NativeModule { param($Mode) $script:NativeToolMode = $Mode } $Mode
+        $parameters = @{ Name = 'example.tool'; ErrorAction = 'Stop' }
+        if ($Command -eq 'Update-DotNetTool') { $parameters.Confirm = $false }
+        $global:LASTEXITCODE = 37
+        $output = @(& "$Module\$Command" @parameters)
+        if ($Command -eq 'Get-DotNetTool') { $output | Should -HaveCount 0 }
+        else {
+            $output | Should -HaveCount 1
+            $output[0].PSTypeNames[0] | Should -BeExactly 'DotNetToolUpdateResult'
+            $output[0].Updated | Should -BeFalse
+            $output[0].PackageId | Should -BeExactly 'example.tool'
+        }
+        $global:LASTEXITCODE | Should -Be 0
+    }
+
+    It 'does not parse successful stderr as tool inventory through <Module>' -ForEach @(
+        @{ Module = 'Shmuelie.DotNet' }
+        @{ Module = 'Shmuelie.Utilities' }
+    ) {
+        & $script:NativeModule { $script:NativeToolMode = 'ListWithStderr' }
+        $tools = @(& "$Module\Get-DotNetTool" -ErrorAction Stop)
+        $tools | Should -HaveCount 1
+        $tools[0].PackageId | Should -BeExactly 'example.tool'
+    }
+
+    It 'preserves update streaming through <Module> with Stop <Stop>' -ForEach @(
+        foreach ($module in 'Shmuelie.DotNet', 'Shmuelie.Utilities') {
+            foreach ($stop in $false, $true) { @{ Module = $module; Stop = $stop } }
+        }
+    ) {
+        & $script:NativeModule { $script:NativeToolMode = 'Pipeline' }
+        $seen = [System.Collections.Generic.List[object]]::new()
+        $tools = @(
+            [pscustomobject]@{ PackageId = 'first-tool'; Global = $true }
+            [pscustomobject]@{ PackageId = 'second-tool'; Global = $false }
+        )
+        $caught = $null
+        try {
+            $tools | & "$Module\Update-DotNetTool" -Confirm:$false -ErrorAction $(if ($Stop) { 'Stop' } else { 'Continue' }) 2>&1 |
+                ForEach-Object { $seen.Add($_) }
+        } catch { $caught = $_ }
+        if ($Stop) {
+            $caught | Should -Not -BeNullOrEmpty
+            $seen | Should -HaveCount 0
+            @(& $script:NativeModule { $script:NativeToolCalls }) | Should -HaveCount 1
+        } else {
+            $caught | Should -BeNullOrEmpty
+            $seen | Should -HaveCount 2
+            $seen[0] | Should -BeOfType ([System.Management.Automation.ErrorRecord])
+            $seen[1].PackageId | Should -BeExactly 'second-tool'
+            $seen[1].Updated | Should -BeTrue
+            @(& $script:NativeModule { $script:NativeToolCalls }) | Should -HaveCount 2
+        }
+    }
+
+    It 'fails unknown completion rather than reusing a stale success for <Command>' -ForEach @(
+        @{ Command = 'Get-DotNetTool' }
+        @{ Command = 'Update-DotNetTool' }
+    ) {
+        & $script:NativeModule { $script:NativeToolMode = 'NoExitCode' }
+        $global:LASTEXITCODE = 0
+        $parameters = @{ Name = 'example.tool'; ErrorAction = 'Stop' }
+        if ($Command -eq 'Update-DotNetTool') { $parameters.Confirm = $false }
+        { & "Shmuelie.DotNet\$Command" @parameters } | Should -Throw '*numeric exit code*'
+    }
+
+    It 'does not invoke the native updater under WhatIf through <Module>' -ForEach @(
+        @{ Module = 'Shmuelie.DotNet' }
+        @{ Module = 'Shmuelie.Utilities' }
+    ) {
+        @(& "$Module\Update-DotNetTool" -Name example.tool -WhatIf) | Should -HaveCount 0
+        @(& $script:NativeModule { $script:NativeToolCalls }) | Should -HaveCount 0
+    }
+
+    It 'never installs after failed discovery through <Module> even with continuing errors' -ForEach @(
+        @{ Module = 'Shmuelie.DotNet' }
+        @{ Module = 'Shmuelie.Utilities' }
+    ) {
+        $caught = $null
+        try { & "$Module\Install-DotNetTool" -Name example.tool -Confirm:$false -ErrorAction Continue } catch { $caught = $_ }
+        $caught | Should -Not -BeNullOrEmpty
+        $caught.FullyQualifiedErrorId | Should -BeLike 'DotNetToolCommandFailed,*'
+        $caught.TargetObject.ExitCode | Should -Be 7
+        @(& $script:NativeModule { $script:NativeToolCalls }) | Should -Be @('tool|list|-g')
+    }
+}
+
 Describe 'Shmuelie.DotNet tool commands' {
     BeforeEach {
         Mock -ModuleName Shmuelie.DotNet dotnet {
@@ -805,6 +1030,7 @@ Describe 'Shmuelie.DotNet tool commands' {
 
         It 'ignores empty lists and malformed rows' {
             Mock -ModuleName Shmuelie.DotNet dotnet {
+                $global:LASTEXITCODE = 0
                 'Package Id        Version      Commands'
                 '---------------------------------------'
                 ''
@@ -815,6 +1041,7 @@ Describe 'Shmuelie.DotNet tool commands' {
 
         It 'preserves home-directory discovery and restores the caller location' {
             Mock -ModuleName Shmuelie.DotNet dotnet {
+                $global:LASTEXITCODE = 0
                 (Get-Location).Path | Should -Be $HOME
             }
             Push-Location $TestDrive
@@ -890,6 +1117,7 @@ Describe 'Shmuelie.DotNet tool commands' {
 
         It 'updates from the caller location rather than the discovery location' {
             Mock -ModuleName Shmuelie.DotNet dotnet {
+                $global:LASTEXITCODE = 0
                 (Get-Location).Path | Should -Be $TestDrive
             }
             Push-Location $TestDrive
@@ -903,6 +1131,7 @@ Describe 'Shmuelie.DotNet tool commands' {
 
         It 'retains Updated false when the existing version is reinstalled' {
             Mock -ModuleName Shmuelie.DotNet dotnet {
+                $global:LASTEXITCODE = 0
                 "Tool 'dotnet-ef' was successfully reinstalled (version '8.0.8')."
             }
             $result = Shmuelie.DotNet\Update-DotNetTool dotnet-ef -Confirm:$false
@@ -910,7 +1139,7 @@ Describe 'Shmuelie.DotNet tool commands' {
         }
 
         It 'parses a trailing version without changing the result shape' {
-            Mock -ModuleName Shmuelie.DotNet dotnet { "Installed version '8.0.9'." }
+            Mock -ModuleName Shmuelie.DotNet dotnet { $global:LASTEXITCODE = 0; "Installed version '8.0.9'." }
             $result = Shmuelie.DotNet\Update-DotNetTool dotnet-ef -Confirm:$false
             $result.Version | Should -BeExactly '8.0.9'
             $result.Updated | Should -BeFalse

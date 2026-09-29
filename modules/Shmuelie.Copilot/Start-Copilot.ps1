@@ -18,7 +18,11 @@ function Start-Copilot {
         When a Prompt is provided, runs in non-interactive autopilot mode (-p --autopilot).
         When no Prompt is provided, starts interactively.
 
-        If exactly one previous session exists for the current directory it is
+        When the effective directory belongs to a GitHub worktree with an origin
+        and checked-out branch, sessions are scoped by recorded repository and
+        branch even after a worktree moves. Incomplete metadata falls back to
+        the exact directory when known fields do not conflict; non-Git or
+        ambiguous origins use the directory. If exactly one eligible session exists it is
         resumed automatically. If multiple sessions exist, an interactive picker
         is shown -- except when only one of them is a *named* session (the rest
         being unnamed '(no summary)' stubs), in which case that lone named
@@ -59,18 +63,19 @@ function Start-Copilot {
         -DenyTool.
 
     .PARAMETER ResumeLatest
-        When multiple sessions exist for the current folder, automatically resume
+        When multiple eligible sessions exist, automatically resume
         the most recently updated session instead of showing the interactive picker.
 
     .PARAMETER ResumeSession
         Resume a specific session directly, by session id, id-prefix, or name
         (passed to the CLI's --resume). Bypasses the auto-resume heuristics and the
-        picker. Tab-completes the current folder's sessions. Mutually exclusive with
+        picker. Tab-completes eligible sessions in the effective launch directory,
+        including -ChangeDir. Mutually exclusive with
         -NoResume, -ResumeLatest, and -NoAutoResume.
 
     .PARAMETER NoAutoResume
         Disable auto-resume and always show the interactive session picker for the
-        current folder, even when a session would otherwise be auto-resumed
+        current scope, even when a session would otherwise be auto-resumed
         (including when only one session exists). Mutually exclusive with -NoResume,
         -ResumeLatest, and -ResumeSession. The former name -ShowPicker is retained
         as an alias for back-compat.
@@ -84,7 +89,8 @@ function Start-Copilot {
         shown (e.g. with -NoResume, -ResumeLatest, or -ResumeSession).
 
     .PARAMETER Model
-        The AI model to use for the session.
+        The AI model to use for the session. Use 'auto' for native model routing.
+        Tab completion suggests common models but does not limit accepted values.
 
     .PARAMETER SessionSelector
         Optional scriptblock replacing the native host picker, forwarded unchanged
@@ -434,23 +440,11 @@ function Start-Copilot {
 
         [Parameter(ParameterSetName = 'CopilotResumeSession', Mandatory)]
         [ArgumentCompleter({
-            param($commandName, $parameterName, $wordToComplete)
-            $sessionStateDir = Join-Path (Get-CopilotHome) '.copilot' 'session-state'
-            if (-not (Test-Path $sessionStateDir)) { return }
-            $cwd = (Get-Location).Path
-            Get-ChildItem $sessionStateDir -Directory | ForEach-Object {
-                if ($_.Name -notlike "$wordToComplete*") { return }
-                $wsFile = Join-Path $_.FullName 'workspace.yaml'
-                if (-not (Test-Path $wsFile)) { return }
-                $content = Get-Content $wsFile -Raw
-                $sessionCwd = Get-CopilotWorkspaceField -Content $content -Field 'cwd'
-                if ($sessionCwd -ne $cwd) { return }
-                $summary = Get-CopilotWorkspaceField -Content $content -Field 'summary'
-                $name = Get-CopilotWorkspaceField -Content $content -Field 'name'
-                if ($name) { $name = ($name -split '\r?\n', 2)[0].Trim() }
-                $display = $name ?? $summary ?? '(no summary)'
-                [System.Management.Automation.CompletionResult]::new($_.Name, $_.Name, 'ParameterValue', $display)
-            }
+            param($commandName, $parameterName, $wordToComplete, $commandAst, $fakeBoundParameters)
+            & (Get-Module Shmuelie.Copilot -ErrorAction Stop) {
+                param($word, $bound)
+                Complete-CopilotResumeSession -WordToComplete $word -BoundParameters $bound
+            } $wordToComplete $fakeBoundParameters
         })]
         [string]$ResumeSession,
 
@@ -466,12 +460,10 @@ function Start-Copilot {
 
         [ArgumentCompleter({
             param($commandName, $parameterName, $wordToComplete)
-            @(
-                'claude-sonnet-4.6', 'claude-sonnet-4.5', 'claude-haiku-4.5',
-                'claude-opus-4.7', 'claude-opus-4.7-1m', 'claude-opus-4.6', 'claude-opus-4.5', 'claude-sonnet-4',
-                'gpt-5.5', 'gpt-5.4', 'gpt-5.3-codex', 'gpt-5.2-codex', 'gpt-5.2',
-                'gpt-5.4-mini', 'gpt-5-mini', 'gpt-4.1'
-            ) | Where-Object { $_ -like "$wordToComplete*" }
+            & (Get-Module Shmuelie.Copilot) {
+                param($word)
+                Get-CopilotModelCompletion -WordToComplete $word
+            } $wordToComplete
         })]
         [string]$Model,
 
