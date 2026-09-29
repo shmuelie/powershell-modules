@@ -453,7 +453,6 @@ function Get-CopilotLaunchPlan {
         [ArgumentCompleter({
             param($commandName, $parameterName, $wordToComplete)
             @(
-                'auto',
                 'claude-sonnet-4.6', 'claude-sonnet-4.5', 'claude-haiku-4.5',
                 'claude-opus-4.7', 'claude-opus-4.7-1m', 'claude-opus-4.6', 'claude-opus-4.5', 'claude-sonnet-4',
                 'gpt-5.5', 'gpt-5.4', 'gpt-5.3-codex', 'gpt-5.2-codex', 'gpt-5.2',
