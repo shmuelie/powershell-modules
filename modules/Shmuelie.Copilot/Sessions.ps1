@@ -23,6 +23,9 @@ function Get-CopilotSession {
         Summary matches the displayed Summary (name, then legacy summary, then
         '(no summary)'). Missing UpdatedAt never matches a date filter; no
         creation time or filesystem timestamp is substituted.
+        A session with a malformed created_at or updated_at is skipped with a
+        nonterminating error naming the session and field. Use -ErrorAction Stop
+        to abort the complete listing before using it for cleanup.
 
     .PARAMETER All
         Search sessions for all directories, still applying any supplied filters.
@@ -155,6 +158,29 @@ function Get-CopilotSession {
             $name              = Get-CopilotWorkspaceField -Content $content -Field 'name'
             if ($name) { $name = ($name -split '\r?\n', 2)[0].Trim() }
 
+            $parsedCreatedAt = $null
+            $parsedUpdatedAt = $null
+            if ($createdAt) {
+                $parsedCreatedAt = [DateTimeOffset]::MinValue
+                if (-not [DateTimeOffset]::TryParse($createdAt, [ref]$parsedCreatedAt)) {
+                    $message = "Invalid created_at for Copilot session '$($_.Name)' in '$wsFile'."
+                    $PSCmdlet.WriteError([System.Management.Automation.ErrorRecord]::new(
+                        [FormatException]::new($message), 'InvalidCopilotSessionTimestamp',
+                        [System.Management.Automation.ErrorCategory]::InvalidData, $_.FullName))
+                    return
+                }
+            }
+            if ($updatedAt) {
+                $parsedUpdatedAt = [DateTimeOffset]::MinValue
+                if (-not [DateTimeOffset]::TryParse($updatedAt, [ref]$parsedUpdatedAt)) {
+                    $message = "Invalid updated_at for Copilot session '$($_.Name)' in '$wsFile'."
+                    $PSCmdlet.WriteError([System.Management.Automation.ErrorRecord]::new(
+                        [FormatException]::new($message), 'InvalidCopilotSessionTimestamp',
+                        [System.Management.Automation.ErrorCategory]::InvalidData, $_.FullName))
+                    return
+                }
+            }
+
             if ($All -or $Id -or $filters.ContainsKey('Cwd') -or
                 (Test-CopilotSessionScope -Scope $scope -Cwd $sessionCwd -Repository $sessionRepository -Branch $sessionBranch)) {
                 [PSCustomObject]@{
@@ -165,8 +191,8 @@ function Get-CopilotSession {
                     Cwd        = $sessionCwd
                     Branch     = $sessionBranch
                     Repository = $sessionRepository
-                    CreatedAt  = if ($createdAt) { [DateTimeOffset]::Parse($createdAt) } else { $null }
-                    UpdatedAt  = if ($updatedAt) { [DateTimeOffset]::Parse($updatedAt) } else { $null }
+                    CreatedAt  = $parsedCreatedAt
+                    UpdatedAt  = $parsedUpdatedAt
                     EventCount = 0
                     EventSize  = [long]0
                     Path       = $_.FullName

@@ -25,6 +25,10 @@ Versions change only when a release is cut; unreleased work stays under
   files. Unrelated locked or large event histories no longer block selective
   global queries; matched sessions still report accurate counts and failures.
   (#333)
+- A malformed session `created_at` or `updated_at` no longer prevents
+  discovery of unrelated healthy sessions. The affected session is skipped
+  with a visible error; `-ErrorAction Stop` aborts the listing for safe
+  cleanup pipelines. (#332)
 - Both launcher commands now suggest native `auto` model routing and use a
   shared, non-exhaustive list for `-Model` completion. Explicit values are
   forwarded unchanged. (#330)

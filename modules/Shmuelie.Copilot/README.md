@@ -285,6 +285,10 @@ Metadata and date filters are applied before counting `events.jsonl` lines:
 unrelated locked or large event files do not block selective listings. Returned
 sessions still include `EventCount` and `EventSize`, and unreadable events for a
 matching session still produce an error.
+Malformed `created_at` or `updated_at` skips only that session and writes an
+error identifying its ID and field; no timestamp is invented and no files are
+changed. Use `-ErrorAction Stop` when feeding a listing into cleanup so any
+malformed session aborts the operation rather than producing a partial inventory.
 
 `-Id` remains an exact, directory-independent lookup, cannot be combined with
 filters or `-All`, and retains the session-root guard. `Select-CopilotSession`
