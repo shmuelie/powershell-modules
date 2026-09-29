@@ -763,20 +763,21 @@ Describe 'DotNet package provider' {
 Describe 'DotNet provider canonical command integration' {
     InModuleScope Shmuelie.PackageManagement {
         BeforeAll {
-            $script:CanonicalOriginalModulePath = $env:PSModulePath
+            $script:CanonicalOriginalGlobalDotNet = Get-Item Function:\global:dotnet -ErrorAction Ignore
+            function global:dotnet { throw 'Real dotnet invocations are forbidden in canonical integration tests.' }
             $sourceModules = Split-Path (Get-Module Shmuelie.PackageManagement).ModuleBase -Parent
-            $env:PSModulePath = $sourceModules + [IO.Path]::PathSeparator + $env:PSModulePath
             $script:CanonicalDotNetModule = Import-Module (Join-Path $sourceModules 'Shmuelie.DotNet' 'Shmuelie.DotNet.psd1') -PassThru -ErrorAction Stop
             & $script:CanonicalDotNetModule { function script:dotnet { throw 'Unexpected native tool operation.' } }
             function script:dotnet { throw 'Unexpected SDK operation.' }
         }
 
         AfterAll {
-            try {
-                Remove-Module -ModuleInfo $script:CanonicalDotNetModule -Force -ErrorAction Stop
-                Remove-Item Function:\script:dotnet -ErrorAction Stop
-            } finally {
-                $env:PSModulePath = $script:CanonicalOriginalModulePath
+            Remove-Module -ModuleInfo $script:CanonicalDotNetModule -Force -ErrorAction Stop
+            Remove-Item Function:\script:dotnet -ErrorAction Stop
+            if ($script:CanonicalOriginalGlobalDotNet) {
+                Set-Item Function:\global:dotnet -Value $script:CanonicalOriginalGlobalDotNet.ScriptBlock
+            } else {
+                Remove-Item Function:\global:dotnet -ErrorAction Stop
             }
         }
 
@@ -787,6 +788,9 @@ Describe 'DotNet provider canonical command integration' {
             $script:NativeFailure = $false
             $script:NativeDiscoveryFailure = $false
             $script:NativeUnchanged = $false
+            Mock Import-Module {} -ParameterFilter { $Name -eq 'Shmuelie.DotNet' }
+            (Get-Command 'Shmuelie.DotNet\Get-DotNetTool' -ListImported).Module.Path |
+                Should -Be $script:CanonicalDotNetModule.Path
             Mock dotnet { '8.0.412 [synthetic SDK]' }
             Mock dotnet -ModuleName Shmuelie.DotNet {
                 $arguments = @($args)
@@ -841,12 +845,50 @@ Describe 'DotNet provider canonical command integration' {
             $result.ResultingVersion | Should -BeExactly '1.0.0'
         }
 
-        It 'detects native failure hidden behind the canonical result object' {
+        It 'retains canonical native failure without a successful result object' {
             $script:NativeFailure = $true
             $result = Update-AllPackages -Provider DotNet -Confirm:$false
             $result.Status | Should -BeExactly 'Failed'
             $result.Reason | Should -BeLike '*exit code 7*'
             $script:NativeCalls | Should -Be @('tool list -g', 'tool update example.tool -g')
+        }
+
+        It 'preserves native errors and aggregate fail-fast with StopOnFailure <Stop>' -ForEach @(
+            @{ Stop = $false; Expected = @('Failed', 'Updated'); CallCount = 4 }
+            @{ Stop = $true; Expected = @('Failed'); CallCount = 2 }
+        ) {
+            $script:SecondVersion = '1.0.0'
+            Mock dotnet -ModuleName Shmuelie.DotNet {
+                $arguments = $args -join ' '
+                $script:NativeCalls.Add($arguments)
+                switch ($arguments) {
+                    'tool list -g' {
+                        $global:LASTEXITCODE = 0
+                        'Package Id      Version      Commands'
+                        '-------------------------------------'
+                        'first-tool      1.0.0        first'
+                        "second-tool     $script:SecondVersion        second"
+                    }
+                    'tool update first-tool -g' {
+                        & (Get-Process -Id $PID).Path -NoProfile -NonInteractive -Command "[Console]::Error.WriteLine('first tool failed'); exit 7"
+                    }
+                    'tool update second-tool -g' {
+                        $global:LASTEXITCODE = 0
+                        $script:SecondVersion = '2.0.0'
+                        "Tool 'second-tool' was successfully updated from version '1.0.0' to version '2.0.0'."
+                    }
+                    default { throw 'Unexpected synthetic tool operation.' }
+                }
+            }
+            $global:LASTEXITCODE = 37
+            $results = @(Update-AllPackages -Provider DotNet -StopOnFailure:$Stop -Confirm:$false)
+            $results.Status | Should -Be $Expected
+            $results[0].Error.FullyQualifiedErrorId | Should -BeLike 'DotNetToolCommandFailed,*'
+            $results[0].Error.TargetObject.ExitCode | Should -Be 7
+            $results[0].Reason | Should -Match 'first tool failed'
+            $script:NativeCalls | Should -HaveCount $CallCount
+            $global:LASTEXITCODE | Should -Be 37
+            if (-not $Stop) { $results[1].ResultingVersion | Should -BeExactly '2.0.0' }
         }
 
         It 'does not interpret native discovery failure as an empty successful update set' {

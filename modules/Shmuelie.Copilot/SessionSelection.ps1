@@ -1,3 +1,86 @@
+function Get-CopilotSessionScope {
+    $cwd = (Get-Location).Path
+    $branch = try { git symbolic-ref --short HEAD 2>$null } catch { $null }
+    $repository = $null
+    if ($branch) {
+        $urls = @(try { git config --get-all remote.origin.url 2>$null } catch { @() })
+        if ($urls.Count -eq 1 -and $urls[0] -match '^(?:https://github\.com/|git@github\.com:|ssh://git@github\.com/)([a-z0-9_.-]+)/([a-z0-9_.-]+?)(?:\.git)?/?$') {
+            $repository = "$($Matches[1])/$($Matches[2])"
+        }
+    }
+    [pscustomobject]@{ Cwd = $cwd; Repository = $repository; Branch = $branch }
+}
+
+function Test-CopilotSessionScope {
+    param(
+        [Parameter(Mandatory)]$Scope,
+        [string]$Cwd,
+        [string]$Repository,
+        [string]$Branch
+    )
+
+    if ($Scope.Repository -and $Scope.Branch) {
+        if ($Repository -and $Branch) {
+            return ($Repository -ieq $Scope.Repository -and $Branch -ceq $Scope.Branch)
+        }
+        if ($Repository -and $Repository -ine $Scope.Repository) { return $false }
+        if ($Branch -and $Branch -cne $Scope.Branch) { return $false }
+    }
+    return ($Cwd -eq $Scope.Cwd)
+}
+
+function Complete-CopilotResumeSession {
+    param(
+        [string]$WordToComplete,
+        [System.Collections.IDictionary]$BoundParameters
+    )
+
+    $changeDir = if ($BoundParameters -and $BoundParameters.Contains('ChangeDir')) {
+        $BoundParameters['ChangeDir']
+    } elseif ($BoundParameters -and $BoundParameters.Contains('C')) {
+        $BoundParameters['C']
+    } else { $null }
+    $originalLocation = $null
+    try {
+        if ($changeDir) {
+            $directory = Get-Item -LiteralPath $changeDir -ErrorAction Stop
+            if ($directory.PSProvider.Name -ne 'FileSystem' -or -not $directory.PSIsContainer) {
+                throw "ChangeDir must be an existing filesystem directory: '$changeDir'."
+            }
+            $originalLocation = Get-Location
+            Set-Location -LiteralPath $directory.FullName -ErrorAction Stop
+        }
+        $sessionStateDir = Join-Path (Get-CopilotHome) '.copilot' 'session-state'
+        if (-not (Test-Path -LiteralPath $sessionStateDir)) { return }
+        $scope = Get-CopilotSessionScope
+        Get-ChildItem -LiteralPath $sessionStateDir -Directory | Where-Object {
+            $_.Name.StartsWith($WordToComplete, [StringComparison]::OrdinalIgnoreCase)
+        } | ForEach-Object {
+            $wsFile = Join-Path $_.FullName 'workspace.yaml'
+            if (-not (Test-Path -LiteralPath $wsFile)) { return }
+            $content = Get-Content -LiteralPath $wsFile -Raw -ErrorAction Stop
+            $sessionCwd = Get-CopilotWorkspaceField -Content $content -Field 'cwd'
+            $sessionRepository = Get-CopilotWorkspaceField -Content $content -Field 'repository'
+            $sessionBranch = Get-CopilotWorkspaceField -Content $content -Field 'branch'
+            if (Test-CopilotSessionScope -Scope $scope -Cwd $sessionCwd -Repository $sessionRepository -Branch $sessionBranch) {
+                $name = Get-CopilotWorkspaceField -Content $content -Field 'name'
+                if ($name) { $name = ($name -split '\r?\n', 2)[0].Trim() }
+                $summary = Get-CopilotWorkspaceField -Content $content -Field 'summary'
+                $updatedAt = Get-CopilotWorkspaceField -Content $content -Field 'updated_at'
+                [pscustomobject]@{
+                    Id        = $_.Name
+                    Display   = $name ?? $summary ?? '(no summary)'
+                    UpdatedAt = if ($updatedAt) { [DateTimeOffset]::Parse($updatedAt) } else { $null }
+                }
+            }
+        } | Sort-Object UpdatedAt -Descending | ForEach-Object {
+            [System.Management.Automation.CompletionResult]::new($_.Id, $_.Id, 'ParameterValue', $_.Display)
+        }
+    } finally {
+        if ($originalLocation) { Set-Location -LiteralPath $originalLocation.Path -ErrorAction Stop }
+    }
+}
+
 function Get-CopilotResumeCandidate {
     [CmdletBinding()]
     [OutputType('CopilotSession')]
@@ -13,8 +96,7 @@ function Get-CopilotResumeCandidate {
         return
     }
 
-    $cwd = (Get-Location).Path
-    $currentBranch = try { git symbolic-ref --short HEAD 2>$null } catch { $null }
+    $scope = Get-CopilotSessionScope
     $sessions = @(Get-ChildItem $sessionStateDir -Directory |
         ForEach-Object {
             $sessionPath = Resolve-CopilotSessionPath -Id $_.Name -ErrorAction Stop
@@ -28,16 +110,19 @@ function Get-CopilotResumeCandidate {
                 $updatedAt = Get-CopilotWorkspaceField -Content $content -Field 'updated_at'
                 $summary = Get-CopilotWorkspaceField -Content $content -Field 'summary'
                 $sessionBranch = Get-CopilotWorkspaceField -Content $content -Field 'branch'
+                $sessionRepository = Get-CopilotWorkspaceField -Content $content -Field 'repository'
                 $sessionName = Get-CopilotWorkspaceField -Content $content -Field 'name'
                 if ($sessionName) { $sessionName = ($sessionName -split '\r?\n', 2)[0].Trim() }
                 $displayName = $sessionName ?? $summary ?? '(no summary)'
-                if ($sessionCwd -eq $cwd -and $updatedAt -and $sessionName -notin $ignoredSessionNames) {
+                if ((Test-CopilotSessionScope -Scope $scope -Cwd $sessionCwd -Repository $sessionRepository -Branch $sessionBranch) -and
+                    $updatedAt -and $sessionName -notin $ignoredSessionNames) {
                     [PSCustomObject]@{
                         PSTypeName = 'CopilotSession'
                         Id         = $_.Name
                         Name       = $displayName
                         Summary    = $displayName
                         Branch     = $sessionBranch
+                        Repository = $sessionRepository
                         UpdatedAt  = [DateTimeOffset]::Parse($updatedAt)
                         Cwd        = $sessionCwd
                     }
@@ -46,9 +131,16 @@ function Get-CopilotResumeCandidate {
         } |
         Sort-Object UpdatedAt -Descending)
 
-    # Prefer the current branch only when it has matches; otherwise retain all.
-    if ($currentBranch -and $sessions.Count -gt 0) {
-        $branchMatches = @($sessions | Where-Object { $_.Branch -and $_.Branch -eq $currentBranch })
+    # Prefer full identity over directory-only legacy candidates when available.
+    if ($scope.Repository -and $sessions.Count -gt 0) {
+        $identityMatches = @($sessions | Where-Object {
+            $_.Repository -ieq $scope.Repository -and $_.Branch -ceq $scope.Branch
+        })
+        if ($identityMatches.Count -gt 0) { return $identityMatches }
+    }
+    # Retain the existing branch preference for directory-only fallback.
+    if ($scope.Branch -and $sessions.Count -gt 0) {
+        $branchMatches = @($sessions | Where-Object { $_.Branch -and $_.Branch -ceq $scope.Branch })
         if ($branchMatches.Count -gt 0) {
             $sessions = $branchMatches
         }
