@@ -4131,6 +4131,42 @@ Describe 'Copilot repository and branch session scope' -Tag 'StableSessionScope'
         $results | Should -Not -Contain 'topic'
         $results | Should -Not -Contain 'legacy'
     }
+
+    It 'completes matching IDs without opening unrelated locked metadata or event histories for <Entry>' -ForEach @(
+        @{ Entry = 'Get-CopilotLaunchPlan' }
+        @{ Entry = 'Start-Copilot' }
+    ) {
+        Add-ScopeSession -Id topic -Cwd $script:ScopeOriginal -Repository owner/repo-a -Branch feature/topic
+        Add-ScopeSession -Id other -Cwd $script:ScopeOriginal -Repository owner/repo-a -Branch feature/other
+        Add-ScopeSession -Id locked-topic -Cwd $script:ScopeOriginal -Repository owner/repo-a -Branch feature/topic
+        Add-ScopeSession -Id locked-other -Cwd $script:ScopeOriginal -Repository owner/repo-a -Branch feature/other
+        Mock -ModuleName Shmuelie.Copilot Get-CopilotSession { throw 'Completion must not enumerate session event histories.' }
+        $attribute = (Get-Command "Shmuelie.Copilot\$Entry").Parameters['ResumeSession'].Attributes |
+            Where-Object { $_ -is [System.Management.Automation.ArgumentCompleterAttribute] }
+        $locks = [System.Collections.Generic.List[IO.FileStream]]::new()
+        try {
+            foreach ($id in 'topic', 'other', 'locked-topic', 'locked-other') {
+                $events = Join-Path $script:ScopeSessionRoot $id 'events.jsonl'
+                Set-Content -LiteralPath $events -Value '{"type":"synthetic"}'
+                $locks.Add([IO.File]::Open($events, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None))
+            }
+            foreach ($id in 'locked-topic', 'locked-other') {
+                $workspace = Join-Path $script:ScopeSessionRoot $id 'workspace.yaml'
+                $locks.Add([IO.File]::Open($workspace, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None))
+            }
+
+            $results = @(& $attribute.ScriptBlock $Entry 'ResumeSession' 'top' $null @{}).CompletionText
+            $results | Should -Be @('topic')
+            $results = @(& $attribute.ScriptBlock $Entry 'ResumeSession' 'oth' $null @{ ChangeDir = $script:ScopeOtherBranch }).CompletionText
+            $results | Should -Be @('other')
+            $results = @(& $attribute.ScriptBlock $Entry 'ResumeSession' 'oth' $null @{ C = $script:ScopeOtherBranch }).CompletionText
+            $results | Should -Be @('other')
+            (Get-Location).Path | Should -Be $script:ScopeMoved
+        } finally {
+            foreach ($lock in $locks) { $lock.Dispose() }
+        }
+        Should -Invoke -ModuleName Shmuelie.Copilot Get-CopilotSession -Times 0 -Exactly
+    }
 }
 
 Describe 'Get-CopilotSession' {

@@ -50,10 +50,31 @@ function Complete-CopilotResumeSession {
             $originalLocation = Get-Location
             Set-Location -LiteralPath $directory.FullName -ErrorAction Stop
         }
-        Get-CopilotSession | Where-Object {
-            $_.Id.StartsWith($WordToComplete, [StringComparison]::OrdinalIgnoreCase)
+        $sessionStateDir = Join-Path (Get-CopilotHome) '.copilot' 'session-state'
+        if (-not (Test-Path -LiteralPath $sessionStateDir)) { return }
+        $scope = Get-CopilotSessionScope
+        Get-ChildItem -LiteralPath $sessionStateDir -Directory | Where-Object {
+            $_.Name.StartsWith($WordToComplete, [StringComparison]::OrdinalIgnoreCase)
         } | ForEach-Object {
-            [System.Management.Automation.CompletionResult]::new($_.Id, $_.Id, 'ParameterValue', $_.Summary)
+            $wsFile = Join-Path $_.FullName 'workspace.yaml'
+            if (-not (Test-Path -LiteralPath $wsFile)) { return }
+            $content = Get-Content -LiteralPath $wsFile -Raw -ErrorAction Stop
+            $sessionCwd = Get-CopilotWorkspaceField -Content $content -Field 'cwd'
+            $sessionRepository = Get-CopilotWorkspaceField -Content $content -Field 'repository'
+            $sessionBranch = Get-CopilotWorkspaceField -Content $content -Field 'branch'
+            if (Test-CopilotSessionScope -Scope $scope -Cwd $sessionCwd -Repository $sessionRepository -Branch $sessionBranch) {
+                $name = Get-CopilotWorkspaceField -Content $content -Field 'name'
+                if ($name) { $name = ($name -split '\r?\n', 2)[0].Trim() }
+                $summary = Get-CopilotWorkspaceField -Content $content -Field 'summary'
+                $updatedAt = Get-CopilotWorkspaceField -Content $content -Field 'updated_at'
+                [pscustomobject]@{
+                    Id        = $_.Name
+                    Display   = $name ?? $summary ?? '(no summary)'
+                    UpdatedAt = if ($updatedAt) { [DateTimeOffset]::Parse($updatedAt) } else { $null }
+                }
+            }
+        } | Sort-Object UpdatedAt -Descending | ForEach-Object {
+            [System.Management.Automation.CompletionResult]::new($_.Id, $_.Id, 'ParameterValue', $_.Display)
         }
     } finally {
         if ($originalLocation) { Set-Location -LiteralPath $originalLocation.Path -ErrorAction Stop }
