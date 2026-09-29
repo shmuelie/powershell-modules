@@ -30,12 +30,6 @@ jobs:
       - uses: actions/setup-dotnet@v5
         with:
           dotnet-version: 8.0.x
-      - name: Validate modules
-        shell: pwsh
-        run: ./build/Test-Modules.ps1
-      - name: Run unit tests
-        shell: pwsh
-        run: ./build/Invoke-Tests.ps1
       - name: Resolve module
         id: module
         shell: pwsh
@@ -43,7 +37,6 @@ jobs:
           INPUT_MODULE: ${{ inputs.module }}
           REF_NAME: ${{ github.ref_name }}
         run: |
-          $allowed = @('Shmuelie.Git', 'Shmuelie.Copilot', 'Shmuelie.Node', 'Shmuelie.DotNet', 'Shmuelie.Utilities', 'Shmuelie.Dsc', 'Shmuelie.VisualStudio', 'Shmuelie.Windows', 'Shmuelie.PackageManagement')
           $module = $env:INPUT_MODULE
           $tagVersion = $null
           if (-not $module) {
@@ -53,12 +46,18 @@ jobs:
             $module = $Matches.module
             $tagVersion = $Matches.version
           }
-          if ($module -notin $allowed) { throw "Unsupported module: $module" }
+          & ./build/Assert-ModulePublishable.ps1 -Module $module
           $manifest = Test-ModuleManifest "./modules/$module/$module.psd1"
           if ($tagVersion -and "$($manifest.Version)" -ne $tagVersion) {
             throw "Tag version $tagVersion does not match manifest version $($manifest.Version)."
           }
           "name=$module" >> $env:GITHUB_OUTPUT
+      - name: Validate modules
+        shell: pwsh
+        run: ./build/Test-Modules.ps1
+      - name: Run unit tests
+        shell: pwsh
+        run: ./build/Invoke-Tests.ps1
       - name: Publish to PowerShell Gallery
         shell: pwsh
         env:

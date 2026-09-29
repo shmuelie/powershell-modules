@@ -6,6 +6,38 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+## [0.10.3] - 2026-09-22
+
+### Fixed
+- Worktree predictor suggestions preserve branch names as one literal PowerShell
+  argument, including apostrophes, dollar signs and other shell-sensitive or
+  numeric-looking names. Existing-worktree and checkoutable-branch suggestions
+  retain typed commands, flags, casing, substring matching and ordinary bare
+  branch names. (#266)
+- Native Git tab completion inserts shell-sensitive filenames and refs as one
+  literal PowerShell argument, preserving spaces, apostrophes, dollar signs and
+  backticks without evaluation. Display names, simple completions, options and
+  existing Git status parsing are unchanged. (#264)
+
+## [0.10.2] - 2026-09-18
+
+### Fixed
+- `Repair-RepositoryLayout` skips occupied standalone-clone destinations without
+  changing either path. Exact-path renames no longer nest a clone inside an
+  existing directory while reporting the wrong resulting root. (#265)
+- `Get-GitStatusSummary` includes tracked type changes in the existing index and
+  working-tree modification counts, so `HasChanges` and status displays no longer
+  report a clean tree when only file types have changed. (#267)
+- Predictor cleanup now identifies the module's idle subscriber by its action-job
+  association instead of confusing job and subscription IDs. Removal and force
+  re-import release only module-owned subscriptions, jobs and predictor binaries,
+  preserving unrelated handlers and caller-owned predictor registrations. (#262)
+- `Update-Worktrees` restores only the stash object created for that update,
+  retaining unrelated existing stashes. A successful no-op stash push (such as
+  submodule-only dirt) now skips the worktree with `StashFailed` rather than
+  applying or dropping an unrelated stash. Restoration conflicts and unexpected
+  stack changes retain stash entries for manual resolution. (#263)
+
 ## [0.10.1] - 2026-09-16
 
 ### Fixed

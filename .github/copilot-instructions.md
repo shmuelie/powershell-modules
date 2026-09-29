@@ -66,6 +66,34 @@ docs/                             # Markdown docs site (contributing, modules, i
 6. If the change applies to the bash port, file an `upstream-parity` issue in
    `shmuelie/bash-scripts` (see [Bash port parity](#bash-port-parity)).
 
+## Interactive input
+
+- Use `$Host.UI.Prompt(...)` / `FieldDescription` for module-owned fields, and
+  `$Host.UI.PromptForChoice(...)` / `ChoiceDescription` for defined options.
+  Supply meaningful captions, messages, labels/help and intentional defaults;
+  preserve exact candidate mapping, cancellation, and explicit selector hooks.
+- Put descriptive session names in actual choice labels, with 22 sessions per
+  page and unique single-character session keys. Reserve `M`/`P` for Next/Previous
+  page and `N`/`C` for New session/Cancel; keep every candidate reachable in order,
+  with an exit action and no default on every page. Navigate through native
+  `PromptForChoice` calls, not key-reading or number-parsing loops. Put the assigned
+  `&` marker before session data so literal ampersands cannot assign keys.
+  Sanitize controls, cap normalized names at 80 Unicode text elements including
+  `...`, and append available branches only for names duplicated after
+  sanitization/truncation across the full candidate set. Keep full sanitized
+  names and identity/context in help; no duplicated message list or RawUI/width logic.
+- No automatic grid dependencies, custom menu rendering, number-parsing loops,
+  or console key reads. Host capability, not `Environment.UserInteractive` or
+  console availability, determines whether prompting works. Host errors and
+  invalid responses must fail closed, including under `-ErrorAction Continue`.
+- Input is not confirmation. Leave `SupportsShouldProcess`, `ShouldProcess`,
+  `ConfirmImpact`, `$ConfirmPreference`, `-Confirm`, `-WhatIf`, existing
+  `ShouldContinue`, and mandatory-parameter prompts framework managed.
+  Preview and explicit noninteractive paths must not acquire input prompts.
+- Use controlled host UI tests with synthetic input and fail-closed native
+  boundaries, plus bounded profile-free ConsoleHost tests for real key acceptance
+  and pagination; see [Interactive input and confirmation](../docs/contributing.md#interactive-input-and-confirmation).
+
 ## .NET tool compatibility
 
 `Shmuelie.DotNet` owns the four .NET tool implementations. Utilities keeps thin,
@@ -111,6 +139,14 @@ gh issue create --repo shmuelie/bash-scripts --label upstream-parity `
   build/CI/docs with no bash equivalent.
 
 ## Testing
+
+- Unpublished AppInstallManager development lives under
+  `experimental/Shmuelie.AppInstall.Experimental/`, outside the default build/test
+  and publication catalog. Keep its implementation, formatting, help and fake
+  tests separate from the supported Windows/AppInstaller commands. The explicit
+  experimental build and test paths do not authorize live access or publication.
+- Draft PRs skip automated build/test jobs. Do not mark a PR ready or dispatch
+  validation workflows while validation is on hold; skipped jobs are not evidence.
 
 - One Pester v6 file per module: `tests/<Module>.Tests.ps1`. Each imports its
   module directly from source (`modules/<Module>/<Module>.psd1`) — no build step.

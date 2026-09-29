@@ -57,6 +57,71 @@ function Assert-DscSafeArgument {
     }
 }
 
+function Assert-DscCliResult {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][AllowNull()][object]$Result,
+        [Parameter(Mandatory)][string]$Operation,
+        [switch]$AllowNonZeroExit
+    )
+
+    $exitCode = $null
+    $output = $null
+    if ($Result -is [System.Collections.IDictionary]) {
+        $exitCode = $Result['ExitCode']
+        $output = $Result['Output']
+    } elseif ($null -ne $Result) {
+        $exitProperty = $Result.PSObject.Properties['ExitCode']
+        $outputProperty = $Result.PSObject.Properties['Output']
+        if ($exitProperty) { $exitCode = $exitProperty.Value }
+        if ($outputProperty) { $output = $outputProperty.Value }
+    }
+    if ($exitCode -is [int] -and ($AllowNonZeroExit -or $exitCode -eq 0)) {
+        return
+    }
+    $knownExit = $exitCode -is [int]
+    $message = if ($knownExit) {
+        "$Operation failed (exit $exitCode)."
+    } else {
+        "$Operation did not report a valid native exit code."
+    }
+    if ($output) { $message += [Environment]::NewLine + ($output -join [Environment]::NewLine) }
+    $exception = [System.InvalidOperationException]::new($message)
+    $exception.Data['ExitCode'] = $exitCode
+    $exception.Data['Output'] = $output
+    $errorId = if ($knownExit) { 'DscCliCommandFailed' } else { 'DscCliCompletionUnknown' }
+    $PSCmdlet.ThrowTerminatingError([System.Management.Automation.ErrorRecord]::new(
+        $exception, $errorId, [System.Management.Automation.ErrorCategory]::InvalidResult, $Result))
+}
+
+function Invoke-DscCliCommand {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][ValidateSet('copilot', 'uv')][string]$Command,
+        [Parameter(Mandatory)][string[]]$Arguments
+    )
+
+    $previousExitCode = Get-Variable LASTEXITCODE -Scope Global -ErrorAction Ignore
+    $previousValue = if ($previousExitCode) { $previousExitCode.Value } else { $null }
+    # Native invocation writes the global variable even when a local one exists.
+    # Capture diagnostics ourselves, independent of the caller's native error policy.
+    $PSNativeCommandUseErrorActionPreference = $false
+    try {
+        $global:LASTEXITCODE = $null
+        $raw = @(& $Command @Arguments 2>&1)
+        $exitCode = $global:LASTEXITCODE
+    } finally {
+        if ($previousExitCode) { $global:LASTEXITCODE = $previousValue }
+        else { Remove-Variable LASTEXITCODE -Scope Global -ErrorAction Ignore -WhatIf:$false -Confirm:$false }
+    }
+    $result = [pscustomobject]@{
+        Output = @($raw | ForEach-Object { Remove-DscAnsiEscape ([string]$_) })
+        ExitCode = $exitCode
+    }
+    Assert-DscCliResult -Result $result -Operation $Command -AllowNonZeroExit
+    return $result
+}
+
 function Invoke-DscCopilot {
     [CmdletBinding()]
     param(
@@ -67,19 +132,13 @@ function Invoke-DscCopilot {
     $previousNoColor = $env:NO_COLOR
     $env:NO_COLOR = '1'
     try {
-        $raw = & copilot @Arguments 2>&1
-        $exit = $LASTEXITCODE
+        Invoke-DscCliCommand -Command copilot -Arguments $Arguments
     } finally {
         if ($null -eq $previousNoColor) {
-            Remove-Item Env:NO_COLOR -ErrorAction SilentlyContinue
+            Remove-Item Env:NO_COLOR -ErrorAction SilentlyContinue -WhatIf:$false -Confirm:$false
         } else {
             $env:NO_COLOR = $previousNoColor
         }
-    }
-    $lines = @($raw | ForEach-Object { Remove-DscAnsiEscape ([string]$_) })
-    [pscustomobject]@{
-        Output   = $lines
-        ExitCode = $exit
     }
 }
 
@@ -95,24 +154,18 @@ function Invoke-DscUv {
     $env:NO_COLOR = '1'
     $env:UV_NO_COLOR = '1'
     try {
-        $raw = & uv @Arguments 2>&1
-        $exit = $LASTEXITCODE
+        Invoke-DscCliCommand -Command uv -Arguments $Arguments
     } finally {
         if ($null -eq $previousNoColor) {
-            Remove-Item Env:NO_COLOR -ErrorAction SilentlyContinue
+            Remove-Item Env:NO_COLOR -ErrorAction SilentlyContinue -WhatIf:$false -Confirm:$false
         } else {
             $env:NO_COLOR = $previousNoColor
         }
         if ($null -eq $previousUvNoColor) {
-            Remove-Item Env:UV_NO_COLOR -ErrorAction SilentlyContinue
+            Remove-Item Env:UV_NO_COLOR -ErrorAction SilentlyContinue -WhatIf:$false -Confirm:$false
         } else {
             $env:UV_NO_COLOR = $previousUvNoColor
         }
-    }
-    $lines = @($raw | ForEach-Object { Remove-DscAnsiEscape ([string]$_) })
-    [pscustomobject]@{
-        Output   = $lines
-        ExitCode = $exit
     }
 }
 
@@ -132,6 +185,208 @@ function New-DscSymbolicLink {
     New-Item -ItemType SymbolicLink -Path $Path -Target $Target -Force -ErrorAction Stop | Out-Null
 }
 
+function Test-DscSymbolicLinkTarget {
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory)][string]$LinkPath,
+        [Parameter(Mandatory)][string]$ActualTarget,
+        [Parameter(Mandatory)][string]$DesiredTarget
+    )
+
+    $provider = $null
+    $drive = $null
+    $link = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($LinkPath, [ref]$provider, [ref]$drive)
+    if ($provider.Name -ne 'FileSystem') {
+        throw 'Symbolic-link comparison requires a filesystem path.'
+    }
+    $parent = [IO.Path]::GetDirectoryName($link)
+    $actual = [IO.Path]::TrimEndingDirectorySeparator([IO.Path]::GetFullPath($ActualTarget, $parent))
+    $desired = [IO.Path]::TrimEndingDirectorySeparator([IO.Path]::GetFullPath($DesiredTarget, $parent))
+    # Drive letters are namespace syntax, not directory-entry case policy.
+    if ($actual -cmatch '^[a-z]:\\') { $actual = $actual.Substring(0, 1).ToUpperInvariant() + $actual.Substring(1) }
+    if ($desired -cmatch '^[a-z]:\\') { $desired = $desired.Substring(0, 1).ToUpperInvariant() + $desired.Substring(1) }
+    if ([string]::Equals($actual, $desired, [StringComparison]::Ordinal)) { return $true }
+    if (-not [string]::Equals($actual, $desired, [StringComparison]::OrdinalIgnoreCase)) { return $false }
+
+    try {
+        $root = [IO.Path]::GetPathRoot($actual)
+        if (-not [string]::Equals($root, [IO.Path]::GetPathRoot($desired), [StringComparison]::Ordinal)) {
+            throw 'The target roots have different spellings and cannot be compared as directory entries.'
+        }
+        $separators = [char[]]@([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+        $actualParts = $actual.Substring($root.Length).Split($separators, [StringSplitOptions]::RemoveEmptyEntries)
+        $desiredParts = $desired.Substring($root.Length).Split($separators, [StringSplitOptions]::RemoveEmptyEntries)
+        $directory = $root
+        for ($index = 0; $index -lt $actualParts.Count; $index++) {
+            if ([string]::Equals($actualParts[$index], $desiredParts[$index], [StringComparison]::Ordinal)) {
+                $directory = Join-Path $directory $actualParts[$index]
+                continue
+            }
+            $entries = @(Get-ChildItem -LiteralPath $directory -Force -ErrorAction Stop)
+            $names = [System.Collections.Generic.List[string]]::new()
+            foreach ($part in $actualParts[$index], $desiredParts[$index]) {
+                # Enumeration supplies stored spelling; a literal lookup proves that
+                # the filesystem accepts the requested spelling, not an OS heuristic.
+                $lookup = @(Get-Item -LiteralPath (Join-Path $directory $part) -Force -ErrorAction Stop)
+                if ($lookup.Count -ne 1) { throw "Literal lookup did not identify one entry for '$part'." }
+                $exact = @($entries | Where-Object { [string]::Equals($_.Name, $part, [StringComparison]::Ordinal) })
+                $matches = if ($exact.Count) { $exact } else {
+                    @($entries | Where-Object { [string]::Equals($_.Name, $part, [StringComparison]::OrdinalIgnoreCase) })
+                }
+                if (@($matches).Count -ne 1) {
+                    throw "No unambiguous directory entry for '$part' in '$directory'."
+                }
+                $names.Add(@($matches)[0].Name)
+            }
+            if (-not [string]::Equals($names[0], $names[1], [StringComparison]::Ordinal)) { return $false }
+            $directory = Join-Path $directory $names[0]
+        }
+        return $true
+    } catch {
+        $exception = [InvalidOperationException]::new(
+            "Cannot determine symbolic-link target case equivalence for '$LinkPath': '$ActualTarget' and '$DesiredTarget'. $($_.Exception.Message)",
+            $_.Exception)
+        $PSCmdlet.ThrowTerminatingError([System.Management.Automation.ErrorRecord]::new(
+            $exception, 'DscSymbolicLinkComparisonUnknown', [System.Management.Automation.ErrorCategory]::InvalidResult, $LinkPath))
+    }
+}
+
+function Test-DscSavedModuleFile {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Directory,
+        [Parameter(Mandatory)][string]$Entry,
+        [ValidateSet('File', 'RootModule', 'NestedModule')]
+        [string]$Kind = 'File'
+    )
+
+    if ([System.IO.Path]::IsPathRooted($Entry)) {
+        Write-Verbose "Saved module entry must be relative to its module directory: '$Entry'."
+        return $false
+    }
+    $suffixes = @('')
+    if ($Kind -ne 'File') {
+        $moduleExtensions = @('.psm1', '.dll', '.exe', '.cdxml', '.xaml')
+        if ($Kind -eq 'NestedModule') { $moduleExtensions += '.psd1' }
+        $extension = [System.IO.Path]::GetExtension($Entry)
+        if (-not $extension) {
+            $suffixes = $moduleExtensions
+        } elseif ($extension -notin $moduleExtensions) {
+            Write-Verbose "Unsupported saved module entry file: '$Entry'."
+            return $false
+        }
+    }
+    foreach ($suffix in $suffixes) {
+        try {
+            $file = [System.IO.Path]::GetFullPath((Join-Path $Directory "$Entry$suffix"))
+        } catch [System.ArgumentException], [System.NotSupportedException] {
+            Write-Verbose "Invalid saved module entry '$Entry': $_"
+            return $false
+        }
+        $relative = [System.IO.Path]::GetRelativePath($Directory, $file)
+        if ($relative -eq '..' -or $relative.StartsWith("..$([System.IO.Path]::DirectorySeparatorChar)") -or
+            [System.IO.Path]::IsPathRooted($relative)) {
+            Write-Verbose "Saved module entry is outside its module directory: '$Entry'."
+            return $false
+        }
+        if (Test-Path -LiteralPath $file -PathType Leaf -ErrorAction Stop) {
+            return $true
+        }
+    }
+    Write-Verbose "Saved module entry is missing: '$Entry' in '$Directory'."
+    return $false
+}
+
+function Test-DscSavedModule {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Directory,
+        [Parameter(Mandatory)][string]$Name,
+        [string]$Version
+    )
+
+    if (-not (Test-Path -LiteralPath $Directory -PathType Container -ErrorAction Stop)) {
+        return $false
+    }
+    $manifestPath = Join-Path $Directory "$Name.psd1"
+    if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf -ErrorAction Stop)) {
+        return $false
+    }
+    try {
+        $manifest = Import-PowerShellDataFile -LiteralPath $manifestPath -ErrorAction Stop
+    } catch [System.InvalidOperationException] {
+        Write-Verbose "Saved module manifest is not readable static data: '$manifestPath': $_"
+        return $false
+    }
+    $manifestVersion = $null
+    if ($manifest.ModuleVersion -isnot [string] -or
+        -not [version]::TryParse($manifest.ModuleVersion, [ref]$manifestVersion)) {
+        Write-Verbose "Saved module manifest has no valid ModuleVersion: '$manifestPath'."
+        return $false
+    }
+    if ($Version) {
+        $directoryVersion = $null
+        if (-not [version]::TryParse($Version, [ref]$directoryVersion) -or
+            $manifestVersion.Major -ne $directoryVersion.Major -or $manifestVersion.Minor -ne $directoryVersion.Minor -or
+            [Math]::Max(0, $manifestVersion.Build) -ne [Math]::Max(0, $directoryVersion.Build) -or
+            [Math]::Max(0, $manifestVersion.Revision) -ne [Math]::Max(0, $directoryVersion.Revision)) {
+            Write-Verbose "Saved module manifest does not match version directory '$Version': '$manifestPath'."
+            return $false
+        }
+    }
+
+    $directoryPath = (Get-Item -LiteralPath $Directory -Force -ErrorAction Stop).FullName
+    if ($manifest.ContainsKey('RootModule')) {
+        $rootModule = $manifest.RootModule
+    } else {
+        $rootModule = $manifest.ModuleToProcess
+    }
+    if ($null -ne $rootModule) {
+        if ($rootModule -isnot [string]) {
+            Write-Verbose "Saved module manifest has an invalid root module value: '$manifestPath'."
+            return $false
+        }
+        if ($rootModule.Length -gt 0 -and -not (Test-DscSavedModuleFile -Directory $directoryPath -Entry $rootModule -Kind RootModule)) {
+            return $false
+        }
+    }
+    # These are local startup files, not dependencies resolved through PSModulePath.
+    foreach ($field in 'ScriptsToProcess', 'TypesToProcess', 'FormatsToProcess') {
+        foreach ($entry in $manifest[$field]) {
+            if ($entry -isnot [string] -or [string]::IsNullOrWhiteSpace($entry)) {
+                Write-Verbose "Saved module manifest has an invalid $field entry: '$manifestPath'."
+                return $false
+            }
+            if (-not (Test-DscSavedModuleFile -Directory $directoryPath -Entry $entry)) {
+                return $false
+            }
+        }
+    }
+    foreach ($field in 'NestedModules', 'RequiredAssemblies') {
+        foreach ($reference in $manifest[$field]) {
+            $entry = $reference
+            if ($field -eq 'NestedModules' -and $reference -is [hashtable]) {
+                $entry = $reference.ModuleName
+            }
+            if ($entry -isnot [string] -or [string]::IsNullOrWhiteSpace($entry)) {
+                Write-Verbose "Saved module manifest has an invalid $field entry: '$manifestPath'."
+                return $false
+            }
+            # Bare dependency names remain unresolved, as with -SkipDependencyCheck.
+            $localFile = $entry.IndexOfAny([char[]]'\/') -ge 0 -or
+                [System.IO.Path]::GetExtension($entry) -in @('.psm1', '.psd1', '.dll', '.exe', '.cdxml', '.xaml')
+            if ($localFile) {
+                $kind = if ($field -eq 'NestedModules') { 'NestedModule' } else { 'File' }
+                if (-not (Test-DscSavedModuleFile -Directory $directoryPath -Entry $entry -Kind $kind)) {
+                    return $false
+                }
+            }
+        }
+    }
+    return $true
+}
+
 # Resources -------------------------------------------------------------------
 
 <#
@@ -140,8 +395,11 @@ function New-DscSymbolicLink {
 
 .DESCRIPTION
     DSC resource that ensures a PowerShell module is saved (not installed) to a
-    specified directory. Tests for existence by checking whether a subfolder
-    matching the module name (and version, when specified) exists under Path.
+    specified directory. Tests for a readable, correctly named manifest with a
+    valid ModuleVersion and any declared root module and local startup files.
+    Accepts a flat module directory or at least one matching version directory.
+    Presence checks read data only; they do not import candidate module code or
+    resolve dependencies, and do not prove runtime compatibility.
     Uses Save-PSResource with -TrustRepository, -IncludeXml, -AcceptLicense, and
     -SkipDependencyCheck so it runs non-interactively.
 
@@ -158,11 +416,13 @@ function New-DscSymbolicLink {
     The PSResourceRepository to save from. Defaults to 'PSGallery'.
 
 .PROPERTY Version
-    Optional specific version to save. When set, Test() checks for that version's
-    subfolder and Set() passes it to Save-PSResource -Version.
+    Optional specific version to save. When set, Test() checks only that exact
+    subfolder and requires its manifest version to match. Set() passes the value
+    unchanged to Save-PSResource -Version; Test() does not resolve version ranges.
 
 .PROPERTY Installed
-    Read-only. Reports whether the module (and version, if specified) is present.
+    Read-only. Reports whether the saved module layout passes the read-only
+    presence check (and matches the version directory, if specified).
 
 .EXAMPLE
     - name: Save Pester
@@ -201,13 +461,21 @@ class SavePSResource {
 
     [bool] Test() {
         $modulePath = Join-Path $this.Path $this.Name
-        if (-not (Test-Path -LiteralPath $modulePath)) {
+        if (-not (Test-Path -LiteralPath $modulePath -PathType Container -ErrorAction Stop)) {
             return $false
         }
         if ($this.Version) {
-            return (Test-Path -LiteralPath (Join-Path $modulePath $this.Version))
+            return (Test-DscSavedModule -Directory (Join-Path $modulePath $this.Version) -Name $this.Name -Version $this.Version)
         }
-        return $true
+        if (Test-DscSavedModule -Directory $modulePath -Name $this.Name) {
+            return $true
+        }
+        foreach ($directory in Get-ChildItem -LiteralPath $modulePath -Directory -ErrorAction Stop) {
+            if (Test-DscSavedModule -Directory $directory.FullName -Name $this.Name -Version $directory.Name) {
+                return $true
+            }
+        }
+        return $false
     }
 
     [void] Set() {
@@ -235,6 +503,10 @@ class SavePSResource {
     DSC resource that ensures a symbolic link exists pointing to the correct
     target. Creates parent directories if they do not exist and replaces an
     existing item at Path when the link is missing or points elsewhere.
+    Test() normalizes relative targets against the link's parent. Case-only
+    differences require unambiguous directory entries and successful literal
+    lookups; unknown equivalence raises an error instead of requesting replacement.
+    Exact normalized matches remain compliant even when the target is absent.
 
     On Windows, creating symbolic links requires Developer Mode or an elevated
     session.
@@ -275,7 +547,7 @@ class SymbolicLink {
         if ($null -eq $item -or $item.LinkType -ne 'SymbolicLink') {
             return $false
         }
-        return ([string]$item.Target -eq $this.Target)
+        return (Test-DscSymbolicLinkTarget -LinkPath $this.Path -ActualTarget ([string]$item.Target) -DesiredTarget $this.Target)
     }
 
     [void] Set() {
@@ -296,6 +568,8 @@ class SymbolicLink {
     checking whether the plugin's name appears as a whole token in
     'copilot plugin list' output. Supports the owner/repo, plugin@marketplace,
     and market:plugin@marketplace source formats accepted by the Copilot CLI.
+    Failed discovery or unknown native completion raises an error instead of
+    reporting the plugin as installed or absent.
 
     For a URL source (or any source whose installed plugin name cannot be
     derived from the source spec), set the Name property so Test() can match the
@@ -350,6 +624,7 @@ class CopilotPlugin {
 
     [bool] Test() {
         $result = Invoke-DscCopilot -Arguments @('plugin', 'list')
+        Assert-DscCliResult -Result $result -Operation 'Copilot plugin discovery'
         return Test-DscListContainsToken -Lines $result.Output -Token $this.ResolveName()
     }
 
@@ -368,16 +643,26 @@ class CopilotPlugin {
 
 .DESCRIPTION
     DSC resource that ensures a Copilot CLI plugin marketplace is registered.
+    Registers Repository as the single source argument to
+    'copilot plugin marketplace add'. The source's marketplace.json name becomes
+    its registered identity; the CLI does not support a custom local name.
     Tests by checking whether the marketplace name appears as a whole token in
-    'copilot plugin marketplace list' output.
+    'copilot plugin marketplace list' output. This is a presence check, not a
+    comparison or replacement of an existing registration's source.
+    Failed discovery or unknown native completion raises an error instead of
+    reporting the marketplace as registered or absent.
 
     Depends only on the public GitHub Copilot CLI (copilot) on PATH.
 
 .PROPERTY Name
-    The name to register the marketplace under. This is the key property.
+    The actual marketplace name declared in the source's marketplace.json and
+    shown by 'copilot plugin marketplace list'. This is the key property used by
+    Test() and Get(), not a custom alias or a name derived from Repository.
+    If it differs from the source's identity, Test() remains false after Set().
 
 .PROPERTY Repository
-    The GitHub repository hosting the marketplace (owner/repo format).
+    The marketplace source (GitHub owner/repo, URL, or local path). Passed
+    unchanged as the single source argument to 'copilot plugin marketplace add'.
 
 .PROPERTY Installed
     Read-only. Reports whether the marketplace is registered.
@@ -386,8 +671,10 @@ class CopilotPlugin {
     - name: Register a marketplace
       type: Shmuelie.Dsc/CopilotMarketplace
       properties:
-        Name: dotnet-skills
-        Repository: dotnet/skills
+        Name: team-tools
+        Repository: example-org/plugin-catalog
+
+    The source's marketplace.json must declare its name as 'team-tools'.
 #>
 [DscResource()]
 class CopilotMarketplace {
@@ -411,13 +698,14 @@ class CopilotMarketplace {
 
     [bool] Test() {
         $result = Invoke-DscCopilot -Arguments @('plugin', 'marketplace', 'list')
+        Assert-DscCliResult -Result $result -Operation 'Copilot marketplace discovery'
         return Test-DscListContainsToken -Lines $result.Output -Token $this.Name
     }
 
     [void] Set() {
         Assert-DscSafeArgument -Value $this.Name -Name 'Name'
         Assert-DscSafeArgument -Value $this.Repository -Name 'Repository'
-        $result = Invoke-DscCopilot -Arguments @('plugin', 'marketplace', 'add', $this.Name, $this.Repository)
+        $result = Invoke-DscCopilot -Arguments @('plugin', 'marketplace', 'add', $this.Repository)
         if ($result.ExitCode -ne 0) {
             throw "Failed to register Copilot marketplace '$($this.Name)': $($result.Output -join '; ')"
         }
@@ -432,6 +720,8 @@ class CopilotMarketplace {
     DSC resource that ensures a Python tool is installed via 'uv tool install'.
     Tests by checking whether the tool name appears as a whole token in
     'uv tool list' output.
+    Failed discovery or unknown native completion raises an error instead of
+    reporting the tool as installed or absent.
 
     Depends only on the public uv CLI on PATH.
 
@@ -465,6 +755,7 @@ class UvTool {
 
     [bool] Test() {
         $result = Invoke-DscUv -Arguments @('tool', 'list')
+        Assert-DscCliResult -Result $result -Operation 'uv tool discovery'
         return Test-DscListContainsToken -Lines $result.Output -Token $this.Name
     }
 

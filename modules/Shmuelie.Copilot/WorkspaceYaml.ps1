@@ -63,11 +63,36 @@ function ConvertFrom-CopilotWorkspaceFlowScalar {
     $trimmed
 }
 
-function ConvertFrom-CopilotWorkspaceBlockScalar {
+function Get-CopilotWorkspaceBlockScalarInfo {
     param(
         [Parameter(Mandatory)][AllowEmptyString()][string[]]$Lines,
         [Parameter(Mandatory)][int]$StartIndex,
         [Parameter(Mandatory)][int]$BaseIndent,
+        [AllowEmptyString()][string]$Value
+    )
+
+    $header = [regex]::Match($Value.Trim(), '^(?<style>[|>])(?<chomp>[-+]?)\s*(?:#.*)?$')
+    if (-not $header.Success) { return $null }
+
+    $endIndex = $StartIndex + 1
+    for (; $endIndex -lt $Lines.Count; $endIndex++) {
+        $line = $Lines[$endIndex]
+        if ($line -match '^[ \t]*$') { continue }
+        if ((Get-CopilotWorkspaceIndentLength $line) -le $BaseIndent) { break }
+    }
+
+    [PSCustomObject]@{
+        EndIndex = $endIndex
+        Style    = $header.Groups['style'].Value
+        Chomp    = $header.Groups['chomp'].Value
+    }
+}
+
+function ConvertFrom-CopilotWorkspaceBlockScalar {
+    param(
+        [Parameter(Mandatory)][AllowEmptyString()][string[]]$Lines,
+        [Parameter(Mandatory)][int]$StartIndex,
+        [Parameter(Mandatory)][int]$EndIndex,
         [Parameter(Mandatory)][ValidateSet('|', '>')][string]$Style,
         [string]$Chomp
     )
@@ -75,7 +100,7 @@ function ConvertFrom-CopilotWorkspaceBlockScalar {
     $blockLines = [System.Collections.Generic.List[string]]::new()
     $blockIndent = $null
 
-    for ($i = $StartIndex + 1; $i -lt $Lines.Count; $i++) {
+    for ($i = $StartIndex + 1; $i -lt $EndIndex; $i++) {
         $line = $Lines[$i]
         if ($line -match '^[ \t]*$') {
             $blockLines.Add('')
@@ -83,7 +108,6 @@ function ConvertFrom-CopilotWorkspaceBlockScalar {
         }
 
         $indent = Get-CopilotWorkspaceIndentLength $line
-        if ($indent -le $BaseIndent) { break }
         if ($null -eq $blockIndent) { $blockIndent = $indent }
 
         $remove = [Math]::Min($blockIndent, $line.Length)
@@ -120,15 +144,23 @@ function Find-CopilotWorkspaceFieldLine {
         [Parameter(Mandatory)][string]$Field
     )
 
-    $escapedField = [regex]::Escape($Field)
     for ($i = 0; $i -lt $Lines.Count; $i++) {
-        if ($Lines[$i] -match "^(?<indent>[ \t]*)$escapedField\s*:\s*(?<value>.*)$") {
+        $mapping = [regex]::Match($Lines[$i], '^(?<indent>[ \t]*)(?<field>[^:#]+?)\s*:\s*(?<value>.*)$')
+        if (-not $mapping.Success) { continue }
+
+        $indent = $mapping.Groups['indent'].Value
+        $value = $mapping.Groups['value'].Value
+        $block = Get-CopilotWorkspaceBlockScalarInfo -Lines $Lines -StartIndex $i -BaseIndent $indent.Length -Value $value
+        if ($mapping.Groups['field'].Value -eq $Field) {
             return [PSCustomObject]@{
                 Index  = $i
-                Indent = $Matches['indent']
-                Value  = $Matches['value']
+                Indent = $indent
+                Value  = $value
+                Block  = $block
             }
         }
+
+        if ($null -ne $block) { $i = $block.EndIndex - 1 }
     }
 
     $null
@@ -163,7 +195,10 @@ function Get-CopilotWorkspaceField {
         Parses the simple top-level workspace.yaml shape used by Copilot CLI
         session metadata. Supports plain scalars, single-quoted and
         double-quoted flow scalars, and literal or folded block scalars using
-        |, |-, >, or >-. The parser accepts either raw content or a path.
+        |, |-, >, or >-. Block bodies, including blank lines and mapping-looking
+        text, are not metadata fields. Accepts raw content or a path. This is
+        not a general YAML parser; explicit block indentation indicators and
+        nested mappings are outside the supported workspace shape.
 
     .PARAMETER Field
         The workspace.yaml field name to read.
@@ -204,14 +239,13 @@ function Get-CopilotWorkspaceField {
         $match = Find-CopilotWorkspaceFieldLine -Lines $lines -Field $Field
         if ($null -eq $match) { return $null }
 
-        $value = $match.Value.Trim()
-        if ($value -match '^(?<style>[|>])(?<chomp>[-+]?)\s*(?:#.*)?$') {
+        if ($null -ne $match.Block) {
             return ConvertFrom-CopilotWorkspaceBlockScalar `
                 -Lines $lines `
                 -StartIndex $match.Index `
-                -BaseIndent $match.Indent.Length `
-                -Style $Matches['style'] `
-                -Chomp $Matches['chomp']
+                -EndIndex $match.Block.EndIndex `
+                -Style $match.Block.Style `
+                -Chomp $match.Block.Chomp
         }
 
         ConvertFrom-CopilotWorkspaceFlowScalar $match.Value
@@ -226,7 +260,8 @@ function Set-CopilotWorkspaceField {
     .DESCRIPTION
         Replaces an existing workspace.yaml field while preserving the field's
         indentation and the file's dominant line ending. Existing block scalar
-        bodies are removed before the replacement is written. Single-line values
+        bodies are removed before the replacement is written; field-like text
+        inside other blocks is left untouched. Single-line values
         are emitted as plain scalars when safe and double-quoted otherwise;
         multi-line values are emitted as a literal block scalar.
 
@@ -277,17 +312,10 @@ function Set-CopilotWorkspaceField {
         $match = Find-CopilotWorkspaceFieldLine -Lines $lines -Field $Field
         if ($null -eq $match) { return $Content }
 
-        $endIndex = $match.Index + 1
-        if ($match.Value.Trim() -match '^[|>]') {
-            for (; $endIndex -lt $lines.Count; $endIndex++) {
-                $line = $lines[$endIndex]
-                if ($line -match '^[ \t]*$') { continue }
-                if ((Get-CopilotWorkspaceIndentLength $line) -le $match.Indent.Length) { break }
-            }
-        }
+        $endIndex = if ($null -ne $match.Block) { $match.Block.EndIndex } else { $match.Index + 1 }
 
         $scalar = ConvertTo-CopilotWorkspaceFlowScalar $Value
-        $replacement = "$($match.Indent)${Field}: $scalar" -replace "`n", $newLine
+        $replacement = "$($match.Indent)${Field}: $scalar".Replace("`n", "$newLine$($match.Indent)")
         $replacementLines = Split-CopilotWorkspaceLines $replacement
 
         $updatedLines = [System.Collections.Generic.List[string]]::new()

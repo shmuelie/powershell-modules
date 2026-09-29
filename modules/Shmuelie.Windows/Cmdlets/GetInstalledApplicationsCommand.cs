@@ -30,7 +30,8 @@ public sealed class GetInstalledApplicationsCommand : InstalledApplicationsComma
     private IHiveOperations HiveOps => TestHiveOperations ?? DefaultHiveOperations.Instance;
 
     /// <summary>
-    /// The scope of applications to query. Defaults to <c>GlobalAndAllUsers</c>.
+    /// The case-insensitive scope of applications to query.
+    /// Defaults to <c>GlobalAndAllUsers</c>.
     /// </summary>
     [Parameter(Position = 0)]
     [ValidateSet("Global", "GlobalAndCurrentUser", "GlobalAndAllUsers", "CurrentUser", "AllUsers")]
@@ -45,9 +46,10 @@ public sealed class GetInstalledApplicationsCommand : InstalledApplicationsComma
     /// <inheritdoc/>
     protected override void ProcessRecord()
     {
-        bool wantsGlobal = Scope is "Global" or "GlobalAndAllUsers" or "GlobalAndCurrentUser";
-        bool wantsCurrentUser = Scope is "CurrentUser" or "GlobalAndCurrentUser";
-        bool wantsAllUsers = Scope is "AllUsers" or "GlobalAndAllUsers";
+        string scope = Scope.ToUpperInvariant();
+        bool wantsGlobal = scope is "GLOBAL" or "GLOBALANDALLUSERS" or "GLOBALANDCURRENTUSER";
+        bool wantsCurrentUser = scope is "CURRENTUSER" or "GLOBALANDCURRENTUSER";
+        bool wantsAllUsers = scope is "ALLUSERS" or "GLOBALANDALLUSERS";
 
         // Mounting offline hives requires elevation. The preview (-WhatIf) path
         // performs no mount, so it does not require an elevated session.

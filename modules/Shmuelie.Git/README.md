@@ -2,7 +2,7 @@
 
 Git repository, worktree, status, completion, and PSReadLine prediction helpers.
 
-**Version:** 0.10.1
+**Version:** 0.10.3
 
 ## Install
 
@@ -16,7 +16,7 @@ Import-Module Shmuelie.Git
 | Command | Purpose |
 |---|---|
 | `New-Repository` | Clone a URL into a standard `<root>/<org>/<repo>/<branch>` layout (parses GitHub and Azure DevOps URLs) |
-| `Repair-RepositoryLayout` | Conform existing clones and worktrees to that layout |
+| `Repair-RepositoryLayout` | Conform existing clones and worktrees to that layout; standalone renames skip occupied exact destinations |
 | `Sync-GitRemote` | Fetch all remotes for the current or `-Path` repository with pruning, returning typed results; picks the right `gh` account per host (github.com/GHE) when several are signed in |
 | `Get-Worktrees` | List worktrees for the current or `-Path` repository |
 | `Get-Branch` | List local and cached remote-tracking refs as `GitBranch` objects, with current branch, commit, upstream, ahead/behind counts and symbolic target (`-Local` / `-Remote` filter the results; never fetches) |
@@ -31,11 +31,11 @@ Import-Module Shmuelie.Git
 | `Remove-StaleWorktree` | Prune stale worktree administrative entries for deleted worktree directories |
 | `Repair-Worktree` | Repair worktree links after a repository or worktree move |
 | `Lock-Worktree` / `Unlock-Worktree` | Lock or unlock a worktree by branch name |
-| `Update-Worktrees` | Fast-forward every worktree for the current or `-Path` repository from upstream (`-ChangedOnly` emits only actionable results; forwards the `Sync-GitRemote` GitHub-account options to the fetch) |
+| `Update-Worktrees` | Fast-forward every worktree for the current or `-Path` repository from upstream, restoring only its own saved changes (`-ChangedOnly` emits only actionable results; forwards the `Sync-GitRemote` GitHub-account options to the fetch) |
 | `Update-AllWorktrees` | Discover repositories under `$env:SOURCE_REPOS` or a supplied `-Path` root and update each repository in parallel (`-ChangedOnly` displays actionable results as wrapping multiline details) |
 | `Find-StaleBranch` | Find local branches in the current or `-Path` repository whose upstream branch is gone (`-IncludeNeverPushed` also includes local-only branches) |
 | `Remove-Branch` | Delete an exact local branch (`-Force` permits unmerged deletion) or a remote branch with `-Remote -RemoteName origin`; high-impact confirmation and `-WhatIf` protect every deletion |
-| `Get-GitStatusSummary` | Parse `git status` for the current or `-Path` repository into a typed object (branch, ahead/behind, conflicts, stash, operation) |
+| `Get-GitStatusSummary` | Parse `git status` for the current or `-Path` repository into a typed object (branch, ahead/behind, tracked changes including type changes, conflicts, stash, operation) |
 | `Get-GitTag` | Inspect local annotated/lightweight tags as typed objects, with case-sensitive exact/wildcard `-Name` filtering and standard repository `-Path` input; never fetches |
 | `Save-GitStash` | Save tracked changes with `git stash push`; opt into `-KeepIndex`, `-IncludeUntracked` or `-All`, and a literal `-Message`; supports pipeline repository paths and `-WhatIf`/`-Confirm` |
 | `Set-Branch` | Switch an existing working tree to a local branch; `-CreateNew` creates at HEAD, `-Track` creates from a remote-tracking branch, and `-Force` explicitly discards local changes; supports `-Path`, `-WhatIf` and `-Confirm` |
@@ -55,8 +55,27 @@ plugin prediction to use it:
 Set-PSReadLineOption -PredictionSource HistoryAndPlugin -PredictionViewStyle ListView
 ```
 
+Removing or force-reimporting the module cleans up only its own idle subscription
+and action job, preserving other idle handlers, event subscribers and jobs. A
+predictor binary imported by this module is removed with it; an already registered
+predictor owned by the caller is left loaded and registered.
+
 Suggestions use substring (not prefix) matching, so a middle fragment like `wim`
-surfaces `user/alex/wim-work`.
+surfaces `user/alex/wim-work`. The typed command, flags and casing are preserved.
+Branch names are emitted as one literal PowerShell argument: ordinary bare names
+stay unchanged, while names needing quotes are single-quoted with embedded quotes
+escaped. For example, `feature/quote'branch` is suggested as
+`'feature/quote''branch'`, and `$` in a branch name stays literal.
+
+## Native Git tab completion
+
+Importing the module registers context-aware argument completion for `git`.
+File paths, refs and other values containing PowerShell-sensitive characters
+are inserted as single-quoted literal arguments, with embedded apostrophes
+escaped. Spaces, dollar signs and backticks remain part of the value rather than
+splitting arguments or introducing PowerShell expressions. Completion lists still
+display the original names; simple names and option completions remain unquoted.
+Completion only queries Git and never executes the suggested command.
 
 ## Worktree creation: navigation and migration
 
@@ -157,6 +176,22 @@ exactly one `--force` to `git worktree remove`; it does not suppress confirmatio
 or retry a failure with additional force. A failed removal always keeps the branch.
 
 ### Other command behavior
+
+`Repair-RepositoryLayout` skips a standalone main-clone rename when the exact
+destination already exists, whether it is an empty directory, a populated
+directory, a file or another repository. It returns `Skipped-TargetExists` with
+the planned `From` and `To`, leaving both paths unchanged; `-WhatIf` reports the
+same skip. Unoccupied destinations retain the normal preview and confirmation.
+The move treats `To` as the exact new root, never as a directory container.
+Failed moves retain the existing `rename-failed` action and `Error:` status.
+There is no cross-filesystem copy fallback or coordination with concurrent
+filesystem writers.
+
+`Get-GitStatusSummary` counts tracked type changes (`T`, such as a regular file
+becoming a symbolic link) as `IndexModified` and/or `WorkingModified`. A path
+with `TT` contributes one modification to each column. These counts set
+`HasChanges` and appear in the existing `~` modification totals in `StatusString`
+and `Format-GitStatusSegment`; no separate type-change properties are added.
 
 `Remove-Branch` accepts an exact branch name or `refs/heads/<name>`, not wildcard
 patterns, revision expressions or remote-tracking refs. It uses Git's safe local
@@ -325,6 +360,21 @@ multi-path restore can leave partial changes and is not automatically rolled bac
 operation, returning `Status = 'InProgress'` with the existing operation string
 (for example `MERGING` or `REBASE-i 1/3`) instead of stashing or fast-forwarding
 them.
+
+For dirty worktrees, `Update-Worktrees` uses `Save-GitStash` to capture a newly
+created stash identity, then applies that exact object after the fast-forward
+attempt. It drops the restored entry only if it is still the newest stash.
+Existing unrelated stashes are never used as a fallback. When a successful push
+creates no stash (such as submodule-only changes), the worktree is skipped with
+`Status = 'StashFailed'`, `Stashed = $false`, and a warning; neither its branch
+nor the pre-existing stash stack is changed.
+
+Apply conflicts retain the saved stash and report `PopFailed = $true`. If the
+stack changes before cleanup, the captured object is restored but no stash is
+dropped; a warning and `PopFailed = $true` indicate manual cleanup is needed.
+Dirty worktrees remain sequential. Avoid concurrent stash writers in any linked
+worktree while updating: the identity reads and verified drop are not atomic
+with other Git processes.
 
 `Update-Worktrees -ChangedOnly` returns only `WorktreeUpdateResult` objects with
 status `Updated`, `Removed`, `Failed`, or `StashFailed`, matching the actionable

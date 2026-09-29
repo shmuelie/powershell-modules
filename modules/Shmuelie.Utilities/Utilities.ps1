@@ -158,8 +158,11 @@ function Invoke-InLocation {
     Invoke a script with a given current location
     .DESCRIPTION
     The script is run with the chosen location and will return to the current location after, even if the script is interrupted.
+    Only existing containers are accepted. If entering the location fails, the script
+    is not run, even under ErrorAction Continue. Cleanup follows successful entry.
     .PARAMETER Location
-    The location to change to before running the script.
+    The existing container to enter before running the script. Accepts provider paths
+    and wildcards supported by Push-Location; the path must resolve to one location.
     .PARAMETER ScriptBlock
     The script to run in the location
     .EXAMPLE
@@ -168,19 +171,21 @@ function Invoke-InLocation {
     [CmdletBinding()]
     param(
         [Alias('Path')]
-        [ValidateScript({ Test-Path $_ })]
+        [ValidateScript({ Test-Path -Path $_ -PathType Container })]
         [string]$Location,
         [Alias('Process')]
         [scriptblock]$ScriptBlock
     )
     begin {
-        Push-Location -Path $Location
+        $locationPushed = $false
+        Push-Location -Path $Location -ErrorAction Stop
+        $locationPushed = $true
     }
     process {
         & $ScriptBlock
     }
     clean {
-        Pop-Location
+        if ($locationPushed) { Pop-Location }
     }
 }
 

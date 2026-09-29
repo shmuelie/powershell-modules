@@ -3,7 +3,7 @@
 GitHub Copilot CLI session, plugin, marketplace, and MCP helpers, plus the
 `Start-Copilot` launcher. Depends only on the public `copilot` executable.
 
-**Version:** 0.4.0
+**Version:** 0.6.0
 
 ## Install
 
@@ -17,12 +17,36 @@ Start-Copilot
 
 | Area | Commands |
 |---|---|
-| Launcher | `Start-Copilot`, `Get-CopilotLaunchPlan` (optional `-SessionSelector`) |
-| Sessions | `Get-CopilotSession` / `Select-CopilotSession` (composable metadata and age filters; optional `-SessionSelector` on selection), `Resume-CopilotSession`, `Rename-CopilotSession`, `Remove-CopilotSession` |
+| Launcher | `Start-Copilot`, `Get-CopilotLaunchPlan` (directory-aware planning with `-ChangeDir` / `-C`; native host choices; optional `-SessionSelector`) |
+| Sessions | `Get-CopilotSession` / `Select-CopilotSession` (composable metadata and age filters; native host choices or `-SessionSelector` on selection), `Resume-CopilotSession`, `Rename-CopilotSession`, `Remove-CopilotSession` |
 | Session maintenance | `Merge-CopilotSession`, `Compress-CopilotSession`, `Repair-CopilotSessionEvents` |
 | Plugins | `Get-CopilotPlugin`, `Install-CopilotPlugin`, `Update-CopilotPlugin`, `Uninstall-CopilotPlugin` |
 | Marketplaces | `Get-CopilotMarketplace`, `Register-CopilotMarketplace`, `Unregister-CopilotMarketplace`, `Get-CopilotMarketplacePlugin` |
 | MCP servers | `Get-CopilotMcpServer`, `Register-CopilotMcpServer`, `Unregister-CopilotMcpServer` (registration/removal protect symlink-managed configuration) |
+
+`Get-CopilotPlugin`, `Get-CopilotMarketplace`, and `Get-CopilotMarketplacePlugin`
+check the native exit code before parsing output. A failed discovery emits a
+PowerShell error containing the exit code and CLI diagnostics, with no objects
+from that invocation; use `-ErrorAction Stop` to terminate a pipeline. Missing or
+invalid native completion evidence is a failure, not a successful empty list. Successful
+empty inventories emit neither objects nor errors. Discovery preserves the
+caller's `$LASTEXITCODE` and console encoding. `Install-CopilotPlugin` and
+`Register-CopilotMarketplace` terminate if their existing-item discovery fails,
+even under `-ErrorAction Continue`, rather than proceeding with a mutation.
+
+Compression and file-backed event repair require a successful `.bak` backup before
+rewriting events, unless `-NoBackup` is explicitly supplied. Backup copies are
+staged beside the event file before replacing the prior backup. A failed backup
+stops the operation even under `-ErrorAction Continue`, before event rewriting or
+compression's snapshot pruning; the original events and prior backup remain.
+
+`Repair-CopilotSessionEvents` removes empty-ID events and tool completions with
+`model: unknown` before relocating out-of-order tool events. Rejected completions
+do not count as completed requests; the existing missing-completion policy
+generates a replacement when a following turn-end event is available. Valid
+events retain their raw lines and fields, and a second repair preserves the
+generated completion rather than duplicating it. Use `-EventLines` for in-memory
+repair without reading or writing session files.
 
 ## Start-Copilot
 
@@ -32,6 +56,16 @@ Start-Copilot
   automatically, multiple sessions show a picker, and a lone named session
   auto-resumes. Control it with `-NoResume`, `-ResumeLatest`, `-ResumeSession`,
   `-NoAutoResume`, and `-IncludeUnnamed`.
+- **Effective launch directory** via `-ChangeDir` (alias `-C`) on both
+  `Start-Copilot` and `Get-CopilotLaunchPlan`. Session candidates, branch
+  preference, selectors, and MCP path policy use that directory, including
+  `-PassThru` and `-WhatIf`. Relative paths resolve from the caller's location;
+  the target must be an existing filesystem directory (literal paths, including
+  spaces and brackets, are supported). Planning restores the caller's location
+  before returning, confirmation, or execution, including on errors. Normal
+  plans forward one absolute native `-C` path, avoiding a second relative
+  directory change. Explicit resume, selection bypasses, and help/update
+  passthrough arguments are unchanged.
 - **Sensible defaults** (`--allow-all --experimental`), each disablable with
   `-NoAllowAll` / `-NoExperimental`. Use `-AllowAllTools` for a middle ground
   that auto-approves tools while keeping file-path and URL verification.
@@ -60,6 +94,7 @@ Start-Copilot
 Start-Copilot "Add unit tests for the auth module"
 Start-Copilot -Model claude-opus-4.7 -ReasoningEffort high
 Start-Copilot -ResumeLatest
+Start-Copilot -C ..\another-repo -ResumeLatest
 Start-Copilot -NoResume -WhatIf   # preview the command line without launching
 ```
 
@@ -113,14 +148,50 @@ deny-tool rules, passthrough arguments, and all other launch flags remain intact
 Returning null is **not** a request to abort a new launch; throw an exception if
 your launch selector must cancel the entire operation.
 
-Without a custom callback, the launcher still uses its numbered `[N] New session`
-picker; `Select-CopilotSession` still prefers `Out-ConsoleGridView`, then
-`Out-GridView`, then its numbered `[Q] Cancel` picker. Built-in pickers reject
-unavailable interactive input (including redirected ConsoleHost input), and host
-prompt errors, such as PowerShell `-NonInteractive`, terminate without fallback.
-The module does not inspect or read the console before invoking custom callbacks,
-so they can select deterministically in noninteractive hosts. Callbacks that
-implement a UI own its requirements.
+Without a custom callback, both pickers use the active PowerShell host's
+`PSHostUserInterface.PromptForChoice`, without grid dependencies or console input
+loops. The host renders and handles the choices, including in hosts without a
+conventional console. Actual choice labels contain a selection key and the
+existing normalized `Summary` (name, legacy summary, or unnamed placeholder),
+without a separate duplicate list in the prompt message. Each displayed name is
+capped at **80 Unicode text elements**, including `...` when truncated;
+surrogate pairs and combining sequences remain
+intact. Keys and branch suffixes are outside the cap. Branches appear only
+beside duplicated displayed names, including truncation/sanitization collisions,
+and only when available. Duplicates are detected across all pages, so branch
+suffixes do not change when navigating.
+
+Each page contains **up to 22 sessions**, with unique keys
+`A B D E F G H I J K L O Q R S T U V W X Y Z`. ConsoleHost displays choices such as
+`[A] A - Fix Git completion quoting`; enter `A` to select that session.
+`M` selects **Next page**, and `P` selects **Previous page**, when available.
+The message gives the current page and session range. Every candidate remains
+reachable; keys are reused only on another page, and always map to the exact
+original session rather than its displayed name. Identical names and branches
+therefore remain unambiguous.
+
+`C` is reserved for global **Cancel** and `N` for launcher **New session**;
+the appropriate action appears on every page. Navigation and action keys are
+never assigned to sessions. Session labels put the assigned accelerator before
+the name, so literal ampersands in names/branches cannot become ConsoleHost
+hotkeys and remain visible as data. Choice help (`?` in ConsoleHost) contains
+the full, untruncated normalized name, exact ID, repository, branch, working
+directory, update timestamp, and event count when available. Terminal control
+characters and Unicode line/paragraph separators in names and branches are
+replaced with spaces in labels and help; ordinary Unicode is preserved.
+
+There is **no default choice** (`defaultChoice = -1`); blank input is not an
+implicit resume or new-session request. `Select-CopilotSession` offers **Cancel**
+to return without launching; the launcher offers **New session** to continue
+without resuming. Unsupported/unavailable prompting, host exceptions (including
+noninteractive input errors), and out-of-range responses terminate without a
+fallback UI or launch. Supply `-SessionSelector` or an explicit selection/bypass
+parameter when prompting is unavailable. Callbacks own any UI they use and still
+work without console access.
+
+Selection is separate from confirmation: `-Confirm`, `$ConfirmPreference`, and
+`-WhatIf` retain PowerShell's standard `ShouldProcess` behavior. Previews do not
+open either the native picker or a custom selector.
 
 ## Session discovery and cleanup
 
@@ -136,6 +207,17 @@ characters in literal paths must be escaped with a PowerShell backtick.
 Missing or empty Repository, Branch, or Cwd does not match even `'*'`.
 Summary matches the displayed value: `name`, then legacy `summary`, then
 `'(no summary)'` for unnamed sessions.
+
+Workspace metadata readers and writers share block boundaries: field-looking
+text inside a literal (`|`, `|-`) or folded (`>`, `>-`) scalar remains text,
+not session metadata. Renaming preserves the full multiline name and summary
+in `workspace.yaml`, without changing the recorded branch, working directory,
+or timestamps; discovery retains its existing first-line display-name behavior.
+Rewrites target only the actual field, retaining its indentation and the file's
+line-ending style. These helpers handle the CLI's simple flat workspace shape,
+not general YAML: existing `+` headers and header comments are recognized, but
+explicit indentation indicators, nested mappings, and full YAML
+folding/chomping semantics are not supported.
 
 | Date filter | Meaning |
 |---|---|
@@ -168,6 +250,53 @@ Cleanup remains an explicit pipeline into `Remove-CopilotSession`: discovery
 never deletes anything, and removal re-resolves each ID rather than trusting
 the pipeline object's Path.
 
+## Session merge failure handling
+
+`Merge-CopilotSession` checks artifact paths in `files`, `research`, and
+`rewind-snapshots/backups` before creating the destination. Differing-content
+files and file/directory conflicts terminate the merge and leave all sources
+unchanged.
+Paths are compared case-insensitively. Overlapping regular files are allowed when
+their SHA-256 hashes match, preserving harmless identical-content copies at the
+same relative path. Differing contents, read/hash failures, and invalid hash
+results abort the merge. It does not rename artifacts or rewrite references.
+
+Shared directories may merge when their descendants do not conflict. Names are
+handled literally, including wildcard characters; hidden artifacts and nested
+rewind backup directories are included. Symbolic links and other reparse points
+are rejected rather than followed. Optional artifact directories may be absent.
+`-WhatIf` previews the merge without performing artifact inspection or copying.
+
+`Merge-CopilotSession` stops on required source-read or destination
+create/copy/write/repair failures, even with `-ErrorAction Continue`. A failure
+during destination construction leaves all source sessions intact and triggers
+cleanup of only the partial destination. If cleanup also fails, a warning
+identifies the remaining destination without replacing the original error.
+
+`-RemoveSource` remains opt-in and starts only after destination construction,
+repair, and read-back complete without errors. `-WhatIf` creates or removes
+nothing. Merge failure handling does not change the caller's error-action
+preference.
+
+### Checkpoint bodies
+
+Checkpoint files are copied with their existing relative paths, including nested
+and unindexed files. The root `checkpoints/index.md` is generated from the source
+indexes rather than copied, so it is excluded from body collisions; checkpoint
+bodies still use the same differing-content/type conflict policy.
+
+The supported index is the existing `# | Title | File` Markdown table, with a
+plain relative file path in each numbered row's File column. Only row numbers are
+renumbered; titles and file references are preserved. Markdown-link file syntax,
+rooted/parent-traversal/drive-qualified paths, components ending in dots or spaces,
+references to the generated index, missing bodies, non-file bodies, and links are
+rejected. Unsupported table rows or index formats also fail explicitly.
+
+Before source removal, the generated index is read back, each retained reference
+must resolve to a regular destination file, and all checkpoint entries (including
+unindexed files) must be present. Copied content is checked against the sources
+using the shared SHA-256 collision validation.
+
 ## MCP configuration management
 
 `Register-CopilotMcpServer` and `Unregister-CopilotMcpServer` delegate to the
@@ -195,7 +324,7 @@ interpreted by `Start-Copilot`, not by `copilot` itself.
 |---|---|
 | `true` or omitted | Server is always enabled. |
 | `false` | Left to the CLI's native lazy/dormant handling (not force-disabled). |
-| `["glob", ...]` | Enabled **only** when the current directory matches one of the path globs; otherwise disabled for this launch. |
+| `["glob", ...]` | Enabled **only** when the effective launch directory (`-ChangeDir` / `-C`, or the current directory when omitted) matches one of the path globs; otherwise disabled for this launch. |
 
 The path-glob form is useful for MCP servers that are only relevant in certain
 repositories. For example, a server configured with

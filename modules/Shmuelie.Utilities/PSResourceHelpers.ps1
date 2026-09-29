@@ -170,9 +170,13 @@ function Get-InstalledPSResourceInfoInPath {
         if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) { continue }
 
         $metadata = Get-PSResourceMetadata -Directory $versionDirectory.FullName
-        # The directory carries only the numeric version for prerelease saves.
-        # Keep it as the fallback so dynamic manifests remain discoverable.
-        $version = ConvertTo-PSResourceVersion -Resource $metadata -FallbackVersion $versionDirectory.Name
+        $version = ConvertTo-PSResourceVersion -Resource $metadata
+        $directoryVersion = $null
+        if ($null -eq $version) {
+            $directoryVersion = ConvertTo-PSResourceVersion -Resource $metadata -FallbackVersion $versionDirectory.Name
+            # XML can store just a prerelease label alongside a numeric directory.
+            if ($directoryVersion -and $directoryVersion.IsPrerelease) { $version = $directoryVersion }
+        }
 
         if ($null -eq $version) {
             try {
@@ -188,6 +192,8 @@ function Get-InstalledPSResourceInfoInPath {
                 Write-Verbose "Could not read module version from '$manifestPath': $_"
             }
         }
+        # A stable directory fallback must not mask a readable manifest's label.
+        if ($null -eq $version) { $version = $directoryVersion }
         if ($null -eq $version) {
             Write-Warning "Could not determine module version from '$versionDirectory' or '$manifestPath'; skipping this version."
             continue
@@ -356,6 +362,10 @@ function Update-InstalledPSResource {
         than beta.2); a stable release is newer than a prerelease with the same
         numeric version. Stable installations stay on stable releases. Older
         versions can supply missing repository provenance, but not prerelease state.
+        When XML metadata cannot supply a version, readable manifests provide
+        ModuleVersion and PrivateData.PSData.Prerelease before a stable numeric
+        directory fallback is used. Recoverable XML versions retain precedence;
+        unreadable or dynamic manifests still permit directory-based discovery.
 
         Use -Name and -Exclude wildcard filters to select managed modules and skip
         local/product-owned modules without repository lookup warnings.

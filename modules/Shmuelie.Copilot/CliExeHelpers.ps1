@@ -1,8 +1,8 @@
 # Shared helper for the Copilot CLI cmdlets.
 #
-# Resolve-CliExe is the single place that resolves the copilot executable. The
-# Copilot cmdlets own their `copilot plugin ...` / `copilot plugin marketplace
-# ...` calls inline in Plugins.ps1 / Marketplaces.ps1.
+# Resolve-CliExe is the single place that resolves the copilot executable.
+# Discovery uses Invoke-CopilotDiscovery to check native status before parsing.
+# Mutating commands own their calls in Plugins.ps1 / Marketplaces.ps1.
 
 function Resolve-CliExe {
     <#
@@ -60,6 +60,51 @@ function Invoke-WithUtf8Console {
             }
         }
     }
+}
+
+function Invoke-CopilotDiscovery {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string[]]$Arguments
+    )
+
+    $exe = Resolve-CliExe -Name copilot
+    $previousExitCode = Get-Variable -Name LASTEXITCODE -Scope Global -ErrorAction Ignore
+    $previousExitCodeValue = if ($previousExitCode) { $previousExitCode.Value }
+    try {
+        $global:LASTEXITCODE = $null
+        $result = Invoke-WithUtf8Console {
+            # Report one error with the complete diagnostics, regardless of the native preference.
+            $PSNativeCommandUseErrorActionPreference = $false
+            $ErrorActionPreference = 'Stop'
+            $output = @(& $exe @Arguments 2>&1)
+            $exitCode = $global:LASTEXITCODE
+            [pscustomobject]@{
+                ExitCode = $exitCode
+                Output   = $output
+            }
+        }
+    } finally {
+        if ($previousExitCode) {
+            $global:LASTEXITCODE = $previousExitCodeValue
+        } else {
+            Remove-Variable -Name LASTEXITCODE -Scope Global -WhatIf:$false -Confirm:$false
+        }
+    }
+
+    if ($result.ExitCode -isnot [int] -or $result.ExitCode -ne 0) {
+        $diagnostics = ($result.Output | ForEach-Object { "$_" }) -join [Environment]::NewLine
+        $status = if ($result.ExitCode -is [int]) { "exit code $($result.ExitCode)" } else { 'an unknown native exit status' }
+        $message = "copilot $($Arguments -join ' ') failed with $status."
+        if ($diagnostics) {
+            $message += [Environment]::NewLine + $diagnostics
+        }
+        Write-Error -Message $message -ErrorId CopilotDiscoveryFailed -Category InvalidOperation -TargetObject $result
+        return
+    }
+
+    $result.Output
 }
 
 function Test-CopilotShimArgument {

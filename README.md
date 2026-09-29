@@ -31,6 +31,9 @@ Install-PSResource Shmuelie.PackageManagement
 
 ## Documentation
 
+- [Unpublished AppInstallManager development](experimental/Shmuelie.AppInstall.Experimental/README.md)
+  is separate from the supported module catalog; its support and release hold
+  remains in effect.
 - [Overview](docs/index.md)
 - [Modules](docs/modules.md)
 - [Installation & build](docs/installation.md)

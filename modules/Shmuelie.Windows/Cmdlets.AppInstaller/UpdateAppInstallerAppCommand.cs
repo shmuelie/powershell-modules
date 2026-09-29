@@ -10,14 +10,21 @@ namespace Shmuelie.Windows.Cmdlets;
 /// <remarks>
 /// Discovers apps installed from <c>.appinstaller</c> files and re-registers
 /// their App Installer URI through the in-process WinRT <c>PackageManager</c>
-/// API (the equivalent of <c>Add-AppxPackage -AppInstallerFile</c>) to trigger
-/// an update check. Pass one or more package names, full names, or family names
-/// to update specific apps; when no name is provided, every discovered App
-/// Installer app is updated. Objects from <c>Get-AppInstallerApp</c> can be
-/// piped in by property name. Windows only.
+/// API to trigger an update check. All supported builds use
+/// AddPackageByAppInstallerFileAsync with AddPackageByAppInstallerOptions.None
+/// and the original App Installer URI. In-use errors remain explicit; the
+/// command does not request deferred registration. No application is implicitly
+/// force-closed or restarted, and failed requests are not retried with other options.
+/// Pass one or more package names, full names, or family names
+/// to update specific apps. A standalone invocation without a name updates
+/// every discovered App Installer app. An empty pipeline updates nothing.
+/// Objects from <c>Get-AppInstallerApp</c> can be piped in by property name;
+/// null, empty, and whitespace-only identities are rejected. Windows only.
 /// With <c>-PassThru</c>, emits a request-completion result only after the
 /// App Installer operation completes. This does not establish that an
-/// installed package version changed. Without <c>-PassThru</c>, emits nothing.
+/// installed package version changed or that registration was deferred.
+/// Completion does not mean the running app was upgraded. Without
+/// <c>-PassThru</c>, emits nothing.
 /// </remarks>
 [Cmdlet(VerbsData.Update, "AppInstallerApp", SupportsShouldProcess = true)]
 [OutputType(typeof(AppInstallerUpdateRequestResult))]
@@ -26,12 +33,14 @@ public sealed class UpdateAppInstallerAppCommand : AppInstallerCommandBase
 {
     /// <summary>
     /// Package identity name, package full name, or package family name to
-    /// update. Accepts pipeline input by property name. When omitted, every
-    /// discovered App Installer app is updated.
+    /// update. Accepts pipeline input by property name. When omitted from a
+    /// standalone invocation, every discovered App Installer app is updated.
+    /// Empty pipelines do not select any apps. Supplied identities must not be
+    /// null, empty, or whitespace-only.
     /// </summary>
     [Parameter(Position = 0, ValueFromPipelineByPropertyName = true)]
     [Alias("PackageName", "PackageFullName", "PackageFamilyName")]
-    [ValidateNotNullOrEmpty]
+    [ValidateNotNullOrWhiteSpace]
     public string[]? Name { get; set; }
 
     /// <summary>
@@ -43,6 +52,7 @@ public sealed class UpdateAppInstallerAppCommand : AppInstallerCommandBase
     public SwitchParameter PassThru { get; set; }
 
     private readonly List<string> _requestedNames = new();
+    private bool _updateAll;
     private readonly Func<IReadOnlyList<AppInstallerApplication>> _getApplications;
     private readonly Action<string> _update;
 
@@ -73,21 +83,22 @@ public sealed class UpdateAppInstallerAppCommand : AppInstallerCommandBase
     {
         if (Name is null)
         {
+            _updateAll = !MyInvocation.ExpectingInput;
             return;
         }
 
-        foreach (string name in Name)
-        {
-            if (!string.IsNullOrWhiteSpace(name))
-            {
-                _requestedNames.Add(name);
-            }
-        }
+        _requestedNames.AddRange(Name);
     }
 
     /// <inheritdoc/>
     protected override void EndProcessing()
     {
+        // EndProcessing also runs after an empty pipeline or failed input binding.
+        if (!_updateAll && _requestedNames.Count == 0)
+        {
+            return;
+        }
+
         IReadOnlyList<AppInstallerApplication> apps = _getApplications();
 
         foreach (AppInstallerApplication app in AppInstallerHelpers.FilterByNames(apps, _requestedNames))

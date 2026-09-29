@@ -11,6 +11,19 @@ Versions change only when a release is cut; unreleased work stays under
   canonical native-failure reporting from Shmuelie.DotNet, preserving errors and
   `-ErrorAction Stop` without duplicate confirmation.
 
+## [0.6.1] - 2026-09-18
+
+### Fixed
+- Reject non-container `Invoke-InLocation` targets and stop before invoking the
+  callback if location entry fails, even under `Continue`. Pair cleanup only with
+  successful entry while preserving streaming output, callback-error cleanup,
+  and early downstream termination.
+- Recover readable manifest prerelease labels before treating numeric module
+  directories as stable when XML version metadata is missing or unreadable.
+  Preserve recoverable XML versions, repository provenance, and dynamic-manifest
+  fallback, so stable promotion and newer prereleases also report correctly
+  through the package-management adapter.
+
 ## [0.6.0] - 2026-09-10
 
 ### Added

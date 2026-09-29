@@ -3,7 +3,7 @@
 General developer utilities for PowerShell, .NET tools, Python packages, VS
 Code, terminal recovery, and general developer workflows.
 
-**Version:** 0.6.0
+**Version:** 0.6.1
 
 ## Install
 
@@ -55,8 +55,12 @@ results. They do not add their own confirmation or native-invocation layer.
 
 - `Reset-TerminalModes` recovers a terminal left in a bad state (mouse tracking,
   alternate screen, bracketed paste, kitty keyboard flags) by a crashed TUI.
-- `Invoke-InLocation` runs a script block in a location and always returns, even
-  on Ctrl+C.
+- `Invoke-InLocation` runs a script block only after entering an existing container.
+  Files and missing locations are rejected; entry failures stop before the callback,
+  even under `-ErrorAction Continue`. Relative, wildcard, and provider-qualified
+  paths retain `Push-Location -Path` semantics and must resolve to one location.
+  Successful entry is paired with cleanup on completion, callback errors, and early
+  downstream termination (including interruption); output remains streaming.
 - Tool helpers list and update .NET global tools, Python packages, uv tools, VS
   Code extensions, and PowerShell resources deployed with `Save-PSResource` to
   caller-supplied module paths (`Update-InstalledPSResource`). The PowerShell
@@ -71,6 +75,12 @@ results. They do not add their own confirmation or native-invocation layer.
   numeric version. The exact selected version is saved to the supplied path.
   A metadata-less newer version can inherit older repository provenance, but
   never the older version's prerelease state.
+  When XML metadata is missing, corrupt, or cannot supply a version, a readable
+  manifest supplies `ModuleVersion` and `PrivateData.PSData.Prerelease` before
+  its numeric directory can imply a stable version. Recoverable XML versions
+  (including a prerelease label completed by a numeric directory) retain
+  precedence. Numeric directories remain the fallback for unreadable or dynamic
+  manifests, so those layouts remain discoverable without evaluating script.
 
 ## Examples
 

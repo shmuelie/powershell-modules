@@ -18,20 +18,6 @@ if ($IsWindows) {
         Import-Module $appInstallerModule -Force -ErrorAction Stop
         $exportedCmdlets += 'Get-AppInstallerApp', 'Update-AppInstallerApp'
     }
-    $appInstallModule = Join-Path $PSScriptRoot 'bin' 'Shmuelie.Windows.AppInstall.dll'
-    if (Test-Path $appInstallModule) {
-        # Resolve the shipped projection in the same load context even when a
-        # consumer's assembly lives elsewhere. Loading is not native activation.
-        foreach ($dependency in 'WinRT.Runtime.dll', 'Microsoft.Windows.SDK.NET.dll') {
-            $dependencyPath = Join-Path $PSScriptRoot 'bin' $dependency
-            if (-not (Test-Path -LiteralPath $dependencyPath -PathType Leaf)) {
-                throw [System.IO.FileNotFoundException]::new("The AppInstall projection dependency '$dependency' is missing.", $dependencyPath)
-            }
-            [System.Reflection.Assembly]::LoadFrom($dependencyPath) | Out-Null
-        }
-        Import-Module $appInstallModule -Force -ErrorAction Stop
-        $exportedCmdlets += 'New-AppInstallContext', 'Get-AppInstallItem', 'Get-AppInstallSettings', 'Request-AppInstallUpdateSearch', 'Wait-AppInstallItem'
-    }
 }
 
 $exportParams = @{

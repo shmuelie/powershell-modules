@@ -1,6 +1,149 @@
 # Copilot session maintenance: merge, compact, and repair operations.
 # Split out of Sessions.ps1 to keep that file focused on basic session CRUD.
 
+function Assert-CopilotMergeArtifactPaths {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][object[]]$Session,
+        [Parameter(Mandatory)][string[]]$RelativeDirectory,
+        [string[]]$ExcludeRelativeFile = @(),
+        # The last session is the destination for complete read-back validation.
+        [switch]$RequireCompleteDestination
+    )
+
+    # Compare overlapping paths consistently, including case-only variants.
+    $seen = [System.Collections.Generic.Dictionary[string, object]]::new([StringComparer]::OrdinalIgnoreCase)
+    $excluded = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($file in $ExcludeRelativeFile) { [void]$excluded.Add(($file -split '[\\/]' -join [IO.Path]::DirectorySeparatorChar)) }
+    if ($RequireCompleteDestination -and $Session.Count -lt 2) {
+        throw 'Complete artifact validation requires source sessions followed by the destination session.'
+    }
+    $destinationPaths = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    $sessionNumber = 0
+    foreach ($source in $Session) {
+        $sessionNumber++
+        $sessionRoot = Get-Item -LiteralPath $source.Path -Force -ErrorAction Stop
+        if ($sessionRoot.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+            throw "Cannot inspect merge artifacts for session '$($source.Id)': '$($sessionRoot.FullName)' is a reparse point."
+        }
+        if (-not $sessionRoot.PSIsContainer) {
+            throw "Cannot inspect merge artifacts for session '$($source.Id)': the session path is not a directory."
+        }
+
+        foreach ($directory in $RelativeDirectory) {
+            $parts = $directory -split '[\\/]'
+            if ([IO.Path]::IsPathRooted($directory) -or '' -in $parts -or '.' -in $parts -or '..' -in $parts) {
+                throw "Invalid relative artifact directory '$directory'."
+            }
+            $root = $sessionRoot
+            foreach ($part in $parts) {
+                $path = Join-Path $root.FullName $part
+                if (-not (Test-Path -LiteralPath $path -ErrorAction Stop)) {
+                    $root = $null
+                    break
+                }
+                $root = Get-Item -LiteralPath $path -Force -ErrorAction Stop
+                if ($root.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+                    throw "Cannot inspect merge artifact '$($root.FullName)': it is a reparse point."
+                }
+                if (-not $root.PSIsContainer) {
+                    throw "Cannot inspect merge artifact directory '$($root.FullName)': it is not a directory."
+                }
+            }
+            if ($null -eq $root) { continue }
+
+            $pending = [System.Collections.Generic.Stack[string]]::new()
+            $pending.Push($root.FullName)
+            while ($pending.Count -gt 0) {
+                # Inspect links before descending; recursive enumeration may follow junctions.
+                foreach ($entry in (Get-ChildItem -LiteralPath $pending.Pop() -Force -ErrorAction Stop)) {
+                    if ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+                        throw "Cannot inspect merge artifact '$($entry.FullName)': it is a reparse point."
+                    }
+                    $relativePath = [IO.Path]::GetRelativePath($sessionRoot.FullName, $entry.FullName)
+                    if (-not $entry.PSIsContainer -and $excluded.Contains($relativePath)) { continue }
+                    if ($RequireCompleteDestination -and $sessionNumber -eq $Session.Count) {
+                        [void]$destinationPaths.Add($relativePath)
+                    }
+                    if ($seen.ContainsKey($relativePath)) {
+                        $previous = $seen[$relativePath]
+                        $compatible = $previous.Directory -and $entry.PSIsContainer
+                        if (-not $previous.Directory -and -not $entry.PSIsContainer) {
+                            $hashes = @(
+                                foreach ($filePath in @($previous.Path, $entry.FullName)) {
+                                    $file = Get-Item -LiteralPath $filePath -Force -ErrorAction Stop
+                                    if ($file -isnot [IO.FileInfo] -or $file.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+                                        throw "Cannot compare merge artifact '$filePath': it is not a regular file."
+                                    }
+                                    $hash = @(Get-FileHash -LiteralPath $filePath -Algorithm SHA256 -ErrorAction Stop)
+                                    if ($hash.Count -ne 1 -or $hash[0].Algorithm -ne 'SHA256' -or
+                                        $hash[0].Hash -isnot [string] -or $hash[0].Hash -notmatch '^[0-9a-fA-F]{64}$') {
+                                        throw "Cannot compare merge artifact '$filePath': SHA-256 hashing did not return a valid result."
+                                    }
+                                    $hash[0].Hash
+                                }
+                            )
+                            $compatible = $hashes[0] -eq $hashes[1]
+                        }
+                        if (-not $compatible) {
+                            throw "Merge artifact path conflict '$relativePath' between session '$($previous.SessionId)' ('$($previous.Path)') and session '$($source.Id)' ('$($entry.FullName)')."
+                        }
+                    } else {
+                        $seen.Add($relativePath, [pscustomobject]@{
+                            Directory = $entry.PSIsContainer
+                            SessionId = $source.Id
+                            Path = $entry.FullName
+                        })
+                    }
+                    if ($entry.PSIsContainer) { $pending.Push($entry.FullName) }
+                }
+            }
+        }
+    }
+    if ($RequireCompleteDestination) {
+        foreach ($relativePath in $seen.Keys) {
+            if (-not $destinationPaths.Contains($relativePath)) {
+                throw "Merged artifact '$relativePath' is missing from destination session '$($Session[-1].Id)'."
+            }
+        }
+    }
+}
+
+function Resolve-CopilotCheckpointBodyPath {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$CheckpointDirectory,
+        [Parameter(Mandatory)][string]$Reference
+    )
+
+    $parts = $Reference -split '[\\/]'
+    if ([IO.Path]::IsPathRooted($Reference) -or $Reference.Contains(':') -or
+        '' -in $parts -or '.' -in $parts -or '..' -in $parts -or
+        ($parts | Where-Object { $_.EndsWith('.') -or $_.EndsWith(' ') }) -or
+        $Reference -match '^\[.*\]\(.*\)$' -or
+        ($parts.Count -eq 1 -and $parts[0] -ieq 'index.md')) {
+        throw "Unsupported checkpoint body reference '$Reference': use a plain relative path beneath the checkpoints directory, not the merged index."
+    }
+
+    $item = Get-Item -LiteralPath $CheckpointDirectory -Force -ErrorAction Stop
+    if (-not $item.PSIsContainer -or $item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+        throw "Unsupported checkpoint directory '$CheckpointDirectory'."
+    }
+    foreach ($part in $parts) {
+        if (-not $item.PSIsContainer) { throw "Unsupported checkpoint body reference '$Reference': a parent path is not a directory." }
+        $path = Join-Path $item.FullName $part
+        if (-not (Test-Path -LiteralPath $path -ErrorAction Stop)) {
+            throw "Checkpoint body '$Reference' was not found beneath '$CheckpointDirectory'."
+        }
+        $item = Get-Item -LiteralPath $path -Force -ErrorAction Stop
+        if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+            throw "Unsupported checkpoint body reference '$Reference': '$path' is a reparse point."
+        }
+    }
+    if ($item -isnot [IO.FileInfo]) { throw "Checkpoint body '$Reference' is not a regular file." }
+    $item.FullName
+}
+
 function Merge-CopilotSession {
     <#
     .SYNOPSIS
@@ -14,9 +157,26 @@ function Merge-CopilotSession {
 
         The original sessions are preserved unless -RemoveSource is specified.
 
-        If the merge fails part-way through, the partially written destination
-        session is removed so no broken session is left behind, and the source
-        sessions are never removed unless the destination completes successfully.
+        Files, research, and rewind backup paths are checked before creating the
+        destination. Differing-content files or file/directory paths abort the
+        merge. Regular files at overlapping paths are allowed only when their
+        SHA-256 hashes match; comparison failures abort the merge. Shared
+        directories with compatible descendants are allowed. Artifact links and
+        reparse points are rejected rather than traversed. No artifacts are
+        automatically renamed and no references are rewritten.
+
+        Checkpoint bodies are copied alongside the merged index. The existing
+        three-column checkpoint table uses plain relative file paths; only its
+        checkpoint numbers are rewritten. Missing bodies, unsupported references,
+        conflicting bodies, or failed copy/read-back validation abort the merge.
+
+        Required source reads and destination operations fail the merge even with
+        -ErrorAction Continue. Source removal starts only after destination
+        creation, copying, writing, repair, and read-back complete without errors.
+
+        If destination construction fails, the source sessions are preserved and
+        cleanup of the partial destination is attempted. A cleanup failure is
+        reported as a warning without replacing the original terminating error.
 
     .PARAMETER Id
         Two or more session IDs to merge.
@@ -58,10 +218,9 @@ function Merge-CopilotSession {
     process {
         if ($PSCmdlet.ParameterSetName -eq 'ById') {
             foreach ($sid in $Id) {
-                $s = Get-CopilotSession -Id $sid
+                $s = Get-CopilotSession -Id $sid -ErrorAction Stop
                 if ($null -eq $s) {
-                    Write-Error "Session '$sid' not found."
-                    return
+                    Write-Error "Session '$sid' not found." -ErrorAction Stop
                 }
                 $collectedSessions.Add($s)
             }
@@ -98,8 +257,15 @@ function Merge-CopilotSession {
         # the merge does not leave a partial session directory behind.
         $newSessionPath = $null
         $mergeSucceeded = $false
+        $previousErrorActionPreference = $ErrorActionPreference
 
         try {
+        # Fail the entire destination build on normally nonterminating errors.
+        $ErrorActionPreference = 'Stop'
+
+        Assert-CopilotMergeArtifactPaths -Session $collectedSessions -RelativeDirectory @(
+            'files', 'research', (Join-Path 'rewind-snapshots' 'backups'), 'checkpoints'
+        ) -ExcludeRelativeFile (Join-Path 'checkpoints' 'index.md')
 
         # Use the most recently updated session for workspace metadata
         $primary = $collectedSessions | Sort-Object UpdatedAt -Descending | Select-Object -First 1
@@ -121,17 +287,20 @@ function Merge-CopilotSession {
         # (Global timestamp sorting breaks tool pairing when events share timestamps.)
         Write-Progress -Activity $activity -Status 'Merging conversation history' -PercentComplete 10 -Id 1
 
-        # Order sessions by their earliest event timestamp
-        $orderedSessions = $collectedSessions | Sort-Object { $_.UpdatedAt } | Sort-Object {
-            $eventsFile = Join-Path $_.Path 'events.jsonl'
+        # Read sort keys outside Sort-Object so read failures retain their error records.
+        $sessionOrder = foreach ($s in ($collectedSessions | Sort-Object UpdatedAt)) {
+            $firstEventTimestamp = $null
+            $eventsFile = Join-Path $s.Path 'events.jsonl'
             if (Test-Path $eventsFile) {
                 $firstLine = Get-Content $eventsFile -TotalCount 1
                 if ($firstLine) {
                     $evt = $firstLine | ConvertFrom-Json
-                    [DateTimeOffset]::Parse($evt.timestamp)
+                    $firstEventTimestamp = [DateTimeOffset]::Parse($evt.timestamp)
                 }
             }
+            [pscustomobject]@{ Session = $s; FirstEventTimestamp = $firstEventTimestamp }
         }
+        $orderedSessions = $sessionOrder | Sort-Object FirstEventTimestamp | Select-Object -ExpandProperty Session
 
         $newEventsFile = Join-Path $newSessionPath 'events.jsonl'
         $totalEvents = 0
@@ -187,12 +356,43 @@ function Merge-CopilotSession {
             '|---|-------|------|'
         )
         $checkpointRows = [System.Collections.Generic.List[string]]::new()
+        $checkpointReferences = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
         foreach ($s in ($collectedSessions | Sort-Object { $_.UpdatedAt })) {
-            $cpFile = Join-Path $s.Path 'checkpoints' 'index.md'
-            if (Test-Path $cpFile) {
-                Get-Content $cpFile | Where-Object { $_ -match '^\|\s*\d+' } | ForEach-Object {
-                    $checkpointRows.Add($_)
+            $checkpointDirectory = Join-Path $s.Path 'checkpoints'
+            $cpFile = Join-Path $checkpointDirectory 'index.md'
+            if (Test-Path -LiteralPath $cpFile) {
+                if ((Get-Item -LiteralPath $cpFile -Force) -isnot [IO.FileInfo]) {
+                    throw "Unsupported checkpoint index '$cpFile': expected a regular file."
                 }
+                $indexLines = @(Get-Content -LiteralPath $cpFile)
+                $recognizedIndex = $false
+                foreach ($line in $indexLines) {
+                    if ($line -match '^\|\s*#\s*\|\s*Title\s*\|\s*File\s*\|\s*$') {
+                        $recognizedIndex = $true
+                        continue
+                    }
+                    if ($line -match '^\|\s*:?-+:?\s*\|\s*:?-+:?\s*\|\s*:?-+:?\s*\|\s*$') { continue }
+                    if ($line -notmatch '^\s*\|') { continue }
+                    if ($line -notmatch '^\|\s*\d+\s*\|[^|]*\|(?<file>[^|]+)\|\s*$') {
+                        throw "Unsupported checkpoint index row in '$cpFile': expected '# | Title | File' with a plain file path."
+                    }
+                    $reference = $Matches['file'].Trim()
+                    if ([string]::IsNullOrWhiteSpace($reference)) {
+                        throw "Unsupported checkpoint index row in '$cpFile': the File path must not be empty."
+                    }
+                    Resolve-CopilotCheckpointBodyPath -CheckpointDirectory $checkpointDirectory -Reference $reference | Out-Null
+                    $checkpointRows.Add($line)
+                    [void]$checkpointReferences.Add($reference)
+                    $recognizedIndex = $true
+                }
+                if (-not $recognizedIndex -and ($indexLines | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })) {
+                    throw "Unsupported checkpoint index format in '$cpFile': expected a checkpoint table."
+                }
+            }
+            if (Test-Path -LiteralPath $checkpointDirectory) {
+                Get-ChildItem -LiteralPath $checkpointDirectory -Force |
+                    Where-Object Name -INE 'index.md' |
+                    Copy-Item -Destination (Join-Path $newSessionPath 'checkpoints') -Recurse -Force
             }
         }
         # Renumber checkpoints
@@ -202,7 +402,17 @@ function Merge-CopilotSession {
             $cpNumber++
             $_ -replace '^\|\s*\d+', "| $currentNumber"
         }
-        ($checkpointHeader + $renumbered) | Set-Content (Join-Path $newSessionPath 'checkpoints' 'index.md') -Encoding UTF8
+        $mergedCheckpointIndex = Join-Path $newSessionPath 'checkpoints' 'index.md'
+        $expectedCheckpointIndex = $checkpointHeader + @($renumbered)
+        $expectedCheckpointIndex | Set-Content -LiteralPath $mergedCheckpointIndex -Encoding UTF8
+        if ([string]::Join("`n", @(Get-Content -LiteralPath $mergedCheckpointIndex)) -cne [string]::Join("`n", $expectedCheckpointIndex)) {
+            throw "Merged checkpoint index '$mergedCheckpointIndex' failed read-back validation."
+        }
+        foreach ($reference in $checkpointReferences) {
+            Resolve-CopilotCheckpointBodyPath -CheckpointDirectory (Join-Path $newSessionPath 'checkpoints') -Reference $reference | Out-Null
+        }
+        Assert-CopilotMergeArtifactPaths -Session (@($collectedSessions.ToArray()) + [pscustomobject]@{ Id = $newId; Path = $newSessionPath }) `
+            -RelativeDirectory 'checkpoints' -ExcludeRelativeFile (Join-Path 'checkpoints' 'index.md') -RequireCompleteDestination
 
         # Merge rewind-snapshots
         Write-Progress -Activity $activity -Status 'Merging rewind snapshots' -PercentComplete 65 -Id 1
@@ -217,8 +427,8 @@ function Merge-CopilotSession {
             }
             # Copy backup files
             $backupsDir = Join-Path $s.Path 'rewind-snapshots' 'backups'
-            if (Test-Path $backupsDir) {
-                Get-ChildItem $backupsDir | Copy-Item -Destination (Join-Path $newSessionPath 'rewind-snapshots' 'backups') -Force
+            if (Test-Path -LiteralPath $backupsDir) {
+                Get-ChildItem -LiteralPath $backupsDir -Force | Copy-Item -Destination (Join-Path $newSessionPath 'rewind-snapshots' 'backups') -Recurse -Force
             }
         }
         $mergedSnapshots = $mergedSnapshots | Sort-Object { [DateTimeOffset]::Parse($_.timestamp) }
@@ -228,12 +438,12 @@ function Merge-CopilotSession {
         Write-Progress -Activity $activity -Status 'Copying files and research' -PercentComplete 75 -Id 1
         foreach ($s in $collectedSessions) {
             $filesDir = Join-Path $s.Path 'files'
-            if ((Test-Path $filesDir) -and (Get-ChildItem $filesDir)) {
-                Get-ChildItem $filesDir | Copy-Item -Destination (Join-Path $newSessionPath 'files') -Recurse -Force
+            if (Test-Path -LiteralPath $filesDir) {
+                Get-ChildItem -LiteralPath $filesDir -Force | Copy-Item -Destination (Join-Path $newSessionPath 'files') -Recurse -Force
             }
             $researchDir = Join-Path $s.Path 'research'
-            if ((Test-Path $researchDir) -and (Get-ChildItem $researchDir)) {
-                Get-ChildItem $researchDir | Copy-Item -Destination (Join-Path $newSessionPath 'research') -Recurse -Force
+            if (Test-Path -LiteralPath $researchDir) {
+                Get-ChildItem -LiteralPath $researchDir -Force | Copy-Item -Destination (Join-Path $newSessionPath 'research') -Recurse -Force
             }
         }
 
@@ -275,6 +485,11 @@ function Merge-CopilotSession {
         Write-Progress -Activity $activity -Status 'Repairing merged session' -PercentComplete 90 -Id 1
         Repair-CopilotSessionEvents -Path $newSessionPath -NoBackup
 
+        $mergedSession = Get-CopilotSession -Id $newId -ErrorAction Stop
+        if ($null -eq $mergedSession) {
+            Write-Error "Merged session '$newId' could not be read." -ErrorAction Stop
+        }
+
         Write-Verbose "Merged $($collectedSessions.Count) sessions into $newId"
         Write-Verbose "  Summary: $mergedSummary"
         Write-Verbose "  Events: $totalEvents"
@@ -282,6 +497,7 @@ function Merge-CopilotSession {
         # The destination is fully written and repaired; only now is it safe to
         # treat the merge as successful and to remove the source sessions.
         $mergeSucceeded = $true
+        $ErrorActionPreference = $previousErrorActionPreference
 
         # Remove source sessions if requested
         if ($RemoveSource) {
@@ -295,23 +511,53 @@ function Merge-CopilotSession {
         Write-Progress -Activity $activity -Id 1 -Completed
 
         } finally {
+            $ErrorActionPreference = $previousErrorActionPreference
             Write-Progress -Activity $activity -Id 1 -Completed
 
             # On any mid-merge failure, remove the partial destination so a broken
             # session is never left behind. Cleanup failures must not mask the
             # original error, so surface them as a warning instead.
-            if (-not $mergeSucceeded -and $newSessionPath -and (Test-Path -LiteralPath $newSessionPath)) {
+            if (-not $mergeSucceeded -and $newSessionPath) {
                 try {
-                    Remove-Item -LiteralPath $newSessionPath -Recurse -Force
+                    if (Test-Path -LiteralPath $newSessionPath -ErrorAction Stop) {
+                        Remove-Item -LiteralPath $newSessionPath -Recurse -Force -ErrorAction Stop
+                    }
                 } catch {
-                    Write-Warning "Failed to clean up partial merged session at '$newSessionPath': $($_.Exception.Message)"
+                    Write-Warning "Failed to clean up partial merged session at '$newSessionPath': $($_.Exception.Message)" -WarningAction Continue
                 }
             }
         }
 
         # Return the new session
         if ($mergeSucceeded) {
-            Get-CopilotSession -Id $newId
+            $mergedSession
+        }
+    }
+}
+
+function Save-CopilotSessionEventsBackup {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][ValidateNotNullOrEmpty()][string]$Path)
+
+    $ErrorActionPreference = 'Stop'
+    $backupPath = "$Path.bak"
+    $temporaryPath = "$backupPath.$([guid]::NewGuid().ToString('N')).tmp"
+    $primaryError = $null
+    try {
+        Copy-Item -LiteralPath $Path -Destination $temporaryPath -ErrorAction Stop
+        [IO.File]::Move($temporaryPath, $backupPath, $true)
+    } catch {
+        $primaryError = $_
+        throw
+    } finally {
+        try {
+            if (Test-Path -LiteralPath $temporaryPath) {
+                Remove-Item -LiteralPath $temporaryPath -Force -ErrorAction Stop
+            }
+        } catch {
+            if ($null -eq $primaryError) { throw }
+            $primaryError.Exception.Data['BackupCleanupError'] = $_
+            Write-Error -ErrorRecord $_ -ErrorAction Continue
         }
     }
 }
@@ -343,6 +589,7 @@ function Compress-CopilotSession {
 
     .PARAMETER NoBackup
         Skip creating a .bak backup before overwriting.
+        Otherwise, backup failure stops before rewriting events or pruning snapshots.
 
     .EXAMPLE
         Compress-CopilotSession -Id "abc-123"
@@ -438,7 +685,7 @@ function Compress-CopilotSession {
 
         # Back up and write
         if (-not $NoBackup) {
-            Copy-Item -LiteralPath $eventsFile -Destination "$eventsFile.bak" -Force
+            Save-CopilotSessionEventsBackup -Path $eventsFile -ErrorAction Stop
         }
         $content = $output -join "`r`n"
         [System.IO.File]::WriteAllText($eventsFile, "$content`r`n", [System.Text.UTF8Encoding]::new($false))
@@ -484,6 +731,9 @@ function Repair-CopilotSessionEvents {
            model set to 'unknown').
         5. Validates the final tool_use/tool_result pairing.
 
+        Malformed events are removed before relocation. Only retained valid
+        completions suppress synthesis; valid events keep their original raw lines.
+
         These issues typically arise from race conditions in the event logger
         where tool completions are recorded before the assistant message that
         requested them, or from context window truncation that splits
@@ -506,6 +756,7 @@ function Repair-CopilotSessionEvents {
 
     .PARAMETER NoBackup
         Skip creating a .bak backup before overwriting.
+        Otherwise, backup failure stops before rewriting events.
 
     .EXAMPLE
         Repair-CopilotSessionEvents -Id "fb52be08-2f0a-42e1-95cd-bd137f0ad769"
@@ -563,9 +814,18 @@ function Repair-CopilotSessionEvents {
             return $lines
         }
 
-        # Parse all events
-        $parsed = for ($i = 0; $i -lt $lines.Count; $i++) {
+        # Filter before indexing so relocation cannot reintroduce rejected events.
+        $removedErrors = 0
+        $removedMalformed = 0
+        $parsed = @(for ($i = 0; $i -lt $lines.Count; $i++) {
             $json = $lines[$i] | ConvertFrom-Json
+            $isSessionError = $json.type -in @('session.error', 'session.warning')
+            $isMalformed = $json.id -eq '' -or
+                ($json.type -eq 'tool.execution_complete' -and $json.data.model -eq 'unknown')
+            if ($isSessionError) { $removedErrors++ }
+            if ($isMalformed) { $removedMalformed++ }
+            if ($isSessionError -or $isMalformed) { continue }
+
             $toolReqs = if ($json.type -eq 'assistant.message' -and $json.data.toolRequests) {
                 @($json.data.toolRequests | ForEach-Object { $_.toolCallId })
             } else { @() }
@@ -577,7 +837,7 @@ function Repair-CopilotSessionEvents {
                 Raw          = $lines[$i]
                 Json         = $json
             }
-        }
+        })
 
         # Build global map: toolCallId -> index of the assistant.message that requested it
         $requestMap = @{}
@@ -620,22 +880,13 @@ function Repair-CopilotSessionEvents {
             }
         }
 
-        # Build output: skip relocated/error events, insert relocated ones after their assistant.message
+        # Build output from retained events, relocating tool events after their assistant.message.
         $output = [System.Collections.Generic.List[string]]::new()
         for ($i = 0; $i -lt $parsed.Count; $i++) {
             $ev = $parsed[$i]
 
             # Skip orphaned events (will be re-inserted after their request)
             if ($relocate.Contains($i)) { continue }
-
-            # Strip session.error and session.warning events
-            if ($ev.Type -in @('session.error', 'session.warning')) { continue }
-
-            # Strip malformed events from previous bad repairs (empty id, unknown model)
-            if ($ev.Json.id -eq '' -or
-                ($ev.Type -eq 'tool.execution_complete' -and $ev.Json.data.model -eq 'unknown')) {
-                continue
-            }
 
             $output.Add($ev.Raw)
 
@@ -657,7 +908,7 @@ function Repair-CopilotSessionEvents {
         }
 
         # Synthesize missing tool completions (tool_use with no execution_complete anywhere)
-        # Re-parse output to find the assistant.messages and their positions
+        # Re-parse valid output to find retained requests and completions.
         $outputParsed = for ($i = 0; $i -lt $output.Count; $i++) {
             $json = $output[$i] | ConvertFrom-Json
             [PSCustomObject]@{ Idx = $i; Type = $json.type; Json = $json }
@@ -720,11 +971,6 @@ function Repair-CopilotSessionEvents {
         }
 
         # Report stats
-        $removedErrors = ($parsed | Where-Object { $_.Type -in @('session.error', 'session.warning') }).Count
-        $removedMalformed = ($parsed | Where-Object {
-            $_.Json.id -eq '' -or
-            ($_.Type -eq 'tool.execution_complete' -and $_.Json.data.model -eq 'unknown')
-        }).Count
         $stats = @{
             Relocated  = $relocate.Count
             Removed    = $removedErrors + $removedMalformed
@@ -741,7 +987,7 @@ function Repair-CopilotSessionEvents {
                 return
             }
             if (-not $NoBackup) {
-                Copy-Item -LiteralPath $eventsFile -Destination "$eventsFile.bak" -Force
+                Save-CopilotSessionEventsBackup -Path $eventsFile -ErrorAction Stop
             }
             $content = $output -join "`r`n"
             [System.IO.File]::WriteAllText($eventsFile, "$content`r`n", [System.Text.UTF8Encoding]::new($false))

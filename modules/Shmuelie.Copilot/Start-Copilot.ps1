@@ -79,7 +79,7 @@ function Start-Copilot {
         The AI model to use for the session.
 
     .PARAMETER SessionSelector
-        Optional scriptblock replacing the numbered picker, forwarded unchanged
+        Optional scriptblock replacing the native host picker, forwarded unchanged
         to Get-CopilotLaunchPlan. Receives one object[] of CopilotSession candidates
         (Id, Name, Summary, Branch, UpdatedAt, Cwd). Return one candidate or
         $null/no output to start a new session; errors and invalid/noncandidate
@@ -89,8 +89,17 @@ function Start-Copilot {
         -WhatIf bypass it.
         Zero candidates start a new session without calling the selector.
         Custom selectors need no interactive console and own their UI requirements.
-        The default picker requires interactive input; unavailable input or host
-        prompt errors terminate instead of choosing a session automatically.
+        The default picker uses the active host's PromptForChoice with descriptive
+        labels and 22 sessions per page. M selects Next page and P selects Previous
+        page when available; N starts a New session from any page. All candidates
+        remain reachable, with unique session keys per page and no default choice.
+        Names are capped at 80 Unicode text elements including '...'; branches
+        appear only for displayed names duplicated anywhere in the candidate set.
+        Full details remain in choice help. Names/branches have terminal controls
+        sanitized; literal ampersands do not assign keys. Unavailable input, host errors,
+        and invalid responses terminate without choosing a session or falling
+        back to another UI. Execution
+        confirmation remains managed by PowerShell's -Confirm and -WhatIf.
 
     .PARAMETER Version
         Run a specific Copilot CLI engine version for this session, e.g. '1.0.55'.
@@ -306,8 +315,14 @@ function Start-Copilot {
         experimental features; use this switch to run with them off.
 
     .PARAMETER ChangeDir
-        Change the working directory before doing anything else (maps to -C).
-        Aliased as -C.
+        Use this directory for session/branch selection and MCP path policy,
+        including -PassThru and -WhatIf. Aliased as -C. Relative paths resolve
+        from the caller's location; invalid/non-filesystem directories terminate
+        before launch. Planning restores the caller's location before returning,
+        confirmation, or execution, including on selection errors.
+        Normal launches pass the absolute filesystem path as native -C without
+        changing the caller's location. Help/update passthrough arguments remain
+        unchanged.
 
     .PARAMETER PassThru
         Do not launch. Compute the full launch plan — including the resolved
@@ -563,6 +578,7 @@ function Start-Copilot {
         [switch]$NoExperimental,
 
         [Alias('C')]
+        [ValidateNotNullOrEmpty()]
         [string]$ChangeDir,
 
         [switch]$PassThru,

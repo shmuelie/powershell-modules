@@ -56,13 +56,115 @@ function Get-CopilotResumeCandidate {
     return $sessions
 }
 
-function Assert-CopilotSessionPickerInteractive {
-    [CmdletBinding()]
-    param()
+function ConvertTo-CopilotSessionDisplayText {
+    param([string]$Text)
 
-    if (-not [Environment]::UserInteractive -or
-        ($Host.Name -eq 'ConsoleHost' -and [Console]::IsInputRedirected)) {
-        throw 'Session selection requires interactive input. Supply -SessionSelector, or choose a session explicitly instead of opening the default picker.'
+    # Keep Unicode graphemes (including joiners) intact, but prevent terminal
+    # controls and line separators from acting as UI rather than session data.
+    $Text -replace '[\p{Cc}\p{Zl}\p{Zp}]', ' '
+}
+
+function Invoke-CopilotSessionChoice {
+    [CmdletBinding()]
+    [OutputType('CopilotSession')]
+    param(
+        [Parameter(Mandatory)]
+        [object[]]$Sessions,
+
+        [Parameter(Mandatory)]
+        [string]$Caption,
+
+        [Parameter(Mandatory)]
+        [string]$Message,
+
+        [Parameter(Mandatory)]
+        [string]$ExitLabel,
+
+        [Parameter(Mandatory)]
+        [string]$ExitHelp
+    )
+
+    $nameCounts = [System.Collections.Generic.Dictionary[string, int]]::new([StringComparer]::Ordinal)
+    $displaySessions = @(
+        foreach ($session in $Sessions) {
+            $name = ConvertTo-CopilotSessionDisplayText $session.Summary
+            $elements = [System.Globalization.StringInfo]::new($name)
+            $displayName = if ($elements.LengthInTextElements -gt 80) {
+                $elements.SubstringByTextElements(0, 77) + '...'
+            } else {
+                $name
+            }
+            if (-not $nameCounts.ContainsKey($displayName)) { $nameCounts[$displayName] = 0 }
+            $nameCounts[$displayName]++
+            [pscustomobject]@{
+                Name = $name
+                DisplayName = $displayName
+                Branch = ConvertTo-CopilotSessionDisplayText $session.Branch
+            }
+        }
+    )
+    # C/M/N/P are reserved for Cancel, Next page, New session, and Previous page.
+    $sessionKeys = 'ABDEFGHIJKLOQRSTUVWXYZ'
+    $pageSize = $sessionKeys.Length
+    $pageStart = 0
+    $pageCount = [int][Math]::Ceiling($Sessions.Count / [double]$pageSize)
+    # A method failure must terminate even when the caller uses Continue.
+    $ErrorActionPreference = 'Stop'
+    while ($true) {
+        $choices = [System.Collections.ObjectModel.Collection[System.Management.Automation.Host.ChoiceDescription]]::new()
+        $sessionCount = [Math]::Min($pageSize, $Sessions.Count - $pageStart)
+        $pageEnd = $pageStart + $sessionCount
+        for ($i = $pageStart; $i -lt $pageEnd; $i++) {
+            $session = $Sessions[$i]
+            $display = $displaySessions[$i]
+            $branchSuffix = if ($nameCounts[$display.DisplayName] -gt 1 -and -not [string]::IsNullOrWhiteSpace($display.Branch)) {
+                " ($($display.Branch))"
+            } else {
+                ''
+            }
+            $updatedAt = if ($session.UpdatedAt) { $session.UpdatedAt.ToString('o') } else { '(unknown)' }
+            $help = "Id: $($session.Id)`nName: $($display.Name)`nRepository: $($session.Repository)`nBranch: $($display.Branch)`nCwd: $($session.Cwd)`nUpdated: $updatedAt`nEvents: $($session.EventCount)"
+            # The host consumes the first '&'; later ampersands stay session data.
+            $label = "&$($sessionKeys[$i - $pageStart]) - $($display.DisplayName)$branchSuffix"
+            $choices.Add([System.Management.Automation.Host.ChoiceDescription]::new($label, $help))
+        }
+        $previousChoice = -1
+        $nextChoice = -1
+        if ($pageStart -gt 0) {
+            $previousChoice = $choices.Count
+            $choices.Add([System.Management.Automation.Host.ChoiceDescription]::new(
+                '&P - Previous page', 'Show the previous sessions without selecting one.'))
+        }
+        if ($pageEnd -lt $Sessions.Count) {
+            $nextChoice = $choices.Count
+            $choices.Add([System.Management.Automation.Host.ChoiceDescription]::new(
+                '&M - Next page', 'Show the next sessions without selecting one.'))
+        }
+        $choices.Add([System.Management.Automation.Host.ChoiceDescription]::new($ExitLabel, $ExitHelp))
+        $pageNumber = [int]($pageStart / $pageSize) + 1
+        $promptMessage = "$Message`n`nSessions $($pageStart + 1)-$pageEnd of $($Sessions.Count) (page $pageNumber of $pageCount).`nChoose a session key or an action. Use choice help for full names, IDs, and workspace details."
+
+        try {
+            if ($null -eq $Host.UI) {
+                throw [System.NotSupportedException]::new('The active host has no user interface.')
+            }
+            $selected = $Host.UI.PromptForChoice($Caption, $promptMessage, $choices, -1)
+        } catch {
+            throw [System.InvalidOperationException]::new(
+                "Session selection requires a host with working PromptForChoice input. Supply -SessionSelector or choose a session explicitly. Host error: $($_.Exception.Message)",
+                $_.Exception)
+        }
+        if ($selected -isnot [int] -or $selected -lt 0 -or $selected -ge $choices.Count) {
+            throw "The host returned an invalid session choice '$selected'. Supply -SessionSelector or choose a session explicitly."
+        }
+        if ($selected -lt $sessionCount) { return $Sessions[$pageStart + $selected] }
+        if ($selected -eq $previousChoice) {
+            $pageStart -= $pageSize
+        } elseif ($selected -eq $nextChoice) {
+            $pageStart = $pageEnd
+        } else {
+            return $null
+        }
     }
 }
 
@@ -79,32 +181,12 @@ function Invoke-CopilotLaunchSessionPicker {
     if ($SessionSelector) {
         return Invoke-CopilotSessionSelector -Sessions $Sessions -SessionSelector $SessionSelector
     }
-    Assert-CopilotSessionPickerInteractive
-    Write-Host "Multiple sessions found for this folder:" -ForegroundColor Yellow
-    Write-Host ""
-    for ($i = 0; $i -lt $Sessions.Count; $i++) {
-        $s = $Sessions[$i]
-        $branchSuffix = if ($s.Branch) { " ($($s.Branch))" } else { '' }
-        $label = "  [$($i + 1)] $($s.Summary)$branchSuffix"
-        $time  = "      $($s.UpdatedAt.LocalDateTime)"
-        if ($i -eq 0) {
-            Write-Host $label -ForegroundColor Cyan
-            Write-Host $time -ForegroundColor DarkGray
-        } else {
-            Write-Host $label
-            Write-Host $time -ForegroundColor DarkGray
-        }
+    $picked = Invoke-CopilotSessionChoice -Sessions $Sessions -Caption 'Choose Copilot session' `
+        -Message 'Choose a session for the current folder, or New session to start without resuming.' `
+        -ExitLabel '&New session' -ExitHelp 'Start a new session instead of resuming an existing one.'
+    if ($picked) {
+        Write-Host "Resuming session: $(ConvertTo-CopilotSessionDisplayText $picked.Summary)" -ForegroundColor Cyan
     }
-    Write-Host "  [N] New session" -ForegroundColor Green
-    Write-Host ""
-    do {
-        Write-Host "Select session [1-$($Sessions.Count)/N]: " -NoNewline -ForegroundColor Yellow
-        $choice = Read-Host -ErrorAction Stop
-        if ($choice -eq 'N' -or $choice -eq 'n') { return $null }
-        $num = $choice -as [int]
-    } while ($null -eq $num -or $num -lt 1 -or $num -gt $Sessions.Count)
-    $picked = $Sessions[$num - 1]
-    Write-Host "Resuming session: $($picked.Summary)" -ForegroundColor Cyan
     return $picked
 }
 

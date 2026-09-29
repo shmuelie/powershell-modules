@@ -38,6 +38,52 @@ modules/<Module>/
 only when a release is cut — see [Releasing](#releasing). Between releases the
 manifest version stays fixed and changes accumulate under `[Unreleased]`.
 
+## Interactive input and confirmation
+
+Use the active PowerShell host UI for module-owned input:
+`$Host.UI.Prompt(...)` with `FieldDescription` metadata for fields/free-form input,
+and `$Host.UI.PromptForChoice(...)` with `ChoiceDescription` metadata for defined
+options. Supply meaningful captions, messages, labels/help, and intentional
+defaults. Keep candidate identity/order exact and cancellation explicit.
+Do not automatically select grid-view packages, render custom menus, parse
+numbered responses, or read console keys. Preserve explicit selector callbacks.
+For session choices, put descriptive names in the actual `ChoiceDescription`
+labels rather than duplicating a numbered list in the message. Use 22 sessions
+per page with unique single-character keys; reserve `M`/`P` for Next/Previous
+page and `N`/`C` for New session/Cancel. Keep every candidate reachable in its
+original order, with the appropriate exit action and no default on every page.
+Navigation repeats native `PromptForChoice`, not custom key reading or parsing.
+Put the assigned `&` accelerator before all session data: ConsoleHost consumes
+only the first marker, preserving later literal ampersands. Do not double data
+ampersands or assume `&10` defines a multi-character accelerator.
+
+Keep sanitized normalized names capped at 80 Unicode text elements including
+`...`, with keys and branch suffixes outside that cap. Add branch suffixes only
+for duplicates after sanitization/truncation across the **entire** candidate set,
+not just one page. Keep full sanitized names and identity/context in help.
+Do not truncate UTF-16 code units or remove Unicode joiners/combining sequences;
+do not depend on console width or RawUI.
+Rely on the host's prompting capability, not console availability or
+`Environment.UserInteractive`; surface unsupported input, errors, and invalid
+choice indices without silently selecting or proceeding. Method-call failures
+must terminate even under `-ErrorAction Continue`.
+
+These input APIs **do not replace operation confirmation**. Keep
+`SupportsShouldProcess`, `ShouldProcess`, `ConfirmImpact`, `$ConfirmPreference`,
+`-Confirm`, `-WhatIf`, and any existing `ShouldContinue` safeguards framework
+managed. Do not add input prompts to preview or explicit noninteractive paths.
+Mandatory-parameter prompting already belongs to PowerShell; do not duplicate it.
+
+Test prompts with a controlled `PSHostUserInterface` in an isolated runspace,
+synthetic candidates, and fail-closed native boundaries. Cover exact mapping,
+metadata/defaults, cancellation, host errors, unavailable input, explicit
+bypasses, callbacks, and standard confirmation separately. Complement queued
+host answers with bounded, profile-free ConsoleHost child-process tests using
+synthetic stdin to verify real key acceptance, navigation, and overflow
+reachability. Stop only owned child PIDs on timeout and dispose their resources.
+No user session data, optional picker installations, or real Copilot launches
+are needed.
+
 ## Running git from module commands
 
 Within `Shmuelie.Git`, use the private `Invoke-Git` helper with `-Arguments`
@@ -116,6 +162,19 @@ contract, not command aliases.
 
 ## Testing
 
+Supported modules live under `modules/`. The repository-local
+`experimental/Shmuelie.AppInstall.Experimental/` module is not publishable and is
+not a dependency of the Windows module. Build it explicitly with
+`Build-Module.ps1 -Module Shmuelie.AppInstall.Experimental` and select its own
+`tests` directory with `Invoke-Tests.ps1 -Path` only when validation is authorized.
+Default build/test and publication flows cover the supported catalog instead.
+The shared `build/Assert-ModulePublishable.ps1` policy rejects experimental
+publication and inspects the Windows artifact before import/publication.
+
+Draft PRs skip automated build/test jobs. Mark a PR ready for review only after
+validation is authorized; that event starts the required checks. A skipped draft
+job is not validation evidence.
+
 Behavioral tests live in [`tests/`](https://github.com/shmuelie/powershell-modules/tree/main/tests),
 one [Pester](https://pester.dev/) v6 file per module (`tests/<Module>.Tests.ps1`).
 Each file imports its module directly from source
@@ -157,6 +216,27 @@ imports the selected module by its exact path; prereleases and newer major
 versions do not take precedence. The runner fails on any failing test. CI and
 publication use that same runner rather than independent framework installation
 policies, so a change without passing tests cannot merge or ship.
+
+## Building a module
+
+```powershell
+.\build\Build-Module.ps1 -Module Shmuelie.Dsc -OutputPath '.\output-[ab]'
+```
+
+`OutputPath` is a literal filesystem path, including brackets and PowerShell
+escape characters. The build normalizes it and replaces only the selected
+module's version directory, preserving neighboring modules, versions, and
+wildcard-looking sibling paths. Output directories must not be links.
+
+Source manifests are checked before staging cleanup. Because
+`Test-ModuleManifest` internally expands wildcards even in referenced file paths,
+affected source and staged directories are validated through isolated temporary
+copies with wildcard-free paths. These copies retain the module/version layout,
+reject linked contents, and are removed on success or failure. The system
+temporary directory must itself have no wildcard or escape characters when a
+copy is needed. Ordinary paths continue to use direct manifest validation.
+The final import and removal always run against the **actual staged artifact**
+in a short-lived child PowerShell process, not against a validation copy.
 
 ## Validate
 

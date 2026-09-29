@@ -33,7 +33,7 @@ no longer eagerly imports PSReadLine before registering the predictor.
 ## Shmuelie.Git
 
 Git repository, worktree, status, completion, and PSReadLine prediction helpers.
-**Version 0.10.1.**
+**Version 0.10.3.**
 [README](https://github.com/shmuelie/powershell-modules/blob/main/modules/Shmuelie.Git/README.md)
 
 Highlights:
@@ -85,7 +85,7 @@ bypassing confirmation or escalating after a failure.
 ## Shmuelie.Copilot
 
 GitHub Copilot CLI sessions, plugins, marketplaces, MCP servers, and the
-`Start-Copilot` launcher. **Version 0.4.0.**
+`Start-Copilot` launcher. **Version 0.6.0.**
 [README](https://github.com/shmuelie/powershell-modules/blob/main/modules/Shmuelie.Copilot/README.md)
 
 Highlights:
@@ -95,9 +95,14 @@ Highlights:
 - `Start-Copilot -PassThru` returns the resolved launch plan without launching,
   so other tools can reuse the built arguments (`-DeferResume` also skips the
   resume picker so an overlay owns session selection).
+- `-ChangeDir` / `-C` on `Start-Copilot` and `Get-CopilotLaunchPlan` selects the
+  effective directory for sessions, branch preference, and MCP policy before
+  planning. Relative paths resolve from the caller; normal plans forward an
+  absolute native `-C`. Invalid directories fail before launch, and the caller's
+  location is restored on success, errors, and declined confirmation.
 - Path-aware MCP startup: a server's `autoConnect` value (`true`/absent, `false`,
   or an array of path globs) decides whether `Start-Copilot` enables it for the
-  current directory. See the module README.
+  effective launch directory. See the module README.
 - Session tools: `Get-CopilotSession`, `Resume-CopilotSession`,
   `Merge-CopilotSession`, `Compress-CopilotSession`, `Repair-CopilotSessionEvents`.
 - Plugin, marketplace, and MCP management wrap the public `copilot` CLI.
@@ -105,7 +110,7 @@ Highlights:
 ## Shmuelie.Node
 
 Node.js, nvm-windows, npm package, and Azure DevOps npm credential helpers.
-**Version 0.1.4.**
+**Version 0.1.5.**
 [README](https://github.com/shmuelie/powershell-modules/blob/main/modules/Shmuelie.Node/README.md)
 
 Highlights:
@@ -118,7 +123,7 @@ Highlights:
 
 User-local .NET SDK installation and canonical tool management for Windows,
 Linux, and macOS.
-**Version 0.2.0.**
+**Version 0.2.1.**
 [README](https://github.com/shmuelie/powershell-modules/blob/main/modules/Shmuelie.DotNet/README.md)
 
 Highlights:
@@ -145,7 +150,7 @@ scope behavior.
 ## Shmuelie.Utilities
 
 General developer utilities for PowerShell, .NET tools, Python packages, VS
-Code, terminal recovery, and general developer workflows. **Version 0.6.0.**
+Code, terminal recovery, and general developer workflows. **Version 0.6.1.**
 [README](https://github.com/shmuelie/powershell-modules/blob/main/modules/Shmuelie.Utilities/README.md)
 
 Highlights:
@@ -157,27 +162,29 @@ Highlights:
 ## Shmuelie.Windows
 
 Windows-only developer utilities for installed applications, Windows Terminal,
-Windows Performance Recorder, and service host processes. **Version 0.2.0.**
+Windows Performance Recorder, and service host processes. **Version 0.2.3.**
 [README](https://github.com/shmuelie/powershell-modules/blob/main/modules/Shmuelie.Windows/README.md)
 
 Highlights:
 
 - `Get-InstalledApplications` queries Windows uninstall registry state.
 - `Get-ServiceProcess` resolves a Windows service to its hosting process.
-- [`New-AppInstallContext`](appinstall.md) creates an experimental lazy context;
-  it does not activate the manager or perform installation or search.
-- [`Get-AppInstallSettings`](appinstall.md#read-only-settings) reads the approved
-  settings through an explicit context; acquisition identity requires opt-in.
-- [`Request-AppInstallUpdateSearch`](appinstall.md#caller-scoped-paused-update-search)
-  confirms the experimental caller all-app paused-queue mutation; explicit context
-  and caller correlation are required, with automatic download/install and forced restart fixed false.
+- `Get-AppInstallerApp` and `Update-AppInstallerApp` provide existing
+  AppInstaller-managed application discovery and update-check requests.
 - `Get-WindowsTerminalSettings` and `Get-WindowsTerminalProfile` inspect Windows Terminal configuration.
 - `Start-WindowsPerformanceRecorder` and `Stop-WindowsPerformanceRecorder` wrap WPR tracing.
+
+AppInstallManager is separate from these AppInstaller commands. Its five
+unpublished commands live in the repository-local
+[`Shmuelie.AppInstall.Experimental`](https://github.com/shmuelie/powershell-modules/tree/main/experimental/Shmuelie.AppInstall.Experimental)
+module, outside the supported module catalog. Windows neither loads nor packages
+that implementation. See [the experimental contract](appinstall.md) for the
+unchanged private-capability restriction and #233 release hold.
 
 ## Shmuelie.Dsc
 
 Class-based [DSC v3](https://learn.microsoft.com/powershell/dsc/overview)
-resources for developer machine setup. **Version 0.1.0.**
+resources for developer machine setup. **Version 0.1.2.**
 [README](https://github.com/shmuelie/powershell-modules/blob/main/modules/Shmuelie.Dsc/README.md)
 
 Highlights:
@@ -185,7 +192,9 @@ Highlights:
 - `SavePSResource` saves a PowerShell module to a local path; `SymbolicLink`
   creates and verifies symbolic links.
 - `CopilotPlugin` and `CopilotMarketplace` install GitHub Copilot CLI plugins
-  and register marketplaces.
+  and register marketplaces. `CopilotMarketplace.Repository` is the single
+  registration source; `Name` must match that source's marketplace manifest
+  name for `Test()` and `Get()` presence checks, not a custom alias.
 - `UvTool` installs a Python tool via `uv tool install`.
 
 ## Shmuelie.VisualStudio

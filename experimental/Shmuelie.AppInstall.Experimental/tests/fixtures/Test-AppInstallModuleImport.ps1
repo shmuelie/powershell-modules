@@ -20,7 +20,7 @@ if ($ExpectedMissingDependency) {
     throw "The module imported without the required projection dependency '$ExpectedMissingDependency'."
 }
 Import-Module $ManifestPath -Force -ErrorAction Stop
-$command = @(Get-Command -Module Shmuelie.Windows -CommandType Cmdlet |
+$command = @(Get-Command -Module Shmuelie.AppInstall.Experimental -CommandType Cmdlet |
     Where-Object Name -In 'New-AppInstallContext', 'Get-AppInstallItem', 'Get-AppInstallSettings', 'Request-AppInstallUpdateSearch', 'Wait-AppInstallItem')
 $assemblyLoaded = @([AppDomain]::CurrentDomain.GetAssemblies() |
     Where-Object { $_.GetName().Name -eq 'Shmuelie.Windows.AppInstall' }).Count -ne 0
@@ -56,7 +56,7 @@ try {
         ($searchHelp.parameters.parameter | Where-Object Name -EQ 'Context').required -ne 'true') {
         throw 'Update search help must document the queue mutation and explicit context.'
     }
-    Remove-Module Shmuelie.Windows -Force -ErrorAction Stop
+    Remove-Module Shmuelie.AppInstall.Experimental -Force -ErrorAction Stop
     if ($context.IsDisposed -or $context.IsActivated) {
         throw 'Removing the module changed caller-owned lazy context lifetime.'
     }

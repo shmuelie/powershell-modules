@@ -13,10 +13,15 @@ namespace Shmuelie.Windows.Cmdlets;
 /// </summary>
 /// <remarks>
 /// Each service name (wildcards supported) is resolved to its hosting process
-/// via the Win32 Service Control Manager APIs. When a single running service is
-/// matched, the underlying <see cref="Process"/> is returned so the cmdlet
-/// composes naturally with <c>Stop-Process</c>, <c>Wait-Process</c>, and so on.
+/// via the Win32 Service Control Manager APIs. When a single service has a
+/// resolved hosting process, the underlying <see cref="Process"/> is returned
+/// so the cmdlet composes naturally with <c>Stop-Process</c>, <c>Wait-Process</c>,
+/// and so on.
 /// Otherwise one <see cref="ServiceProcessInfo"/> object is emitted per service.
+/// Stopped, StartPending, StopPending, and unknown native status snapshots do
+/// not provide a usable PID: their results have ProcessId zero, null Process,
+/// and an empty ProcessName, without performing process lookup. Status and
+/// process observations are not atomic and do not guarantee continued ownership.
 /// </remarks>
 [Cmdlet(VerbsCommon.Get, "ServiceProcess", SupportsShouldProcess = true)]
 [OutputType(typeof(Process), typeof(ServiceProcessInfo))]
@@ -41,6 +46,21 @@ public sealed class GetServiceProcessCommand : ServiceProcessCommandBase
     public SwitchParameter PerService { get; set; }
 
     private readonly List<ServiceProcessInfo> _results = new();
+    private readonly Func<int, Process> _getProcessById;
+
+    /// <summary>
+    /// Creates the cmdlet using the standard process lookup.
+    /// </summary>
+    public GetServiceProcessCommand()
+        : this(Process.GetProcessById)
+    {
+    }
+
+    internal GetServiceProcessCommand(Func<int, Process> getProcessById)
+    {
+        ArgumentNullException.ThrowIfNull(getProcessById);
+        _getProcessById = getProcessById;
+    }
 
     /// <inheritdoc/>
     protected override void BeginProcessing()
@@ -155,7 +175,7 @@ public sealed class GetServiceProcessCommand : ServiceProcessCommandBase
         });
     }
 
-    private static Process? ResolveProcess(int processId)
+    private Process? ResolveProcess(int processId)
     {
         if (processId <= 0)
         {
@@ -164,7 +184,7 @@ public sealed class GetServiceProcessCommand : ServiceProcessCommandBase
 
         try
         {
-            return Process.GetProcessById(processId);
+            return _getProcessById(processId);
         }
         catch (ArgumentException)
         {

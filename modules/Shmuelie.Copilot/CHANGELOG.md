@@ -6,6 +6,78 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-24
+
+### Changed
+- Native session pickers now put descriptive summaries in the actual choice
+  labels, with 22 sessions per page and unique session keys. Next/Previous page
+  actions keep every candidate reachable; New session/Cancel remain available
+  on every page with no default selection. Names retain the 80-Unicode-text-element
+  limit, full identity help, and duplicate-only branch suffixes across pages.
+  Literal ampersands cannot claim session or action keys. Selection, callbacks,
+  automatic-resume policy, and confirmation/preview behavior are unchanged. (#313)
+
+## [0.5.1] - 2026-09-22
+
+### Fixed
+- Workspace field lookup and replacement now skip literal and folded block
+  bodies, so field-looking text in a multiline session name or summary cannot
+  replace or mask real metadata. Renaming retains the full multiline text,
+  existing field indentation, and line-ending style; discovery and filters keep
+  the recorded branch, working directory, and timestamps. (#285)
+- `Get-CopilotLaunchPlan` and `Start-Copilot` now apply `-ChangeDir` / `-C`
+  before session, branch, and MCP path-policy planning. Relative paths resolve
+  from the caller's location and normal plans forward an absolute native `-C`
+  path. Invalid directories terminate before launch; planning restores the
+  caller's location even on errors, without changing selection, confirmation,
+  preview, or help/update passthrough contracts. (#283)
+- Plugin and marketplace discovery now reports native failures with exit codes
+  and CLI diagnostics before parsing, supports `-ErrorAction Stop`, and preserves
+  the caller's native exit status and console encoding. Failed discovery emits no
+  inventory objects, unlike successful empty responses which remain error-free.
+  Missing or invalid native completion evidence also fails closed.
+  Install/register existence checks stop on discovery failure instead of mutating
+  based on an apparently empty inventory. (#281)
+
+## [0.5.0] - 2026-09-18
+
+### Changed
+- Session selection now uses the active PowerShell host's `PromptForChoice`,
+  without automatic grid pickers or custom console input loops. The initial host
+  message shows numbered names capped at 80 Unicode text elements, with branches
+  only for duplicated displayed names. Numeric labels stay unique beyond nine
+  choices; help retains full names and context. Names and branches have terminal
+  controls sanitized without changing identity; no default is selected. Global
+  Cancel and launch New session remain distinct, and host failures or invalid responses
+  terminate without launching. Custom selectors, explicit bypasses, and standard
+  PowerShell confirmation/preview behavior are unchanged. (#304)
+
+### Fixed
+- `Repair-CopilotSessionEvents` now filters malformed events before relocation,
+  preventing empty-ID or unknown-model completions from being reinserted and
+  suppressing valid replacement completions. Already-valid raw tool events and
+  the existing synthesis and backup policies are preserved. (#284)
+- `Merge-CopilotSession` now preserves checkpoint bodies alongside the merged
+  index, retaining file references while renumbering rows. The generated root
+  index is excluded from body collision checks; differing bodies and type
+  conflicts still abort. Missing/unsupported references, failed copies, and
+  index/body read-back failures terminate before any source is removed.
+- `Merge-CopilotSession` now preflights files, research, and rewind backup paths
+  and aborts conflicting merges before creating a destination or removing any
+  sources. Overlapping files with different contents and file/directory conflicts
+  are rejected without renaming; identical regular-file copies remain supported
+  after SHA-256 comparison, with read/hash failures terminating the merge.
+  Literal-path handling includes hidden artifacts and nested rewind backups;
+  artifact links/reparse points are rejected rather than traversed.
+- `Compress-CopilotSession` and file-backed `Repair-CopilotSessionEvents` stop
+  before rewriting events when a required backup fails, even under `Continue`.
+  Backup copies are staged before replacing an existing backup; failed copies
+  preserve the prior backup and original events. `-NoBackup` remains explicit. (#280)
+- `Merge-CopilotSession` now aborts required source-read and destination
+  create/copy/write/repair failures even under `-ErrorAction Continue`, before
+  removing any source sessions. Partial-destination cleanup failures are reported
+  without replacing the original error or changing the caller's preferences.
+
 ## [0.4.0] - 2026-09-10
 
 ### Added

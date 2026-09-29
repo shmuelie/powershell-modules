@@ -6,7 +6,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
   </PropertyGroup>
   <ItemGroup>
-    <ProjectReference Include="..\..\modules\Shmuelie.Windows\Cmdlets.AppInstall\Shmuelie.Windows.AppInstall.csproj" />
+    <ProjectReference Include="..\..\Cmdlets.AppInstall\Shmuelie.Windows.AppInstall.csproj" />
     <PackageReference Include="Microsoft.PowerShell.SDK" Version="7.4.0" PrivateAssets="all" />
   </ItemGroup>
 </Project>

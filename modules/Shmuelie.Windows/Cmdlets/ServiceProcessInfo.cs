@@ -27,20 +27,20 @@ public sealed class ServiceProcessInfo
     public ServiceControllerStatus Status { get; init; }
 
     /// <summary>
-    /// Gets the id of the hosting process, or <c>0</c> when the service is not
-    /// running.
+    /// Gets the observed hosting process id, or <c>0</c> when the native status
+    /// snapshot does not provide a usable process id.
     /// </summary>
     public int ProcessId { get; init; }
 
     /// <summary>
     /// Gets the name of the hosting process, or an empty string when the
-    /// service is not running.
+    /// process could not be resolved.
     /// </summary>
     public string ProcessName { get; init; } = string.Empty;
 
     /// <summary>
     /// Gets the underlying hosting process, or <see langword="null"/> when the
-    /// service is not running.
+    /// process could not be resolved.
     /// </summary>
     public Process? Process { get; init; }
 

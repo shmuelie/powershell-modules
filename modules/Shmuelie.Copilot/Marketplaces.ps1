@@ -5,6 +5,9 @@ function Get-CopilotMarketplace {
     .DESCRIPTION
         Parses the output of 'copilot plugin marketplace list' into typed objects
         with Name and Repository properties. Includes both built-in and registered marketplaces.
+        Native failures write a PowerShell error with the exit code and diagnostics
+        and emit no marketplaces. Use -ErrorAction Stop to terminate on failure.
+        A successful empty list emits no marketplaces and no error.
     .PARAMETER Name
         Filter by marketplace name. Supports wildcards.
     .EXAMPLE
@@ -20,8 +23,7 @@ function Get-CopilotMarketplace {
         [Parameter(Position = 0)]
         [string]$Name = '*'
     )
-    $exe = Resolve-CliExe -Name copilot
-    $output = Invoke-WithUtf8Console { & $exe plugin marketplace list 2>&1 }
+    $output = Invoke-CopilotDiscovery -Arguments 'plugin', 'marketplace', 'list'
     foreach ($line in $output) {
         if ($line -match '^\s+[◆•]\s+(\S+)\s+\((GitHub|URL):\s+(.+?)\)') {
             $mktName = $Matches[1]
@@ -43,6 +45,7 @@ function Register-CopilotMarketplace {
         Register a Copilot CLI plugin marketplace.
     .DESCRIPTION
         Adds a marketplace from a GitHub repository containing a marketplace.json.
+        If discovery of registered marketplaces fails, terminates without registering.
     .PARAMETER Source
         The marketplace source (owner/repo format).
     .EXAMPLE
@@ -59,7 +62,7 @@ function Register-CopilotMarketplace {
 
     $exe = Resolve-CliExe -Name copilot
     if ($PSCmdlet.ShouldProcess($Source, 'copilot plugin marketplace add')) {
-        $existing = Get-CopilotMarketplace | Where-Object Repository -eq $Source
+        $existing = Get-CopilotMarketplace -ErrorAction Stop | Where-Object Repository -eq $Source
         if ($existing) {
             Write-Verbose "Marketplace '$($existing.Name)' ($Source) is already registered."
             return
@@ -117,6 +120,9 @@ function Get-CopilotMarketplacePlugin {
     .DESCRIPTION
         Lists all plugins available in the specified marketplace.
         Accepts pipeline input from Get-CopilotMarketplace.
+        Native failures write a PowerShell error with the exit code and diagnostics
+        and emit no entries for that marketplace. Use -ErrorAction Stop to terminate
+        on failure. A successful empty marketplace emits no entries and no error.
     .PARAMETER InputObject
         A CopilotMarketplace object from Get-CopilotMarketplace.
     .PARAMETER Name
@@ -140,8 +146,7 @@ function Get-CopilotMarketplacePlugin {
         $mktName = if ($PSCmdlet.ParameterSetName -eq 'ByName') { $Name } else { $InputObject.Name }
         Assert-CopilotShimArgument -Value $mktName -ParameterName 'Name' -Pattern '^[A-Za-z0-9][A-Za-z0-9._#/-]*$'
 
-        $exe = Resolve-CliExe -Name copilot
-        $output = Invoke-WithUtf8Console { & $exe plugin marketplace browse $mktName 2>&1 }
+        $output = Invoke-CopilotDiscovery -Arguments 'plugin', 'marketplace', 'browse', $mktName
         foreach ($line in $output) {
             if ($line -match '^\s+[•]\s+(\S+)\s+-\s+(.+)$') {
                 [PSCustomObject]@{

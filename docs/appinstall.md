@@ -4,6 +4,26 @@ title: Experimental AppInstall foundation
 
 # Experimental AppInstall foundation
 
+## Unpublished module boundary
+
+The five implemented commands belong to the repository-local
+[`Shmuelie.AppInstall.Experimental`](https://github.com/shmuelie/powershell-modules/tree/main/experimental/Shmuelie.AppInstall.Experimental)
+module, not `Shmuelie.Windows`. The supported Windows module still owns
+`Get-AppInstallerApp` and `Update-AppInstallerApp`, which use a different API family.
+Normal Windows builds, default tests and release packages exclude AppInstallManager.
+
+The experimental implementation, help, formatting and fake tests are preserved
+under `experimental/Shmuelie.AppInstall.Experimental/`. Its explicit build target
+is `Build-Module.ps1 -Module Shmuelie.AppInstall.Experimental`; fake validation uses
+`Invoke-Tests.ps1 -Path experimental/Shmuelie.AppInstall.Experimental/tests`.
+Run either only after validation is authorized. The manual experimental workflow
+does not publish, and both repository publication entry points reject this module.
+There is no Gallery installation path or release authorization.
+
+Consumers of unpublished source builds must update the module/manifest name.
+The `Shmuelie.Windows.AppInstall` assembly, CLR namespaces and serialized type
+names remain unchanged to preserve experimental contracts and evidence.
+
 **Microsoft documents AppInstallManager access as protected by a private
 capability restricted to Microsoft-developed apps.** Observed activation and
 selected calls are empirical evidence, not an official third-party support

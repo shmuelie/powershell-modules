@@ -8,6 +8,14 @@ One `*.Tests.ps1` file per module. Each file imports the module directly from
 `modules/<Module>/<Module>.psd1` (source, not a built artifact) so tests run
 without a full build.
 
+Unpublished AppInstallManager tests and their compiled fakes live separately
+under `experimental/Shmuelie.AppInstall.Experimental/tests/`, outside default
+discovery. When explicitly authorized, use
+`./build/Invoke-Tests.ps1 -Path ./experimental/Shmuelie.AppInstall.Experimental/tests`.
+This does not authorize live API calls or publication. Ordinary Windows tests
+retain the supported AppInstaller command coverage and check that imports and
+packages cannot expose experimental commands, including with stale source assets.
+
 - `Shmuelie.Git.Tests.ps1` — table-driven `Get-GitStatusSummary` coverage against
   real temporary git repositories (non-repo, clean, staged/working/untracked
   changes, and ahead-of-upstream tracking), plus `Format-GitStatusSegment`
@@ -27,6 +35,8 @@ without a full build.
 - `Invoke-Tests.Tests.ps1` - stable supported Pester version selection, bounded
   installation fallback, runner configuration, and failure propagation.
   Module discovery, installation, imports, and test execution are mocked.
+- `ModulePublication.Tests.ps1` - supported publication catalog and Windows
+  artifact boundary, with fail-closed build and publication stubs.
 
 ## Running
 
@@ -41,6 +51,9 @@ do not take precedence. The selected module is imported by its exact path.
 The runner fails on any failing test. CI runs it in
 `.github/workflows/ci.yml`, and it gates publishing in
 `.github/workflows/publish-module.yml`.
+
+Draft pull requests skip automated build/test jobs. Marking a PR ready for review
+starts the required checks; do not do so while validation is on hold.
 
 Parameter-filtered mocks must explicitly cover every expected call. Use
 fail-closed stubs for external operations and never add a fallback that runs

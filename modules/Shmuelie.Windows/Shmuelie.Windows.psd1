@@ -1,6 +1,6 @@
 @{
     RootModule           = 'Shmuelie.Windows.psm1'
-    ModuleVersion        = '0.2.0'
+    ModuleVersion        = '0.2.3'
     GUID                 = '1378be2e-a233-4d0d-b260-876317e77565'
     Author               = 'Shmueli Englard'
     CompanyName          = 'Shmuelie'
@@ -12,7 +12,7 @@
         'Get-WindowsTerminalSettings', 'Get-WindowsTerminalProfile',
         'Start-WindowsPerformanceRecorder', 'Stop-WindowsPerformanceRecorder'
     )
-    CmdletsToExport      = @('Get-AppInstallItem', 'Get-AppInstallerApp', 'Get-AppInstallSettings', 'Get-InstalledApplications', 'Get-ServiceProcess', 'Get-SubstDrive', 'New-AppInstallContext', 'New-SubstDrive', 'Remove-SubstDrive', 'Request-AppInstallUpdateSearch', 'Update-AppInstallerApp', 'Wait-AppInstallItem')
+    CmdletsToExport      = @('Get-AppInstallerApp', 'Get-InstalledApplications', 'Get-ServiceProcess', 'Get-SubstDrive', 'New-SubstDrive', 'Remove-SubstDrive', 'Update-AppInstallerApp')
     VariablesToExport    = @()
     AliasesToExport      = @()
     FormatsToProcess  = @('Windows.format.ps1xml')

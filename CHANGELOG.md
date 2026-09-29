@@ -7,6 +7,14 @@ between releases this file tracks catalog-level changes under `[Unreleased]`.
 ## [Unreleased]
 
 ### Fixed
+- Literal build-path fixtures derive the stage version from the copied module
+  manifest, preserving path and neighbor checks across module releases.
+- `Build-Module.ps1` treats source, output, copy, lookup, and cleanup paths
+  literally and validates the owned output directory before replacing it.
+  Bracketed repository/output paths no longer select or delete sibling
+  artifacts. Isolated temporary views retain framework manifest validation for
+  affected paths; child-process import/removal still checks the actual staged
+  module. (Fixes #257.)
 - `Invoke-Tests.ps1` bounds framework selection and fallback installation to
   the supported major version, keeping local, CI, and publication policy
   consistent even when newer major versions are installed. (Fixes #221.)
@@ -21,6 +29,8 @@ between releases this file tracks catalog-level changes under `[Unreleased]`.
   build and import correctly on Linux and macOS. (Fixes #155.)
 
 ### Added
+- Existing portable CI selects the two owned DSC symbolic-link filesystem
+  regressions and requires actual case-sensitive coverage without skipped cases.
 - Build, validation, publishing, portable CI, and documentation catalogs include
   the independently versioned `Shmuelie.PackageManagement` foundation module.
 - Add `Shmuelie.DotNet` to the module catalog, build/publish selectors, and
@@ -39,6 +49,13 @@ between releases this file tracks catalog-level changes under `[Unreleased]`.
   `Shmuelie.Windows` on Windows) without DLL-lock failures.
 
 ### Changed
+- Separate AppInstallManager development into an unpublished experimental module
+  with explicit build/fake-test entry points. Supported Windows packaging and
+  default validation no longer depend on the experimental project. Share
+  publication policy between scripts and workflows, rejecting experimental
+  modules and experimental content in Windows artifacts.
+- Skip automated build/test jobs for draft PRs and start them when ready for
+  review, allowing code-only work while validation is explicitly paused.
 - The test suite and shared runner target stable Pester 6.2+ within major version
   6, superseding the temporary 5.x compatibility pin. Selection and installation
   exclude prereleases and newer majors, and imports use the selected module's

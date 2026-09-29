@@ -1,5 +1,7 @@
 using System.ComponentModel;
 using System.Runtime.InteropServices;
+using System.Runtime.Versioning;
+using System.ServiceProcess;
 using static Shmuelie.Windows.Cmdlets.ServiceProcessNativeMethods;
 
 namespace Shmuelie.Windows.Cmdlets;
@@ -10,12 +12,13 @@ namespace Shmuelie.Windows.Cmdlets;
 /// run in its own process. The P/Invoke handling lives here so the cmdlet stays
 /// thin.
 /// </summary>
+[SupportedOSPlatform("windows")]
 internal static class ServiceProcessService
 {
     /// <summary>
     /// Resolves the process id hosting a service via
-    /// <c>QueryServiceStatusEx</c>. Returns <c>0</c> when the service is stopped
-    /// or the id cannot be determined.
+    /// <c>QueryServiceStatusEx</c>. Returns <c>0</c> when the captured service
+    /// state does not guarantee a valid process id, or the id cannot be determined.
     /// </summary>
     /// <param name="serviceName">The service name (not the display name).</param>
     public static int GetProcessId(string serviceName)
@@ -46,7 +49,12 @@ internal static class ServiceProcessService
                     }
 
                     SERVICE_STATUS_PROCESS status = Marshal.PtrToStructure<SERVICE_STATUS_PROCESS>(buffer);
-                    return (int)status.dwProcessId;
+                    return (ServiceControllerStatus)status.dwCurrentState switch
+                    {
+                        ServiceControllerStatus.Running or ServiceControllerStatus.PausePending or
+                            ServiceControllerStatus.Paused or ServiceControllerStatus.ContinuePending => (int)status.dwProcessId,
+                        _ => 0,
+                    };
                 }
                 finally
                 {

@@ -126,6 +126,26 @@ BeforeAll {
             Where-Object { $_.Trim() } |
             ForEach-Object { $_ | ConvertFrom-Json }
     }
+
+    function Get-AtomicMergeSourceSnapshot {
+        param([string[]]$Path)
+
+        @(
+            foreach ($source in $Path) {
+                Get-Item -LiteralPath $source -ErrorAction Stop
+                Get-ChildItem -LiteralPath $source -Recurse -Force -ErrorAction Stop
+            }
+        ) | Sort-Object FullName | ForEach-Object {
+            [pscustomobject]@{
+                Path = $_.FullName
+                Directory = $_.PSIsContainer
+                LinkTarget = $_.LinkTarget
+                Hash = if (-not $_.PSIsContainer -and -not ($_.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+                    (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash
+                }
+            }
+        } | ConvertTo-Json -Depth 4 -Compress
+    }
 }
 
 Describe 'Copilot CLI shim argument validation' {
@@ -201,6 +221,7 @@ Describe 'Merge-CopilotSession' {
             '|---|-------|------|'
             '| 9 | Older checkpoint | checkpoint-9.json |'
         )
+        Set-Content -LiteralPath (Join-Path $earlierPath 'checkpoints' 'checkpoint-9.json') -Value '{"checkpoint":"older"}'
 
         $merged = Merge-CopilotSession -Id $laterSession, $earlierSession -Confirm:$false
 
@@ -286,6 +307,799 @@ Describe 'Merge-CopilotSession' {
     }
 }
 
+Describe 'Merge-CopilotSession atomic failure handling' {
+    BeforeAll {
+        $script:AtomicOriginalFunctions = @{
+            'Get-CopilotSession' = (Get-Command Shmuelie.Copilot\Get-CopilotSession).ScriptBlock
+            'Repair-CopilotSessionEvents' = (Get-Command Shmuelie.Copilot\Repair-CopilotSessionEvents).ScriptBlock
+        }
+
+        function Set-AtomicMergeFailureCommand {
+            param(
+                [string]$Name,
+                [string]$ErrorId = 'AtomicRequiredFailure',
+                [string]$Message = 'Synthetic required operation failed.',
+                [string]$Target = 'synthetic-required-operation',
+                [ValidateSet('Always', 'FinalRepair', 'Discovery', 'Cleanup', 'Empty')]
+                [string]$Mode = 'Always'
+            )
+
+            & (Get-Module Shmuelie.Copilot) {
+                param($CommandName, $FailureId, $FailureMessage, $FailureTarget, $FailureMode, $Root, $Sessions)
+                $script:AtomicFailures[$CommandName] = @{
+                    Error = [System.Management.Automation.ErrorRecord]::new(
+                        [IO.IOException]::new($FailureMessage), $FailureId,
+                        [System.Management.Automation.ErrorCategory]::WriteError, $FailureTarget)
+                    Mode = $FailureMode
+                    Root = $Root
+                    Sessions = $Sessions
+                }
+                # Real advanced functions inherit the merge's preference; Pester's
+                # MockWith execution scope does not reproduce that cmdlet boundary.
+                Microsoft.PowerShell.Management\Set-Item -Path "Function:script:$CommandName" -Value {
+                    [CmdletBinding(SupportsShouldProcess, PositionalBinding = $false)]
+                    param(
+                        [Parameter(ValueFromPipeline)]$InputObject,
+                        [Parameter(Position = 0)][string]$Path,
+                        [string]$LiteralPath, [string]$Id,
+                        [string]$ItemType, [switch]$Force, [switch]$Recurse,
+                        [switch]$Raw, [int]$TotalCount, [string]$Destination,
+                        $Value, [string]$Encoding, [string]$Algorithm, [switch]$NoNewline,
+                        [string[]]$EventLines, [switch]$NoBackup
+                    )
+                    process {
+                        $failure = $script:AtomicFailures[$MyInvocation.MyCommand.Name]
+                        if ($failure.Mode -eq 'Empty') { return }
+                        if ($failure.Mode -eq 'FinalRepair' -and $PSBoundParameters.ContainsKey('EventLines')) {
+                            $EventLines
+                            return
+                        }
+                        if ($failure.Mode -eq 'Discovery') {
+                            $existing = @($failure.Sessions | Where-Object Id -EQ $Id)
+                            if ($existing.Count -eq 1) { $existing[0]; return }
+                        }
+                        if ($failure.Mode -eq 'Cleanup' -and
+                            ([IO.Path]::GetDirectoryName($LiteralPath) -ne $failure.Root -or
+                             [IO.Path]::GetFileName($LiteralPath) -in $failure.Sessions.Id)) {
+                            throw 'Unexpected attempt to remove a source session.'
+                        }
+                        $PSCmdlet.WriteError($failure.Error)
+                    }
+                }
+            } $Name $ErrorId $Message $Target $Mode $script:AtomicRoot $script:AtomicSessions
+            $script:AtomicOverriddenCommands.Add($Name)
+        }
+
+    }
+
+    BeforeEach {
+        $script:AtomicOverriddenCommands = [System.Collections.Generic.List[string]]::new()
+        & (Get-Module Shmuelie.Copilot) { $script:AtomicFailures = @{} }
+        $testHome = Join-Path $TestDrive ([guid]::NewGuid().ToString())
+        $script:AtomicRoot = Join-Path $testHome '.copilot' 'session-state'
+        $workspace = Join-Path $testHome 'workspace'
+        New-Item -ItemType Directory -Path $script:AtomicRoot, $workspace -Force -ErrorAction Stop | Out-Null
+        Mock -ModuleName Shmuelie.Copilot Get-CopilotHome {
+            if (-not $testHome -or -not [IO.Directory]::Exists($testHome)) {
+                throw 'Synthetic Copilot home is unavailable.'
+            }
+            $testHome
+        }
+        Mock -ModuleName Shmuelie.Copilot Get-Command { throw 'Unexpected native command discovery.' }
+        $script:AtomicIds = @('a1111111-1111-1111-1111-111111111111', 'b2222222-2222-2222-2222-222222222222')
+        $script:AtomicPaths = @(
+            for ($i = 0; $i -lt $script:AtomicIds.Count; $i++) {
+                $path = New-CopilotSessionState -SessionRoot $script:AtomicRoot -Id $script:AtomicIds[$i] -Cwd $workspace -Summary "Atomic source $i"
+                Set-CopilotTestEvents -SessionPath $path -Lines (New-CopilotTestConversationEvents -Prefix "atomic-$i" -SessionId $script:AtomicIds[$i] -Count 1 -Start ([datetimeoffset]'2026-08-20T20:00:00Z').AddMinutes($i))
+                $files = Join-Path $path 'files'
+                New-Item -ItemType Directory -Path $files -ErrorAction Stop | Out-Null
+                Set-Content -LiteralPath (Join-Path $files "payload-$i.txt") -Value "Source payload $i" -ErrorAction Stop
+                $path
+            }
+        )
+        $script:AtomicSessions = @($script:AtomicIds | ForEach-Object { Get-CopilotSession -Id $_ -ErrorAction Stop })
+        $script:AtomicBefore = Get-AtomicMergeSourceSnapshot -Path $script:AtomicPaths
+    }
+
+    AfterEach {
+        foreach ($name in $script:AtomicOverriddenCommands) {
+            & (Get-Module Shmuelie.Copilot) {
+                param($Name, $Original)
+                if ($Original) {
+                    Microsoft.PowerShell.Management\Set-Item -Path "Function:script:$Name" -Value $Original
+                } else {
+                    Microsoft.PowerShell.Management\Remove-Item -Path "Function:$Name" -ErrorAction Stop
+                }
+            } $name $script:AtomicOriginalFunctions[$name]
+        }
+        & (Get-Module Shmuelie.Copilot) {
+            Microsoft.PowerShell.Utility\Remove-Variable -Name AtomicFailures -Scope Script
+        }
+    }
+
+    It 'aborts a real copy sharing violation without deleting any source files' -Skip:(-not $IsWindows) {
+        $ErrorActionPreference = 'Continue'
+        $beforePreference = $ErrorActionPreference
+        $lockedPath = Join-Path $script:AtomicPaths[0] 'files' 'payload-0.txt'
+        $handle = [IO.File]::Open($lockedPath, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+        $failure = $null
+        $result = $null
+        try {
+            try {
+                $result = Merge-CopilotSession -Id $script:AtomicIds -RemoveSource -Confirm:$false -ErrorAction Continue
+            } catch { $failure = $_ }
+        } finally { $handle.Dispose() }
+
+        $failure | Should -Not -BeNullOrEmpty
+        $failure.FullyQualifiedErrorId | Should -Match 'Copy'
+        $failure.TargetObject | Should -Match ([regex]::Escape('payload-0.txt'))
+        $result | Should -BeNullOrEmpty
+        $ErrorActionPreference | Should -Be $beforePreference
+        Get-AtomicMergeSourceSnapshot -Path $script:AtomicPaths | Should -BeExactly $script:AtomicBefore
+        @(Get-ChildItem -LiteralPath $script:AtomicRoot -Directory).Name | Sort-Object | Should -Be ($script:AtomicIds | Sort-Object)
+    }
+
+    It 'aborts a nonterminating <Operation> failure and retains its error identity' -ForEach @(
+        @{ Operation = 'create'; Command = 'New-Item' }
+        @{ Operation = 'read'; Command = 'Get-Content' }
+        @{ Operation = 'enumerate'; Command = 'Get-ChildItem' }
+        @{ Operation = 'hash'; Command = 'Get-FileHash' }
+        @{ Operation = 'copy'; Command = 'Copy-Item' }
+        @{ Operation = 'append'; Command = 'Add-Content' }
+        @{ Operation = 'write'; Command = 'Set-Content' }
+        @{ Operation = 'repair'; Command = 'Repair-CopilotSessionEvents' }
+    ) {
+        $ErrorActionPreference = 'Continue'
+        $beforePreference = $ErrorActionPreference
+        if ($Operation -eq 'hash') {
+            Copy-Item -LiteralPath (Join-Path $script:AtomicPaths[0] 'files' 'payload-0.txt') -Destination (Join-Path $script:AtomicPaths[1] 'files' 'payload-0.txt') -ErrorAction Stop
+            $script:AtomicBefore = Get-AtomicMergeSourceSnapshot -Path $script:AtomicPaths
+        }
+        Set-AtomicMergeFailureCommand -Name $Command
+
+        $failure = $null
+        $result = $null
+        try {
+            $result = $script:AtomicSessions | Merge-CopilotSession -RemoveSource -Confirm:$false -ErrorAction Continue
+        } catch { $failure = $_ }
+
+        $failure | Should -Not -BeNullOrEmpty
+        $failure.FullyQualifiedErrorId | Should -Match 'AtomicRequiredFailure'
+        $failure.CategoryInfo.Category | Should -Be ([System.Management.Automation.ErrorCategory]::WriteError)
+        $failure.TargetObject | Should -Be 'synthetic-required-operation'
+        $result | Should -BeNullOrEmpty
+        $ErrorActionPreference | Should -Be $beforePreference
+        Get-AtomicMergeSourceSnapshot -Path $script:AtomicPaths | Should -BeExactly $script:AtomicBefore
+        @(Get-ChildItem -LiteralPath $script:AtomicRoot -Directory).Name | Sort-Object | Should -Be ($script:AtomicIds | Sort-Object)
+    }
+
+    It 'aborts a final repair error after materialization but before source deletion' {
+        $ErrorActionPreference = 'Continue'
+        Set-AtomicMergeFailureCommand -Name Repair-CopilotSessionEvents -Mode FinalRepair -ErrorId AtomicFinalRepairFailure
+
+        $failure = $null
+        try {
+            $script:AtomicSessions | Merge-CopilotSession -RemoveSource -Confirm:$false -ErrorAction Continue | Out-Null
+        } catch { $failure = $_ }
+
+        $failure.FullyQualifiedErrorId | Should -Match 'AtomicFinalRepairFailure'
+        Get-AtomicMergeSourceSnapshot -Path $script:AtomicPaths | Should -BeExactly $script:AtomicBefore
+        @(Get-ChildItem -LiteralPath $script:AtomicRoot -Directory).Name | Sort-Object | Should -Be ($script:AtomicIds | Sort-Object)
+    }
+
+    It 'aborts source discovery errors without merging a previously collected prefix' {
+        $ErrorActionPreference = 'Continue'
+        Set-AtomicMergeFailureCommand -Name Get-CopilotSession -Mode Discovery -ErrorId AtomicDiscoveryFailure
+
+        $failure = $null
+        try {
+            Merge-CopilotSession -Id ($script:AtomicIds + 'c3333333-3333-3333-3333-333333333333') -RemoveSource -Confirm:$false -ErrorAction Continue | Out-Null
+        } catch { $failure = $_ }
+
+        $failure.FullyQualifiedErrorId | Should -Match 'AtomicDiscoveryFailure'
+        Get-AtomicMergeSourceSnapshot -Path $script:AtomicPaths | Should -BeExactly $script:AtomicBefore
+        @(Get-ChildItem -LiteralPath $script:AtomicRoot -Directory).Name | Sort-Object | Should -Be ($script:AtomicIds | Sort-Object)
+    }
+
+    It 'aborts a missing source without merging a previously collected prefix' {
+        $ErrorActionPreference = 'Continue'
+        {
+            Merge-CopilotSession -Id ($script:AtomicIds + 'c3333333-3333-3333-3333-333333333333') -RemoveSource -Confirm:$false -ErrorAction Continue
+        } | Should -Throw '*not found*'
+
+        Get-AtomicMergeSourceSnapshot -Path $script:AtomicPaths | Should -BeExactly $script:AtomicBefore
+        @(Get-ChildItem -LiteralPath $script:AtomicRoot -Directory).Name | Sort-Object | Should -Be ($script:AtomicIds | Sort-Object)
+    }
+
+    It 'reads the completed destination before deleting any source sessions' {
+        $ErrorActionPreference = 'Continue'
+        Set-AtomicMergeFailureCommand -Name Get-CopilotSession -Mode Discovery -ErrorId AtomicDestinationReadFailure
+
+        $failure = $null
+        try {
+            $script:AtomicSessions | Merge-CopilotSession -RemoveSource -Confirm:$false -ErrorAction Continue | Out-Null
+        } catch { $failure = $_ }
+
+        $failure.FullyQualifiedErrorId | Should -Match 'AtomicDestinationReadFailure'
+        Get-AtomicMergeSourceSnapshot -Path $script:AtomicPaths | Should -BeExactly $script:AtomicBefore
+        @(Get-ChildItem -LiteralPath $script:AtomicRoot -Directory).Name | Sort-Object | Should -Be ($script:AtomicIds | Sort-Object)
+    }
+
+    It 'reports cleanup failure without replacing the original required-operation error' {
+        $ErrorActionPreference = 'Continue'
+        Set-AtomicMergeFailureCommand -Name Repair-CopilotSessionEvents -ErrorId AtomicOriginalFailure -Target 'original-repair'
+        Set-AtomicMergeFailureCommand -Name Remove-Item -Mode Cleanup -ErrorId AtomicCleanupFailure -Message 'Synthetic destination cleanup failure.'
+
+        $failure = $null
+        $cleanupWarnings = @()
+        try {
+            $script:AtomicSessions | Merge-CopilotSession -RemoveSource -Confirm:$false -ErrorAction Continue -WarningAction Stop -WarningVariable +cleanupWarnings | Out-Null
+        } catch { $failure = $_ }
+
+        $failure.FullyQualifiedErrorId | Should -Match 'AtomicOriginalFailure'
+        $failure.TargetObject | Should -Be 'original-repair'
+        @($cleanupWarnings) | Should -HaveCount 1
+        $cleanupWarnings[0].Message | Should -Match 'Failed to clean up partial merged session.*Synthetic destination cleanup failure'
+        Get-AtomicMergeSourceSnapshot -Path $script:AtomicPaths | Should -BeExactly $script:AtomicBefore
+        $partial = @(Get-ChildItem -LiteralPath $script:AtomicRoot -Directory | Where-Object Name -NotIn $script:AtomicIds)
+        $partial | Should -HaveCount 1
+        $cleanupWarnings[0].Message | Should -Match ([regex]::Escape($partial[0].FullName))
+        Microsoft.PowerShell.Management\Remove-Item -LiteralPath $partial[0].FullName -Recurse -Force -ErrorAction Stop
+    }
+
+    It 'rejects an empty destination read-back before deleting sources' {
+        $ErrorActionPreference = 'Continue'
+        Set-AtomicMergeFailureCommand -Name Get-CopilotSession -Mode Empty
+
+        {
+            $script:AtomicSessions | Merge-CopilotSession -RemoveSource -Confirm:$false -ErrorAction Continue
+        } | Should -Throw '*could not be read*'
+
+        Get-AtomicMergeSourceSnapshot -Path $script:AtomicPaths | Should -BeExactly $script:AtomicBefore
+        @(Get-ChildItem -LiteralPath $script:AtomicRoot -Directory).Name | Sort-Object | Should -Be ($script:AtomicIds | Sort-Object)
+    }
+
+    It 'rejects an empty hash result rather than assuming identical contents' {
+        Copy-Item -LiteralPath (Join-Path $script:AtomicPaths[0] 'files' 'payload-0.txt') -Destination (Join-Path $script:AtomicPaths[1] 'files' 'payload-0.txt') -ErrorAction Stop
+        $before = Get-AtomicMergeSourceSnapshot -Path $script:AtomicPaths
+        Set-AtomicMergeFailureCommand -Name Get-FileHash -Mode Empty
+
+        {
+            $script:AtomicSessions | Merge-CopilotSession -RemoveSource -Confirm:$false -ErrorAction Continue
+        } | Should -Throw '*hashing did not return a valid result*'
+
+        Get-AtomicMergeSourceSnapshot -Path $script:AtomicPaths | Should -BeExactly $before
+        @(Get-ChildItem -LiteralPath $script:AtomicRoot -Directory).Name | Sort-Object | Should -Be ($script:AtomicIds | Sort-Object)
+    }
+
+    It 'does not leak error preferences after a successful RemoveSource merge' {
+        $ErrorActionPreference = 'Continue'
+        $beforePreference = $ErrorActionPreference
+
+        $merged = Merge-CopilotSession -Id $script:AtomicIds -RemoveSource -Confirm:$false -ErrorAction Continue
+
+        $merged | Should -Not -BeNullOrEmpty
+        $ErrorActionPreference | Should -Be $beforePreference
+        foreach ($path in $script:AtomicPaths) { Test-Path -LiteralPath $path | Should -BeFalse }
+        @(Get-ChildItem -LiteralPath $script:AtomicRoot -Directory).Name | Should -Be $merged.Id
+    }
+}
+
+Describe 'Merge-CopilotSession artifact collisions' {
+    BeforeEach {
+        $testHome = Join-Path $TestDrive ([guid]::NewGuid().ToString())
+        $script:CollisionRoot = Join-Path $testHome '.copilot' 'session-state'
+        $workspace = Join-Path $testHome 'workspace'
+        New-Item -ItemType Directory -Path $script:CollisionRoot, $workspace -Force -ErrorAction Stop | Out-Null
+        Mock -ModuleName Shmuelie.Copilot Get-CopilotHome {
+            if (-not $testHome -or -not [IO.Directory]::Exists($testHome)) { throw 'Synthetic Copilot home is unavailable.' }
+            $testHome
+        }
+        Mock -ModuleName Shmuelie.Copilot Get-Command { throw 'Unexpected native command discovery.' }
+        $script:CollisionIds = @('c1111111-1111-1111-1111-111111111111', 'd2222222-2222-2222-2222-222222222222')
+        $script:CollisionPaths = @(
+            for ($i = 0; $i -lt $script:CollisionIds.Count; $i++) {
+                $path = New-CopilotSessionState -SessionRoot $script:CollisionRoot -Id $script:CollisionIds[$i] -Cwd $workspace -Summary "Collision source $i"
+                Set-CopilotTestEvents -SessionPath $path -Lines (New-CopilotTestConversationEvents -Prefix "collision-$i" -SessionId $script:CollisionIds[$i] -Count 1 -Start ([datetimeoffset]'2026-08-20T20:00:00Z').AddMinutes($i))
+                $path
+            }
+        )
+    }
+
+    It 'rejects <Kind> in <Area> without changing any source' -ForEach @(
+        foreach ($area in 'files', 'research', (Join-Path 'rewind-snapshots' 'backups')) {
+            foreach ($kind in 'different contents', 'file then directory', 'directory then file', 'nested file', 'case-only file', 'hidden file') {
+                @{ Area = $area; Kind = $kind }
+            }
+        }
+    ) {
+        $ErrorActionPreference = 'Continue'
+        $relative = if ($Kind -eq 'nested file') { Join-Path 'shared' 'report[1].txt' } elseif ($Kind -eq 'hidden file') { '.report[1].txt' } else { 'report[1].txt' }
+        for ($i = 0; $i -lt 2; $i++) {
+            $name = if ($Kind -eq 'case-only file' -and $i -eq 1) { 'REPORT[1].TXT' } else { $relative }
+            $path = Join-Path $script:CollisionPaths[$i] $Area $name
+            $isDirectory = ($Kind -eq 'file then directory' -and $i -eq 1) -or ($Kind -eq 'directory then file' -and $i -eq 0)
+            if ($isDirectory) { $path = Join-Path $path 'child.txt' }
+            New-Item -ItemType Directory -Path (Split-Path $path -Parent) -Force -ErrorAction Stop | Out-Null
+            Set-Content -LiteralPath $path -Value "Distinct source $i" -ErrorAction Stop
+            if ($Kind -eq 'hidden file' -and $IsWindows) {
+                [IO.File]::SetAttributes($path, [IO.File]::GetAttributes($path) -bor [IO.FileAttributes]::Hidden)
+            }
+        }
+        $before = Get-AtomicMergeSourceSnapshot -Path $script:CollisionPaths
+        Mock -ModuleName Shmuelie.Copilot New-Item { throw 'Destination creation started before conflict validation.' }
+
+        $failure = $null
+        $result = $null
+        try {
+            $result = Merge-CopilotSession -Id $script:CollisionIds -RemoveSource -Confirm:$false -ErrorAction Continue
+        } catch { $failure = $_ }
+
+        $failure.Exception.Message | Should -Match 'artifact.*conflict'
+        $failure.Exception.Message | Should -Match ([regex]::Escape($Area))
+        foreach ($id in $script:CollisionIds) { $failure.Exception.Message | Should -Match ([regex]::Escape($id)) }
+        $result | Should -BeNullOrEmpty
+        Get-AtomicMergeSourceSnapshot -Path $script:CollisionPaths | Should -BeExactly $before
+        @(Get-ChildItem -LiteralPath $script:CollisionRoot -Directory).Name | Sort-Object | Should -Be ($script:CollisionIds | Sort-Object)
+        $ErrorActionPreference | Should -Be 'Continue'
+    }
+
+    It 'preserves disjoint artifacts under shared directories and literal bracket names in <Area>' -ForEach @(
+        @{ Area = 'files' }
+        @{ Area = 'research' }
+        @{ Area = (Join-Path 'rewind-snapshots' 'backups') }
+    ) {
+        foreach ($i in 0, 1) {
+            $directory = Join-Path $script:CollisionPaths[$i] $Area 'shared[1]'
+            New-Item -ItemType Directory -Path $directory -Force -ErrorAction Stop | Out-Null
+            Set-Content -LiteralPath (Join-Path $directory "report-$i.txt") -Value "Distinct source $i" -ErrorAction Stop
+        }
+
+        $merged = Merge-CopilotSession -Id $script:CollisionIds -RemoveSource -Confirm:$false -ErrorAction Continue
+
+        $merged | Should -Not -BeNullOrEmpty
+        foreach ($i in 0, 1) {
+            Get-Content -LiteralPath (Join-Path $merged.Path $Area 'shared[1]' "report-$i.txt") | Should -Be "Distinct source $i"
+            Test-Path -LiteralPath $script:CollisionPaths[$i] | Should -BeFalse
+        }
+        $events = @(Get-CopilotTestEventObjects -SessionPath $merged.Path)
+        @($events | Where-Object type -EQ 'user.message' | ForEach-Object { $_.data.content }) | Should -Be @('collision-0 user 1', 'collision-1 user 1')
+    }
+
+    It 'preserves identical <ContentKind> artifacts in <Area> with RemoveSource=<RemoveSources>' -ForEach @(
+        foreach ($area in 'files', 'research', (Join-Path 'rewind-snapshots' 'backups')) {
+            foreach ($kind in 'binary', 'empty') {
+                foreach ($remove in $false, $true) {
+                    @{ Area = $area; ContentKind = $kind; RemoveSources = $remove }
+                }
+            }
+        }
+    ) {
+        $bytes = [byte[]]@()
+        if ($ContentKind -eq 'binary') { $bytes = [byte[]]@(0, 1, 13, 10, 127, 128, 254, 255) }
+        foreach ($i in 0, 1) {
+            $directory = Join-Path $script:CollisionPaths[$i] $Area 'shared[1]'
+            New-Item -ItemType Directory -Path $directory -Force -ErrorAction Stop | Out-Null
+            [IO.File]::WriteAllBytes((Join-Path $directory 'identical[1].bin'), [byte[]]$bytes)
+        }
+        $before = Get-AtomicMergeSourceSnapshot -Path $script:CollisionPaths
+
+        $merged = Merge-CopilotSession -Id $script:CollisionIds -RemoveSource:$RemoveSources -Confirm:$false -ErrorAction Continue
+
+        [Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $merged.Path $Area 'shared[1]' 'identical[1].bin'))) |
+            Should -BeExactly ([Convert]::ToBase64String($bytes))
+        if ($RemoveSources) {
+            foreach ($path in $script:CollisionPaths) { Test-Path -LiteralPath $path | Should -BeFalse }
+        } else {
+            Get-AtomicMergeSourceSnapshot -Path $script:CollisionPaths | Should -BeExactly $before
+        }
+    }
+
+    It 'aborts when identical artifact <LockedIndex> cannot be read for comparison' -Skip:(-not $IsWindows) -ForEach @(
+        @{ LockedIndex = 0 }
+        @{ LockedIndex = 1 }
+    ) {
+        $paths = @(
+            foreach ($i in 0, 1) {
+                $directory = Join-Path $script:CollisionPaths[$i] 'files'
+                New-Item -ItemType Directory -Path $directory -ErrorAction Stop | Out-Null
+                $path = Join-Path $directory 'identical.txt'
+                Set-Content -LiteralPath $path -Value 'Identical bytes' -ErrorAction Stop
+                $path
+            }
+        )
+        $before = Get-AtomicMergeSourceSnapshot -Path $script:CollisionPaths
+        $handle = [IO.File]::Open($paths[$LockedIndex], [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+        $failure = $null
+        try {
+            try {
+                Merge-CopilotSession -Id $script:CollisionIds -RemoveSource -Confirm:$false -ErrorAction Continue | Out-Null
+            } catch { $failure = $_ }
+        } finally { $handle.Dispose() }
+
+        $failure | Should -Not -BeNullOrEmpty
+        $failure.FullyQualifiedErrorId | Should -Match 'FileReadError|GetFileHash'
+        Get-AtomicMergeSourceSnapshot -Path $script:CollisionPaths | Should -BeExactly $before
+        @(Get-ChildItem -LiteralPath $script:CollisionRoot -Directory).Name | Sort-Object | Should -Be ($script:CollisionIds | Sort-Object)
+    }
+
+    It 'keeps same leaf names in different artifact namespaces independent' {
+        $first = Join-Path $script:CollisionPaths[0] 'files'
+        $second = Join-Path $script:CollisionPaths[1] 'research'
+        New-Item -ItemType Directory -Path $first, $second -ErrorAction Stop | Out-Null
+        Set-Content -LiteralPath (Join-Path $first 'report.txt') -Value 'File artifact' -ErrorAction Stop
+        Set-Content -LiteralPath (Join-Path $second 'report.txt') -Value 'Research artifact' -ErrorAction Stop
+
+        $merged = Merge-CopilotSession -Id $script:CollisionIds -RemoveSource -Confirm:$false
+
+        Get-Content -LiteralPath (Join-Path $merged.Path 'files' 'report.txt') | Should -Be 'File artifact'
+        Get-Content -LiteralPath (Join-Path $merged.Path 'research' 'report.txt') | Should -Be 'Research artifact'
+    }
+
+    It 'also rejects conflicting pipeline input when RemoveSource is not requested' {
+        foreach ($i in 0, 1) {
+            $directory = Join-Path $script:CollisionPaths[$i] 'files'
+            New-Item -ItemType Directory -Path $directory -ErrorAction Stop | Out-Null
+            Set-Content -LiteralPath (Join-Path $directory 'shared.txt') -Value "Source $i" -ErrorAction Stop
+        }
+        $sessions = @($script:CollisionIds | ForEach-Object { Get-CopilotSession -Id $_ -ErrorAction Stop })
+        $before = Get-AtomicMergeSourceSnapshot -Path $script:CollisionPaths
+
+        { $sessions | Merge-CopilotSession -Confirm:$false -ErrorAction Continue } |
+            Should -Throw '*artifact path conflict*'
+
+        Get-AtomicMergeSourceSnapshot -Path $script:CollisionPaths | Should -BeExactly $before
+        @(Get-ChildItem -LiteralPath $script:CollisionRoot -Directory).Name | Sort-Object | Should -Be ($script:CollisionIds | Sort-Object)
+    }
+
+    It 'preserves nonconflicting hidden artifacts in <Area>' -ForEach @(
+        @{ Area = 'files' }
+        @{ Area = 'research' }
+        @{ Area = (Join-Path 'rewind-snapshots' 'backups') }
+    ) {
+        foreach ($i in 0, 1) {
+            $directory = Join-Path $script:CollisionPaths[$i] $Area
+            New-Item -ItemType Directory -Path $directory -Force -ErrorAction Stop | Out-Null
+            $path = Join-Path $directory ".hidden-$i.txt"
+            Set-Content -LiteralPath $path -Value "Hidden source $i" -ErrorAction Stop
+            if ($IsWindows) {
+                [IO.File]::SetAttributes($path, [IO.File]::GetAttributes($path) -bor [IO.FileAttributes]::Hidden)
+            }
+        }
+
+        $merged = Merge-CopilotSession -Id $script:CollisionIds -RemoveSource -Confirm:$false
+
+        foreach ($i in 0, 1) {
+            Get-Content -LiteralPath (Join-Path $merged.Path $Area ".hidden-$i.txt") | Should -Be "Hidden source $i"
+            Test-Path -LiteralPath $script:CollisionPaths[$i] | Should -BeFalse
+        }
+    }
+
+    It 'does not inspect or copy artifacts during WhatIf' {
+        Mock -ModuleName Shmuelie.Copilot Get-ChildItem { throw 'Unexpected artifact inspection.' }
+        $before = Get-AtomicMergeSourceSnapshot -Path $script:CollisionPaths
+
+        $result = Merge-CopilotSession -Id $script:CollisionIds -RemoveSource -WhatIf
+
+        $result | Should -BeNullOrEmpty
+        Get-AtomicMergeSourceSnapshot -Path $script:CollisionPaths | Should -BeExactly $before
+        Should -Invoke -ModuleName Shmuelie.Copilot Get-ChildItem -Times 0 -Exactly
+        @(Get-ChildItem -LiteralPath $script:CollisionRoot -Directory).Name | Sort-Object | Should -Be ($script:CollisionIds | Sort-Object)
+    }
+
+    It 'does not report missing optional artifact directories as errors' {
+        $observedErrors = @()
+
+        $merged = Merge-CopilotSession -Id $script:CollisionIds -Confirm:$false -ErrorAction Continue -ErrorVariable +observedErrors
+
+        $merged | Should -Not -BeNullOrEmpty
+        @($observedErrors) | Should -HaveCount 0
+    }
+
+    It 'refuses artifact links at <Location> without following their targets' -ForEach @(
+        @{ Location = 'root' }
+        @{ Location = 'dangling root' }
+        @{ Location = 'nested directory' }
+        @{ Location = 'nested file' }
+        @{ Location = 'intermediate rewind directory' }
+    ) {
+        $canary = Join-Path $testHome 'canary'
+        New-Item -ItemType Directory -Path (Join-Path $canary 'backups') -Force -ErrorAction Stop | Out-Null
+        $canaryFile = Join-Path $canary 'backups' 'untouched.txt'
+        Set-Content -LiteralPath $canaryFile -Value 'Synthetic canary' -ErrorAction Stop
+        $target = $canary
+        $link = switch ($Location) {
+            'root' { Join-Path $script:CollisionPaths[0] 'files' }
+            'dangling root' {
+                $target = Join-Path $testHome 'missing-target'
+                Join-Path $script:CollisionPaths[0] 'files'
+            }
+            'nested directory' {
+                $files = Join-Path $script:CollisionPaths[0] 'files'
+                New-Item -ItemType Directory -Path $files -ErrorAction Stop | Out-Null
+                Join-Path $files 'linked'
+            }
+            'nested file' {
+                $files = Join-Path $script:CollisionPaths[0] 'files'
+                New-Item -ItemType Directory -Path $files -ErrorAction Stop | Out-Null
+                $target = $canaryFile
+                Join-Path $files 'linked.txt'
+            }
+            'intermediate rewind directory' { Join-Path $script:CollisionPaths[0] 'rewind-snapshots' }
+        }
+        if ($Location -eq 'nested file') {
+            [IO.File]::CreateSymbolicLink($link, $target) | Out-Null
+        } else {
+            [IO.Directory]::CreateSymbolicLink($link, $target) | Out-Null
+        }
+        $before = Get-AtomicMergeSourceSnapshot -Path $script:CollisionPaths
+
+        { Merge-CopilotSession -Id $script:CollisionIds -RemoveSource -Confirm:$false -ErrorAction Continue } |
+            Should -Throw '*artifact*reparse point*'
+
+        Get-AtomicMergeSourceSnapshot -Path $script:CollisionPaths | Should -BeExactly $before
+        Get-Content -LiteralPath $canaryFile | Should -Be 'Synthetic canary'
+        (Get-Item -LiteralPath $link -Force -ErrorAction Stop).LinkTarget | Should -BeExactly $target
+        @(Get-ChildItem -LiteralPath $script:CollisionRoot -Directory).Name | Sort-Object | Should -Be ($script:CollisionIds | Sort-Object)
+    }
+}
+
+Describe 'Merge-CopilotSession checkpoint bodies' {
+    BeforeAll {
+        function Set-CheckpointBodyFixture {
+            param([int]$Source, [string]$FileName, [string]$Content, [int]$Number = 9)
+            $directory = Join-Path $script:CheckpointPaths[$Source] 'checkpoints'
+            $body = Join-Path $directory $FileName
+            New-Item -ItemType Directory -Path (Split-Path $body -Parent) -Force -ErrorAction Stop | Out-Null
+            Set-Content -LiteralPath $body -Value $Content -NoNewline -ErrorAction Stop
+            Set-Content -LiteralPath (Join-Path $directory 'index.md') -Value @(
+                '# Checkpoint History'
+                '| # | Title | File |'
+                '|---|-------|------|'
+                "| $Number | Checkpoint $Source | $FileName |"
+            ) -ErrorAction Stop
+        }
+    }
+
+    BeforeEach {
+        $testHome = Join-Path $TestDrive ([guid]::NewGuid().ToString())
+        $script:CheckpointRoot = Join-Path $testHome '.copilot' 'session-state'
+        $workspace = Join-Path $testHome 'workspace'
+        New-Item -ItemType Directory -Path $script:CheckpointRoot, $workspace -Force -ErrorAction Stop | Out-Null
+        Mock -ModuleName Shmuelie.Copilot Get-CopilotHome {
+            if (-not $testHome -or -not [IO.Directory]::Exists($testHome)) { throw 'Synthetic Copilot home is unavailable.' }
+            $testHome
+        }
+        Mock -ModuleName Shmuelie.Copilot Get-Command { throw 'Unexpected native command discovery.' }
+        $script:CheckpointIds = @('e1111111-1111-1111-1111-111111111111', 'f2222222-2222-2222-2222-222222222222')
+        $script:CheckpointPaths = @(
+            foreach ($i in 0, 1) {
+                $start = ([datetimeoffset]'2026-08-20T20:00:00Z').AddMinutes($i)
+                $path = New-CopilotSessionState -SessionRoot $script:CheckpointRoot -Id $script:CheckpointIds[$i] -Cwd $workspace -Summary "Checkpoint source $i" -UpdatedAt $start.ToString('o')
+                Set-CopilotTestEvents -SessionPath $path -Lines (New-CopilotTestConversationEvents -Prefix "checkpoint-$i" -SessionId $script:CheckpointIds[$i] -Count 1 -Start $start)
+                $path
+            }
+        )
+        Set-CheckpointBodyFixture -Source 0 -FileName 'checkpoint-a.md' -Content 'First checkpoint payload' -Number 9
+        Set-CheckpointBodyFixture -Source 1 -FileName 'checkpoint-b.json' -Content '{"checkpoint":"second"}' -Number 3
+    }
+
+    It 'copies bodies and preserves renumbered references with RemoveSource=<RemoveSources>' -ForEach @(
+        @{ RemoveSources = $false }
+        @{ RemoveSources = $true }
+    ) {
+        $before = Get-AtomicMergeSourceSnapshot -Path $script:CheckpointPaths
+        $expected = @(
+            @{ Name = 'checkpoint-a.md'; Hash = (Get-FileHash -LiteralPath (Join-Path $script:CheckpointPaths[0] 'checkpoints' 'checkpoint-a.md')).Hash }
+            @{ Name = 'checkpoint-b.json'; Hash = (Get-FileHash -LiteralPath (Join-Path $script:CheckpointPaths[1] 'checkpoints' 'checkpoint-b.json')).Hash }
+        )
+
+        $merged = Merge-CopilotSession -Id $script:CheckpointIds -RemoveSource:$RemoveSources -Confirm:$false -ErrorAction Continue
+
+        $index = @(Get-Content -LiteralPath (Join-Path $merged.Path 'checkpoints' 'index.md'))
+        $index | Should -Contain '| 1 | Checkpoint 0 | checkpoint-a.md |'
+        $index | Should -Contain '| 2 | Checkpoint 1 | checkpoint-b.json |'
+        foreach ($body in $expected) {
+            (Get-FileHash -LiteralPath (Join-Path $merged.Path 'checkpoints' $body.Name)).Hash | Should -BeExactly $body.Hash
+        }
+        if ($RemoveSources) {
+            foreach ($path in $script:CheckpointPaths) { Test-Path -LiteralPath $path | Should -BeFalse }
+        } else {
+            Get-AtomicMergeSourceSnapshot -Path $script:CheckpointPaths | Should -BeExactly $before
+        }
+    }
+
+    It 'preserves identical bodies without treating differing indexes as collisions' {
+        foreach ($i in 0, 1) { Set-CheckpointBodyFixture -Source $i -FileName 'shared.md' -Content 'Identical payload' -Number (9 - $i) }
+
+        $merged = Merge-CopilotSession -Id $script:CheckpointIds -RemoveSource -Confirm:$false
+
+        Get-Content -LiteralPath (Join-Path $merged.Path 'checkpoints' 'shared.md') -Raw | Should -BeExactly 'Identical payload'
+        $index = @(Get-Content -LiteralPath (Join-Path $merged.Path 'checkpoints' 'index.md'))
+        $index | Should -Contain '| 1 | Checkpoint 0 | shared.md |'
+        $index | Should -Contain '| 2 | Checkpoint 1 | shared.md |'
+        Test-Path -LiteralPath (Join-Path $merged.Path 'checkpoints' 'checkpoint-a.md') | Should -BeTrue
+        Test-Path -LiteralPath (Join-Path $merged.Path 'checkpoints' 'checkpoint-b.json') | Should -BeTrue
+    }
+
+    It 'rejects checkpoint <Kind> conflicts with sources intact' -ForEach @(
+        @{ Kind = 'different body contents' }
+        @{ Kind = 'file then directory' }
+        @{ Kind = 'directory then file' }
+        @{ Kind = 'nested index body contents' }
+    ) {
+        $name = if ($Kind -eq 'nested index body contents') { Join-Path 'nested' 'index.md' } else { 'shared.md' }
+        foreach ($i in 0, 1) { Set-CheckpointBodyFixture -Source $i -FileName $name -Content "Source $i" }
+        if ($Kind -in 'file then directory', 'directory then file') {
+            $directorySource = if ($Kind -eq 'file then directory') { 1 } else { 0 }
+            $path = Join-Path $script:CheckpointPaths[$directorySource] 'checkpoints' $name
+            Remove-Item -LiteralPath $path -ErrorAction Stop
+            New-Item -ItemType Directory -Path $path -ErrorAction Stop | Out-Null
+            Set-Content -LiteralPath (Join-Path $path 'child.txt') -Value 'Directory payload' -ErrorAction Stop
+        }
+        $before = Get-AtomicMergeSourceSnapshot -Path $script:CheckpointPaths
+
+        { Merge-CopilotSession -Id $script:CheckpointIds -RemoveSource -Confirm:$false -ErrorAction Continue } |
+            Should -Throw '*artifact path conflict*'
+
+        Get-AtomicMergeSourceSnapshot -Path $script:CheckpointPaths | Should -BeExactly $before
+        @(Get-ChildItem -LiteralPath $script:CheckpointRoot -Directory).Name | Sort-Object | Should -Be ($script:CheckpointIds | Sort-Object)
+    }
+
+    It 'preserves literal nested file references without rewriting them' {
+        Set-CheckpointBodyFixture -Source 0 -FileName 'nested/checkpoint[1].md' -Content 'Literal nested payload'
+
+        $merged = Merge-CopilotSession -Id $script:CheckpointIds -RemoveSource -Confirm:$false
+
+        @(Get-Content -LiteralPath (Join-Path $merged.Path 'checkpoints' 'index.md')) |
+            Should -Contain '| 1 | Checkpoint 0 | nested/checkpoint[1].md |'
+        Get-Content -LiteralPath (Join-Path $merged.Path 'checkpoints' 'nested' 'checkpoint[1].md') -Raw |
+            Should -BeExactly 'Literal nested payload'
+    }
+
+    It 'rejects a missing indexed body and removes only the partial destination' {
+        Remove-Item -LiteralPath (Join-Path $script:CheckpointPaths[1] 'checkpoints' 'checkpoint-b.json') -ErrorAction Stop
+        $before = Get-AtomicMergeSourceSnapshot -Path $script:CheckpointPaths
+
+        { Merge-CopilotSession -Id $script:CheckpointIds -RemoveSource -Confirm:$false -ErrorAction Continue } |
+            Should -Throw '*Checkpoint body*not found*'
+
+        Get-AtomicMergeSourceSnapshot -Path $script:CheckpointPaths | Should -BeExactly $before
+        @(Get-ChildItem -LiteralPath $script:CheckpointRoot -Directory).Name | Sort-Object | Should -Be ($script:CheckpointIds | Sort-Object)
+    }
+
+    It 'rejects unsupported reference <Reference> without reading outside the fixture' -ForEach @(
+        @{ Reference = '../escape.md' }
+        @{ Reference = '..\escape.md' }
+        @{ Reference = '.. \escape.md' }
+        @{ Reference = 'nested.\body.md' }
+        @{ Reference = '/outside.md' }
+        @{ Reference = 'C:\outside.md' }
+        @{ Reference = 'body.md:stream' }
+        @{ Reference = 'index.md' }
+        @{ Reference = '[body](body.md)' }
+    ) {
+        Set-Content -LiteralPath (Join-Path $script:CheckpointPaths[0] 'checkpoints' 'index.md') -Value "| 1 | Unsupported | $Reference |" -ErrorAction Stop
+        $before = Get-AtomicMergeSourceSnapshot -Path $script:CheckpointPaths
+
+        { Merge-CopilotSession -Id $script:CheckpointIds -RemoveSource -Confirm:$false -ErrorAction Continue } |
+            Should -Throw '*Unsupported checkpoint body reference*'
+
+        Get-AtomicMergeSourceSnapshot -Path $script:CheckpointPaths | Should -BeExactly $before
+        @(Get-ChildItem -LiteralPath $script:CheckpointRoot -Directory).Name | Sort-Object | Should -Be ($script:CheckpointIds | Sort-Object)
+    }
+
+    It 'rejects unsupported index format <Content>' -ForEach @(
+        @{ Content = '| 1 | Missing file column |' }
+        @{ Content = '| 1 | Empty file column |   |' }
+        @{ Content = '| # | Title | Different format |' }
+        @{ Content = '{"checkpoints":[]}' }
+    ) {
+        Set-Content -LiteralPath (Join-Path $script:CheckpointPaths[0] 'checkpoints' 'index.md') -Value $Content -ErrorAction Stop
+        $before = Get-AtomicMergeSourceSnapshot -Path $script:CheckpointPaths
+
+        { Merge-CopilotSession -Id $script:CheckpointIds -RemoveSource -Confirm:$false -ErrorAction Continue } |
+            Should -Throw '*Unsupported checkpoint index*'
+
+        Get-AtomicMergeSourceSnapshot -Path $script:CheckpointPaths | Should -BeExactly $before
+        @(Get-ChildItem -LiteralPath $script:CheckpointRoot -Directory).Name | Sort-Object | Should -Be ($script:CheckpointIds | Sort-Object)
+    }
+
+    It 'rejects a checkpoint <Entry> link, including the collision-excluded index' -ForEach @(
+        @{ Entry = 'checkpoint-a.md' }
+        @{ Entry = 'index.md' }
+    ) {
+        $canary = Join-Path $testHome 'canary.txt'
+        Set-Content -LiteralPath $canary -Value 'Synthetic canary' -ErrorAction Stop
+        $link = Join-Path $script:CheckpointPaths[0] 'checkpoints' $Entry
+        Remove-Item -LiteralPath $link -ErrorAction Stop
+        [IO.File]::CreateSymbolicLink($link, $canary) | Out-Null
+        $before = Get-AtomicMergeSourceSnapshot -Path $script:CheckpointPaths
+
+        { Merge-CopilotSession -Id $script:CheckpointIds -RemoveSource -Confirm:$false -ErrorAction Continue } |
+            Should -Throw '*reparse point*'
+
+        Get-AtomicMergeSourceSnapshot -Path $script:CheckpointPaths | Should -BeExactly $before
+        Get-Content -LiteralPath $canary | Should -Be 'Synthetic canary'
+    }
+
+    It 'aborts a real checkpoint-body copy failure before any source removal' -Skip:(-not $IsWindows) {
+        $before = Get-AtomicMergeSourceSnapshot -Path $script:CheckpointPaths
+        $locked = Join-Path $script:CheckpointPaths[0] 'checkpoints' 'checkpoint-a.md'
+        $handle = [IO.File]::Open($locked, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+        $failure = $null
+        try {
+            try { Merge-CopilotSession -Id $script:CheckpointIds -RemoveSource -Confirm:$false -ErrorAction Continue | Out-Null }
+            catch { $failure = $_ }
+        } finally { $handle.Dispose() }
+
+        $failure.FullyQualifiedErrorId | Should -Match 'Copy'
+        Get-AtomicMergeSourceSnapshot -Path $script:CheckpointPaths | Should -BeExactly $before
+        @(Get-ChildItem -LiteralPath $script:CheckpointRoot -Directory).Name | Sort-Object | Should -Be ($script:CheckpointIds | Sort-Object)
+    }
+
+    It 'rejects a successful-looking <CopyResult> checkpoint copy' -ForEach @(
+        @{ CopyResult = 'missing'; Message = '*Checkpoint body*not found*' }
+        @{ CopyResult = 'corrupt'; Message = '*artifact path conflict*' }
+    ) {
+        $before = Get-AtomicMergeSourceSnapshot -Path $script:CheckpointPaths
+        Mock -ModuleName Shmuelie.Copilot Copy-Item {
+            if (-not $Destination.StartsWith($script:CheckpointRoot + [IO.Path]::DirectorySeparatorChar)) { throw 'Unexpected copy destination.' }
+            if ($CopyResult -eq 'corrupt') {
+                Microsoft.PowerShell.Management\Set-Content -LiteralPath (Join-Path $Destination 'checkpoint-a.md') -Value 'Corrupt body'
+                Microsoft.PowerShell.Management\Set-Content -LiteralPath (Join-Path $Destination 'checkpoint-b.json') -Value 'Corrupt body'
+            }
+        } -ParameterFilter { [IO.Path]::GetFileName($Destination) -eq 'checkpoints' }
+
+        { Merge-CopilotSession -Id $script:CheckpointIds -RemoveSource -Confirm:$false -ErrorAction Continue } | Should -Throw $Message
+
+        Get-AtomicMergeSourceSnapshot -Path $script:CheckpointPaths | Should -BeExactly $before
+        @(Get-ChildItem -LiteralPath $script:CheckpointRoot -Directory).Name | Sort-Object | Should -Be ($script:CheckpointIds | Sort-Object)
+    }
+
+    It 'validates the generated index read-back before source deletion' {
+        $before = Get-AtomicMergeSourceSnapshot -Path $script:CheckpointPaths
+        Mock -ModuleName Shmuelie.Copilot Set-Content {
+            if (-not $LiteralPath.StartsWith($script:CheckpointRoot + [IO.Path]::DirectorySeparatorChar)) { throw 'Unexpected index destination.' }
+            Microsoft.PowerShell.Management\Set-Content -LiteralPath $LiteralPath -Value '| 1 | Changed | absent.md |'
+        } -ParameterFilter { [IO.Path]::GetFileName($LiteralPath) -eq 'index.md' }
+
+        { Merge-CopilotSession -Id $script:CheckpointIds -RemoveSource -Confirm:$false -ErrorAction Continue } |
+            Should -Throw '*checkpoint index*read-back validation*'
+
+        Get-AtomicMergeSourceSnapshot -Path $script:CheckpointPaths | Should -BeExactly $before
+        @(Get-ChildItem -LiteralPath $script:CheckpointRoot -Directory).Name | Sort-Object | Should -Be ($script:CheckpointIds | Sort-Object)
+    }
+
+    It 'rejects an incomplete copy even when only an unindexed body is missing' {
+        Set-Content -LiteralPath (Join-Path $script:CheckpointPaths[0] 'checkpoints' 'unindexed.md') -Value 'Unindexed payload' -ErrorAction Stop
+        $before = Get-AtomicMergeSourceSnapshot -Path $script:CheckpointPaths
+        Mock -ModuleName Shmuelie.Copilot Copy-Item {
+            if (-not $Destination.StartsWith($script:CheckpointRoot + [IO.Path]::DirectorySeparatorChar)) { throw 'Unexpected copy destination.' }
+            Microsoft.PowerShell.Management\Copy-Item -LiteralPath (Join-Path $script:CheckpointPaths[0] 'checkpoints' 'checkpoint-a.md') -Destination $Destination -Force -ErrorAction Stop
+            Microsoft.PowerShell.Management\Copy-Item -LiteralPath (Join-Path $script:CheckpointPaths[1] 'checkpoints' 'checkpoint-b.json') -Destination $Destination -Force -ErrorAction Stop
+        } -ParameterFilter { [IO.Path]::GetFileName($Destination) -eq 'checkpoints' }
+
+        { Merge-CopilotSession -Id $script:CheckpointIds -RemoveSource -Confirm:$false -ErrorAction Continue } |
+            Should -Throw '*Merged artifact*unindexed.md*missing*'
+
+        Get-AtomicMergeSourceSnapshot -Path $script:CheckpointPaths | Should -BeExactly $before
+        @(Get-ChildItem -LiteralPath $script:CheckpointRoot -Directory).Name | Sort-Object | Should -Be ($script:CheckpointIds | Sort-Object)
+    }
+
+    It 'does not copy or modify checkpoints during WhatIf' {
+        $before = Get-AtomicMergeSourceSnapshot -Path $script:CheckpointPaths
+        Mock -ModuleName Shmuelie.Copilot Copy-Item { throw 'Unexpected checkpoint copy.' }
+
+        $result = Merge-CopilotSession -Id $script:CheckpointIds -RemoveSource -WhatIf
+
+        $result | Should -BeNullOrEmpty
+        Should -Invoke -ModuleName Shmuelie.Copilot Copy-Item -Times 0 -Exactly
+        Get-AtomicMergeSourceSnapshot -Path $script:CheckpointPaths | Should -BeExactly $before
+        @(Get-ChildItem -LiteralPath $script:CheckpointRoot -Directory).Name | Sort-Object | Should -Be ($script:CheckpointIds | Sort-Object)
+    }
+}
+
 Describe 'Compress-CopilotSession' {
     BeforeEach {
         $testHome = Join-Path $TestDrive 'home'
@@ -367,6 +1181,276 @@ Describe 'Repair-CopilotSessionEvents' {
 
         Get-Content $eventsFile -Raw | Should -Be $before
         Test-Path (Join-Path $sessionPath 'events.jsonl.bak') | Should -BeFalse
+    }
+}
+
+Describe 'Repair-CopilotSessionEvents event validity' {
+    BeforeAll {
+        $script:MalformedRepairFixture = @(
+            '{"type":"session.start","id":"start","timestamp":"2026-09-01T12:00:00Z","data":{"sessionId":"synthetic"}}'
+            '{"type":"tool.execution_complete","id":"","timestamp":"2026-09-01T12:00:00Z","data":{"toolCallId":"tool-1","model":"unknown"}}'
+            '{"type":"assistant.message","id":"assistant-1","timestamp":"2026-09-01T12:00:01Z","data":{"toolRequests":[{"toolCallId":"tool-1"}],"model":"test-model"}}'
+            '{"type":"assistant.turn_end","id":"end-1","timestamp":"2026-09-01T12:00:02Z","data":{}}'
+        )
+    }
+
+    BeforeEach {
+        Mock -ModuleName Shmuelie.Copilot Get-CopilotHome { throw 'Unexpected session discovery in isolated repair tests.' }
+        Mock -ModuleName Shmuelie.Copilot Get-Command { throw 'Unexpected native command discovery.' }
+    }
+
+    It 'replaces the malformed relocated completion from the four-line regression fixture and is idempotent' {
+        $records = @(Repair-CopilotSessionEvents -EventLines $script:MalformedRepairFixture -Verbose 4>&1)
+        $fixed = @($records | Where-Object { $_ -is [string] })
+        $events = @($fixed | ForEach-Object { $_ | ConvertFrom-Json })
+        $completions = @($events | Where-Object type -EQ 'tool.execution_complete')
+
+        $fixed | Should -HaveCount 4
+        $fixed[0] | Should -BeExactly $script:MalformedRepairFixture[0]
+        $fixed[1] | Should -BeExactly $script:MalformedRepairFixture[2]
+        $fixed[3] | Should -BeExactly $script:MalformedRepairFixture[3]
+        $completions | Should -HaveCount 1
+        $completions[0].id | Should -Not -BeNullOrEmpty
+        { [guid]::Parse($completions[0].id) } | Should -Not -Throw
+        $completions[0].timestamp | Should -Be $events[-1].timestamp
+        $completions[0].data.toolCallId | Should -Be 'tool-1'
+        $completions[0].data.model | Should -Be 'test-model'
+        $completions[0].data.success | Should -BeTrue
+        $completions[0].data.result.content | Should -Be '[Session repair: tool execution data unavailable]'
+        @($records | Where-Object { $_ -is [System.Management.Automation.VerboseRecord] }).Message |
+            Should -Contain 'Repaired: relocated 0 orphaned tool events, removed 1 error/malformed events, synthesized 1 missing completions'
+        $again = @(Repair-CopilotSessionEvents -EventLines $fixed)
+        [string]::Join("`n", $again) | Should -BeExactly ([string]::Join("`n", $fixed))
+    }
+
+    It 'replaces a completion with <Defect> appearing <Position> its request' -ForEach @(
+        foreach ($defect in 'empty ID', 'unknown model') {
+            foreach ($position in 'before', 'after') {
+                @{ Defect = $defect; Position = $position }
+            }
+        }
+    ) {
+        $completion = if ($Defect -eq 'empty ID') {
+            $script:MalformedRepairFixture[1].Replace('"model":"unknown"', '"model":"test-model"')
+        } else {
+            $script:MalformedRepairFixture[1].Replace('"id":""', '"id":"malformed-completion"')
+        }
+        $request = $script:MalformedRepairFixture[2].Replace('"model":"test-model"', '"model":"test-model","interactionId":"interaction-1"')
+        $lines = @(
+            $script:MalformedRepairFixture[0]
+            if ($Position -eq 'before') { $completion }
+            $request
+            if ($Position -eq 'after') { $completion }
+            $script:MalformedRepairFixture[3]
+        )
+
+        $fixed = @(Repair-CopilotSessionEvents -EventLines $lines)
+        $events = @($fixed | ForEach-Object { $_ | ConvertFrom-Json })
+        $completions = @($events | Where-Object type -EQ 'tool.execution_complete')
+
+        $completions | Should -HaveCount 1
+        $completions[0].id | Should -Not -BeNullOrEmpty
+        $completions[0].id | Should -Not -Be 'malformed-completion'
+        $completions[0].data.model | Should -Be 'test-model'
+        $completions[0].data.interactionId | Should -Be 'interaction-1'
+        $events.type | Should -Be @('session.start', 'assistant.message', 'tool.execution_complete', 'assistant.turn_end')
+        $fixed | Should -Not -Contain $completion
+        $again = @(Repair-CopilotSessionEvents -EventLines $fixed)
+        [string]::Join("`n", $again) | Should -BeExactly ([string]::Join("`n", $fixed))
+    }
+
+    It 'preserves valid raw tool pairs with events <Position> their request' -ForEach @(
+        @{ Position = 'before' }
+        @{ Position = 'after' }
+    ) {
+        $start = '{ "type": "tool.execution_start", "id": "tool-start", "timestamp": "2026-09-01T12:00:00Z", "data": { "toolCallId": "tool-1", "extra": "preserved" } }'
+        $complete = '{ "type": "tool.execution_complete", "id": "tool-complete", "timestamp": "2026-09-01T12:00:00Z", "data": { "toolCallId": "tool-1", "model": "test-model", "success": false, "result": { "content": "original result" }, "extra": [1, 2] } }'
+        $lines = @(
+            $script:MalformedRepairFixture[0]
+            if ($Position -eq 'before') { $start; $complete }
+            $script:MalformedRepairFixture[2]
+            if ($Position -eq 'after') { $start; $complete }
+            $script:MalformedRepairFixture[3]
+        )
+        $expected = @($script:MalformedRepairFixture[0], $script:MalformedRepairFixture[2], $start, $complete, $script:MalformedRepairFixture[3])
+
+        $fixed = @(Repair-CopilotSessionEvents -EventLines $lines)
+
+        [string]::Join("`n", $fixed) | Should -BeExactly ([string]::Join("`n", $expected))
+        $again = @(Repair-CopilotSessionEvents -EventLines $fixed)
+        [string]::Join("`n", $again) | Should -BeExactly ([string]::Join("`n", $fixed))
+    }
+
+    It 'does not synthesize a duplicate when a valid completion is <Position> its request beside a malformed one' -ForEach @(
+        @{ Position = 'before' }
+        @{ Position = 'after' }
+    ) {
+        $valid = $script:MalformedRepairFixture[1].Replace('"id":""', '"id":"valid-completion"').Replace('"model":"unknown"', '"model":"test-model"')
+        $lines = @(
+            $script:MalformedRepairFixture[0]
+            $script:MalformedRepairFixture[1]
+            if ($Position -eq 'before') { $valid }
+            $script:MalformedRepairFixture[2]
+            if ($Position -eq 'after') { $valid }
+            $script:MalformedRepairFixture[3]
+        )
+
+        $fixed = @(Repair-CopilotSessionEvents -EventLines $lines)
+        $completions = @($fixed | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object type -EQ 'tool.execution_complete')
+
+        $completions | Should -HaveCount 1
+        $completions[0].id | Should -Be 'valid-completion'
+        $fixed | Should -Contain $valid
+        $fixed | Should -Not -Contain $script:MalformedRepairFixture[1]
+    }
+
+    It 'drops an empty-ID relocated start without discarding the valid completion' {
+        $start = $script:MalformedRepairFixture[1].Replace('tool.execution_complete', 'tool.execution_start')
+        $complete = $script:MalformedRepairFixture[1].Replace('"id":""', '"id":"valid-completion"').Replace('"model":"unknown"', '"model":"test-model"')
+        $lines = @($script:MalformedRepairFixture[0], $start, $complete, $script:MalformedRepairFixture[2], $script:MalformedRepairFixture[3])
+
+        $fixed = @(Repair-CopilotSessionEvents -EventLines $lines)
+
+        $expected = @($script:MalformedRepairFixture[0], $script:MalformedRepairFixture[2], $complete, $script:MalformedRepairFixture[3])
+        [string]::Join("`n", $fixed) | Should -BeExactly ([string]::Join("`n", $expected))
+    }
+
+    It 'handles filtering down to <Retained> retained events' -ForEach @(
+        @{ Retained = 0 }
+        @{ Retained = 1 }
+    ) {
+        $lines = @(
+            $script:MalformedRepairFixture[1]
+            '{"type":"session.warning","id":"warning","data":{"message":"synthetic"}}'
+            '{"type":"session.error","id":"error","data":{"message":"synthetic"}}'
+            if ($Retained -eq 1) { $script:MalformedRepairFixture[0] }
+        )
+
+        $fixed = @(Repair-CopilotSessionEvents -EventLines $lines)
+
+        $fixed | Should -HaveCount $Retained
+        if ($Retained -eq 1) { $fixed[0] | Should -BeExactly $script:MalformedRepairFixture[0] }
+    }
+
+    It 'retains the existing replacement model policy when the request model is <Model>' -ForEach @(
+        @{ Model = 'unknown' }
+        @{ Model = '' }
+    ) {
+        $lines = @($script:MalformedRepairFixture)
+        $lines[2] = $lines[2].Replace('"model":"test-model"', "`"model`":`"$Model`"")
+
+        $fixed = @(Repair-CopilotSessionEvents -EventLines $lines)
+        $completions = @($fixed | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object type -EQ 'tool.execution_complete')
+
+        $completions | Should -HaveCount 1
+        $completions[0].data.model | Should -Be 'claude-sonnet-4'
+        $completions[0].id | Should -Not -BeNullOrEmpty
+    }
+
+    It 'repairs synthetic pipeline sessions with NoBackup=<NoBackup> while preserving backup policy' -ForEach @(
+        @{ NoBackup = $false }
+        @{ NoBackup = $true }
+    ) {
+        $root = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
+        $sessions = @(
+            foreach ($id in 'first', 'second') {
+                $path = New-CopilotSessionState -SessionRoot $root -Id $id -Cwd $root -Summary 'Synthetic repair'
+                Set-CopilotTestEvents -SessionPath $path -Lines $script:MalformedRepairFixture
+                [pscustomobject]@{
+                    Path = $path
+                    OriginalHash = (Get-FileHash -LiteralPath (Join-Path $path 'events.jsonl')).Hash
+                }
+            }
+        )
+
+        $output = @($sessions | Repair-CopilotSessionEvents -NoBackup:$NoBackup -Confirm:$false)
+
+        $output | Should -HaveCount 0
+        foreach ($session in $sessions) {
+            $eventsFile = Join-Path $session.Path 'events.jsonl'
+            $events = @(Get-CopilotTestEventObjects -SessionPath $session.Path)
+            $completions = @($events | Where-Object type -EQ 'tool.execution_complete')
+            $completions | Should -HaveCount 1
+            $completions[0].id | Should -Not -BeNullOrEmpty
+            $completions[0].data.model | Should -Be 'test-model'
+            if ($NoBackup) {
+                Test-Path -LiteralPath "$eventsFile.bak" | Should -BeFalse
+            } else {
+                (Get-FileHash -LiteralPath "$eventsFile.bak").Hash | Should -BeExactly $session.OriginalHash
+            }
+        }
+    }
+}
+
+Describe 'Copilot required backup safety' {
+    Context '<Command>' -ForEach @(
+        @{ Command = 'Compress-CopilotSession'; Options = @{ Keep = 1 } }
+        @{ Command = 'Repair-CopilotSessionEvents'; Options = @{} }
+    ) {
+        BeforeEach {
+            $root = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
+            $id = [guid]::NewGuid().ToString()
+            $sessionPath = New-CopilotSessionState -SessionRoot $root -Id $id -Cwd $root -Summary 'Backup fixture'
+            $lines = @(New-CopilotTestConversationEvents -Prefix 'backup' -SessionId $id -Count 2 -Start ([datetimeoffset]'2026-09-01T12:00:00Z'))
+            $lines += New-CopilotTestEventLine -Type 'session.warning' -Id 'remove-warning' -Timestamp '2026-09-01T12:03:00Z' -Data @{ message = 'Synthetic warning' }
+            Set-CopilotTestEvents -SessionPath $sessionPath -Lines $lines
+            Set-CopilotTestSnapshotIndex -SessionPath $sessionPath -Snapshots @(
+                @{ eventId = 'backup-user-1'; backupPath = 'retained-fixture' }
+            )
+            $backupSession = [pscustomobject]@{ Id = $id; Path = $sessionPath; Summary = 'Backup fixture' }
+            $eventsFile = Join-Path $sessionPath 'events.jsonl'
+            $backupFile = "$eventsFile.bak"
+            $snapshotFile = Join-Path $sessionPath 'rewind-snapshots' 'index.json'
+            Set-Content -LiteralPath $backupFile -Value 'Previous backup, not the current event stream'
+            $beforeEvents = (Get-FileHash -LiteralPath $eventsFile).Hash
+            $beforeBackup = (Get-FileHash -LiteralPath $backupFile).Hash
+            $beforeSnapshots = (Get-FileHash -LiteralPath $snapshotFile).Hash
+        }
+
+        It 'does not rewrite events or prune snapshots when a required backup fails under Continue' -Skip:(-not $IsWindows) {
+            $handle = [IO.File]::Open($backupFile, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+            try {
+                { & $Command -InputObject $backupSession @Options -Confirm:$false -ErrorAction Continue } |
+                    Should -Throw
+                (Get-FileHash -LiteralPath $eventsFile).Hash | Should -BeExactly $beforeEvents
+                (Get-FileHash -LiteralPath $snapshotFile).Hash | Should -BeExactly $beforeSnapshots
+            } finally {
+                $handle.Dispose()
+            }
+            (Get-FileHash -LiteralPath $backupFile).Hash | Should -BeExactly $beforeBackup
+        }
+
+        It 'retains explicit NoBackup behavior even when an old backup is locked' -Skip:(-not $IsWindows) {
+            $handle = [IO.File]::Open($backupFile, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+            try {
+                & $Command -InputObject $backupSession @Options -NoBackup -Confirm:$false -ErrorAction Stop
+                (Get-FileHash -LiteralPath $eventsFile).Hash | Should -Not -Be $beforeEvents
+            } finally {
+                $handle.Dispose()
+            }
+            (Get-FileHash -LiteralPath $backupFile).Hash | Should -BeExactly $beforeBackup
+        }
+
+        It 'preserves the exact original event bytes in a successful required backup' {
+            & $Command -InputObject $backupSession @Options -Confirm:$false -ErrorAction Stop
+            (Get-FileHash -LiteralPath $backupFile).Hash | Should -BeExactly $beforeEvents
+            (Get-FileHash -LiteralPath $eventsFile).Hash | Should -Not -Be $beforeEvents
+        }
+
+        It 'preserves the previous backup and originals when staging a backup fails' {
+            Mock -ModuleName Shmuelie.Copilot Copy-Item {
+                param($Destination)
+                Set-Content -LiteralPath $Destination -Value 'Synthetic partial backup'
+                throw [IO.IOException]::new('Synthetic backup copy failure.')
+            }
+            { & $Command -InputObject $backupSession @Options -Confirm:$false -ErrorAction Continue } |
+                Should -Throw '*Synthetic backup copy failure*'
+            (Get-FileHash -LiteralPath $eventsFile).Hash | Should -BeExactly $beforeEvents
+            (Get-FileHash -LiteralPath $backupFile).Hash | Should -BeExactly $beforeBackup
+            (Get-FileHash -LiteralPath $snapshotFile).Hash | Should -BeExactly $beforeSnapshots
+            @(Get-ChildItem -LiteralPath $sessionPath -Filter 'events.jsonl.bak.*.tmp') | Should -HaveCount 0
+            Should -Invoke -ModuleName Shmuelie.Copilot Copy-Item -Times 1 -Exactly
+        }
     }
 }
 
@@ -517,6 +1601,404 @@ Describe 'Copilot CLI UTF-8 output parsing' {
     }
 }
 
+Describe 'Copilot discovery native status' -Tag 'CopilotDiscovery' {
+    BeforeAll {
+        $script:DiscoveryRoot = Join-Path $TestDrive 'discovery-native'
+        New-Item -ItemType Directory -Path $script:DiscoveryRoot -Force | Out-Null
+        $script:DiscoveryControl = Join-Path $script:DiscoveryRoot 'responses.json'
+        $script:DiscoveryLog = Join-Path $script:DiscoveryRoot 'calls.log'
+        $handler = Join-Path $script:DiscoveryRoot 'discovery.ps1'
+        Set-Content -LiteralPath $handler -Value @'
+$ErrorActionPreference = 'Stop'
+$command = $args -join ' '
+[IO.File]::AppendAllText((Join-Path $PSScriptRoot 'calls.log'), $command + [Environment]::NewLine)
+$responses = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'responses.json') -Raw | ConvertFrom-Json -AsHashtable
+if (-not $responses.ContainsKey($command)) {
+    [Console]::Error.WriteLine("Unexpected native invocation: $command")
+    exit 97
+}
+$response = $responses[$command]
+[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+[Console]::Out.Write([string]$response.Output)
+[Console]::Error.Write([string]$response.Diagnostics)
+exit $response.ExitCode
+'@
+        $pwsh = (Get-Process -Id $PID).Path
+        if ($IsWindows) {
+            $script:DiscoveryExe = Join-Path $script:DiscoveryRoot 'copilot.cmd'
+            Set-Content -LiteralPath $script:DiscoveryExe -Value @(
+                '@echo off'
+                "`"$($pwsh -replace '"', '""')`" -NoLogo -NoProfile -NonInteractive -File `"$($handler -replace '"', '""')`" %*"
+                'exit /b %ERRORLEVEL%'
+            )
+        } else {
+            $script:DiscoveryExe = Join-Path $script:DiscoveryRoot 'copilot'
+            Set-Content -LiteralPath $script:DiscoveryExe -Value @(
+                '#!/usr/bin/env sh'
+                "exec '$($pwsh -replace '''', '''\''''')' -NoLogo -NoProfile -NonInteractive -File '$($handler -replace '''', '''\''''')' `"`$@`""
+            )
+            & chmod +x $script:DiscoveryExe
+            if ($LASTEXITCODE -ne 0) { throw 'Unable to make the isolated native stub executable.' }
+        }
+
+        function Set-DiscoveryResponses {
+            param([hashtable]$Responses)
+            $Responses | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $script:DiscoveryControl
+        }
+    }
+
+    BeforeEach {
+        $script:DiscoveryPreviousExit = Get-Variable LASTEXITCODE -Scope Global -ErrorAction Ignore
+        $script:DiscoveryPreviousExitValue = if ($script:DiscoveryPreviousExit) { $script:DiscoveryPreviousExit.Value }
+        $script:DiscoveryPreviousNativePreference = $global:PSNativeCommandUseErrorActionPreference
+        $script:DiscoveryPreviousEncoding = [Console]::OutputEncoding
+        $global:LASTEXITCODE = 123
+        $global:PSNativeCommandUseErrorActionPreference = $false
+        [Console]::OutputEncoding = [Text.Encoding]::GetEncoding(28591)
+        Remove-Item -LiteralPath $script:DiscoveryLog -Force -ErrorAction SilentlyContinue
+        Set-DiscoveryResponses @{}
+        Mock -ModuleName Shmuelie.Copilot Resolve-CliExe { $script:DiscoveryExe } -ParameterFilter { $Name -eq 'copilot' }
+        Mock -ModuleName Shmuelie.Copilot Get-CopilotHome { throw 'Discovery must not inspect user configuration.' }
+    }
+
+    AfterEach {
+        [Console]::OutputEncoding = $script:DiscoveryPreviousEncoding
+        $global:PSNativeCommandUseErrorActionPreference = $script:DiscoveryPreviousNativePreference
+        if ($script:DiscoveryPreviousExit) {
+            $global:LASTEXITCODE = $script:DiscoveryPreviousExitValue
+        } else {
+            Remove-Variable LASTEXITCODE -Scope Global -WhatIf:$false -Confirm:$false -ErrorAction SilentlyContinue
+        }
+    }
+
+    Context '<Reader>' -ForEach @(
+        @{
+            Reader = 'Get-CopilotPlugin'; ReaderParameters = @{}; NativeArguments = 'plugin list'
+            Listing = "  • synthetic@curated (v1.2.3)`n"; ResultType = 'CopilotPlugin'
+        }
+        @{
+            Reader = 'Get-CopilotMarketplace'; ReaderParameters = @{}; NativeArguments = 'plugin marketplace list'
+            Listing = "  ◆ synthetic (GitHub: example/marketplace)`n"; ResultType = 'CopilotMarketplace'
+        }
+        @{
+            Reader = 'Get-CopilotMarketplacePlugin'; ReaderParameters = @{ Name = 'curated' }; NativeArguments = 'plugin marketplace browse curated'
+            Listing = "  • synthetic - Synthetic description`n"; ResultType = 'CopilotMarketplaceEntry'
+        }
+    ) {
+        It 'reports failure before parsing with native error preference <NativePreference>' -ForEach @(
+            @{ NativePreference = $false }
+            @{ NativePreference = $true }
+        ) {
+            $global:PSNativeCommandUseErrorActionPreference = $NativePreference
+            Set-DiscoveryResponses @{ $NativeArguments = @{
+                ExitCode = 17; Output = $Listing + "synthetic stdout diagnostic`n"; Diagnostics = "synthetic stderr diagnostic`n"
+            } }
+            $discoveryErrors = @()
+
+            $results = @(& $Reader @ReaderParameters -ErrorAction Continue -ErrorVariable discoveryErrors 2>$null)
+
+            $results | Should -HaveCount 0
+            $discoveryErrors | Should -HaveCount 1
+            $discoveryErrors[0].FullyQualifiedErrorId | Should -BeLike 'CopilotDiscoveryFailed,*'
+            $discoveryErrors[0].Exception.Message | Should -Match ([regex]::Escape("copilot $NativeArguments failed with exit code 17"))
+            $discoveryErrors[0].Exception.Message | Should -Match 'synthetic stdout diagnostic'
+            $discoveryErrors[0].Exception.Message | Should -Match 'synthetic stderr diagnostic'
+            $discoveryErrors[0].TargetObject.ExitCode | Should -Be 17
+            $global:LASTEXITCODE | Should -Be 123
+            $global:PSNativeCommandUseErrorActionPreference | Should -Be $NativePreference
+            [Console]::OutputEncoding.CodePage | Should -Be 28591
+            @(Get-Content -LiteralPath $script:DiscoveryLog) | Should -Be @($NativeArguments)
+        }
+
+        It 'honors ErrorAction Stop with native error preference <NativePreference>' -ForEach @(
+            @{ NativePreference = $false }
+            @{ NativePreference = $true }
+        ) {
+            $global:PSNativeCommandUseErrorActionPreference = $NativePreference
+            Set-DiscoveryResponses @{ $NativeArguments = @{ ExitCode = 17; Output = $Listing; Diagnostics = 'synthetic failure' } }
+
+            { & $Reader @ReaderParameters -ErrorAction Stop } | Should -Throw '*exit code 17*synthetic failure*'
+
+            $global:LASTEXITCODE | Should -Be 123
+            $global:PSNativeCommandUseErrorActionPreference | Should -Be $NativePreference
+            [Console]::OutputEncoding.CodePage | Should -Be 28591
+            @(Get-Content -LiteralPath $script:DiscoveryLog) | Should -Be @($NativeArguments)
+        }
+
+        It 'keeps successful empty output error-free: <OutputKind>' -ForEach @(
+            @{ OutputKind = 'no output'; EmptyOutput = '' }
+            @{ OutputKind = 'empty-list message'; EmptyOutput = 'No entries found.' }
+        ) {
+            Set-DiscoveryResponses @{ $NativeArguments = @{ ExitCode = 0; Output = $EmptyOutput } }
+            $discoveryErrors = @()
+
+            $results = @(& $Reader @ReaderParameters -ErrorAction Stop -ErrorVariable discoveryErrors)
+
+            $results | Should -HaveCount 0
+            $discoveryErrors | Should -HaveCount 0
+            $global:LASTEXITCODE | Should -Be 123
+            [Console]::OutputEncoding.CodePage | Should -Be 28591
+            @(Get-Content -LiteralPath $script:DiscoveryLog) | Should -Be @($NativeArguments)
+        }
+
+        It 'preserves successful typed UTF-8 parsing and the caller exit code' {
+            Set-DiscoveryResponses @{ $NativeArguments = @{ ExitCode = 0; Output = $Listing } }
+
+            $results = @(& $Reader @ReaderParameters -ErrorAction Stop)
+
+            $results | Should -HaveCount 1
+            $results[0].PSTypeNames | Should -Contain $ResultType
+            $results[0].Name | Should -Be 'synthetic'
+            switch ($Reader) {
+                'Get-CopilotPlugin' {
+                    $results[0].FullName | Should -Be 'synthetic@curated'
+                    $results[0].Marketplace | Should -Be 'curated'
+                    $results[0].Version | Should -Be '1.2.3'
+                }
+                'Get-CopilotMarketplace' { $results[0].Repository | Should -Be 'example/marketplace' }
+                'Get-CopilotMarketplacePlugin' {
+                    $results[0].Description | Should -Be 'Synthetic description'
+                    $results[0].Marketplace | Should -Be 'curated'
+                }
+            }
+            $global:LASTEXITCODE | Should -Be 123
+            [Console]::OutputEncoding.CodePage | Should -Be 28591
+        }
+
+        It 'restores an absent global exit code under inherited WhatIf after exit <ExitCode> with <Action>' -ForEach @(
+            @{ ExitCode = 0; Action = 'Continue' }
+            @{ ExitCode = 17; Action = 'Continue' }
+            @{ ExitCode = 0; Action = 'Stop' }
+            @{ ExitCode = 17; Action = 'Stop' }
+        ) {
+            Set-DiscoveryResponses @{ $NativeArguments = @{ ExitCode = $ExitCode; Diagnostics = 'synthetic diagnostic' } }
+            Remove-Variable LASTEXITCODE -Scope Global -WhatIf:$false -Confirm:$false
+
+            $invoke = {
+                $WhatIfPreference = $true
+                $discoveryErrors = @()
+                & $Reader @ReaderParameters -ErrorAction $Action -ErrorVariable discoveryErrors 2>$null
+                $discoveryErrors | Should -HaveCount $(if ($ExitCode -eq 0) { 0 } else { 1 })
+            }
+            if ($ExitCode -ne 0 -and $Action -eq 'Stop') {
+                $invoke | Should -Throw '*exit code 17*synthetic diagnostic*'
+            } else {
+                & $invoke
+            }
+
+            Get-Variable LASTEXITCODE -Scope Global -ErrorAction Ignore | Should -BeNullOrEmpty
+            [Console]::OutputEncoding.CodePage | Should -Be 28591
+            @(Get-Content -LiteralPath $script:DiscoveryLog) | Should -Be @($NativeArguments)
+        }
+
+        It 'reports failures without diagnostics using the exit code' {
+            Set-DiscoveryResponses @{ $NativeArguments = @{ ExitCode = 17 } }
+
+            { & $Reader @ReaderParameters -ErrorAction Stop } | Should -Throw '*failed with exit code 17.*'
+
+            $global:LASTEXITCODE | Should -Be 123
+        }
+
+        It 'rejects <StatusKind> completion evidence before parsing' -ForEach @(
+            @{ StatusKind = 'missing'; NativeStatus = $null }
+            @{ StatusKind = 'string zero'; NativeStatus = '0' }
+            @{ StatusKind = 'Boolean false'; NativeStatus = $false }
+        ) {
+            Mock -ModuleName Shmuelie.Copilot Invoke-WithUtf8Console {
+                [pscustomobject]@{ ExitCode = $NativeStatus; Output = @($Listing, 'synthetic completion diagnostic') }
+            }
+            $discoveryErrors = @()
+
+            @(& $Reader @ReaderParameters -ErrorAction Continue -ErrorVariable discoveryErrors 2>$null) |
+                Should -HaveCount 0
+            $discoveryErrors | Should -HaveCount 1
+            $discoveryErrors[0].FullyQualifiedErrorId | Should -BeLike 'CopilotDiscoveryFailed,*'
+            $discoveryErrors[0].Exception.Message | Should -Match 'unknown native exit status.*'
+            { & $Reader @ReaderParameters -ErrorAction Stop } |
+                Should -Throw '*unknown native exit status*synthetic completion diagnostic*'
+
+            $global:LASTEXITCODE | Should -Be 123
+            Test-Path -LiteralPath $script:DiscoveryLog | Should -BeFalse
+        }
+
+        It 'fails closed and restores state when the resolved executable is missing' {
+            Mock -ModuleName Shmuelie.Copilot Resolve-CliExe {
+                Join-Path $script:DiscoveryRoot 'missing-copilot.exe'
+            } -ParameterFilter { $Name -eq 'copilot' }
+
+            { & $Reader @ReaderParameters -ErrorAction Continue } | Should -Throw '*missing-copilot.exe*'
+
+            $global:LASTEXITCODE | Should -Be 123
+            [Console]::OutputEncoding.CodePage | Should -Be 28591
+            Test-Path -LiteralPath $script:DiscoveryLog | Should -BeFalse
+        }
+
+        It 'restores a present null global exit code without removing the variable' {
+            Set-DiscoveryResponses @{ $NativeArguments = @{ ExitCode = 0 } }
+            $global:LASTEXITCODE = $null
+
+            & $Reader @ReaderParameters -ErrorAction Stop
+
+            $variable = Get-Variable LASTEXITCODE -Scope Global -ErrorAction Stop
+            $variable.Value | Should -BeNullOrEmpty
+        }
+
+        It 'does not confuse a caller-local success status with the native global failure' {
+            Set-DiscoveryResponses @{ $NativeArguments = @{ ExitCode = 17; Diagnostics = 'synthetic failure' } }
+
+            {
+                InModuleScope Shmuelie.Copilot -Parameters @{ Reader = $Reader; ReaderParameters = $ReaderParameters } {
+                    $LASTEXITCODE = 0
+                    & $Reader @ReaderParameters -ErrorAction Stop
+                }
+            } | Should -Throw '*exit code 17*synthetic failure*'
+
+            $global:LASTEXITCODE | Should -Be 123
+        }
+    }
+
+    It 'resets a stale global exit code before invoking the discovery boundary' {
+        Mock -ModuleName Shmuelie.Copilot Invoke-WithUtf8Console {
+            if ($null -ne $global:LASTEXITCODE) { throw 'Discovery did not clear the stale exit code.' }
+            [pscustomobject]@{ ExitCode = 0; Output = @() }
+        }
+
+        @(Get-CopilotPlugin -ErrorAction Stop) | Should -HaveCount 0
+
+        $global:LASTEXITCODE | Should -Be 123
+        Test-Path -LiteralPath $script:DiscoveryLog | Should -BeFalse
+        Should -Invoke -ModuleName Shmuelie.Copilot Invoke-WithUtf8Console -Times 1 -Exactly
+    }
+
+    It 'restores an absent exit code on invocation exceptions under inherited WhatIf' {
+        Mock -ModuleName Shmuelie.Copilot Resolve-CliExe {
+            Join-Path $script:DiscoveryRoot 'missing-copilot.exe'
+        } -ParameterFilter { $Name -eq 'copilot' }
+        Remove-Variable LASTEXITCODE -Scope Global -WhatIf:$false -Confirm:$false
+
+        {
+            $WhatIfPreference = $true
+            Get-CopilotPlugin -ErrorAction Continue
+        } | Should -Throw '*missing-copilot.exe*'
+
+        Get-Variable LASTEXITCODE -Scope Global -ErrorAction Ignore | Should -BeNullOrEmpty
+        [Console]::OutputEncoding.CodePage | Should -Be 28591
+        Test-Path -LiteralPath $script:DiscoveryLog | Should -BeFalse
+    }
+
+    It 'keeps successful discovery-to-update pipelines working' {
+        Set-DiscoveryResponses @{
+            'plugin list' = @{ ExitCode = 0; Output = "  • synthetic@curated (v1.2.3)`n" }
+            'plugin update synthetic@curated' = @{ ExitCode = 0 }
+        }
+
+        $results = @(Get-CopilotPlugin -ErrorAction Stop | Update-CopilotPlugin -Confirm:$false -ErrorAction Stop)
+
+        $results | Should -HaveCount 1
+        $results[0].Name | Should -Be 'synthetic@curated'
+        $results[0].Success | Should -BeTrue
+        @(Get-Content -LiteralPath $script:DiscoveryLog) | Should -Be @('plugin list', 'plugin update synthetic@curated')
+    }
+
+    It 'keeps successful marketplace-to-install pipelines working' {
+        Set-DiscoveryResponses @{
+            'plugin marketplace list' = @{ ExitCode = 0; Output = "  ◆ curated (GitHub: example/marketplace)`n" }
+            'plugin marketplace browse curated' = @{ ExitCode = 0; Output = "  • synthetic - Synthetic description`n" }
+            'plugin list' = @{ ExitCode = 0 }
+            'plugin install synthetic@curated' = @{ ExitCode = 0 }
+        }
+
+        Get-CopilotMarketplace -ErrorAction Stop |
+            Get-CopilotMarketplacePlugin -ErrorAction Stop |
+            Install-CopilotPlugin -Confirm:$false -ErrorAction Stop
+
+        @(Get-Content -LiteralPath $script:DiscoveryLog) | Should -Be @(
+            'plugin marketplace list', 'plugin marketplace browse curated', 'plugin list', 'plugin install synthetic@curated'
+        )
+    }
+
+    It 'never exports its private discovery helper' {
+        (Get-Module Shmuelie.Copilot).ExportedCommands.Keys | Should -Not -Contain 'Invoke-CopilotDiscovery'
+    }
+
+    It 'does not invoke <Consumer> after <Reader> fails' -ForEach @(
+        @{
+            Reader = 'Get-CopilotPlugin'; ReaderParameters = @{}; NativeArguments = 'plugin list'
+            Listing = "  • synthetic@curated (v1.2.3)`n"
+            Consumer = 'Update-CopilotPlugin'; ConsumerParameters = @{ Confirm = $false }
+        }
+        @{
+            Reader = 'Get-CopilotPlugin'; ReaderParameters = @{}; NativeArguments = 'plugin list'
+            Listing = "  • synthetic@curated (v1.2.3)`n"
+            Consumer = 'Uninstall-CopilotPlugin'; ConsumerParameters = @{ Confirm = $false }
+        }
+        @{
+            Reader = 'Get-CopilotMarketplace'; ReaderParameters = @{}; NativeArguments = 'plugin marketplace list'
+            Listing = "  ◆ synthetic (GitHub: example/marketplace)`n"
+            Consumer = 'Get-CopilotMarketplacePlugin'; ConsumerParameters = @{}
+        }
+        @{
+            Reader = 'Get-CopilotMarketplace'; ReaderParameters = @{}; NativeArguments = 'plugin marketplace list'
+            Listing = "  ◆ synthetic (GitHub: example/marketplace)`n"
+            Consumer = 'Unregister-CopilotMarketplace'; ConsumerParameters = @{ Confirm = $false }
+        }
+        @{
+            Reader = 'Get-CopilotMarketplacePlugin'; ReaderParameters = @{ Name = 'curated' }; NativeArguments = 'plugin marketplace browse curated'
+            Listing = "  • synthetic - Synthetic description`n"
+            Consumer = 'Install-CopilotPlugin'; ConsumerParameters = @{ Confirm = $false }
+        }
+    ) {
+        Set-DiscoveryResponses @{ $NativeArguments = @{ ExitCode = 17; Output = $Listing; Diagnostics = 'synthetic failure' } }
+        $discoveryErrors = @()
+
+        $results = @(& $Reader @ReaderParameters -ErrorAction Continue -ErrorVariable discoveryErrors 2>$null |
+            & $Consumer @ConsumerParameters)
+
+        $results | Should -HaveCount 0
+        $discoveryErrors | Should -HaveCount 1
+        @(Get-Content -LiteralPath $script:DiscoveryLog) | Should -Be @($NativeArguments)
+    }
+
+    Context '<Mutation> existence precheck' -ForEach @(
+        @{ Mutation = 'Install-CopilotPlugin'; Discovery = 'plugin list'; NativeMutation = 'plugin install example/marketplace'; Existing = "  • marketplace (v1.0.0)`n" }
+        @{ Mutation = 'Register-CopilotMarketplace'; Discovery = 'plugin marketplace list'; NativeMutation = 'plugin marketplace add example/marketplace'; Existing = "  ◆ synthetic (GitHub: example/marketplace)`n" }
+    ) {
+        It 'terminates on discovery failure even with ErrorAction Continue' {
+            Set-DiscoveryResponses @{ $Discovery = @{ ExitCode = 17; Diagnostics = 'synthetic precheck failure' } }
+
+            { & $Mutation -Source 'example/marketplace' -Confirm:$false -ErrorAction Continue } |
+                Should -Throw '*exit code 17*synthetic precheck failure*'
+
+            @(Get-Content -LiteralPath $script:DiscoveryLog) | Should -Be @($Discovery)
+        }
+
+        It 'still mutates after successful empty discovery' {
+            Set-DiscoveryResponses @{
+                $Discovery = @{ ExitCode = 0 }
+                $NativeMutation = @{ ExitCode = 0 }
+            }
+
+            & $Mutation -Source 'example/marketplace' -Confirm:$false -ErrorAction Stop
+
+            @(Get-Content -LiteralPath $script:DiscoveryLog) | Should -Be @($Discovery, $NativeMutation)
+        }
+
+        It 'still skips an already-present item' {
+            Set-DiscoveryResponses @{ $Discovery = @{ ExitCode = 0; Output = $Existing } }
+
+            & $Mutation -Source 'example/marketplace' -Confirm:$false -ErrorAction Stop
+
+            @(Get-Content -LiteralPath $script:DiscoveryLog) | Should -Be @($Discovery)
+        }
+
+        It 'does not discover or mutate under WhatIf' {
+            & $Mutation -Source 'example/marketplace' -WhatIf -ErrorAction Stop
+
+            Test-Path -LiteralPath $script:DiscoveryLog | Should -BeFalse
+        }
+    }
+}
+
 Describe 'Get-CopilotLaunchPlan' {
     BeforeEach {
         $testHome = Join-Path $TestDrive 'home'
@@ -602,6 +2084,301 @@ Describe 'Get-CopilotLaunchPlan' {
     }
 }
 
+Describe 'Copilot effective launch directory' -Tag 'EffectiveLaunchDirectory' {
+    BeforeAll {
+        $script:DirectoryPlanCommand = Get-Command 'Shmuelie.Copilot\Get-CopilotLaunchPlan' -ListImported -ErrorAction Stop
+        & (Get-Module Shmuelie.Copilot) {
+            function script:Invoke-CopilotDirectoryTestEngine {
+                $script:DirectoryNativeCalls.Add([pscustomobject]@{
+                    Args = @($args | ForEach-Object { $_ })
+                    Cwd = (Get-Location).Path
+                })
+                if ($script:DirectoryEngineFailure) { throw 'Synthetic launch failure.' }
+                $global:LASTEXITCODE = 0
+            }
+        }
+
+        function Invoke-DirectoryTestPlan {
+            param([string]$Entry, [hashtable]$Options)
+            if ($Entry -eq 'Start-Copilot') {
+                Start-Copilot -PassThru @Options
+            } else {
+                Get-CopilotLaunchPlan @Options
+            }
+        }
+    }
+
+    BeforeEach {
+        $caseRoot = Join-Path $TestDrive ([guid]::NewGuid().ToString())
+        $testHome = Join-Path $caseRoot 'home'
+        $directoryA = Join-Path $caseRoot 'A'
+        $relativeB = 'B [target]'
+        $directoryB = Join-Path $directoryA $relativeB
+        $sessionRoot = Join-Path $testHome '.copilot' 'session-state'
+        New-Item -ItemType Directory -Path $directoryB -Force -ErrorAction Stop | Out-Null
+        $null = New-CopilotSessionState -SessionRoot $sessionRoot -Id 'session-a' -Cwd $directoryA -Summary 'Session A'
+        $sessionB = New-CopilotSessionState -SessionRoot $sessionRoot -Id 'session-b' -Cwd $directoryB -Summary 'Session B'
+        $otherB = New-CopilotSessionState -SessionRoot $sessionRoot -Id 'other-b' -Cwd $directoryB -Summary 'Other branch B' -UpdatedAt '2026-08-13T22:00:00Z'
+        Add-Content -LiteralPath (Join-Path $sessionRoot 'session-a' 'workspace.yaml') -Value 'branch: branch-a'
+        Add-Content -LiteralPath (Join-Path $sessionB 'workspace.yaml') -Value 'branch: branch-b'
+        Add-Content -LiteralPath (Join-Path $otherB 'workspace.yaml') -Value 'branch: branch-a'
+        $mcpPath = Join-Path $testHome '.copilot' 'mcp-config.json'
+        @{
+            mcpServers = @{
+                'only-a' = @{ autoConnect = @([WildcardPattern]::Escape($directoryA)) }
+                'only-b' = @{ autoConnect = @([WildcardPattern]::Escape($directoryB) + '*') }
+                'lazy' = @{ autoConnect = $false }
+                'always' = @{ autoConnect = $true }
+            }
+        } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $mcpPath
+        $originalMcp = Get-Content -LiteralPath $mcpPath -Raw
+        $script:DirectoryGitLocations = [System.Collections.Generic.List[string]]::new()
+        $script:DirectoryDiscoveryLocations = [System.Collections.Generic.List[string]]::new()
+        Mock -ModuleName Shmuelie.Copilot Get-CopilotHome { $testHome }
+        Mock -ModuleName Shmuelie.Copilot Get-Command { throw "Unexpected discovery: $Name" }
+        Mock -ModuleName Shmuelie.Copilot Get-Command {
+            $script:DirectoryDiscoveryLocations.Add((Get-Location).Path)
+            [pscustomobject]@{ Source = 'Invoke-CopilotDirectoryTestEngine' }
+        } -ParameterFilter { $Name.Count -eq 1 -and $Name[0] -eq 'copilot' -and $CommandType -eq 'Application' }
+        Mock -ModuleName Shmuelie.Copilot Get-Command {
+            $script:DirectoryPlanCommand
+        } -ParameterFilter { $Name.Count -eq 1 -and $Name[0] -eq 'Get-CopilotLaunchPlan' }
+        Mock -ModuleName Shmuelie.Copilot git {
+            $script:DirectoryGitLocations.Add((Get-Location).Path)
+            if (($args -join ' ') -ne 'symbolic-ref --short HEAD') { throw 'Unexpected git arguments.' }
+            if ((Get-Location).Path -eq $directoryB) { 'branch-b' }
+            elseif ((Get-Location).Path -eq $directoryA) { 'branch-a' }
+            else { throw 'Unexpected git directory.' }
+        }
+        Mock -ModuleName Shmuelie.Copilot Invoke-CopilotSessionChoice { throw 'Unexpected host input.' }
+        Mock -ModuleName Shmuelie.Copilot Read-Host { throw 'Unexpected console input.' }
+        & (Get-Module Shmuelie.Copilot) {
+            $script:DirectoryNativeCalls = [System.Collections.Generic.List[object]]::new()
+            $script:DirectoryEngineFailure = $false
+        }
+        $callerLocation = Get-Location
+        Set-Location -LiteralPath $directoryA
+    }
+
+    AfterEach {
+        try {
+            (Get-Location).Path | Should -Be $directoryA
+            Get-Content -LiteralPath $mcpPath -Raw | Should -BeExactly $originalMcp
+            Should -Invoke -ModuleName Shmuelie.Copilot Invoke-CopilotSessionChoice -Times 0 -Exactly
+            Should -Invoke -ModuleName Shmuelie.Copilot Read-Host -Times 0 -Exactly
+        } finally {
+            Set-Location -LiteralPath $callerLocation.Path
+        }
+    }
+
+    AfterAll {
+        & (Get-Module Shmuelie.Copilot) {
+            Remove-Item -LiteralPath Function:Invoke-CopilotDirectoryTestEngine
+            Remove-Variable -Name DirectoryNativeCalls, DirectoryEngineFailure -Scope Script
+        }
+    }
+
+    Context '<Entry>' -ForEach @(
+        @{ Entry = 'Get-CopilotLaunchPlan' }
+        @{ Entry = 'Start-Copilot' }
+    ) {
+        It 'uses B for discovery, branch preference and MCP globs with <Kind>' -ForEach @(
+            @{ Kind = 'absolute ChangeDir'; Relative = $false; Alias = $false }
+            @{ Kind = 'relative ChangeDir'; Relative = $true; Alias = $false }
+            @{ Kind = 'absolute C alias'; Relative = $false; Alias = $true }
+            @{ Kind = 'relative C alias'; Relative = $true; Alias = $true }
+        ) {
+            $options = @{ SessionSelector = { throw 'Branch preference should leave one candidate.' } }
+            $options[$(if ($Alias) { 'C' } else { 'ChangeDir' })] = if ($Relative) { $relativeB } else { $directoryB }
+            $plan = Invoke-DirectoryTestPlan -Entry $Entry -Options $options
+            $plan.Args[[array]::IndexOf($plan.Args, '--resume') + 1] | Should -Be 'session-b'
+            $plan.Args[[array]::IndexOf($plan.Args, '-C') + 1] | Should -Be $directoryB
+            @($plan.Args | Where-Object { $_ -eq '-C' }) | Should -HaveCount 1
+            $plan.Args | Should -Contain 'only-a'
+            $plan.Args | Should -Not -Contain 'only-b'
+            $plan.Args | Should -Not -Contain 'lazy'
+            $plan.Args | Should -Not -Contain 'always'
+            Should -Invoke -ModuleName Shmuelie.Copilot git -Times 1 -Exactly
+            $script:DirectoryGitLocations.ToArray() | Should -Be @($directoryB)
+            Should -Invoke -ModuleName Shmuelie.Copilot Get-Command -Times 1 -Exactly -ParameterFilter {
+                $Name[0] -eq 'copilot'
+            }
+            $script:DirectoryDiscoveryLocations.ToArray() | Should -Be @($directoryB)
+        }
+
+        It 'keeps current-directory behavior when ChangeDir is omitted' {
+            $plan = Invoke-DirectoryTestPlan -Entry $Entry -Options @{}
+            $plan.Args[[array]::IndexOf($plan.Args, '--resume') + 1] | Should -Be 'session-a'
+            $plan.Args | Should -Not -Contain '-C'
+            $plan.Args | Should -Contain 'only-b'
+            $plan.Args | Should -Not -Contain 'only-a'
+        }
+
+        It 'runs a forced selector in B with canonical candidates and preserves arguments' {
+            $options = @{
+                ChangeDir = $relativeB
+                NoAutoResume = $true
+                Model = 'test-model'
+                Prompt = 'test prompt'
+                AddDir = './extra'
+                AdditionalMcpConfig = '@./extra-mcp.json'
+                RemainingArgs = @('--custom-flag', 'literal value')
+                EnableMcpServer = 'only-a'
+                DisableMcpServer = 'only-b'
+                SessionSelector = {
+                    param([object[]]$Sessions)
+                    (Get-Location).Path | Should -Be $directoryB
+                    $Sessions | Should -HaveCount 1
+                    $Sessions[0].Id | Should -Be 'session-b'
+                    $Sessions[0].Cwd | Should -Be $directoryB
+                    $Sessions[0].Cwd = 'ignored metadata'
+                    $Sessions[0]
+                }
+            }
+            $plan = Invoke-DirectoryTestPlan -Entry $Entry -Options $options
+            $options.Remove('NoAutoResume')
+            $options.Remove('SessionSelector')
+            $options.ResumeSession = 'session-b'
+            $baseline = Invoke-DirectoryTestPlan -Entry $Entry -Options $options
+            $plan.Args | Should -Be $baseline.Args
+            $plan.Args[[array]::IndexOf($plan.Args, '--add-dir') + 1] | Should -Be './extra'
+            $plan.Args[[array]::IndexOf($plan.Args, '--additional-mcp-config') + 1] | Should -Be '@./extra-mcp.json'
+            $plan.Args[-2..-1] | Should -Be @('--custom-flag', 'literal value')
+        }
+
+        It 'preserves <Kind> without calling the selector' -ForEach @(
+            @{ Kind = 'explicit resume'; Options = @{ ResumeSession = 'explicit session' }; Resume = 'explicit session' }
+            @{ Kind = 'explicit resume with deferred selection'; Options = @{ ResumeSession = 'explicit session'; DeferResume = $true }; Resume = 'explicit session' }
+            @{ Kind = 'NoResume'; Options = @{ NoResume = $true }; Resume = $null }
+            @{ Kind = 'DeferResume'; Options = @{ DeferResume = $true }; Resume = $null }
+            @{ Kind = 'SessionId'; Options = @{ SessionId = 'assigned-id' }; Resume = $null }
+            @{ Kind = 'ResumeLatest'; Options = @{ ResumeLatest = $true }; Resume = 'session-b' }
+        ) {
+            $options = $Options.Clone()
+            $options.ChangeDir = $relativeB
+            $options.SessionSelector = { throw 'Unexpected selector.' }
+            $plan = Invoke-DirectoryTestPlan -Entry $Entry -Options $options
+            if ($Resume) { $plan.Args[[array]::IndexOf($plan.Args, '--resume') + 1] | Should -Be $Resume }
+            else { $plan.Args | Should -Not -Contain '--resume' }
+            $plan.Args | Should -Contain 'only-a'
+            $plan.Args | Should -Not -Contain 'only-b'
+        }
+
+        It 'preserves <Prompt> passthrough arguments' -ForEach @(
+            @{ Prompt = 'help' }
+            @{ Prompt = 'update' }
+        ) {
+            $plan = Invoke-DirectoryTestPlan -Entry $Entry -Options @{
+                ChangeDir = $relativeB; Prompt = $Prompt; RemainingArgs = @('--native-option', 'value')
+                SessionSelector = { throw 'Unexpected selector.' }
+            }
+            $plan.Passthrough | Should -BeTrue
+            $plan.Args | Should -Be @($Prompt, '--native-option', 'value')
+            Should -Invoke -ModuleName Shmuelie.Copilot git -Times 0 -Exactly
+        }
+
+        It 'preserves null selector new-session semantics and restores the location' {
+            $plan = Invoke-DirectoryTestPlan -Entry $Entry -Options @{
+                ChangeDir = $relativeB; NoAutoResume = $true; Name = 'New session'
+                SessionSelector = { (Get-Location).Path | Should -Be $directoryB; $null }
+            }
+            $plan.Args | Should -Not -Contain '--resume'
+            $plan.Args[[array]::IndexOf($plan.Args, '--name') + 1] | Should -Be 'New session'
+        }
+
+        It 'retains B candidates in newest-first order when no branch matches' {
+            Mock -ModuleName Shmuelie.Copilot git { 'unmatched-branch' }
+            $plan = Invoke-DirectoryTestPlan -Entry $Entry -Options @{
+                ChangeDir = $relativeB
+                SessionSelector = {
+                    param([object[]]$Sessions)
+                    (Get-Location).Path | Should -Be $directoryB
+                    $Sessions.Id | Should -Be @('other-b', 'session-b')
+                    $Sessions[1]
+                }
+            }
+            $plan.Args[[array]::IndexOf($plan.Args, '--resume') + 1] | Should -Be 'session-b'
+        }
+
+        It 'restores the location after <Kind> selection failure under Continue' -ForEach @(
+            @{ Kind = 'exception'; Selector = { throw 'Selector failure.' } }
+            @{ Kind = 'invalid result'; Selector = { 'not a candidate' } }
+            @{ Kind = 'nonterminating error'; Selector = { Write-Error 'Selector failure.' -ErrorAction Continue } }
+        ) {
+            { Invoke-DirectoryTestPlan -Entry $Entry -Options @{
+                ChangeDir = $relativeB; NoAutoResume = $true; SessionSelector = $Selector; ErrorAction = 'Continue'
+            } } | Should -Throw
+            @(& (Get-Module Shmuelie.Copilot) { $script:DirectoryNativeCalls.ToArray() }) | Should -HaveCount 0
+        }
+
+        It 'restores the location after executable discovery fails' {
+            Mock -ModuleName Shmuelie.Copilot Get-Command { throw 'Synthetic discovery failure.' } -ParameterFilter { $Name[0] -eq 'copilot' }
+            { Invoke-DirectoryTestPlan -Entry $Entry -Options @{ ChangeDir = $relativeB; ErrorAction = 'Continue' } } |
+                Should -Throw '*Synthetic discovery failure*'
+        }
+
+        It 'restores the location after MCP configuration reading fails' {
+            Mock -ModuleName Shmuelie.Copilot Get-Content { throw 'Synthetic MCP read failure.' } -ParameterFilter { $Path -eq $mcpPath }
+            { Invoke-DirectoryTestPlan -Entry $Entry -Options @{ ChangeDir = $relativeB; ErrorAction = 'Continue' } } |
+                Should -Throw '*Synthetic MCP read failure*'
+        }
+    }
+
+    It 'rejects <Kind> before planning or launching under Continue' -ForEach @(
+        @{ Kind = 'missing directory'; Target = 'missing' }
+        @{ Kind = 'file'; Target = 'file' }
+        @{ Kind = 'provider path'; Target = 'provider' }
+        @{ Kind = 'empty path'; Target = 'empty' }
+        @{ Kind = 'null path'; Target = 'null' }
+    ) {
+        $invalidPath = switch ($Target) {
+            missing { Join-Path $directoryA 'missing' }
+            file { $mcpPath }
+            provider { 'Env:' }
+            empty { '' }
+            null { $null }
+        }
+        foreach ($entry in 'Get-CopilotLaunchPlan', 'Start-Copilot') {
+            { & $entry -ChangeDir $invalidPath -ErrorAction Continue } | Should -Throw
+        }
+        Should -Invoke -ModuleName Shmuelie.Copilot Get-CopilotHome -Times 0 -Exactly
+        Should -Invoke -ModuleName Shmuelie.Copilot Get-Command -Times 0 -Exactly -ParameterFilter { $Name[0] -eq 'copilot' }
+        @(& (Get-Module Shmuelie.Copilot) { $script:DirectoryNativeCalls.ToArray() }) | Should -HaveCount 0
+    }
+
+    It 'keeps WhatIf noninteractive while applying B MCP policy' {
+        $plan = Start-Copilot -C $relativeB -WhatIf -PassThru -NoAutoResume -SessionSelector { throw 'Unexpected selector.' }
+        $plan.Args | Should -Not -Contain '--resume'
+        $plan.Args | Should -Contain 'only-a'
+        $plan.Args | Should -Not -Contain 'only-b'
+        $explicit = Start-Copilot -C $relativeB -WhatIf -PassThru -ResumeSession 'explicit-id'
+        $explicit.Args[[array]::IndexOf($explicit.Args, '--resume') + 1] | Should -Be 'explicit-id'
+        Start-Copilot -C $relativeB -WhatIf -NoAutoResume -SessionSelector { throw 'Unexpected selector.' }
+        Should -Invoke -ModuleName Shmuelie.Copilot git -Times 0 -Exactly
+        @(& (Get-Module Shmuelie.Copilot) { $script:DirectoryNativeCalls.ToArray() }) | Should -HaveCount 0
+    }
+
+    It 'launches only the capture helper with one absolute C on <Outcome>' -ForEach @(
+        @{ Outcome = 'success'; Failure = $false }
+        @{ Outcome = 'error'; Failure = $true }
+    ) {
+        & (Get-Module Shmuelie.Copilot) { param($Failure) $script:DirectoryEngineFailure = $Failure } $Failure
+        if ($Failure) {
+            { Start-Copilot -C $relativeB -Confirm:$false } | Should -Throw '*Synthetic launch failure*'
+        } else {
+            Start-Copilot -C $relativeB -Confirm:$false
+        }
+        $calls = @(& (Get-Module Shmuelie.Copilot) { $script:DirectoryNativeCalls.ToArray() })
+        $calls | Should -HaveCount 1
+        $calls[0].Cwd | Should -Be $directoryA
+        $calls[0].Args[[array]::IndexOf($calls[0].Args, '--resume') + 1] | Should -Be 'session-b'
+        @($calls[0].Args | Where-Object { $_ -eq '-C' }) | Should -HaveCount 1
+        $nativeDirectory = $calls[0].Args[[array]::IndexOf($calls[0].Args, '-C') + 1]
+        [IO.Path]::IsPathFullyQualified($nativeDirectory) | Should -BeTrue
+        [IO.Path]::GetFullPath($nativeDirectory, $calls[0].Cwd) | Should -Be $directoryB
+    }
+}
+
 Describe 'Copilot pluggable session selector' {
     BeforeAll {
         $script:SelectorLaunchPlanCommand = Get-Command 'Shmuelie.Copilot\Get-CopilotLaunchPlan' -ListImported -ErrorAction Stop
@@ -620,8 +2397,7 @@ Describe 'Copilot pluggable session selector' {
             $script:SelectorLaunchPlanCommand
         } -ParameterFilter { $Name.Count -eq 1 -and $Name[0] -eq 'Get-CopilotLaunchPlan' }
         Mock -ModuleName Shmuelie.Copilot git { 'test-branch' }
-        $script:ExpectedConsoleReads = 0
-        Mock -ModuleName Shmuelie.Copilot Assert-CopilotSessionPickerInteractive { throw 'No interactive console.' }
+        Mock -ModuleName Shmuelie.Copilot Invoke-CopilotSessionChoice { throw 'Unexpected native picker.' }
         Mock -ModuleName Shmuelie.Copilot Read-Host { throw 'Unexpected console read.' }
         Mock -ModuleName Shmuelie.Copilot Invoke-CopilotSessionPicker { throw 'Unexpected default picker.' }
         Mock -ModuleName Shmuelie.Copilot Resume-CopilotSession {}
@@ -634,7 +2410,8 @@ Describe 'Copilot pluggable session selector' {
 
     AfterEach {
         Pop-Location
-        Should -Invoke -ModuleName Shmuelie.Copilot Read-Host -Times $script:ExpectedConsoleReads -Exactly
+        Should -Invoke -ModuleName Shmuelie.Copilot Read-Host -Times 0 -Exactly
+        Should -Invoke -ModuleName Shmuelie.Copilot Invoke-CopilotSessionChoice -Times 0 -Exactly
         Should -Invoke -ModuleName Shmuelie.Copilot Invoke-CopilotSessionPicker -Times 0 -Exactly
     }
 
@@ -897,33 +2674,6 @@ Describe 'Copilot pluggable session selector' {
         $candidates[0].Id | Should -Be $recentId
     }
 
-    It 'fails before prompting when the default picker has no interactive input' {
-        { Get-CopilotLaunchPlan } | Should -Throw '*No interactive console*'
-        Should -Invoke -ModuleName Shmuelie.Copilot Assert-CopilotSessionPickerInteractive -Times 1 -Exactly
-    }
-
-    It 'preserves the default numeric picker choice <Choice>' -ForEach @(
-        @{ Choice = '2'; ExpectedResume = $true }
-        @{ Choice = 'N'; ExpectedResume = $false }
-    ) {
-        Mock -ModuleName Shmuelie.Copilot Assert-CopilotSessionPickerInteractive {}
-        Mock -ModuleName Shmuelie.Copilot Read-Host { $Choice }
-        $script:ExpectedConsoleReads = 1
-        $plan = Get-CopilotLaunchPlan
-        if ($ExpectedResume) {
-            $plan.Args | Should -Contain $olderId
-        } else {
-            $plan.Args | Should -Not -Contain '--resume'
-        }
-    }
-
-    It 'surfaces a host prompt error instead of repeatedly retrying' {
-        Mock -ModuleName Shmuelie.Copilot Assert-CopilotSessionPickerInteractive {}
-        Mock -ModuleName Shmuelie.Copilot Read-Host { throw 'Host does not support prompting.' }
-        $script:ExpectedConsoleReads = 1
-        { Get-CopilotLaunchPlan } | Should -Throw '*Host does not support prompting*'
-    }
-
     It 'rejects an unsafe candidate ID before invoking the custom selector' {
         $candidate = [pscustomobject]@{
             PSTypeName = 'CopilotSession'
@@ -933,6 +2683,1001 @@ Describe 'Copilot pluggable session selector' {
             param($Candidate)
             Invoke-CopilotSessionSelector -Sessions @($Candidate) -SessionSelector { throw 'Unexpected selector.' }
         } $candidate } | Should -Throw '*Invalid Copilot session ID*'
+    }
+}
+
+Describe 'Copilot native host selection' -Tag 'NativeHostSelection' {
+    BeforeAll {
+        if (-not ('CopilotPromptTestHost' -as [type])) {
+            Add-Type -Path (Join-Path $repoRoot 'tests' 'fixtures' 'CopilotPromptTestHost.cs')
+        }
+
+        function Invoke-CopilotPromptCase {
+            param(
+                [scriptblock]$Command,
+                [object[]]$Candidates = $script:PromptCandidates,
+                [int[]]$Answers = @(),
+                [Exception]$Failure,
+                [int]$FailureAfterCalls = 0,
+                [switch]$MissingUI
+            )
+
+            $hostStub = [CopilotPromptTestHost]::new()
+            $hostStub.MissingUI = $MissingUI
+            $hostStub.TestUI.Failure = $Failure
+            $hostStub.TestUI.FailureAfterCalls = $FailureAfterCalls
+            foreach ($answer in $Answers) { $hostStub.TestUI.Answers.Enqueue($answer) }
+            $runspace = [runspacefactory]::CreateRunspace($hostStub)
+            $pipeline = [powershell]::Create()
+            try {
+                $runspace.Open()
+                $pipeline.Runspace = $runspace
+                $null = $pipeline.AddScript({
+                    param($Root, $Scratch, $Candidates, $CommandText)
+                    $ErrorActionPreference = 'Stop'
+                    $PSModuleAutoLoadingPreference = 'None'
+                    Set-Location -LiteralPath $Scratch
+                    Import-Module (Join-Path $Root 'modules' 'Shmuelie.Copilot' 'Shmuelie.Copilot.psd1') -Force
+                    $module = Get-Module Shmuelie.Copilot
+                    & $module {
+                        param($Candidates, $Scratch)
+                        $script:PromptCandidates = $Candidates
+                        $script:PromptScratch = $Scratch
+                        $script:NativeCalls = [System.Collections.Generic.List[object]]::new()
+                        # Capture real metadata before installing fail-closed discovery.
+                        $script:PromptPlanCommand = Get-Command Get-CopilotLaunchPlan
+                        function script:Get-Command {
+                            [CmdletBinding()]
+                            param([string[]]$Name, $CommandType)
+                            if ($Name.Count -ne 1) { throw 'Unexpected command discovery.' }
+                            switch -Exact ($Name[0]) {
+                                'Get-CopilotLaunchPlan' { return $script:PromptPlanCommand }
+                                'copilot' { return [pscustomobject]@{ Source = 'Invoke-CopilotPromptTestEngine' } }
+                                default { throw "Unexpected command discovery: $Name" }
+                            }
+                        }
+                        function script:Get-CopilotHome { $script:PromptScratch }
+                        function script:Get-Date {
+                            [CmdletBinding()]
+                            param([switch]$AsUTC)
+                            if (-not $AsUTC) { throw 'Unexpected clock request.' }
+                            [datetime]::new(2026, 8, 22, 0, 0, 0, [DateTimeKind]::Utc)
+                        }
+                        function script:Get-CopilotResumeCandidate { $script:PromptCandidates }
+                        function script:Get-CopilotSession {
+                            [CmdletBinding()]
+                            param([switch]$All, [string]$Id)
+                            if ($All) { return $script:PromptCandidates }
+                            if ($Id) { return $script:PromptCandidates | Where-Object Id -CEQ $Id }
+                            throw 'Unexpected session discovery.'
+                        }
+                        function script:Resolve-CopilotSessionPath {
+                            [CmdletBinding()]
+                            param([string]$Id)
+                            if ($Id -cnotin $script:PromptCandidates.Id) { throw 'Unexpected session path access.' }
+                            Join-Path $script:PromptScratch $Id
+                        }
+                        function script:Invoke-CopilotPromptTestEngine {
+                            $script:NativeCalls.Add([pscustomobject]@{
+                                Args = @($args | ForEach-Object { $_ })
+                                Cwd = (Get-Location).Path
+                            })
+                            throw 'Native execution blocked by fixture.'
+                        }
+                        function script:git { throw 'Unexpected native git call.' }
+                        function script:Read-Host { throw 'Unexpected Read-Host call.' }
+                        function script:Out-GridView { throw 'Unexpected grid picker.' }
+                        function script:Out-ConsoleGridView { throw 'Unexpected console grid picker.' }
+                    } $Candidates $Scratch
+                    $ErrorActionPreference = 'Continue'
+                    $caught = $null
+                    $output = @()
+                    try { $output = @(& ([scriptblock]::Create($CommandText))) } catch { $caught = $_ }
+                    [pscustomobject]@{
+                        Output = $output
+                        Error = $caught
+                        NativeCalls = @(& $module { $script:NativeCalls.ToArray() })
+                        Preference = $ErrorActionPreference
+                        Location = (Get-Location).Path
+                    }
+                }.ToString()).AddArgument($repoRoot).AddArgument($TestDrive).
+                    AddArgument($Candidates).AddArgument($Command.ToString())
+                $result = @($pipeline.Invoke())
+                if ($pipeline.Streams.Error.Count -gt 0) { throw ($pipeline.Streams.Error -join "`n") }
+                if ($result.Count -ne 1) { throw 'Unexpected fixture result count.' }
+                $result[0] | Add-Member -NotePropertyName HostUI -NotePropertyValue $hostStub.TestUI -PassThru
+            } finally {
+                $pipeline.Dispose()
+                $runspace.Dispose()
+            }
+        }
+
+        function New-CopilotPromptCandidates {
+            param([int]$Count)
+
+            foreach ($i in 1..$Count) {
+                $candidate = $script:PromptCandidates[0].PSObject.Copy()
+                $candidate.Id = "id-$i"
+                $candidate.Name = $candidate.Summary = "Session $i"
+                $candidate.UpdatedAt = $candidate.UpdatedAt.AddMinutes(-$i)
+                $candidate
+            }
+        }
+
+        function Get-CopilotNativeChoiceLabels {
+            param($Choices)
+
+            # Exercise PowerShell's own parser, not a test reimplementation.
+            $helper = [psobject].Assembly.GetType('System.Management.Automation.Host.HostUIHelperMethods')
+            $method = $helper.GetMethod('BuildHotkeysAndPlainLabels', [Reflection.BindingFlags]'Static,NonPublic')
+            $arguments = [object[]]@($Choices, $null)
+            $null = $method.Invoke($null, $arguments)
+            for ($i = 0; $i -lt $Choices.Count; $i++) {
+                [pscustomobject]@{ Key = $arguments[1][0, $i]; Label = $arguments[1][1, $i] }
+            }
+        }
+    }
+
+    BeforeEach {
+        $script:PromptCandidates = @(
+            [pscustomobject]@{
+                PSTypeName = 'CopilotSession'; Id = 'recent-id'; Name = 'Same & name [x]; $(not-code)'
+                Summary = 'Same & name [x]; $(not-code)'; Repository = 'owner/repo'; Branch = 'topic&branch'
+                Cwd = $TestDrive; UpdatedAt = [datetimeoffset]'2026-08-20T11:00:00Z'; EventCount = 8
+            }
+            [pscustomobject]@{
+                PSTypeName = 'CopilotSession'; Id = 'older-id'; Name = 'Same & name [x]; $(not-code)'
+                Summary = 'Same & name [x]; $(not-code)'; Repository = 'owner/repo'; Branch = 'other'
+                Cwd = $TestDrive; UpdatedAt = [datetimeoffset]'2026-08-19T11:00:00Z'; EventCount = 4
+            }
+        )
+    }
+
+    It 'uses a nonconsole native host with literal candidate help and no implicit default' {
+        $result = Invoke-CopilotPromptCase -Answers 1 -Command { Get-CopilotLaunchPlan -Name 'new work' -Model 'gpt-5.4' }
+        $result.Error | Should -BeNullOrEmpty
+        $result.Output | Should -HaveCount 1
+        $result.Output[0].PSObject.TypeNames | Should -Contain 'CopilotLaunchPlan'
+        $result.Output[0].Args | Should -Contain 'older-id'
+        $result.Output[0].Args | Should -Contain 'gpt-5.4'
+        $result.Output[0].Args | Should -Not -Contain '--name'
+        $result.HostUI.Calls | Should -HaveCount 1
+        $call = $result.HostUI.Calls[0]
+        $call.Caption | Should -Be 'Choose Copilot session'
+        $call.Message | Should -Match 'current folder'
+        $call.DefaultChoice | Should -Be -1
+        $call.Choices.Label | Should -Be @(
+            '&A - Same & name [x]; $(not-code) (topic&branch)'
+            '&B - Same & name [x]; $(not-code) (other)'
+            '&New session'
+        )
+        $call.Message | Should -Match 'Sessions 1-2 of 2 \(page 1 of 1\)'
+        $call.Message | Should -Not -Match 'Same & name'
+        foreach ($i in 0, 1) {
+            foreach ($value in $script:PromptCandidates[$i].Id, $script:PromptCandidates[$i].Summary, $TestDrive, 'owner/repo') {
+                $call.Choices[$i].HelpMessage | Should -Match ([regex]::Escape($value))
+            }
+        }
+        $call.Choices[0].HelpMessage | Should -Match 'Branch: topic&branch'
+        $call.Choices[0].HelpMessage | Should -Match 'Updated: 2026-08-20T11:00:00'
+        $call.Choices[0].HelpMessage | Should -Match 'Events: 8'
+        $result.HostUI.OtherInputCalls | Should -Be 0
+        $result.NativeCalls | Should -HaveCount 0
+    }
+
+    It 'keeps every one of 120 candidates reachable as the exact original object' {
+        $candidates = @(New-CopilotPromptCandidates -Count 120)
+        foreach ($candidate in $candidates) { $candidate.Summary = 'Same & name' }
+        $answers = @(foreach ($i in 0..119) {
+            $page = [int][Math]::Floor($i / 22)
+            if ($page -gt 0) {
+                22
+                for ($j = 1; $j -lt $page; $j++) { 23 }
+            }
+            $i % 22
+        })
+        $result = Invoke-CopilotPromptCase -Candidates $candidates -Answers $answers -Command {
+            & (Get-Module Shmuelie.Copilot) {
+                for ($i = 0; $i -lt $script:PromptCandidates.Count; $i++) {
+                    $selected = Invoke-CopilotSessionPicker -Sessions $script:PromptCandidates
+                    if (-not [object]::ReferenceEquals($selected, $script:PromptCandidates[$i])) {
+                        throw "Incorrect mapping for candidate $i."
+                    }
+                    $selected.Id
+                }
+            }
+        }
+        $result.Error | Should -BeNullOrEmpty
+        $result.Output | Should -Be $candidates.Id
+        $result.HostUI.Calls | Should -HaveCount 390
+        @($result.HostUI.Calls | Where-Object { $_.Choices.Count -gt 25 -or $_.DefaultChoice -ne -1 }) |
+            Should -HaveCount 0
+        $last = $result.HostUI.Calls[-1]
+        $last.Message | Should -Match 'Sessions 111-120 of 120 \(page 6 of 6\)'
+        $last.Choices[9].Label | Should -Be '&K - Same & name (topic&branch)'
+        $last.Choices[9].HelpMessage | Should -Match '(?m)^Id: id-120$'
+        $last.Choices[-1].Label | Should -Be '&Cancel'
+        $result.NativeCalls | Should -HaveCount 0
+        $result.HostUI.OtherInputCalls | Should -Be 0
+    }
+
+    It 'selects the last of <Count> sessions with complete bounded pages' -ForEach @(
+        @{ Count = 9; Answers = @(8) }
+        @{ Count = 10; Answers = @(9) }
+        @{ Count = 22; Answers = @(21) }
+        @{ Count = 23; Answers = @(22, 0) }
+        @{ Count = 44; Answers = @(22, 21) }
+        @{ Count = 45; Answers = @(22, 23, 0) }
+        @{ Count = 120; Answers = @(22, 23, 23, 23, 23, 9) }
+    ) {
+        $candidates = @(New-CopilotPromptCandidates -Count $Count)
+        $result = Invoke-CopilotPromptCase -Candidates $candidates -Answers $Answers -Command {
+            Get-CopilotLaunchPlan -NoAutoResume
+        }
+        $result.Error | Should -BeNullOrEmpty
+        $result.Output[0].Args | Should -Contain "id-$Count"
+        $result.HostUI.Calls | Should -HaveCount $Answers.Count
+        $expectedKeys = @([char[]]'ABDEFGHIJKLOQRSTUVWXYZ' | ForEach-Object { "$_" })
+        for ($page = 0; $page -lt $result.HostUI.Calls.Count; $page++) {
+            $call = $result.HostUI.Calls[$page]
+            $start = 22 * $page
+            $length = [Math]::Min(22, $Count - $start)
+            $call.Message | Should -Match "Sessions $($start + 1)-$($start + $length) of $Count \(page $($page + 1) of $($Answers.Count)\)"
+            $call.DefaultChoice | Should -Be -1
+            $call.Choices[0].HelpMessage | Should -Match "(?m)^Id: id-$($start + 1)$"
+            $call.Choices[$length - 1].HelpMessage | Should -Match "(?m)^Id: id-$($start + $length)$"
+            $call.Choices[-1].Label | Should -Be '&New session'
+            $labels = @(Get-CopilotNativeChoiceLabels -Choices $call.Choices)
+            $labels[0..($length - 1)].Key | Should -Be $expectedKeys[0..($length - 1)]
+            @($labels.Key | Select-Object -Unique) | Should -HaveCount $call.Choices.Count
+            if ($page -gt 0) { $labels.Key | Should -Contain 'P' } else { $labels.Key | Should -Not -Contain 'P' }
+            if ($page -lt $Answers.Count - 1) { $labels.Key | Should -Contain 'M' } else { $labels.Key | Should -Not -Contain 'M' }
+            $call.Message | Should -Not -Match 'Session \d+'
+        }
+        $result.NativeCalls | Should -HaveCount 0
+        $result.HostUI.OtherInputCalls | Should -Be 0
+    }
+
+    It 'restores original labels and mappings when navigating back across two pages' {
+        $result = Invoke-CopilotPromptCase -Candidates @(New-CopilotPromptCandidates -Count 45) `
+            -Answers 22, 23, 1, 22, 1 -Command { Get-CopilotLaunchPlan }
+        $result.Error | Should -BeNullOrEmpty
+        $result.Output[0].Args | Should -Contain 'id-2'
+        $result.HostUI.Calls | Should -HaveCount 5
+        $result.HostUI.Calls[0].Choices.Label | Should -Be $result.HostUI.Calls[4].Choices.Label
+        $result.HostUI.Calls[1].Choices.Label | Should -Be $result.HostUI.Calls[3].Choices.Label
+        $result.HostUI.Calls[4].Choices[1].HelpMessage | Should -Match '(?m)^Id: id-2$'
+        $result.NativeCalls | Should -HaveCount 0
+    }
+
+    It 'disambiguates <Kind> across pages without shortening help or changing candidates' -ForEach @(
+        @{ Kind = 'duplicates'; First = 'Shared & name'; Second = 'Shared & name'; Display = 'Shared & name' }
+        @{ Kind = 'truncation collisions'; First = ('a' * 80) + 'first'; Second = ('a' * 80) + 'second'; Display = ('a' * 77) + '...' }
+        @{ Kind = 'sanitization collisions'; First = "shared`tname"; Second = "shared`nname"; Display = 'shared name' }
+        @{ Kind = 'unnamed sessions'; First = '(no summary)'; Second = '(no summary)'; Display = '(no summary)' }
+    ) {
+        $candidates = @(New-CopilotPromptCandidates -Count 23)
+        $candidates[0].Summary = $First
+        $candidates[22].Summary = $Second
+        $candidates[0].Branch = 'first&branch'
+        $candidates[22].Branch = 'second&branch'
+        $result = Invoke-CopilotPromptCase -Candidates $candidates -Answers 22, 0 -Command {
+            Get-CopilotLaunchPlan -IncludeUnnamed -NoAutoResume
+        }
+        $result.Error | Should -BeNullOrEmpty
+        $result.Output[0].Args | Should -Contain 'id-23'
+        $result.HostUI.Calls[0].Choices[0].Label | Should -BeExactly "&A - $Display (first&branch)"
+        $result.HostUI.Calls[1].Choices[0].Label | Should -BeExactly "&A - $Display (second&branch)"
+        $result.HostUI.Calls[0].Choices[1].Label | Should -BeExactly '&B - Session 2'
+        $safeFirst = $First -replace '[\p{Cc}\p{Zl}\p{Zp}]', ' '
+        $safeSecond = $Second -replace '[\p{Cc}\p{Zl}\p{Zp}]', ' '
+        $result.HostUI.Calls[0].Choices[0].HelpMessage | Should -Match ([regex]::Escape("Name: $safeFirst`n"))
+        $result.HostUI.Calls[1].Choices[0].HelpMessage | Should -Match ([regex]::Escape("Name: $safeSecond`n"))
+        $candidates[0].Summary | Should -BeExactly $First
+        $candidates[22].Summary | Should -BeExactly $Second
+    }
+
+    It 'reserves navigation and exit keys even when session names resemble actions' {
+        $candidates = @(New-CopilotPromptCandidates -Count 45)
+        foreach ($candidate in $candidates) {
+            $candidate.Summary = '&Next &Previous &New &Cancel &? &&'
+            $candidate.Branch = 'same&branch'
+        }
+        $result = Invoke-CopilotPromptCase -Candidates $candidates -Answers 22, 23, 0 -Command {
+            Get-CopilotLaunchPlan
+        }
+        $result.Error | Should -BeNullOrEmpty
+        $result.Output[0].Args | Should -Contain 'id-45'
+        $expected = @(
+            ,@('A', 'B', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'O', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', 'M', 'N')
+            ,@('A', 'B', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'O', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', 'P', 'M', 'N')
+            ,@('A', 'P', 'N')
+        )
+        foreach ($page in 0..2) {
+            $nativeLabels = @(Get-CopilotNativeChoiceLabels -Choices $result.HostUI.Calls[$page].Choices)
+            $nativeLabels.Key | Should -Be $expected[$page]
+            $nativeLabels[0].Label | Should -BeExactly 'A - &Next &Previous &New &Cancel &? && (same&branch)'
+        }
+    }
+
+    It 'keeps Cancel and New session available on the <Page> page' -ForEach @(
+        @{ Page = 'first'; Answers = @(23) }
+        @{ Page = 'middle'; Answers = @(22, 24) }
+        @{ Page = 'last'; Answers = @(22, 23, 2) }
+    ) {
+        $candidates = @(New-CopilotPromptCandidates -Count 45)
+        $cancel = Invoke-CopilotPromptCase -Candidates $candidates -Answers $Answers -Command {
+            Select-CopilotSession -Confirm:$false
+        }
+        $cancel.Error | Should -BeNullOrEmpty
+        $cancel.Output | Should -HaveCount 0
+        $cancel.NativeCalls | Should -HaveCount 0
+        $cancel.HostUI.Calls | Should -HaveCount $Answers.Count
+        $cancel.HostUI.Calls[-1].Choices[-1].Label | Should -Be '&Cancel'
+        $fresh = Invoke-CopilotPromptCase -Candidates $candidates -Answers $Answers -Command {
+            Start-Copilot -PassThru -Name 'new work'
+        }
+        $fresh.Error | Should -BeNullOrEmpty
+        $fresh.Output[0].Args | Should -Not -Contain '--resume'
+        $fresh.Output[0].Args | Should -Contain 'new work'
+        $fresh.NativeCalls | Should -HaveCount 0
+        $fresh.HostUI.Calls | Should -HaveCount $Answers.Count
+        $fresh.HostUI.Calls[-1].Choices[-1].Label | Should -Be '&New session'
+    }
+
+    It 'resumes a later global page in the exact selected workspace' {
+        $candidates = @(New-CopilotPromptCandidates -Count 45)
+        $workspace = Join-Path $TestDrive 'last-page-workspace'
+        $null = New-Item -ItemType Directory -Path $workspace
+        $candidates[44].Cwd = $workspace
+        $result = Invoke-CopilotPromptCase -Candidates $candidates -Answers 22, 23, 0 -Command {
+            Select-CopilotSession -Confirm:$false
+        }
+        $result.Error.Exception.Message | Should -Be 'Native execution blocked by fixture.'
+        $result.NativeCalls | Should -HaveCount 1
+        $result.NativeCalls[0].Args | Should -Contain 'id-45'
+        $result.NativeCalls[0].Cwd | Should -Be $workspace
+        $result.Location | Should -Be $TestDrive
+        $result.HostUI.Calls | Should -HaveCount 3
+    }
+
+    It 'keeps standard confirmation separate from pagination for <Kind>' -ForEach @(
+        @{
+            Kind = 'approved launch'; Answers = @(0, 22, 23, 0); NativeCount = 1
+            Command = { Start-Copilot -Confirm }
+        }
+        @{
+            Kind = 'declined global resume'; Answers = @(22, 23, 0, 2); NativeCount = 0
+            Command = { Select-CopilotSession -Confirm }
+        }
+    ) {
+        $result = Invoke-CopilotPromptCase -Candidates @(New-CopilotPromptCandidates -Count 45) `
+            -Answers $Answers -Command $Command
+        $result.HostUI.Calls | Should -HaveCount 4
+        $confirmation = @($result.HostUI.Calls | Where-Object { $_.Choices.Label -contains '&Yes' })
+        $confirmation | Should -HaveCount 1
+        $result.NativeCalls | Should -HaveCount $NativeCount
+        if ($NativeCount) {
+            $result.Error.Exception.Message | Should -Be 'Native execution blocked by fixture.'
+            $result.NativeCalls[0].Args | Should -Contain 'id-45'
+        } else {
+            $result.Error | Should -BeNullOrEmpty
+        }
+    }
+
+    It 'does not paginate candidates passed to an explicit selector' {
+        $result = Invoke-CopilotPromptCase -Candidates @(New-CopilotPromptCandidates -Count 120) -Command {
+            Start-Copilot -PassThru -SessionSelector {
+                param([object[]]$Sessions)
+                if ($Sessions.Count -ne 120) { throw 'Incomplete selector input.' }
+                $Sessions[119]
+            }
+        }
+        $result.Error | Should -BeNullOrEmpty
+        $result.Output[0].Args | Should -Contain 'id-120'
+        $result.HostUI.Calls | Should -HaveCount 0
+        $result.NativeCalls | Should -HaveCount 0
+    }
+
+    It 'rejects an invalid response after navigation: <Label>' -ForEach @(
+        @{ Label = 'middle page upper bound'; Answers = @(22, 25) }
+        @{ Label = 'last page upper bound'; Answers = @(22, 23, 3) }
+        @{ Label = 'negative index'; Answers = @(22, 23, -1) }
+        @{ Label = 'maximum index'; Answers = @(22, 23, [int]::MaxValue) }
+    ) {
+        foreach ($command in @(
+            { Start-Copilot -Confirm:$false -ErrorAction Continue },
+            { Select-CopilotSession -Confirm:$false -ErrorAction Continue }
+        )) {
+            $result = Invoke-CopilotPromptCase -Candidates @(New-CopilotPromptCandidates -Count 45) `
+                -Answers $Answers -Command $command
+            $result.Error.Exception.Message | Should -Match 'invalid session choice'
+            $result.HostUI.Calls | Should -HaveCount $Answers.Count
+            $result.Output | Should -HaveCount 0
+            $result.NativeCalls | Should -HaveCount 0
+            $result.Preference | Should -Be 'Continue'
+        }
+    }
+
+    It 'fails closed after navigation when the host <Kind>' -ForEach @(
+        @{ Kind = 'does not support input'; Failure = [NotSupportedException]::new('No later-page input.'); After = 1; Answers = @(22) }
+        @{ Kind = 'cancels'; Failure = [OperationCanceledException]::new('Later-page cancellation.'); After = 2; Answers = @(22, 23) }
+        @{ Kind = 'reaches EOF'; Failure = [IO.EndOfStreamException]::new('Later-page EOF.'); After = 2; Answers = @(22, 23) }
+    ) {
+        foreach ($command in @(
+            { Start-Copilot -Confirm:$false -ErrorAction Continue },
+            { Select-CopilotSession -Confirm:$false -ErrorAction Continue }
+        )) {
+            $result = Invoke-CopilotPromptCase -Candidates @(New-CopilotPromptCandidates -Count 45) `
+                -Answers $Answers -Failure $Failure -FailureAfterCalls $After -Command $command
+            $result.Error.Exception.Message | Should -Match 'PromptForChoice.*SessionSelector'
+            $result.Error.Exception.ToString() | Should -Match ([regex]::Escape($Failure.Message))
+            $result.HostUI.Calls | Should -HaveCount ($After + 1)
+            $result.Output | Should -HaveCount 0
+            $result.NativeCalls | Should -HaveCount 0
+            $result.Preference | Should -Be 'Continue'
+        }
+    }
+
+    It 'shows normalized names with the <Kind> <Length>-text-element boundary in actual labels' -ForEach @(
+        foreach ($elementCase in @(
+            @{ Kind = 'ASCII'; Element = 'a' }
+            @{ Kind = 'ordinary Unicode'; Element = "`u{5B57}" }
+            @{ Kind = 'astral'; Element = "`u{1F680}" }
+            @{ Kind = 'combining'; Element = "e`u{0301}" }
+            @{ Kind = 'joined emoji'; Element = "`u{1F469}`u{200D}`u{1F4BB}" }
+        )) {
+            foreach ($length in 79, 80, 81) {
+                @{ Kind = $elementCase.Kind; Element = $elementCase.Element; Length = $length }
+            }
+        }
+    ) {
+        $candidate = $script:PromptCandidates[0]
+        $candidate.Name = 'Not the normalized display name'
+        $candidate.Summary = $Element * $Length
+        $candidate.Branch = 'not-needed-for-unique-name'
+        $expected = if ($Length -gt 80) { ($Element * 77) + '...' } else { $candidate.Summary }
+        $result = Invoke-CopilotPromptCase -Candidates @($candidate) -Answers 0 -Command {
+            Get-CopilotLaunchPlan -NoAutoResume
+        }
+        $result.Error | Should -BeNullOrEmpty
+        $call = $result.HostUI.Calls[0]
+        $call.Choices[0].Label | Should -BeExactly "&A - $expected"
+        [System.Globalization.StringInfo]::new($call.Choices[0].Label.Substring(5)).LengthInTextElements |
+            Should -Be ([Math]::Min($Length, 80))
+        $call.Choices[0].Label | Should -Not -Match 'not-needed-for-unique-name|Not the normalized display name'
+        $call.Message | Should -Not -Match ([regex]::Escape($expected))
+        $call.Choices[0].HelpMessage | Should -Match ([regex]::Escape("Name: $($candidate.Summary)`n"))
+        $call.Choices[0].HelpMessage | Should -Match 'Branch: not-needed-for-unique-name'
+        $result.Output[0].Args | Should -Contain $candidate.Id
+    }
+
+    It 'appends branches only for final duplicated names including <Kind>' -ForEach @(
+        @{ Kind = 'exact duplicates'; First = 'shared'; Second = 'shared'; Display = 'shared' }
+        @{ Kind = 'truncation collisions'; First = ('a' * 80) + 'first'; Second = ('a' * 80) + 'second'; Display = ('a' * 77) + '...' }
+        @{ Kind = 'sanitization collisions'; First = "shared`tname"; Second = "shared`nname"; Display = 'shared name' }
+    ) {
+        $script:PromptCandidates[0].Summary = $First
+        $script:PromptCandidates[1].Summary = $Second
+        $script:PromptCandidates[0].Branch = 'first-branch'
+        $script:PromptCandidates[1].Branch = 'second-branch'
+        $unique = $script:PromptCandidates[0].PSObject.Copy()
+        $unique.Id = 'unique-id'; $unique.Summary = 'unique'; $unique.Branch = 'hidden-branch'
+        $result = Invoke-CopilotPromptCase -Candidates @($script:PromptCandidates + $unique) -Answers 1 -Command {
+            Get-CopilotLaunchPlan
+        }
+        $result.Error | Should -BeNullOrEmpty
+        $labels = $result.HostUI.Calls[0].Choices[0..2].Label
+        $labels | Should -Be @("&A - $Display (first-branch)", "&B - $Display (second-branch)", '&D - unique')
+        $labels -join "`n" | Should -Not -Match 'hidden-branch'
+        $result.Output[0].Args | Should -Contain 'older-id'
+        $result.HostUI.Calls[0].Choices[1].HelpMessage | Should -Match 'Id: older-id'
+    }
+
+    It 'keeps identical or unavailable branches disambiguated by keys and full help' {
+        $branches = @('same-branch', 'same-branch', $null, '', '   ', "`t`e")
+        $candidates = @(for ($i = 0; $i -lt $branches.Count; $i++) {
+            $candidate = $script:PromptCandidates[0].PSObject.Copy()
+            $candidate.Id = "duplicate-$i"
+            $candidate.Summary = 'same'
+            $candidate.Branch = $branches[$i]
+            $candidate
+        })
+        $result = Invoke-CopilotPromptCase -Candidates $candidates -Answers 4 -Command { Get-CopilotLaunchPlan }
+        $result.Error | Should -BeNullOrEmpty
+        $result.HostUI.Calls[0].Choices[0..5].Label | Should -Be @(
+            '&A - same (same-branch)', '&B - same (same-branch)', '&D - same', '&E - same', '&F - same', '&G - same'
+        )
+        $result.Output[0].Args | Should -Contain 'duplicate-4'
+        foreach ($i in 0..5) {
+            $result.HostUI.Calls[0].Choices[$i].HelpMessage | Should -Match "Id: duplicate-$i"
+        }
+    }
+
+    It 'treats names that remain distinct after truncation as unique' {
+        $script:PromptCandidates[0].Summary = ('a' * 80) + 'one'
+        $script:PromptCandidates[1].Summary = ('b' * 80) + 'two'
+        $result = Invoke-CopilotPromptCase -Answers 0 -Command { Get-CopilotLaunchPlan }
+        $result.Error | Should -BeNullOrEmpty
+        $labels = $result.HostUI.Calls[0].Choices[0..1].Label
+        $labels | Should -Be @("&A - $('a' * 77)...", "&B - $('b' * 77)...")
+        $labels -join "`n" | Should -Not -Match 'topic&branch|\(other\)'
+    }
+
+    It 'sanitizes terminal controls in names and branches but preserves Unicode and ampersands' {
+        $name = "A&B`u{201C}quotes`u{201D}`u{5B57}`u{1F680}e`u{0301}`0`t`r`n`e[31m`a`b`u{007F}`u{0085}`u{009B}31m`u{2028}`u{2029}"
+        $safeName = "A&B`u{201C}quotes`u{201D}`u{5B57}`u{1F680}e`u{0301}" + (' ' * 5) + '[31m' + (' ' * 5) + '31m' + (' ' * 2)
+        $branch = "feature&`u{5B57}`e]0;title`a`tbranch"
+        $safeBranch = "feature&`u{5B57} ]0;title  branch"
+        foreach ($candidate in $script:PromptCandidates) {
+            $candidate.Summary = $name
+            $candidate.Branch = $branch
+        }
+        $result = Invoke-CopilotPromptCase -Answers 1 -Command { Get-CopilotLaunchPlan }
+        $result.Error | Should -BeNullOrEmpty
+        $call = $result.HostUI.Calls[0]
+        $labels = $call.Choices[0..1].Label
+        $labels | Should -Be @("&A - $safeName ($safeBranch)", "&B - $safeName ($safeBranch)")
+        foreach ($label in $labels) { $label | Should -Not -Match '[\p{Cc}\p{Zl}\p{Zp}]' }
+        foreach ($choice in $call.Choices[0..1]) {
+            $choice.HelpMessage | Should -Match ([regex]::Escape("Name: $safeName`n"))
+            $choice.HelpMessage | Should -Match ([regex]::Escape("Branch: $safeBranch`n"))
+            ($choice.HelpMessage -replace "`n", '') | Should -Not -Match '[\p{Cc}\p{Zl}\p{Zp}]'
+        }
+        $nativeLabels = @(Get-CopilotNativeChoiceLabels -Choices $call.Choices)
+        $nativeLabels.Key | Should -Be @('A', 'B', 'N')
+        $nativeLabels[0].Label | Should -BeExactly "A - $safeName ($safeBranch)"
+        $nativeLabels[1].Label | Should -BeExactly "B - $safeName ($safeBranch)"
+        $script:PromptCandidates[0].Summary | Should -BeExactly $name
+        $script:PromptCandidates[1].Branch | Should -BeExactly $branch
+        $result.Output[0].Args | Should -Contain 'older-id'
+    }
+
+    It 'keeps global Cancel distinct from launch New session' {
+        $cancel = Invoke-CopilotPromptCase -Answers 2 -Command { Select-CopilotSession -Confirm:$false }
+        $cancel.Error | Should -BeNullOrEmpty
+        $cancel.Output | Should -HaveCount 0
+        $cancel.NativeCalls | Should -HaveCount 0
+        $cancel.HostUI.Calls[0].Caption | Should -Be 'Select Copilot session to resume'
+        $cancel.HostUI.Calls[0].Choices[2].Label | Should -Be '&Cancel'
+        $fresh = Invoke-CopilotPromptCase -Answers 2 -Command { Start-Copilot -PassThru -Name 'new work' }
+        $fresh.Error | Should -BeNullOrEmpty
+        $fresh.Output[0].Args | Should -Not -Contain '--resume'
+        $fresh.Output[0].Args | Should -Contain 'new work'
+        $fresh.NativeCalls | Should -HaveCount 0
+    }
+
+    It 'filters and sorts global candidates then resumes the exact choice from its Cwd' {
+        $workspace = Join-Path $TestDrive 'selected-workspace'
+        $null = New-Item -ItemType Directory -Path $workspace -Force
+        $script:PromptCandidates[1].Cwd = $workspace
+        $excluded = $script:PromptCandidates[0].PSObject.Copy()
+        $excluded.Id = 'excluded'; $excluded.Repository = 'other/repo'
+        $result = Invoke-CopilotPromptCase -Candidates @($script:PromptCandidates[1], $excluded, $script:PromptCandidates[0]) -Answers 1 -Command {
+            Select-CopilotSession -Id '*-id' -Repository 'OWNER/*' -Branch '*' -Cwd '*' -Summary 'Same*' `
+                -UpdatedBefore '2026-08-21T00:00:00Z' -OlderThan ([timespan]::FromDays(1)) -First 2 `
+                -Prompt 'continue' -RemainingArgs '--model', 'gpt-5.4' -Confirm:$false
+        }
+        $result.Error.Exception.Message | Should -Be 'Native execution blocked by fixture.'
+        $result.NativeCalls | Should -HaveCount 1
+        $result.NativeCalls[0].Args | Should -Contain 'older-id'
+        $result.NativeCalls[0].Args | Should -Contain 'continue'
+        $result.NativeCalls[0].Args | Should -Contain 'gpt-5.4'
+        $result.NativeCalls[0].Cwd | Should -Be $workspace
+        $result.Location | Should -Be $TestDrive
+        $result.HostUI.Calls[0].Choices[0].HelpMessage | Should -Match 'Id: recent-id'
+        $result.HostUI.Calls[0].Choices | Should -HaveCount 3
+    }
+
+    It 'rejects invalid host response <Answer> without output or execution under Continue' -ForEach @(
+        @{ Answer = -1 }, @{ Answer = -2 }, @{ Answer = 3 }, @{ Answer = [int]::MaxValue }
+    ) {
+        foreach ($command in @(
+            { Start-Copilot -Confirm:$false -ErrorAction Continue },
+            { Select-CopilotSession -Confirm:$false -ErrorAction Continue }
+        )) {
+            $result = Invoke-CopilotPromptCase -Answers $Answer -Command $command
+            $result.Error.Exception.Message | Should -Match 'invalid session choice'
+            $result.Output | Should -HaveCount 0
+            $result.NativeCalls | Should -HaveCount 0
+            $result.HostUI.Calls | Should -HaveCount 1
+            $result.Preference | Should -Be 'Continue'
+        }
+    }
+
+    It 'preserves underlying host <Kind> failures and offers explicit alternatives' -ForEach @(
+        @{ Kind = 'unsupported'; Failure = [NotSupportedException]::new('Host cannot prompt.') }
+        @{ Kind = 'unimplemented'; Failure = [NotImplementedException]::new('Method not implemented.') }
+        @{ Kind = 'EOF'; Failure = [IO.EndOfStreamException]::new('Input ended.') }
+    ) {
+        foreach ($command in @({ Start-Copilot -Confirm:$false }, { Select-CopilotSession -Confirm:$false })) {
+            $result = Invoke-CopilotPromptCase -Failure $Failure -Command $command
+            $result.Error.Exception.Message | Should -Match 'PromptForChoice.*SessionSelector'
+            $result.Error.Exception.ToString() | Should -Match ([regex]::Escape($Failure.Message))
+            $result.Error.Exception.InnerException | Should -Not -BeNullOrEmpty
+            $result.NativeCalls | Should -HaveCount 0
+            $result.Output | Should -HaveCount 0
+            $result.HostUI.Calls | Should -HaveCount 1
+        }
+    }
+
+    It 'fails closed when input is unavailable' {
+        $result = Invoke-CopilotPromptCase -Command { Start-Copilot -Confirm:$false }
+        $result.Error.Exception.Message | Should -Match 'No prompt input is available'
+        $result.Output | Should -HaveCount 0
+        $result.NativeCalls | Should -HaveCount 0
+    }
+
+    It 'fails closed when the host has no user interface' {
+        $result = Invoke-CopilotPromptCase -MissingUI -Command { Start-Copilot -Confirm:$false }
+        $result.Error | Should -Not -BeNullOrEmpty
+        $result.Output | Should -HaveCount 0
+        $result.NativeCalls | Should -HaveCount 0
+    }
+
+    It 'has no prompt for zero candidates and preserves the global no-match error' {
+        $launch = Invoke-CopilotPromptCase -Candidates @() -Command {
+            Get-CopilotLaunchPlan -NoAutoResume -SessionSelector { throw 'Unexpected selector.' }
+        }
+        $launch.Error | Should -BeNullOrEmpty
+        $launch.Output[0].Args | Should -Not -Contain '--resume'
+        $launch.HostUI.Calls | Should -HaveCount 0
+        $globalSelection = Invoke-CopilotPromptCase -Candidates @() -Command {
+            Select-CopilotSession -SessionSelector { throw 'Unexpected selector.' } -ErrorAction Stop
+        }
+        $globalSelection.Error.Exception.Message | Should -Match 'No Copilot sessions matched'
+        $globalSelection.HostUI.Calls | Should -HaveCount 0
+        $globalSelection.NativeCalls | Should -HaveCount 0
+    }
+
+    It 'preserves empty metadata and all-unnamed candidates in native help' {
+        foreach ($candidate in $script:PromptCandidates) {
+            $candidate.Summary = '(no summary)'
+            $candidate.Name = $null
+            $candidate.UpdatedAt = $null
+            $candidate.Repository = $null
+            $candidate.Branch = $null
+            $candidate.EventCount = $null
+        }
+        $result = Invoke-CopilotPromptCase -Answers 1 -Command { Get-CopilotLaunchPlan }
+        $result.Error | Should -BeNullOrEmpty
+        $result.Output[0].Args | Should -Contain 'older-id'
+        $result.HostUI.Calls[0].Choices | Should -HaveCount 3
+        $result.HostUI.Calls[0].Choices[0].HelpMessage | Should -Match 'Updated: \(unknown\)'
+        $result.HostUI.Calls[0].Choices[0].Label | Should -Be '&A - (no summary)'
+        $result.HostUI.Calls[0].Choices[1].Label | Should -Be '&B - (no summary)'
+    }
+
+    It 'bypasses host prompting with <Label>' -ForEach @(
+        @{ Label = 'NoResume'; Command = { Get-CopilotLaunchPlan -NoResume } }
+        @{ Label = 'ResumeLatest'; Command = { Get-CopilotLaunchPlan -ResumeLatest } }
+        @{ Label = 'explicit resume'; Command = { Get-CopilotLaunchPlan -ResumeSession 'explicit' } }
+        @{ Label = 'SessionId'; Command = { Get-CopilotLaunchPlan -SessionId 'assigned' } }
+        @{ Label = 'DeferResume'; Command = { Get-CopilotLaunchPlan -DeferResume } }
+        @{ Label = 'help'; Command = { Get-CopilotLaunchPlan -Prompt help } }
+        @{ Label = 'update'; Command = { Get-CopilotLaunchPlan -Prompt update } }
+    ) {
+        $result = Invoke-CopilotPromptCase -Command $Command
+        $result.Error | Should -BeNullOrEmpty
+        $result.Output | Should -HaveCount 1
+        $result.HostUI.Calls | Should -HaveCount 0
+        $result.NativeCalls | Should -HaveCount 0
+    }
+
+    It 'auto-resumes a single session but NoAutoResume forces the host even for one' {
+        $single = @($script:PromptCandidates[0])
+        $auto = Invoke-CopilotPromptCase -Candidates $single -Command { Get-CopilotLaunchPlan }
+        $auto.Output[0].Args | Should -Contain 'recent-id'
+        $auto.HostUI.Calls | Should -HaveCount 0
+        $forced = Invoke-CopilotPromptCase -Candidates $single -Answers 1 -Command { Get-CopilotLaunchPlan -NoAutoResume }
+        $forced.Error | Should -BeNullOrEmpty
+        $forced.Output[0].Args | Should -Not -Contain '--resume'
+        $forced.HostUI.Calls[0].Choices | Should -HaveCount 2
+    }
+
+    It 'preserves lone-named preference and IncludeUnnamed picker filtering' {
+        $script:PromptCandidates[0].Summary = '(no summary)'
+        $auto = Invoke-CopilotPromptCase -Command { Get-CopilotLaunchPlan -IncludeUnnamed }
+        $auto.Output[0].Args | Should -Contain 'older-id'
+        $auto.HostUI.Calls | Should -HaveCount 0
+        $filtered = Invoke-CopilotPromptCase -Answers 0 -Command { Get-CopilotLaunchPlan -NoAutoResume }
+        $filtered.Output[0].Args | Should -Contain 'older-id'
+        $filtered.HostUI.Calls[0].Choices | Should -HaveCount 2
+        $all = Invoke-CopilotPromptCase -Answers 0 -Command { Get-CopilotLaunchPlan -NoAutoResume -IncludeUnnamed }
+        $all.Output[0].Args | Should -Contain 'recent-id'
+        $all.HostUI.Calls[0].Choices | Should -HaveCount 3
+    }
+
+    It 'skips the host for First and exact single-match selection' {
+        foreach ($command in @(
+            { Select-CopilotSession -First 1 -StayInDirectory -Confirm:$false },
+            { Select-CopilotSession -Id 'recent-id' -StayInDirectory -Confirm:$false }
+        )) {
+            $result = Invoke-CopilotPromptCase -Command $command
+            $result.Error.Exception.Message | Should -Be 'Native execution blocked by fixture.'
+            $result.NativeCalls[0].Args | Should -Contain 'recent-id'
+            $result.HostUI.Calls | Should -HaveCount 0
+        }
+    }
+
+    It 'never prompts or executes for WhatIf' {
+        foreach ($command in @(
+            { Start-Copilot -NoAutoResume -WhatIf },
+            { Start-Copilot -NoAutoResume -PassThru -WhatIf },
+            { Select-CopilotSession -First 1 -WhatIf },
+            { Select-CopilotSession -WhatIf -ErrorAction Stop },
+            { Start-Copilot -WhatIf -NoAutoResume -SessionSelector { throw 'Unexpected selector.' } },
+            { Select-CopilotSession -WhatIf -First 1 -SessionSelector { throw 'Unexpected selector.' } }
+        )) {
+            $result = Invoke-CopilotPromptCase -Command $command
+            $result.HostUI.Calls | Should -HaveCount 0
+            $result.NativeCalls | Should -HaveCount 0
+            if ($result.Error) {
+                $result.Error.Exception.Message | Should -Match '^Multiple Copilot sessions matched'
+            }
+        }
+    }
+
+    It 'keeps the native choice helper private and public confirmation metadata unchanged' {
+        $module = Get-Module Shmuelie.Copilot
+        $module.ExportedFunctions.Keys | Should -Not -Contain 'Invoke-CopilotSessionChoice'
+        $module.ExportedFunctions.Keys | Should -Not -Contain 'ConvertTo-CopilotSessionDisplayText'
+        foreach ($name in 'Start-Copilot', 'Select-CopilotSession') {
+            $command = $module.ExportedFunctions[$name]
+            $binding = $command.ScriptBlock.Attributes |
+                Where-Object { $_ -is [System.Management.Automation.CmdletBindingAttribute] }
+            $binding.SupportsShouldProcess | Should -BeTrue
+            $binding.ConfirmImpact | Should -Be 'Medium'
+            $command.Parameters.Keys | Should -Contain 'Confirm'
+            $command.Parameters.Keys | Should -Contain 'WhatIf'
+            $command.Parameters.Keys | Should -Contain 'SessionSelector'
+        }
+    }
+
+    It 'keeps caller selectors and canonical identity without using the host' {
+        $result = Invoke-CopilotPromptCase -Command {
+            Start-Copilot -PassThru -SessionSelector {
+                param([object[]]$Sessions)
+                if ($args.Count -ne 0 -or $Sessions.Count -ne 2) { throw 'Invalid callback input.' }
+                $Sessions[1].Cwd = 'not-the-original-path'
+                $Sessions[1]
+            }
+        }
+        $result.Error | Should -BeNullOrEmpty
+        $result.Output[0].Args | Should -Contain 'older-id'
+        $result.HostUI.Calls | Should -HaveCount 0
+        $result.NativeCalls | Should -HaveCount 0
+        $cancel = Invoke-CopilotPromptCase -Command { Select-CopilotSession -SessionSelector { $null } -Confirm:$false }
+        $cancel.Error | Should -BeNullOrEmpty
+        $cancel.Output | Should -HaveCount 0
+        $cancel.NativeCalls | Should -HaveCount 0
+        $cancel.HostUI.Calls | Should -HaveCount 0
+    }
+
+    It 'retains canonical resume metadata when a custom selector changes its copy' {
+        $result = Invoke-CopilotPromptCase -Command {
+            Select-CopilotSession -SessionSelector {
+                param($Sessions)
+                $Sessions[1].Cwd = 'not-an-existing-workspace'
+                $Sessions[1].PSObject.Copy()
+            } -Confirm:$false
+        }
+        $result.Error.Exception.Message | Should -Be 'Native execution blocked by fixture.'
+        $result.NativeCalls | Should -HaveCount 1
+        $result.NativeCalls[0].Args | Should -Contain 'older-id'
+        $result.NativeCalls[0].Cwd | Should -Be $TestDrive
+        $result.HostUI.Calls | Should -HaveCount 0
+    }
+
+    It 'retains custom-selector new-session semantics for null and no output' {
+        foreach ($command in @(
+            { Start-Copilot -PassThru -Name 'new work' -SessionSelector { $null } },
+            { Get-CopilotLaunchPlan -Name 'new work' -SessionSelector {} }
+        )) {
+            $result = Invoke-CopilotPromptCase -Command $command
+            $result.Error | Should -BeNullOrEmpty
+            $result.Output[0].Args | Should -Not -Contain '--resume'
+            $result.Output[0].Args | Should -Contain 'new work'
+            $result.HostUI.Calls | Should -HaveCount 0
+            $result.NativeCalls | Should -HaveCount 0
+        }
+    }
+
+    It 'retains selector contract rejection without host fallback for <Label>' -ForEach @(
+        @{ Label = 'extra output'; Selector = "param(`$Sessions) 'extra'; `$Sessions[0]" }
+        @{ Label = 'noncandidate'; Selector = "param(`$Sessions) `$Sessions[0].Id = 'OTHER'; `$Sessions[0]" }
+        @{ Label = 'case-mismatched identity'; Selector = "param(`$Sessions) `$Sessions[0].Id = 'RECENT-ID'; `$Sessions[0]" }
+        @{ Label = 'multiple candidates'; Selector = "param(`$Sessions) `$Sessions" }
+        @{ Label = 'untyped result'; Selector = "param(`$Sessions) [pscustomobject]@{ Id = `$Sessions[0].Id }" }
+        @{ Label = 'throw'; Selector = "throw 'selector failure'" }
+        @{ Label = 'error'; Selector = "param(`$Sessions) Write-Error 'selector failure' -ErrorAction Continue; `$Sessions[0]" }
+    ) {
+        foreach ($entry in 'Start-Copilot', 'Select-CopilotSession') {
+            $command = [scriptblock]::Create("$entry -SessionSelector { $Selector } -Confirm:`$false")
+            $result = Invoke-CopilotPromptCase -Command $command
+            $result.Error | Should -Not -BeNullOrEmpty
+            $result.Output | Should -HaveCount 0
+            $result.HostUI.Calls | Should -HaveCount 0
+            $result.NativeCalls | Should -HaveCount 0
+        }
+    }
+
+    It 'leaves standard confirmation to ShouldProcess with <Label>' -ForEach @(
+        @{ Label = 'explicit Confirm'; Command = { Start-Copilot -Confirm }; Answers = @(2); ExpectedCalls = 1; NativeCount = 0 }
+        @{ Label = 'ConfirmPreference'; Command = { $global:ConfirmPreference = 'Medium'; Start-Copilot }; Answers = @(2); ExpectedCalls = 1; NativeCount = 0 }
+        @{ Label = 'approved launch'; Command = { Start-Copilot -Confirm }; Answers = @(0, 1); ExpectedCalls = 2; NativeCount = 1 }
+        @{ Label = 'selected but declined resume'; Command = { Select-CopilotSession -Confirm }; Answers = @(1, 2); ExpectedCalls = 2; NativeCount = 0 }
+    ) {
+        $result = Invoke-CopilotPromptCase -Answers $Answers -Command $Command
+        $result.HostUI.Calls | Should -HaveCount $ExpectedCalls
+        $result.NativeCalls | Should -HaveCount $NativeCount
+        if ($NativeCount) {
+            $result.Error.Exception.Message | Should -Be 'Native execution blocked by fixture.'
+            $result.NativeCalls[0].Args | Should -Contain 'older-id'
+        } else {
+            $result.Error | Should -BeNullOrEmpty
+        }
+        $confirmation = @($result.HostUI.Calls | Where-Object { $_.Choices.Label -contains '&Yes' })
+        $confirmation | Should -HaveCount 1
+        $confirmation[0].Choices.Label | Should -Contain '&No'
+        $confirmation[0].Message | Should -Match 'Execute|Resume Copilot'
+    }
+
+    It 'restores ChangeDir after host <Label> in both planning entrypoints' -ForEach @(
+        @{ Label = 'new session'; Answers = @(2); Failure = $null; ExpectedError = $false }
+        @{ Label = 'invalid choice'; Answers = @(-1); Failure = $null; ExpectedError = $true }
+        @{ Label = 'unavailable input'; Answers = @(); Failure = $null; ExpectedError = $true }
+        @{ Label = 'cancellation'; Answers = @(); Failure = [OperationCanceledException]::new('Synthetic cancellation.'); ExpectedError = $true }
+    ) {
+        foreach ($command in @(
+            {
+                $destination = Join-Path $Scratch 'child [folder]'
+                $null = [IO.Directory]::CreateDirectory($destination)
+                Get-CopilotLaunchPlan -C 'child [folder]' -NoAutoResume -ErrorAction Continue
+            },
+            {
+                $destination = Join-Path $Scratch 'child [folder]'
+                $null = [IO.Directory]::CreateDirectory($destination)
+                Start-Copilot -PassThru -C 'child [folder]' -NoAutoResume -ErrorAction Continue
+            }
+        )) {
+            $result = Invoke-CopilotPromptCase -Command $command -Answers $Answers -Failure $Failure
+            $result.Location | Should -Be $TestDrive
+            $result.NativeCalls | Should -HaveCount 0
+            $result.HostUI.Calls | Should -HaveCount 1
+            $result.HostUI.OtherInputCalls | Should -Be 0
+            if ($ExpectedError) {
+                $result.Error | Should -Not -BeNullOrEmpty
+                $result.Output | Should -HaveCount 0
+            } else {
+                $result.Error | Should -BeNullOrEmpty
+                $result.Output[0].Args | Should -Not -Contain '--resume'
+                $result.Output[0].Args[[array]::IndexOf($result.Output[0].Args, '-C') + 1] |
+                    Should -Be (Join-Path $TestDrive 'child [folder]')
+            }
+        }
+    }
+
+    It 'restores ChangeDir around <Label> confirmation and replanning' -ForEach @(
+        @{ Label = 'declined'; Answers = @(2); ExpectedCalls = 1; NativeCount = 0 }
+        @{ Label = 'approved'; Answers = @(0, 1); ExpectedCalls = 2; NativeCount = 1 }
+    ) {
+        $result = Invoke-CopilotPromptCase -Answers $Answers -Command {
+            $destination = Join-Path $Scratch 'child [folder]'
+            $null = [IO.Directory]::CreateDirectory($destination)
+            Start-Copilot -C 'child [folder]' -Confirm
+        }
+        $result.Location | Should -Be $TestDrive
+        $result.HostUI.Calls | Should -HaveCount $ExpectedCalls
+        $result.HostUI.Calls[0].Choices.Label | Should -Contain '&Yes'
+        $result.NativeCalls | Should -HaveCount $NativeCount
+        if ($NativeCount) {
+            $result.Error.Exception.Message | Should -Be 'Native execution blocked by fixture.'
+            $result.NativeCalls[0].Cwd | Should -Be $TestDrive
+            $result.NativeCalls[0].Args | Should -Contain 'older-id'
+            $result.NativeCalls[0].Args[[array]::IndexOf($result.NativeCalls[0].Args, '-C') + 1] |
+                Should -Be (Join-Path $TestDrive 'child [folder]')
+        } else {
+            $result.Error | Should -BeNullOrEmpty
+        }
+    }
+}
+
+Describe 'Copilot ConsoleHost key acceptance' -Tag 'NativeHostSelection' {
+    BeforeAll {
+        function Invoke-CopilotConsoleCase {
+            param(
+                [hashtable]$Case,
+                [string[]]$InputLines
+            )
+
+            $casePath = Join-Path $TestDrive "$([guid]::NewGuid()).case.json"
+            $resultPath = Join-Path $TestDrive "$([guid]::NewGuid()).result.json"
+            $Case | ConvertTo-Json | Set-Content -LiteralPath $casePath -Encoding utf8
+            $start = [Diagnostics.ProcessStartInfo]::new()
+            $start.FileName = Join-Path $PSHOME $(if ($IsWindows) { 'pwsh.exe' } else { 'pwsh' })
+            $start.UseShellExecute = $false
+            $start.CreateNoWindow = $true
+            $start.RedirectStandardInput = $true
+            $start.RedirectStandardOutput = $true
+            $start.RedirectStandardError = $true
+            $start.StandardInputEncoding = [Text.UTF8Encoding]::new($false)
+            $start.StandardOutputEncoding = [Text.UTF8Encoding]::new($false)
+            foreach ($argument in @(
+                '-NoLogo', '-NoProfile', '-File',
+                (Join-Path $repoRoot 'tests' 'fixtures' 'Invoke-CopilotNativePrompt.ps1'),
+                '-CasePath', $casePath, '-ResultPath', $resultPath
+            )) {
+                $start.ArgumentList.Add($argument)
+            }
+            $process = [Diagnostics.Process]::new()
+            $process.StartInfo = $start
+            $started = $false
+            try {
+                $started = $process.Start()
+                if (-not $started) { throw 'Unable to start synthetic ConsoleHost.' }
+                $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+                $stderrTask = $process.StandardError.ReadToEndAsync()
+                foreach ($line in $InputLines) { $process.StandardInput.WriteLine($line) }
+                $process.StandardInput.Close()
+                if (-not $process.WaitForExit(30000)) { throw 'Synthetic ConsoleHost input timed out.' }
+                $stdout = $stdoutTask.GetAwaiter().GetResult()
+                $stderr = $stderrTask.GetAwaiter().GetResult()
+                if ($process.ExitCode -ne 0 -or $stderr) {
+                    throw "Synthetic ConsoleHost failed (exit $($process.ExitCode)): $stderr`n$stdout"
+                }
+                $result = Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json
+                if ($result.ProcessId -ne $process.Id) { throw 'Unexpected native result identity.' }
+                $result | Add-Member -NotePropertyName Exited -NotePropertyValue $process.HasExited -PassThru
+            } finally {
+                try {
+                    if ($started -and -not $process.HasExited) {
+                        Stop-Process -Id $process.Id -Force -ErrorAction Stop
+                        if (-not $process.WaitForExit(5000)) { throw 'Synthetic ConsoleHost did not stop.' }
+                    }
+                } finally {
+                    $process.Dispose()
+                }
+            }
+        }
+    }
+
+    It 'accepts real native input for <Label>' -ForEach @(
+        @{ Label = 'ninth session'; Count = 9; Keys = @('J'); Index = 8; ExitLabel = '&Cancel' }
+        @{ Label = 'tenth session'; Count = 10; Keys = @('K'); Index = 9; ExitLabel = '&Cancel' }
+        @{ Label = '22-session boundary'; Count = 22; Keys = @('Z'); Index = 21; ExitLabel = '&Cancel' }
+        @{ Label = '23rd session'; Count = 23; Keys = @('M', 'A'); Index = 22; ExitLabel = '&Cancel' }
+        @{ Label = 'full last page'; Count = 44; Keys = @('M', 'Z'); Index = 43; ExitLabel = '&Cancel' }
+        @{ Label = 'partial third page'; Count = 45; Keys = @('M', 'M', 'A'); Index = 44; ExitLabel = '&Cancel' }
+        @{ Label = '120th session'; Count = 120; Keys = @('M', 'M', 'M', 'M', 'M', 'K'); Index = 119; ExitLabel = '&Cancel' }
+        @{ Label = 'back navigation'; Count = 45; Keys = @('M', 'M', 'P', 'P', 'B'); Index = 1; ExitLabel = '&Cancel' }
+        @{ Label = 'last-page Cancel'; Count = 45; Keys = @('M', 'M', 'C'); Index = -1; ExitLabel = '&Cancel' }
+        @{ Label = 'last-page New session'; Count = 45; Keys = @('M', 'M', 'N'); Index = -1; ExitLabel = '&New session' }
+        @{ Label = 'blank input and native help'; Count = 23; Keys = @('', '?', 'M', 'A'); Index = 22; ExitLabel = '&Cancel' }
+        @{ Label = 'rejected numeric prefix'; Count = 23; Keys = @('23', 'M', 'A'); Index = 22; ExitLabel = '&Cancel' }
+        @{ Label = 'unavailable Previous and wrong exit key'; Count = 23; Keys = @('P', 'N', 'M', 'A'); Index = 22; ExitLabel = '&Cancel' }
+        @{ Label = 'unavailable Next on final page'; Count = 23; Keys = @('M', 'M', 'A'); Index = 22; ExitLabel = '&Cancel' }
+        @{
+            Label = 'literal ampersands and action-looking data'; Count = 23
+            Keys = @('&', 'M', 'A'); Index = 22; ExitLabel = '&New session'
+            Summary = '&New &Cancel &Previous &Next &? &&'
+        }
+        @{
+            Label = 'Unicode quotes, controls, and graphemes'; Count = 23
+            Keys = @('M', 'A'); Index = 22; ExitLabel = '&Cancel'
+            Summary = "R&D `u{201C}quoted`u{201D} `u{5B57} e`u{0301} `u{1F469}`u{200D}`u{1F4BB}`t`e`u{2028}"
+        }
+    ) {
+        $case = @{ Count = $Count; ExitLabel = $ExitLabel }
+        if ($Summary) { $case.Summary = $Summary }
+        $result = Invoke-CopilotConsoleCase -Case $case -InputLines $Keys
+        $result.SelectedIndex | Should -Be $Index
+        if ($Index -eq -1) {
+            $result.SelectedId | Should -BeNullOrEmpty
+        } else {
+            $result.SelectedId | Should -Be "id-$($Index + 1)"
+        }
+        $result.Exited | Should -BeTrue
     }
 }
 
@@ -997,6 +3742,122 @@ Describe 'Start-Copilot' {
 }
 
 Describe 'Copilot workspace.yaml helpers' {
+    It 'skips block content for exact reads and replacements: <Header>, <Ending>, <IndentName>' -ForEach @(
+        foreach ($header in '|', '|-', '|+', '>', '>-', '>+') {
+            foreach ($ending in @(
+                @{ Name = 'LF'; Value = "`n" }
+                @{ Name = 'CRLF'; Value = "`r`n" }
+                @{ Name = 'CR'; Value = "`r" }
+            )) {
+                foreach ($indent in @(
+                    @{ Name = 'none'; Value = '' }
+                    @{ Name = 'spaces'; Value = '   ' }
+                    @{ Name = 'tab'; Value = "`t" }
+                )) {
+                    @{
+                        Header = $header; NewLine = $ending.Value; Ending = $ending.Name
+                        Indent = $indent.Value; IndentName = $indent.Name
+                    }
+                }
+            }
+        }
+    ) {
+        $fields = [ordered]@{
+            name = 'Real name'
+            summary = 'Real summary'
+            branch = 'main'
+            cwd = '/synthetic/workspace'
+            created_at = '2026-09-01T12:00:00Z'
+            updated_at = '2026-09-02T12:00:00Z'
+            summary_count = '1'
+        }
+        $lines = @(
+            "${Indent}notes: $Header # block header comment"
+            ''
+            "${Indent}    branch: invented"
+            "${Indent}    cwd: /invented"
+            "${Indent}    name: |-"
+            "${Indent}      summary: invented"
+            "${Indent}    "
+            "${Indent}    created_at: not-a-date"
+            "${Indent}    updated_at: not-a-date"
+            "${Indent}    summary_count: 999"
+            "${Indent}    absent: not-metadata"
+            ''
+            foreach ($field in $fields.Keys) { "${Indent}${field}: $($fields[$field])" }
+            ''
+        )
+        $content = $lines -join $NewLine
+
+        InModuleScope Shmuelie.Copilot -Parameters @{
+            Content = $content; Fields = $fields; Indent = $Indent; NewLine = $NewLine
+        } {
+            foreach ($field in $Fields.Keys) {
+                Get-CopilotWorkspaceField -Content $Content -Field $field | Should -BeExactly $Fields[$field]
+                $updated = Set-CopilotWorkspaceField -Content $Content -Field $field -Value 'updated'
+                $updated | Should -BeExactly $Content.Replace("${Indent}${field}: $($Fields[$field])", "${Indent}${field}: updated")
+                Get-CopilotWorkspaceField -Content $updated -Field $field | Should -BeExactly 'updated'
+            }
+            Get-CopilotWorkspaceField -Content $Content -Field 'absent' | Should -BeNullOrEmpty
+            Set-CopilotWorkspaceField -Content $Content -Field 'absent' -Value 'new' | Should -BeExactly $Content
+
+            $multiline = "First line`nbranch: still text`n`nsummary: 'literal quotes'"
+            $updated = Set-CopilotWorkspaceField -Content $Content -Field 'name' -Value $multiline
+            $expectedBlock = @(
+                "${Indent}name: |-"
+                "${Indent}  First line"
+                "${Indent}  branch: still text"
+                "${Indent}  "
+                "${Indent}  summary: 'literal quotes'"
+            ) -join $NewLine
+            $updated | Should -BeExactly $Content.Replace("${Indent}name: Real name", $expectedBlock)
+            Get-CopilotWorkspaceField -Content $updated -Field 'name' | Should -BeExactly $multiline
+            Get-CopilotWorkspaceField -Content $updated -Field 'summary' | Should -BeExactly 'Real summary'
+            Get-CopilotWorkspaceField -Content $updated -Field 'branch' | Should -BeExactly 'main'
+            Set-CopilotWorkspaceField -Content $updated -Field 'name' -Value 'Real name' | Should -BeExactly $Content
+        }
+    }
+
+    It 'replaces only the actual <Header> field after a preceding block' -ForEach @(
+        @{ Header = '|' }
+        @{ Header = '|-' }
+        @{ Header = '|+' }
+        @{ Header = '>' }
+        @{ Header = '>-' }
+        @{ Header = '>+' }
+    ) {
+        $prefix = "notes: >-`n  name: leave this alone`n`n"
+        $content = "${prefix}name: $Header # comment`n`n  old name`n  summary: also old name`n`nsummary: keep`n"
+        InModuleScope Shmuelie.Copilot -Parameters @{ Content = $content; Prefix = $prefix; Header = $Header } {
+            Set-CopilotWorkspaceField -Content $Content -Field 'name' -Value 'new' |
+                Should -BeExactly "${Prefix}name: new`nsummary: keep`n"
+
+            $lastBlock = "notes: $Header`n`n  branch: only text`n"
+            Get-CopilotWorkspaceField -Content $lastBlock -Field 'branch' | Should -BeNullOrEmpty
+            Set-CopilotWorkspaceField -Content $lastBlock -Field 'branch' -Value 'new' | Should -BeExactly $lastBlock
+
+            $emptyBlock = "notes: $Header`n`nbranch: main"
+            Get-CopilotWorkspaceField -Content $emptyBlock -Field 'branch' | Should -BeExactly 'main'
+        }
+    }
+
+    It 'does not treat quoted, plain, or commented scalar indicators as blocks: <Line>' -ForEach @(
+        @{ Line = 'notes: "|-"' }
+        @{ Line = "notes: '>-'" }
+        @{ Line = 'notes: text |-' }
+        @{ Line = '# notes: |-' }
+        @{ Line = 'notes: |suffix' }
+    ) {
+        $content = "$Line`n   branch: main`nsummary: keep"
+        InModuleScope Shmuelie.Copilot -Parameters @{ Content = $content } {
+            Get-CopilotWorkspaceField -Content $Content -Field 'branch' | Should -BeExactly 'main'
+            Set-CopilotWorkspaceField -Content $Content -Field 'branch' -Value 'new' |
+                Should -BeExactly $Content.Replace('   branch: main', '   branch: new')
+            Set-CopilotWorkspaceField -Content $Content -Field 'notes' -Value 'new' |
+                Should -Match ([regex]::Escape("`n   branch: main`nsummary: keep"))
+        }
+    }
+
     It 'reads quoted and plain flow scalars with varied indentation and line endings' -ForEach @(
         @{ Content = 'name: "quoted value"'; Field = 'name'; Expected = 'quoted value' }
         @{ Content = "name: 'It''s fine'"; Field = 'name'; Expected = "It's fine" }
@@ -1507,6 +4368,111 @@ Describe 'Rename-CopilotSession' {
         $content = Get-Content $workspaceFile -Raw
         $content | Should -Match '(?m)^name: Renamed session\r?$'
         $content | Should -Match '(?m)^summary: Renamed session\r?$'
+    }
+
+    It 'preserves metadata and multiline text through rename and discovery: <Ending>, <IndentName>, summary first <SummaryFirst>' -ForEach @(
+        foreach ($ending in @(
+            @{ Name = 'LF'; Value = "`n" }
+            @{ Name = 'CRLF'; Value = "`r`n" }
+            @{ Name = 'CR'; Value = "`r" }
+        )) {
+            foreach ($indent in @(
+                @{ Name = 'none'; Value = '' }
+                @{ Name = 'spaces'; Value = '   ' }
+            )) {
+                foreach ($summaryFirst in $false, $true) {
+                    @{
+                        NewLine = $ending.Value; Ending = $ending.Name
+                        Indent = $indent.Value; IndentName = $indent.Name; SummaryFirst = $summaryFirst
+                    }
+                }
+            }
+        }
+    ) {
+        Mock -ModuleName Shmuelie.Copilot -CommandName Resume-CopilotSession -MockWith { throw 'Unexpected native resume.' }
+        Mock -ModuleName Shmuelie.Copilot -CommandName Start-Copilot -MockWith { throw 'Unexpected native launch.' }
+        $sessionId = '85858585-0000-0000-0000-000000000000'
+        $sessionPath = New-CopilotSessionState -SessionRoot $script:SessionRoot -Id $sessionId -Cwd $script:Workspace -Summary 'Original'
+        $workspaceFile = Join-Path $sessionPath 'workspace.yaml'
+        $displayFields = if ($SummaryFirst) { 'summary', 'name' } else { 'name', 'summary' }
+        $original = @(
+            "${Indent}id: $sessionId"
+            foreach ($field in $displayFields) { "${Indent}${field}: Original" }
+            "${Indent}branch: main"
+            "${Indent}cwd: $script:Workspace"
+            "${Indent}repository: owner/repo"
+            "${Indent}created_at: 2026-09-01T12:00:00Z"
+            "${Indent}updated_at: 2026-09-02T12:00:00Z"
+            "${Indent}summary_count: 1"
+            ''
+        ) -join $NewLine
+        Set-Content -LiteralPath $workspaceFile -Value $original -NoNewline
+        Set-CopilotTestEvents -SessionPath $sessionPath -Lines @(
+            (New-CopilotTestEventLine -Type 'session.start' -Id 'start' -Timestamp '2026-09-01T12:00:00Z' -Data @{ sessionId = $sessionId })
+            (New-CopilotTestEventLine -Type 'user.message' -Id 'user' -Timestamp '2026-09-02T12:00:00Z' -Data @{ content = 'Synthetic event' })
+        )
+        $eventsFile = Join-Path $sessionPath 'events.jsonl'
+        $eventsBefore = [IO.File]::ReadAllBytes($eventsFile)
+        $summaryLines = @(
+            'Review plan'
+            'branch: invented-branch'
+            ''
+            'cwd: /invented'
+            'created_at: not-a-date'
+            'updated_at: not-a-date'
+            'repository: invented/repo'
+            'summary_count: 999'
+            'name: "literal quotes"'
+            "summary: 'literal quotes'"
+            'notes: >-'
+            '  branch: still text'
+        )
+        $summary = $summaryLines -join "`n"
+        $expected = $original
+        foreach ($field in $displayFields) {
+            $block = @(
+                "${Indent}${field}: |-"
+                foreach ($line in $summaryLines) { "${Indent}  $line" }
+            ) -join $NewLine
+            $expected = $expected.Replace("${Indent}${field}: Original", $block)
+        }
+
+        $renamed = Rename-CopilotSession -Id $sessionId -Summary $summary -Confirm:$false
+        $discovered = Get-CopilotSession -Id $sessionId
+        foreach ($session in $renamed, $discovered) {
+            $session.Id | Should -BeExactly $sessionId
+            $session.Name | Should -BeExactly 'Review plan'
+            $session.Summary | Should -BeExactly 'Review plan'
+            $session.Branch | Should -BeExactly 'main'
+            $session.Cwd | Should -BeExactly $script:Workspace
+            $session.Repository | Should -BeExactly 'owner/repo'
+            $session.CreatedAt | Should -Be ([datetimeoffset]'2026-09-01T12:00:00Z')
+            $session.UpdatedAt | Should -Be ([datetimeoffset]'2026-09-02T12:00:00Z')
+            $session.EventCount | Should -Be 2
+        }
+        Get-Content -LiteralPath $workspaceFile -Raw | Should -BeExactly $expected
+        InModuleScope Shmuelie.Copilot -Parameters @{ Path = $workspaceFile; Summary = $summary } {
+            foreach ($field in 'name', 'summary') {
+                Get-CopilotWorkspaceField -Path $Path -Field $field | Should -BeExactly $Summary
+            }
+        }
+        Push-Location -LiteralPath $script:Workspace
+        try {
+            @(Get-CopilotSession).Id | Should -BeExactly $sessionId
+            @(Get-CopilotSession -All -Branch main).Id | Should -BeExactly $sessionId
+            @(Get-CopilotSession -All -Branch invented-branch) | Should -HaveCount 0
+            @(Get-CopilotSession -All -Cwd ([WildcardPattern]::Escape($script:Workspace)) -Repository owner/repo -Summary 'Review*' -UpdatedBefore '2026-09-03T00:00:00Z').Id |
+                Should -BeExactly $sessionId
+            @(Get-CopilotSession -All -Cwd /invented) | Should -HaveCount 0
+        } finally {
+            Pop-Location
+        }
+        [IO.File]::ReadAllBytes($eventsFile) | Should -Be $eventsBefore
+
+        $renamedAgain = Rename-CopilotSession -Id $sessionId -Summary 'Final name' -Confirm:$false
+        $renamedAgain.Branch | Should -BeExactly 'main'
+        Get-Content -LiteralPath $workspaceFile -Raw | Should -BeExactly $original.Replace(': Original', ': Final name')
+        [IO.File]::ReadAllBytes($eventsFile) | Should -Be $eventsBefore
     }
 
     It 'ignores a malicious InputObject Path and never rewrites an external canary' {

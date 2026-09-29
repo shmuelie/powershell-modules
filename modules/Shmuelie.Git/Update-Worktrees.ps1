@@ -17,14 +17,70 @@ function Select-ChangedWorktreeResult {
     }
 }
 
+function Restore-WorktreeUpdateStash {
+    <#
+    .SYNOPSIS
+        Restore an update's captured stash object, removing only its verified top entry.
+    #>
+    [OutputType([bool])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path,
+
+        [Parameter(Mandatory)]
+        [ValidatePattern('\A(?:[0-9a-f]{40}|[0-9a-f]{64})\z')]
+        [string]$ObjectId
+    )
+
+    $apply = Invoke-Git -Path $Path -Arguments @('stash', 'apply', '--', $ObjectId) -AllowNonZeroExit
+    if ($null -eq $apply) { return $false }
+    if ($apply.ExitCode -ne 0) {
+        Write-Warning "git stash apply failed for saved stash '$ObjectId' in '$Path' (exit $($apply.ExitCode)): $($apply.Output -join [Environment]::NewLine)"
+        return $false
+    }
+
+    # Apply the immutable object, not a reflog position. If another writer moved
+    # the stack, keep every entry rather than dropping an unrelated newest stash.
+    $head = Invoke-Git -Path $Path -Arguments @(
+        'for-each-ref', '--format=%(objectname)', '--', 'refs/stash'
+    ) -AllowNonZeroExit
+    if ($null -eq $head) { return $false }
+    if ($head.ExitCode -ne 0) {
+        Write-Warning "Could not verify saved stash '$ObjectId' after applying it in '$Path' (exit $($head.ExitCode)): $($head.Output -join [Environment]::NewLine)"
+        return $false
+    }
+    if ($head.StandardOutput.Trim() -cne $ObjectId) {
+        Write-Warning "Applied saved stash '$ObjectId' in '$Path', but the stash stack changed; no stash was dropped."
+        return $false
+    }
+
+    $drop = Invoke-Git -Path $Path -Arguments @('stash', 'drop', '--quiet', '--', 'stash@{0}') -AllowNonZeroExit
+    if ($null -eq $drop) { return $false }
+    if ($drop.ExitCode -ne 0) {
+        Write-Warning "git stash drop failed for restored stash '$ObjectId' in '$Path' (exit $($drop.ExitCode)): $($drop.Output -join [Environment]::NewLine)"
+        return $false
+    }
+    $true
+}
+
 function Update-Worktrees {
     <#
     .SYNOPSIS
     Update all worktrees for the repository to the latest from upstream.
     .DESCRIPTION
     Fetches from all remotes and fast-forwards worktrees that have zero local
-    commits, stashing and then popping any local changes. Returns an object
-    per worktree describing the action taken.
+    commits, saving and restoring any local changes through an owned stash.
+    Returns an object per worktree describing the action taken.
+
+    Restores only the captured stash object and drops it only when it is still
+    the newest entry. A successful stash push that creates no stash (for example
+    submodule-only changes) leaves the worktree untouched and returns StashFailed.
+    Restoration conflicts retain the stash and report PopFailed.
+
+    Dirty worktrees are processed sequentially because the stash stack is shared.
+    Avoid other stash writers in any linked worktree while updating: the stash
+    identity reads and verified drop are not atomic with external Git processes.
 
     Uses a bulk 'git for-each-ref' call to get ahead/behind counts for all
     branches in one pass, then checks only worktrees that need merging for
@@ -246,9 +302,8 @@ function Update-Worktrees {
         }
 
         # Merge behind worktrees. Clean worktrees can fast-forward in parallel, but
-        # dirty worktrees must stash/pop sequentially because refs/stash is shared
-        # across every worktree in the repository and git stash pop always pops
-        # stash@{0}.
+        # dirty worktrees must save/restore sequentially because refs/stash is
+        # shared across every worktree in the repository.
         if ($behindWorktrees.Count -gt 0 -and $PSCmdlet.ShouldProcess("$($behindWorktrees.Count) worktrees", 'Fast-forward merge from upstream')) {
             Write-Progress -Activity 'Updating Worktrees' -Status "Checking $($behindWorktrees.Count) worktrees" -PercentComplete 50 -Id 0
 
@@ -307,20 +362,31 @@ function Update-Worktrees {
             }
 
             foreach ($wt in $dirtyWorktrees) {
-                $stashed = $false
+                $stash = $null
+                $stashErrors = @()
                 $dirtyOutput = git -C $wt.Path status --porcelain 2>&1
                 $isDirty = $dirtyOutput -and @($dirtyOutput).Count -gt 0
 
                 if ($isDirty) {
-                    git -C $wt.Path stash push --include-untracked --quiet 2>&1 | Out-Null
-                    $stashed = $LASTEXITCODE -eq 0
+                    # Reject another writer's stash if it wins the post-push identity read.
+                    $stashMessage = "Update-Worktrees $([guid]::NewGuid().ToString('N'))"
+                    $stash = Save-GitStash -Path $wt.Path -IncludeUntracked -Message $stashMessage `
+                        -Confirm:$false -ErrorAction SilentlyContinue -ErrorVariable stashErrors
+                    if ($stash -and -not $stash.Subject.EndsWith($stashMessage, [StringComparison]::Ordinal)) {
+                        $stashErrors += 'The recorded stash was not created by this update; the stash stack may have changed'
+                        $stash = $null
+                    }
                 }
+                $stashed = $null -ne $stash
 
-                # Only fast-forward when the tree is safe: either it was clean, or we
-                # successfully stashed it. A dirty tree that failed to stash must NOT be
-                # fast-forwarded, and we must NOT run `git stash pop` (which would pop an
-                # unrelated, pre-existing stash into this worktree).
+                # A successful no-op push owns no stash, just like a failed push.
                 if ($isDirty -and -not $stashed) {
+                    $detail = if ($stashErrors.Count -gt 0) {
+                        "git stash push failed for $($wt.Branch): $($stashErrors -join ' ')"
+                    } else {
+                        "git stash push did not create a stash for $($wt.Branch)"
+                    }
+                    Write-Warning "$detail; skipped fast-forward to avoid disturbing the working tree."
                     $mergeResults.Add([PSCustomObject]@{
                         PSTypeName = 'WorktreeUpdateResult'
                         Branch     = $wt.Branch
@@ -338,8 +404,7 @@ function Update-Worktrees {
                 $mergeSuccess = $LASTEXITCODE -eq 0
 
                 if ($stashed) {
-                    git -C $wt.Path stash pop --quiet 2>&1 | Out-Null
-                    $popFailed = $LASTEXITCODE -ne 0
+                    $popFailed = -not (Restore-WorktreeUpdateStash -Path $wt.Path -ObjectId $stash.ObjectId)
                 }
 
                 $mergeResults.Add([PSCustomObject]@{
@@ -356,14 +421,12 @@ function Update-Worktrees {
 
             foreach ($mr in $mergeResults) {
                 if ($mr.PopFailed) {
-                    Write-Warning "git stash pop failed for $($mr.Branch) — stash may need manual resolution"
+                    Write-Warning "git stash restoration failed for $($mr.Branch) — stash may need manual resolution"
                 }
                 if ($mr.Status -eq 'Updated') {
                     Write-Verbose "Updated $($mr.Branch)"
                 } elseif ($mr.Status -eq 'Failed') {
                     Write-Warning "Fast-forward failed for $($mr.Branch)"
-                } elseif ($mr.Status -eq 'StashFailed') {
-                    Write-Warning "git stash push failed for $($mr.Branch); skipped fast-forward to avoid disturbing the working tree"
                 } elseif ($mr.Status -eq 'InProgress') {
                     Write-Warning "Skipped $($mr.Branch): git operation in progress ($($mr.Operation))"
                 }

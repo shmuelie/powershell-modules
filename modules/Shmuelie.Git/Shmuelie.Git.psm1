@@ -27,28 +27,34 @@ function Update-WorktreePrediction {
     }
 }
 
+$script:predictorModule = $null
+$script:predictorJob = $null
 $predictorPath = Join-Path $PSScriptRoot 'bin' 'WorktreePredictor.dll'
 if (Test-Path $predictorPath) {
     $predictorRegistered = (Get-PSSubsystem -Kind CommandPredictor).Implementations.Name -contains 'Worktree'
     if (-not $predictorRegistered) {
         $script:predictorModule = Import-Module $predictorPath -Force -PassThru -ErrorAction Stop
-    } else {
-        # Already registered (e.g. this module re-imported in the same session):
-        # capture the existing module handle so OnRemove can still clean it up.
-        $script:predictorModule = Get-Module -Name ([IO.Path]::GetFileNameWithoutExtension($predictorPath))
     }
 }
 
 if ($null -ne ('WorktreePredictor.WorktreeCommandPredictor' -as [type])) {
     Update-WorktreePrediction
-    $script:predictorSubscription = Register-EngineEvent -SourceIdentifier PowerShell.OnIdle -Action {
+    $script:predictorJob = Register-EngineEvent -SourceIdentifier PowerShell.OnIdle -Action {
         [WorktreePredictor.WorktreeCommandPredictor]::UpdateWorkingDirectory((Get-Location).Path)
     }
 }
 
 $ExecutionContext.SessionState.Module.OnRemove = {
-    if ($script:predictorSubscription -and $script:predictorSubscription.Id) {
-        Unregister-Event -SubscriptionId $script:predictorSubscription.Id -ErrorAction Ignore
+    if ($script:predictorJob) {
+        # Register-EngineEvent returns an action job, not a subscription. Match
+        # the actual association; job and subscription IDs use separate counters.
+        foreach ($subscriber in Get-EventSubscriber -Force) {
+            if ([object]::ReferenceEquals($subscriber.Action, $script:predictorJob)) {
+                Unregister-Event -SubscriptionId $subscriber.SubscriptionId -ErrorAction Ignore
+            }
+        }
+        Remove-Job -Job $script:predictorJob -Force -ErrorAction Ignore
+        $script:predictorJob = $null
     }
     if ($script:predictorModule) {
         Remove-Module $script:predictorModule -Force -ErrorAction Ignore
