@@ -6,6 +6,15 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+### Added
+- `Start-Copilot` and `Get-CopilotLaunchPlan` now expose typed mappings for the
+  current native fleet, Auto tier, dynamic retrieval, `--no-mouse`, and
+  Windows `--no-eager-powershell-resolution` flags. `-DynamicRetrieval`
+  documents its persisted-setting side effect and remains preview-safe under
+  `Get-CopilotLaunchPlan`, `-PassThru`, and `-WhatIf`, while hidden
+  compatibility switches `-Version` (`--prefer-version`) and
+  `-EnableReasoningSummaries` (`--enable-reasoning-summaries`) stay supported. (#329)
+
 ### Fixed
 - Both launcher commands now suggest native `auto` model routing and use a
   shared, non-exhaustive list for `-Model` completion. Explicit values are
