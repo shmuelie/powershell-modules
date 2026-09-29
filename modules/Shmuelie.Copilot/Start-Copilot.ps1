@@ -134,6 +134,14 @@ function Start-Copilot {
     .PARAMETER AdditionalMcpConfig
         Additional MCP servers configuration as JSON string or file path (prefix with @).
 
+    .PARAMETER McpGitHubAuth
+        One or more server=origin entries for --mcp-github-auth (Copilot CLI
+        1.0.90-3 or later). Only the named server in explicit -AdditionalMcpConfig
+        at the approved HTTPS origin (or literal loopback HTTP) receives the
+        signed-in GitHub account credential. Never put a token in this argument.
+        -PassThru and -WhatIf plan without authenticating. -PassThru retains
+        inline -AdditionalMcpConfig verbatim; -WhatIf redacts it in diagnostics.
+
     .PARAMETER AllowTool
         One or more tools to allow without confirmation.
 
@@ -468,6 +476,8 @@ function Start-Copilot {
 
         [string[]]$AdditionalMcpConfig,
 
+        [string[]]$McpGitHubAuth,
+
         [string[]]$AllowTool,
 
         [string[]]$DenyTool,
@@ -622,8 +632,16 @@ function Start-Copilot {
         return $launchPlan
     }
 
+    $displayArgs = @($launchPlan.Args)
+    for ($i = 0; $i -lt $displayArgs.Count - 1; $i++) {
+        if ($displayArgs[$i] -eq '--additional-mcp-config' -and $displayArgs[$i + 1] -notlike '@*') {
+            $displayArgs[$i + 1] = '<redacted inline MCP config>'
+            $i++
+        }
+    }
+
     $exitCode = $null
-    if ($PSCmdlet.ShouldProcess("$($launchPlan.Exe) $($launchPlan.Args -join ' ')", 'Execute')) {
+    if ($PSCmdlet.ShouldProcess("$($launchPlan.Exe) $($displayArgs -join ' ')", 'Execute')) {
         if ($previewPlanDiffers) {
             $launchPlan = Get-CopilotLaunchPlan @planParams
         }

@@ -6,6 +6,13 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+### Added
+- `Start-Copilot` and `Get-CopilotLaunchPlan` map repeatable scoped
+  `-McpGitHubAuth` entries to Copilot CLI 1.0.90-3+ without handling tokens.
+  Explicit additional MCP configuration and a matching remote origin are
+  required; HTTPS is mandatory except literal loopback HTTP. Invalid scopes
+  fail before launch, while plans and previews remain nonauthenticating. (#331)
+
 ## [0.6.0] - 2026-09-24
 
 ### Changed
