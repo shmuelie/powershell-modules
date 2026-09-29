@@ -150,20 +150,6 @@ function Get-CopilotSession {
             if ($name) { $name = ($name -split '\r?\n', 2)[0].Trim() }
 
             if ($All -or $Id -or $filters.ContainsKey('Cwd') -or $sessionCwd -eq $currentDirectory) {
-                $eventsFile = Join-Path $_.FullName 'events.jsonl'
-                $eventCount = 0
-                $eventSize  = [long]0
-                if (Test-Path $eventsFile) {
-                    $fi = [System.IO.FileInfo]::new($eventsFile)
-                    $eventSize = $fi.Length
-                    # Stream-count lines without allocating the full string array
-                    $reader = [System.IO.StreamReader]::new($fi.FullName)
-                    try {
-                        while ($null -ne $reader.ReadLine()) { $eventCount++ }
-                    } finally {
-                        $reader.Dispose()
-                    }
-                }
                 [PSCustomObject]@{
                     PSTypeName = 'CopilotSession'
                     Id         = $_.Name
@@ -174,13 +160,27 @@ function Get-CopilotSession {
                     Repository = $sessionRepository
                     CreatedAt  = if ($createdAt) { [DateTimeOffset]::Parse($createdAt) } else { $null }
                     UpdatedAt  = if ($updatedAt) { [DateTimeOffset]::Parse($updatedAt) } else { $null }
-                    EventCount = $eventCount
-                    EventSize  = $eventSize
+                    EventCount = 0
+                    EventSize  = [long]0
                     Path       = $_.FullName
                 }
             }
         }
-    } | Select-CopilotSessionMatch @filters | Sort-Object UpdatedAt -Descending
+    } | Select-CopilotSessionMatch @filters | ForEach-Object {
+        $eventsFile = Join-Path $_.Path 'events.jsonl'
+        if (Test-Path $eventsFile) {
+            $fi = [System.IO.FileInfo]::new($eventsFile)
+            $_.EventSize = $fi.Length
+            # Stream-count lines without allocating the full string array
+            $reader = [System.IO.StreamReader]::new($fi.FullName)
+            try {
+                while ($null -ne $reader.ReadLine()) { $_.EventCount++ }
+            } finally {
+                $reader.Dispose()
+            }
+        }
+        $_
+    } | Sort-Object UpdatedAt -Descending
 }
 
 function Remove-CopilotSession {

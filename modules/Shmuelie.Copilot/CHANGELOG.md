@@ -6,6 +6,12 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+### Fixed
+- `Get-CopilotSession` applies metadata and age filters before reading event
+  files. Unrelated locked or large event histories no longer block selective
+  global queries; matched sessions still report accurate counts and failures.
+  (#333)
+
 ## [0.6.0] - 2026-09-24
 
 ### Changed

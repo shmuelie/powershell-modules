@@ -228,6 +228,10 @@ Both date filters can be combined; the earlier cutoff wins. Sessions with missin
 UpdatedAt are excluded when either is supplied, without falling back to CreatedAt
 or filesystem timestamps. Sessions without workspace metadata are still skipped.
 Output remains sorted by UpdatedAt descending.
+Metadata and date filters are applied before counting `events.jsonl` lines:
+unrelated locked or large event files do not block selective listings. Returned
+sessions still include `EventCount` and `EventSize`, and unreadable events for a
+matching session still produce an error.
 
 `-Id` remains an exact, directory-independent lookup, cannot be combined with
 filters or `-All`, and retains the session-root guard. `Select-CopilotSession`

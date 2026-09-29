@@ -4093,6 +4093,54 @@ Describe 'Get-CopilotSession rich filters' {
         $sessions.Id | Should -Be 'old-remote'
     }
 
+    It 'filters by <Field> before opening an unrelated locked event file' -ForEach @(
+        @{ Field = 'Repository'; Value = 'owner/*' }
+        @{ Field = 'Branch'; Value = 'feature/*' }
+        @{ Field = 'Cwd'; Value = $null }
+        @{ Field = 'Summary'; Value = 'Clean*' }
+        @{ Field = 'UpdatedBefore'; Value = '2026-08-02T00:00:00Z' }
+        @{ Field = 'OlderThan'; Value = [timespan]::FromDays(1) }
+    ) {
+        $unrelated = New-CopilotSessionState -SessionRoot $script:FilterSessionRoot -Id 'a-unrelated' -Cwd $script:FilterOtherWorkspace -Summary 'Unrelated' -UpdatedAt '2026-09-01T11:30:00Z'
+        Add-Content -LiteralPath (Join-Path $unrelated 'workspace.yaml') -Value @('repository: other/repo', 'branch: other/branch')
+        Set-Content -LiteralPath (Join-Path $unrelated 'events.jsonl') -Value (@('{}') * 1000)
+        $local = Join-Path $script:FilterSessionRoot 'old-local'
+        Set-CopilotTestEvents -SessionPath $local -Lines @('{}')
+        if ($Field -eq 'Cwd') { $Value = [WildcardPattern]::Escape($script:FilterWorkspace) }
+        $filter = @{ $Field = $Value }
+        $locked = [System.IO.FileStream]::new(
+            (Join-Path $unrelated 'events.jsonl'),
+            [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite,
+            [System.IO.FileShare]::None)
+        try {
+            $sessions = @(Get-CopilotSession -All @filter -ErrorAction Stop)
+        } finally {
+            $locked.Dispose()
+        }
+
+        $sessions.Id | Should -Contain 'old-local'
+        $sessions.Id | Should -Not -Contain 'a-unrelated'
+        ($sessions | Where-Object Id -eq 'old-local').EventCount | Should -Be 1
+        ($sessions | Where-Object Id -eq 'old-local').EventSize | Should -BeGreaterThan 0
+    }
+
+    It 'still reports unreadable matching events, including unfiltered and exact-ID listings' {
+        $matched = New-CopilotSessionState -SessionRoot $script:FilterSessionRoot -Id 'a-matched' -Cwd $script:FilterWorkspace -Summary 'Locked events'
+        Add-Content -LiteralPath (Join-Path $matched 'workspace.yaml') -Value @('repository: owner/repo', 'branch: feature/cleanup')
+        Set-CopilotTestEvents -SessionPath $matched -Lines @('{}')
+        $locked = [System.IO.FileStream]::new(
+            (Join-Path $matched 'events.jsonl'),
+            [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite,
+            [System.IO.FileShare]::None)
+        try {
+            { Get-CopilotSession -All -Repository 'owner/repo' -ErrorAction Stop } | Should -Throw
+            { Get-CopilotSession -All -ErrorAction Stop } | Should -Throw
+            { Get-CopilotSession -Id 'a-matched' -ErrorAction Stop } | Should -Throw
+        } finally {
+            $locked.Dispose()
+        }
+    }
+
     It 'matches literal wildcard characters in Cwd only when escaped' {
         $recordedCwd = Join-Path $script:FilterWorkspace 'project[1]'
         New-CopilotSessionState -SessionRoot $script:FilterSessionRoot -Id 'bracket-path' -Cwd $recordedCwd -Summary 'Literal path' | Out-Null
