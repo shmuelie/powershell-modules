@@ -69,6 +69,22 @@ function Invoke-CopilotDiscovery {
         [string[]]$Arguments
     )
 
+    $result = Invoke-CopilotCliCapture -Arguments $Arguments
+    if ($result.ExitCode -isnot [int] -or $result.ExitCode -ne 0) {
+        Write-CopilotDiscoveryFailure -Arguments $Arguments -Result $result
+        return
+    }
+
+    $result.Output
+}
+
+function Invoke-CopilotCliCapture {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string[]]$Arguments
+    )
+
     $exe = Resolve-CliExe -Name copilot
     $previousExitCode = Get-Variable -Name LASTEXITCODE -Scope Global -ErrorAction Ignore
     $previousExitCodeValue = if ($previousExitCode) { $previousExitCode.Value }
@@ -93,18 +109,26 @@ function Invoke-CopilotDiscovery {
         }
     }
 
-    if ($result.ExitCode -isnot [int] -or $result.ExitCode -ne 0) {
-        $diagnostics = ($result.Output | ForEach-Object { "$_" }) -join [Environment]::NewLine
-        $status = if ($result.ExitCode -is [int]) { "exit code $($result.ExitCode)" } else { 'an unknown native exit status' }
-        $message = "copilot $($Arguments -join ' ') failed with $status."
-        if ($diagnostics) {
-            $message += [Environment]::NewLine + $diagnostics
-        }
-        Write-Error -Message $message -ErrorId CopilotDiscoveryFailed -Category InvalidOperation -TargetObject $result
-        return
-    }
+    $result
+}
 
-    $result.Output
+function Write-CopilotDiscoveryFailure {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string[]]$Arguments,
+
+        [Parameter(Mandatory)]
+        [pscustomobject]$Result
+    )
+
+    $diagnostics = ($Result.Output | ForEach-Object { "$_" }) -join [Environment]::NewLine
+    $status = if ($Result.ExitCode -is [int]) { "exit code $($Result.ExitCode)" } else { 'an unknown native exit status' }
+    $message = "copilot $($Arguments -join ' ') failed with $status."
+    if ($diagnostics) {
+        $message += [Environment]::NewLine + $diagnostics
+    }
+    Write-Error -Message $message -ErrorId CopilotDiscoveryFailed -Category InvalidOperation -TargetObject $Result
 }
 
 function Test-CopilotShimArgument {

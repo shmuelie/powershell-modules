@@ -1,13 +1,259 @@
+function New-CopilotPluginRecord {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Name,
+
+        [AllowEmptyString()]
+        [string]$Marketplace = '',
+
+        [AllowEmptyString()]
+        [string]$Version = '',
+
+        [Parameter(Mandatory)]
+        [bool]$Enabled,
+
+        [AllowEmptyString()]
+        [string]$Source = '',
+
+        [AllowEmptyString()]
+        [string]$InstalledFrom = ''
+    )
+
+    $fullName = if ($Marketplace) { "$Name@$Marketplace" } else { $Name }
+    [PSCustomObject]@{
+        PSTypeName    = 'CopilotPlugin'
+        Name          = $Name
+        FullName      = $fullName
+        Marketplace   = $Marketplace
+        Version       = $Version
+        Enabled       = $Enabled
+        Source        = $Source
+        InstalledFrom = $InstalledFrom
+        Managed       = -not [string]::Equals($Source, 'builtin', [StringComparison]::OrdinalIgnoreCase) -and
+            -not [string]::Equals($Source, 'plugin-dir', [StringComparison]::OrdinalIgnoreCase)
+    }
+}
+
+function Get-CopilotPluginJsonStringProperty {
+    param(
+        [Parameter(Mandatory)]
+        [System.Collections.IDictionary]$Entry,
+
+        [Parameter(Mandatory)]
+        [string]$Name,
+
+        [switch]$Required
+    )
+
+    if (-not $Entry.Contains($Name) -or $null -eq $Entry[$Name]) {
+        if ($Required) {
+            throw "Missing required '$Name' property."
+        }
+        return ''
+    }
+
+    if ($Entry[$Name] -isnot [string]) {
+        throw "Property '$Name' must be a string."
+    }
+
+    $value = [string]$Entry[$Name]
+    if ($Required -and [string]::IsNullOrWhiteSpace($value)) {
+        throw "Property '$Name' must not be empty."
+    }
+
+    $value
+}
+
+function ConvertFrom-CopilotPluginJsonOutput {
+    param(
+        [Parameter(Mandatory)]
+        [AllowEmptyCollection()]
+        [string[]]$Output
+    )
+
+    $json = ($Output | ForEach-Object { "$_" }) -join [Environment]::NewLine
+    if ([string]::IsNullOrWhiteSpace($json)) {
+        return @()
+    }
+
+    try {
+        $parsed = $json | ConvertFrom-Json -AsHashtable -NoEnumerate -Depth 16
+    } catch {
+        throw "Invalid JSON. $($_.Exception.Message)"
+    }
+
+    if ($parsed -isnot [System.Collections.IList]) {
+        throw 'The JSON result must be an array.'
+    }
+
+    foreach ($entry in $parsed) {
+        if ($entry -isnot [System.Collections.IDictionary]) {
+            throw 'Each plugin row must be an object.'
+        }
+
+        if (-not $entry.Contains('enabled') -or $entry.enabled -isnot [bool]) {
+            throw "Property 'enabled' must be a Boolean."
+        }
+
+        New-CopilotPluginRecord -Name (Get-CopilotPluginJsonStringProperty -Entry $entry -Name 'name' -Required) `
+            -Marketplace (Get-CopilotPluginJsonStringProperty -Entry $entry -Name 'marketplace') `
+            -Version (Get-CopilotPluginJsonStringProperty -Entry $entry -Name 'version') `
+            -Enabled ([bool]$entry.enabled) `
+            -Source (Get-CopilotPluginJsonStringProperty -Entry $entry -Name 'source' -Required) `
+            -InstalledFrom (Get-CopilotPluginJsonStringProperty -Entry $entry -Name 'installedFrom')
+    }
+}
+
+function ConvertFrom-CopilotPluginTextOutput {
+    param(
+        [Parameter(Mandatory)]
+        [AllowEmptyCollection()]
+        [string[]]$Output
+    )
+
+    $section = 'managed'
+    foreach ($line in $Output) {
+        switch -Regex ($line) {
+            '^\s*Built-in plugins:\s*$' {
+                $section = 'builtin'
+                continue
+            }
+            '^\s*External Plugins \(via --plugin-dir\):\s*$' {
+                $section = 'plugin-dir'
+                continue
+            }
+            '^\s*$' {
+                $section = 'managed'
+                continue
+            }
+        }
+
+        if ($line -match '^\s+[•]\s+(.+?)\s+\(v(.+?)\)(?:\s+\[(disabled)\])?\s*$') {
+            $fullName = $Matches[1]
+            $version = $Matches[2]
+            $enabled = $Matches[3] -ne 'disabled'
+            $pluginName = $fullName
+            $marketplace = ''
+            if ($fullName -match '^(.+)@(.+)$') {
+                $pluginName = $Matches[1]
+                $marketplace = $Matches[2]
+            }
+            $source = if ($section -eq 'managed' -and $marketplace) { 'marketplace' } else { $section }
+            New-CopilotPluginRecord -Name $pluginName -Marketplace $marketplace -Version $version -Enabled $enabled -Source $source
+        }
+    }
+}
+
+function Test-CopilotPluginListJsonUnsupported {
+    param(
+        [Parameter(Mandatory)]
+        [pscustomobject]$Result
+    )
+
+    if ($Result.ExitCode -isnot [int] -or $Result.ExitCode -eq 0) {
+        return $false
+    }
+
+    $diagnostics = ($Result.Output | ForEach-Object { "$_" }) -join [Environment]::NewLine
+    [bool]($diagnostics -match '(?is)(?:unexpected|unknown|unrecognized|invalid)[^\r\n]*--json|--json[^\r\n]*(?:unexpected|unknown|unrecognized|invalid)')
+}
+
+function Get-CopilotPluginInstallCheckName {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Source
+    )
+
+    if ($Source -match '^[^@]+@[^@]+$') {
+        return ($Source -split '@', 2)[0]
+    }
+
+    if ($Source -match '^[^:]+/[^:]+:(.+)$') {
+        $pluginPath = $Matches[1].TrimEnd('\', '/')
+        $leaf = [IO.Path]::GetFileName($pluginPath)
+        if ($leaf) {
+            return $leaf
+        }
+    }
+
+    $uri = $null
+    if ([Uri]::TryCreate($Source, [UriKind]::Absolute, [ref]$uri)) {
+        $fileName = [IO.Path]::GetFileName($uri.AbsolutePath.TrimEnd('/'))
+        if ($fileName) {
+            return ($fileName -replace '\.(zip|tgz|tar\.gz|git)$', '')
+        }
+    }
+
+    $trimmedSource = $Source.TrimEnd('\', '/')
+    $fileLeaf = [IO.Path]::GetFileName($trimmedSource)
+    if ($fileLeaf) {
+        return ($fileLeaf -replace '\.(zip|tgz|tar\.gz|git)$', '')
+    }
+
+    if ($Source -match '/([^/#]+?)(?:\.git)?(?:#|$)') {
+        return $Matches[1]
+    }
+
+    $Source
+}
+
+function Resolve-CopilotPluginInstallRequest {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Source
+    )
+
+    if ($Source -match '^(?<name>[^@]+)@(?<marketplace>[^@]+)$') {
+        return [pscustomobject]@{
+            Kind        = 'Marketplace'
+            Name        = $Matches['name']
+            FullName    = $Source
+            Marketplace = $Matches['marketplace']
+        }
+    }
+
+    [pscustomobject]@{
+        Kind          = 'Direct'
+        Name          = Get-CopilotPluginInstallCheckName -Source $Source
+        FullName      = $Source
+        Marketplace   = ''
+        InstalledFrom = $Source
+    }
+}
+
+function Get-CopilotUnmanagedPluginMessage {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Name,
+
+        [AllowEmptyString()]
+        [string]$Source
+    )
+
+    $reason = if ([string]::Equals($Source, 'plugin-dir', [StringComparison]::OrdinalIgnoreCase)) {
+        'it is mounted via --plugin-dir'
+    } elseif ([string]::Equals($Source, 'builtin', [StringComparison]::OrdinalIgnoreCase)) {
+        'it is built into the Copilot CLI'
+    } else {
+        "its source '$Source' is not a managed installation"
+    }
+
+    "Cannot manage plugin '$Name' with this cmdlet because $reason."
+}
+
 function Get-CopilotPlugin {
     <#
     .SYNOPSIS
         List installed Copilot CLI plugins.
     .DESCRIPTION
-        Parses the output of 'copilot plugin list' into typed CopilotPlugin objects
-        with Name, Marketplace, and Version properties.
+        Uses 'copilot plugin list --json' when available and falls back to the
+        legacy text list on older CLIs. Returns typed CopilotPlugin objects with
+        Name, FullName, Marketplace, Version, Enabled, Source, InstalledFrom,
+        and Managed properties.
         Native failures write a PowerShell error with the exit code and diagnostics
         and emit no plugins. Use -ErrorAction Stop to terminate on failure.
-        A successful empty list emits no plugins and no error.
+        A successful empty list emits no plugins and no error. Invalid JSON or
+        schema failures also write a PowerShell error and emit no plugins.
     .PARAMETER Name
         Filter by plugin name. Supports wildcards.
     .EXAMPLE
@@ -26,27 +272,31 @@ function Get-CopilotPlugin {
         [Parameter(Position = 0)]
         [string]$Name = '*'
     )
-    $output = Invoke-CopilotDiscovery -Arguments 'plugin', 'list'
-    foreach ($line in $output) {
-        if ($line -match '^\s+[•]\s+(.+?)\s+\(v(.+?)\)\s*$') {
-            $fullName = $Matches[1]
-            $version = $Matches[2]
-            $pluginName = $fullName
-            $marketplace = ''
-            if ($fullName -match '^(.+)@(.+)$') {
-                $pluginName = $Matches[1]
-                $marketplace = $Matches[2]
-            }
-            $plugin = [PSCustomObject]@{
-                PSTypeName  = 'CopilotPlugin'
-                Name        = $pluginName
-                FullName    = $fullName
-                Marketplace = $marketplace
-                Version     = $version
-            }
-            if ($plugin.Name -like $Name -or $plugin.FullName -like $Name) {
-                $plugin
-            }
+    $jsonResult = Invoke-CopilotCliCapture -Arguments @('plugin', 'list', '--json')
+    $plugins = if ($jsonResult.ExitCode -is [int] -and $jsonResult.ExitCode -eq 0) {
+        try {
+            @(ConvertFrom-CopilotPluginJsonOutput -Output $jsonResult.Output)
+        } catch {
+            $jsonText = ($jsonResult.Output | ForEach-Object { "$_" }) -join [Environment]::NewLine
+            $message = "copilot plugin list --json returned an invalid result. $($_.Exception.Message)"
+            $errorRecord = [System.Management.Automation.ErrorRecord]::new(
+                [System.InvalidOperationException]::new($message, $_.Exception),
+                'CopilotDiscoveryInvalidResult',
+                [System.Management.Automation.ErrorCategory]::InvalidData,
+                $jsonText)
+            $PSCmdlet.WriteError($errorRecord)
+            return
+        }
+    } elseif (Test-CopilotPluginListJsonUnsupported -Result $jsonResult) {
+        @(ConvertFrom-CopilotPluginTextOutput -Output (Invoke-CopilotDiscovery -Arguments @('plugin', 'list')))
+    } else {
+        Write-CopilotDiscoveryFailure -Arguments @('plugin', 'list', '--json') -Result $jsonResult
+        return
+    }
+
+    foreach ($plugin in $plugins) {
+        if ($plugin.Name -like $Name -or $plugin.FullName -like $Name) {
+            $plugin
         }
     }
 }
@@ -85,6 +335,20 @@ function Update-CopilotPlugin {
     process {
         $updateName = if ($PSCmdlet.ParameterSetName -eq 'ByName') { $Name } else { $InputObject.FullName }
         Assert-CopilotShimArgument -Value $updateName -ParameterName 'Name'
+
+        if ($PSCmdlet.ParameterSetName -eq 'ByObject' -and
+            $InputObject.PSObject.Properties['Managed'] -and
+            -not [bool]$InputObject.Managed) {
+            $errorMsg = Get-CopilotUnmanagedPluginMessage -Name $updateName -Source ([string]$InputObject.Source)
+            Write-Warning $errorMsg
+            [PSCustomObject]@{
+                PSTypeName = 'CopilotPluginUpdateResult'
+                Name       = $updateName
+                Success    = $false
+                Error      = $errorMsg
+            }
+            return
+        }
 
         $exe = Resolve-CliExe -Name copilot
         if (-not $PSCmdlet.ShouldProcess($updateName, 'copilot plugin update')) {
@@ -146,7 +410,10 @@ function Install-CopilotPlugin {
         Install a Copilot CLI plugin.
     .DESCRIPTION
         Installs a plugin from a GitHub repository, marketplace, or direct URL.
-        If discovery of already-installed plugins fails, terminates without installing.
+        If discovery of already-installed plugins fails, terminates without
+        installing. Duplicate detection uses the installed plugin's full managed
+        identity when the Copilot CLI reports it, so different marketplaces and
+        unmanaged --plugin-dir mounts are not confused with the requested source.
     .PARAMETER Source
         The plugin source: owner/repo (GitHub), plugin@marketplace, or a URL.
     .PARAMETER InputObject
@@ -183,11 +450,47 @@ function Install-CopilotPlugin {
 
         $exe = Resolve-CliExe -Name copilot
         if ($PSCmdlet.ShouldProcess($installSource, 'copilot plugin install')) {
-            # Skip if already installed.
-            $checkName = if ($installSource -match '^(.+)@') { $Matches[1] }
-                         elseif ($installSource -match '/([^/#]+)(?:#|$)') { $Matches[1] }
-                         else { $installSource }
-            $existing = Get-CopilotPlugin -ErrorAction Stop | Where-Object { $_.Name -eq $checkName -or $_.FullName -eq $installSource }
+            $requestedPlugin = Resolve-CopilotPluginInstallRequest -Source $installSource
+            $installedPlugins = @(Get-CopilotPlugin -ErrorAction Stop)
+            $existing = switch ($requestedPlugin.Kind) {
+                'Marketplace' {
+                    @($installedPlugins | Where-Object {
+                        $_.Managed -and $_.FullName -eq $requestedPlugin.FullName
+                    })
+                    break
+                }
+                'Direct' {
+                    $exact = @($installedPlugins | Where-Object {
+                        $_.Managed -and $_.InstalledFrom -and $_.InstalledFrom -eq $requestedPlugin.InstalledFrom
+                    })
+                    if ($exact) {
+                        $exact
+                        break
+                    }
+
+                    $legacy = @($installedPlugins | Where-Object {
+                        -not $_.Source -and ($_.Name -eq $requestedPlugin.Name -or $_.FullName -eq $installSource)
+                    })
+                    if ($legacy) {
+                        $legacy
+                        break
+                    }
+
+                    $ambiguous = @($installedPlugins | Where-Object {
+                        $_.Managed -and
+                        -not $_.Marketplace -and
+                        $_.Name -eq $requestedPlugin.Name -and
+                        -not $_.InstalledFrom
+                    })
+                    if ($ambiguous) {
+                        throw "Cannot determine whether plugin '$($requestedPlugin.Name)' is already installed because the Copilot CLI did not report its install source."
+                    }
+
+                    @()
+                    break
+                }
+                default { @() }
+            }
             if ($existing) {
                 Write-Verbose "Plugin '$($existing.FullName)' is already installed."
                 return
@@ -205,7 +508,10 @@ function Uninstall-CopilotPlugin {
     .SYNOPSIS
         Uninstall a Copilot CLI plugin.
     .DESCRIPTION
-        Removes an installed plugin by name. Accepts pipeline input from Get-CopilotPlugin.
+        Removes an installed plugin by name. Accepts pipeline input from
+        Get-CopilotPlugin. Built-in plugins and --plugin-dir mounts are reported
+        by discovery but rejected from the object pipeline because they are not
+        managed installations.
     .PARAMETER InputObject
         A CopilotPlugin object from Get-CopilotPlugin.
     .PARAMETER Name
@@ -228,6 +534,13 @@ function Uninstall-CopilotPlugin {
     process {
         $uninstallName = if ($PSCmdlet.ParameterSetName -eq 'ByName') { $Name } else { $InputObject.FullName }
         Assert-CopilotShimArgument -Value $uninstallName -ParameterName 'Name'
+
+        if ($PSCmdlet.ParameterSetName -eq 'ByObject' -and
+            $InputObject.PSObject.Properties['Managed'] -and
+            -not [bool]$InputObject.Managed) {
+            Write-Error (Get-CopilotUnmanagedPluginMessage -Name $uninstallName -Source ([string]$InputObject.Source))
+            return
+        }
 
         $exe = Resolve-CliExe -Name copilot
         if ($PSCmdlet.ShouldProcess($uninstallName, 'copilot plugin uninstall')) {
