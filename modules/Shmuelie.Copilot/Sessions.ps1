@@ -123,7 +123,7 @@ function Get-CopilotSession {
         }
     }
     $sessionStateDir = Join-Path (Get-CopilotHome) '.copilot' 'session-state'
-    if (-not (Test-Path $sessionStateDir)) {
+    if (-not (Test-Path -LiteralPath $sessionStateDir -PathType Container -ErrorAction Stop)) {
         return
     }
 
@@ -131,15 +131,15 @@ function Get-CopilotSession {
 
     $dirs = if ($Id) {
         $target = Resolve-CopilotSessionPath -Id $Id
-        if ($target) { Get-Item -LiteralPath $target } else { return }
+        if ($target) { Get-Item -LiteralPath $target -ErrorAction Stop } else { return }
     } else {
-        Get-ChildItem $sessionStateDir -Directory
+        Get-ChildItem -LiteralPath $sessionStateDir -Directory -ErrorAction Stop
     }
 
     $dirs | ForEach-Object {
         $wsFile = Join-Path $_.FullName 'workspace.yaml'
-        if (Test-Path $wsFile) {
-            $content = Get-Content $wsFile -Raw
+        if (Test-Path -LiteralPath $wsFile -ErrorAction Stop) {
+            $content = Get-Content -LiteralPath $wsFile -Raw -ErrorAction Stop
             $sessionCwd        = Get-CopilotWorkspaceField -Content $content -Field 'cwd'
             $updatedAt         = Get-CopilotWorkspaceField -Content $content -Field 'updated_at'
             $sessionSummary    = Get-CopilotWorkspaceField -Content $content -Field 'summary'
@@ -153,7 +153,7 @@ function Get-CopilotSession {
                 $eventsFile = Join-Path $_.FullName 'events.jsonl'
                 $eventCount = 0
                 $eventSize  = [long]0
-                if (Test-Path $eventsFile) {
+                if (Test-Path -LiteralPath $eventsFile -ErrorAction Stop) {
                     $fi = [System.IO.FileInfo]::new($eventsFile)
                     $eventSize = $fi.Length
                     # Stream-count lines without allocating the full string array
@@ -314,7 +314,7 @@ function Rename-CopilotSession {
         }
 
         $wsFile = Join-Path $session.Path 'workspace.yaml'
-        if (-not (Test-Path $wsFile)) {
+        if (-not (Test-Path -LiteralPath $wsFile -ErrorAction Stop)) {
             Write-Error "workspace.yaml not found for session $($session.Id)."
             return
         }
@@ -323,7 +323,7 @@ function Rename-CopilotSession {
             return
         }
 
-        $content = Get-Content $wsFile -Raw
+        $content = Get-Content -LiteralPath $wsFile -Raw -ErrorAction Stop
 
         $content = Set-CopilotWorkspaceField -Content $content -Field 'name' -Value $Summary
         $content = Set-CopilotWorkspaceField -Content $content -Field 'summary' -Value $Summary

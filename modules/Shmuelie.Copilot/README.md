@@ -233,6 +233,8 @@ Output remains sorted by UpdatedAt descending.
 filters or `-All`, and retains the session-root guard. `Select-CopilotSession`
 uses the same matching logic but still searches **all** directories by default,
 supports wildcard IDs, and applies `-First` after filtering and sorting.
+Discovery treats home, session directory, and session file paths literally,
+including paths with brackets; only recorded metadata filters use wildcards.
 
 ```powershell
 Get-CopilotSession -All -Repository 'owner/*' -Branch 'feature/*' -Summary '*cleanup*'
