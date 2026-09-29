@@ -12,6 +12,33 @@ Versions change only when a release is cut; unreleased work stays under
   Explicit additional MCP configuration and a matching remote origin are
   required; HTTPS is mandatory except literal loopback HTTP. Invalid scopes
   fail before launch, while plans and previews remain nonauthenticating. (#331)
+- `Start-Copilot` and `Get-CopilotLaunchPlan` now expose typed mappings for the
+  current native fleet, Auto tier, dynamic retrieval, `--no-mouse`, and
+  Windows `--no-eager-powershell-resolution` flags. `-DynamicRetrieval`
+  documents its persisted-setting side effect and remains preview-safe under
+  `Get-CopilotLaunchPlan`, `-PassThru`, and `-WhatIf`, while hidden
+  compatibility switches `-Version` (`--prefer-version`) and
+  `-EnableReasoningSummaries` (`--enable-reasoning-summaries`) stay supported. (#329)
+
+### Fixed
+- Both launcher commands now suggest native `auto` model routing and use a
+  shared, non-exhaustive list for `-Model` completion. Explicit values are
+  forwarded unchanged. (#330)
+- `Get-CopilotSession` now discovers sessions when the home or session
+  directory contains literal wildcard characters, including exact ID lookup.
+  Session filesystem paths no longer use wildcard matching; metadata filters
+  retain their documented wildcard behavior. (#334)
+- `Get-CopilotPlugin` now prefers the Copilot CLI's JSON plugin inventory,
+  preserving the existing plugin identity fields while adding enabled/source
+  metadata and failing closed on invalid results. Install duplicate checks now
+  distinguish managed marketplace/direct installs from built-in and
+  `--plugin-dir` plugins instead of treating a mismatched source as already
+  installed or silently empty. (#327)
+- Resume discovery, selection, `-ResumeSession` completion, and default session
+  listing now recognize a moved GitHub worktree by repository and branch
+  metadata. Legacy sessions use the recorded directory only when known identity
+  fields do not conflict; explicit global and directory filters retain their
+  existing behavior. (#326)
 
 ## [0.6.0] - 2026-09-24
 

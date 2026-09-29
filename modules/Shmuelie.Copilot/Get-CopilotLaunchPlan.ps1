@@ -68,6 +68,19 @@ function Assert-CopilotMcpGitHubAuth {
     }
 }
 
+function Get-CopilotModelCompletion {
+    param([string]$WordToComplete)
+
+    # Native help documents auto but offers no non-interactive model inventory.
+    @(
+        'auto',
+        'claude-sonnet-4.6', 'claude-sonnet-4.5', 'claude-haiku-4.5',
+        'claude-opus-4.7', 'claude-opus-4.7-1m', 'claude-opus-4.6', 'claude-opus-4.5', 'claude-sonnet-4',
+        'gpt-5.5', 'gpt-5.4', 'gpt-5.3-codex', 'gpt-5.2-codex', 'gpt-5.2',
+        'gpt-5.4-mini', 'gpt-5-mini', 'gpt-4.1'
+    ) | Where-Object { $_ -like "$WordToComplete*" }
+}
+
 function Get-CopilotLaunchPlan {
     <#
     .SYNOPSIS
@@ -86,12 +99,21 @@ function Get-CopilotLaunchPlan {
         both compute identical arguments through this one function instead of
         duplicating the logic. Destructive git operations (force push, hard reset,
         rebase, amend, and similar) are denied by default; pass -NoDefaultDenyTools
-        to opt out of those deny rules.
+        to opt out of those deny rules. Typed mappings track the current printed
+        CLI surface, while compatibility switches such as -Version
+        (--prefer-version) and -EnableReasoningSummaries
+        (--enable-reasoning-summaries) remain available even though the current
+        native help text omits them.
 
         When a Prompt is provided, the plan runs in non-interactive autopilot mode
         (-p --autopilot). When no Prompt is provided, it is interactive.
 
-        If exactly one previous session exists for the current directory it is
+        When the effective directory belongs to a GitHub worktree with an origin
+        and checked-out branch, sessions are scoped by recorded repository and
+        branch, even after a worktree moves. Incomplete session metadata falls
+        back only at the current directory when known fields do not conflict;
+        non-Git or ambiguous origins use the current directory. If exactly one
+        eligible session exists it is
         resumed automatically. If multiple sessions exist, an interactive picker
         is shown -- except when only one of them is a *named* session (the rest
         being unnamed '(no summary)' stubs), in which case that lone named
@@ -114,6 +136,10 @@ function Get-CopilotLaunchPlan {
         Start interactive mode and automatically execute this prompt. Unlike -Prompt,
         the session remains interactive after the initial prompt completes.
 
+    .PARAMETER Fleet
+        Run the initial prompt in fleet mode (parallel subagent orchestration).
+        When using this wrapper, combine it with -Prompt or -Interactive.
+
     .PARAMETER NoResume
         Skip session resume even if a matching session exists.
 
@@ -128,20 +154,21 @@ function Get-CopilotLaunchPlan {
         -DenyTool.
 
     .PARAMETER ResumeLatest
-        When multiple sessions exist for the current folder, automatically resume
+        When multiple eligible sessions exist, automatically resume
         the most recently updated session instead of showing the interactive picker.
 
     .PARAMETER ResumeSession
         Resume a specific session directly, by session id, id-prefix, or name
         (passed to the CLI's --resume). Bypasses the auto-resume heuristics and the
-        picker. Tab-completes the current folder's sessions. Mutually exclusive with
+        picker. Tab-completes eligible sessions in the effective launch directory
+        (including -ChangeDir). Mutually exclusive with
         -NoResume, -ResumeLatest, and -NoAutoResume. If combined with -SessionId,
         this parameter drives the --resume value while -SessionId is still forwarded
         as --session-id.
 
     .PARAMETER NoAutoResume
         Disable auto-resume and always show the interactive session picker for the
-        current folder, even when a session would otherwise be auto-resumed
+        current scope, even when a session would otherwise be auto-resumed
         (including when only one session exists). Mutually exclusive with -NoResume,
         -ResumeLatest, and -ResumeSession. The former name -ShowPicker is retained
         as an alias for back-compat.
@@ -155,7 +182,8 @@ function Get-CopilotLaunchPlan {
         shown (e.g. with -NoResume, -ResumeLatest, or -ResumeSession).
 
     .PARAMETER Model
-        The AI model to use for the session.
+        The AI model to use for the session. Use 'auto' for native model routing.
+        Tab completion suggests common models but does not limit accepted values.
 
     .PARAMETER SessionSelector
         Optional scriptblock replacing only the native host session picker. Receives
@@ -193,6 +221,10 @@ function Get-CopilotLaunchPlan {
 
     .PARAMETER ReasoningEffort
         Set the reasoning effort level.
+
+    .PARAMETER AutoTier
+        Set the Auto routing preference: efficiency, balance, or intelligence.
+        If combined with -Model, the model must be 'auto'.
 
     .PARAMETER AddDir
         One or more directories to grant file access to.
@@ -310,6 +342,10 @@ function Get-CopilotLaunchPlan {
     .PARAMETER Mouse
         Enable or disable mouse support in alt screen mode ('on' or 'off').
 
+    .PARAMETER NoMouse
+        Disable mouse support in alt screen mode. Native compatibility switch
+        alongside -Mouse on|off; cannot be combined with -Mouse.
+
     .PARAMETER PlainDiff
         Disable rich diff rendering (syntax highlighting via git's diff tool).
 
@@ -375,6 +411,13 @@ function Get-CopilotLaunchPlan {
         Enable the memory tools in prompt (-Prompt) mode. Memory is disabled by
         default in non-interactive mode.
 
+    .PARAMETER DynamicRetrieval
+        Persistently enable or disable embeddings-based dynamic retrieval per
+        category, using values such as 'skills=off'. Unlike ordinary session
+        flags, this updates Copilot's saved setting when the CLI actually starts.
+        Get-CopilotLaunchPlan, Start-Copilot -PassThru, and -WhatIf only preview
+        the native arguments and do not persist anything.
+
     .PARAMETER MaxAiCredits
         Set the maximum AI credits to spend in this session.
 
@@ -395,6 +438,10 @@ function Get-CopilotLaunchPlan {
     .PARAMETER NoRemoteExport
         Disable exporting the session to GitHub web and mobile (also disables
         remote control).
+
+    .PARAMETER NoEagerPowerShellResolution
+        On Windows, disable background PowerShell prompt resolution. This native
+        switch is Windows-only; passing it on another platform is an error.
 
     .PARAMETER ExtensionSdkPath
         Override the bundled @github/copilot-sdk injected into extension
@@ -457,6 +504,8 @@ function Get-CopilotLaunchPlan {
 
         [string]$Interactive,
 
+        [switch]$Fleet,
+
         [Parameter(ParameterSetName = 'CopilotNoResume', Mandatory)]
         [switch]$NoResume,
 
@@ -469,23 +518,11 @@ function Get-CopilotLaunchPlan {
 
         [Parameter(ParameterSetName = 'CopilotResumeSession', Mandatory)]
         [ArgumentCompleter({
-            param($commandName, $parameterName, $wordToComplete)
-            $sessionStateDir = Join-Path (Get-CopilotHome) '.copilot' 'session-state'
-            if (-not (Test-Path $sessionStateDir)) { return }
-            $cwd = (Get-Location).Path
-            Get-ChildItem $sessionStateDir -Directory | ForEach-Object {
-                if ($_.Name -notlike "$wordToComplete*") { return }
-                $wsFile = Join-Path $_.FullName 'workspace.yaml'
-                if (-not (Test-Path $wsFile)) { return }
-                $content = Get-Content $wsFile -Raw
-                $sessionCwd = Get-CopilotWorkspaceField -Content $content -Field 'cwd'
-                if ($sessionCwd -ne $cwd) { return }
-                $summary = Get-CopilotWorkspaceField -Content $content -Field 'summary'
-                $name = Get-CopilotWorkspaceField -Content $content -Field 'name'
-                if ($name) { $name = ($name -split '\r?\n', 2)[0].Trim() }
-                $display = $name ?? $summary ?? '(no summary)'
-                [System.Management.Automation.CompletionResult]::new($_.Name, $_.Name, 'ParameterValue', $display)
-            }
+            param($commandName, $parameterName, $wordToComplete, $commandAst, $fakeBoundParameters)
+            & (Get-Module Shmuelie.Copilot -ErrorAction Stop) {
+                param($word, $bound)
+                Complete-CopilotResumeSession -WordToComplete $word -BoundParameters $bound
+            } $wordToComplete $fakeBoundParameters
         })]
         [string]$ResumeSession,
 
@@ -501,12 +538,10 @@ function Get-CopilotLaunchPlan {
 
         [ArgumentCompleter({
             param($commandName, $parameterName, $wordToComplete)
-            @(
-                'claude-sonnet-4.6', 'claude-sonnet-4.5', 'claude-haiku-4.5',
-                'claude-opus-4.7', 'claude-opus-4.7-1m', 'claude-opus-4.6', 'claude-opus-4.5', 'claude-sonnet-4',
-                'gpt-5.5', 'gpt-5.4', 'gpt-5.3-codex', 'gpt-5.2-codex', 'gpt-5.2',
-                'gpt-5.4-mini', 'gpt-5-mini', 'gpt-4.1'
-            ) | Where-Object { $_ -like "$wordToComplete*" }
+            & (Get-Module Shmuelie.Copilot) {
+                param($word)
+                Get-CopilotModelCompletion -WordToComplete $word
+            } $wordToComplete
         })]
         [string]$Model,
 
@@ -516,6 +551,9 @@ function Get-CopilotLaunchPlan {
 
         [ValidateSet('none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max')]
         [string]$ReasoningEffort,
+
+        [ValidateSet('efficiency', 'balance', 'intelligence')]
+        [string]$AutoTier,
 
         [string[]]$AddDir,
 
@@ -584,6 +622,8 @@ function Get-CopilotLaunchPlan {
         [ValidateSet('on', 'off')]
         [string]$Mouse,
 
+        [switch]$NoMouse,
+
         [switch]$PlainDiff,
 
         [ValidateSet('on', 'off')]
@@ -624,6 +664,18 @@ function Get-CopilotLaunchPlan {
 
         [switch]$EnableMemory,
 
+        [ArgumentCompleter({
+            param($commandName, $parameterName, $wordToComplete)
+            @('skills=on', 'skills=off') | Where-Object { $_ -like "$wordToComplete*" }
+        })]
+        [ValidateScript({
+            if ($_ -isnot [string] -or $_ -notmatch '^skills=(on|off)$') {
+                throw "DynamicRetrieval values must match the current native help, e.g. 'skills=on' or 'skills=off'."
+            }
+            $true
+        })]
+        [string[]]$DynamicRetrieval,
+
         [int]$MaxAiCredits,
 
         [switch]$AllowAllMcpServerInstructions,
@@ -636,6 +688,8 @@ function Get-CopilotLaunchPlan {
         [switch]$RemoteExport,
 
         [switch]$NoRemoteExport,
+
+        [switch]$NoEagerPowerShellResolution,
 
         [string]$ExtensionSdkPath,
 
@@ -738,10 +792,12 @@ function Get-CopilotLaunchPlan {
         }
 
         # Named parameters mapped to CLI flags
+        if ($Fleet) { $copilotArgs += '--fleet' }
         if ($Model) { $copilotArgs += '--model', $Model }
         if ($Version) { $copilotArgs += '--prefer-version', $Version; if ($copilotArgs -notcontains '--no-auto-update') { $copilotArgs += '--no-auto-update' } }
         if ($Agent) { $copilotArgs += '--agent', $Agent }
         if ($ReasoningEffort) { $copilotArgs += '--reasoning-effort', $ReasoningEffort }
+        if ($AutoTier) { $copilotArgs += '--auto-tier', $AutoTier }
         if ($AddDir) { foreach ($d in $AddDir) { $copilotArgs += '--add-dir', $d } }
         if ($MaxAutopilotContinues) { $copilotArgs += '--max-autopilot-continues', $MaxAutopilotContinues }
         if ($Silent) { $copilotArgs += '--silent' }
@@ -793,6 +849,7 @@ function Get-CopilotLaunchPlan {
         if ($Remote) { $copilotArgs += '--remote' }
         if ($NoRemote) { $copilotArgs += '--no-remote' }
         if ($Mouse) { $copilotArgs += '--mouse', $Mouse }
+        if ($NoMouse) { $copilotArgs += '--no-mouse' }
         if ($PSBoundParameters.ContainsKey('Connect')) {
             if ($Connect) { $copilotArgs += '--connect', $Connect } else { $copilotArgs += '--connect' }
         }
@@ -802,6 +859,8 @@ function Get-CopilotLaunchPlan {
         if ($NoBashEnv) { $copilotArgs += '--no-bash-env' }
         if ($RemoteExport) { $copilotArgs += '--remote-export' }
         if ($NoRemoteExport) { $copilotArgs += '--no-remote-export' }
+        if ($DynamicRetrieval) { foreach ($entry in $DynamicRetrieval) { $copilotArgs += '--dynamic-retrieval', $entry } }
+        if ($NoEagerPowerShellResolution) { $copilotArgs += '--no-eager-powershell-resolution' }
         if ($ExtensionSdkPath) { $copilotArgs += '--extension-sdk-path', $ExtensionSdkPath }
         if ($Acp) { $copilotArgs += '--acp' }
 
@@ -827,6 +886,21 @@ function Get-CopilotLaunchPlan {
         if ($isPassthrough) {
             $passthroughArgs = @($Prompt) + @($RemainingArgs | Where-Object { $_ })
             $Prompt = $null
+        }
+
+        if (-not $isPassthrough) {
+            if ($Fleet -and -not ($PSBoundParameters.ContainsKey('Prompt') -or $PSBoundParameters.ContainsKey('Interactive'))) {
+                throw '-Fleet requires -Prompt or -Interactive when using Start-Copilot/Get-CopilotLaunchPlan.'
+            }
+            if ($AutoTier -and $PSBoundParameters.ContainsKey('Model') -and $Model -ne 'auto') {
+                throw '-AutoTier can only be combined with -Model auto.'
+            }
+            if ($NoMouse -and $PSBoundParameters.ContainsKey('Mouse')) {
+                throw '-NoMouse cannot be combined with -Mouse.'
+            }
+            if ($NoEagerPowerShellResolution -and -not $IsWindows) {
+                throw '-NoEagerPowerShellResolution is only supported on Windows.'
+            }
         }
 
         # Resume-mode flags derived from the active parameter set.
