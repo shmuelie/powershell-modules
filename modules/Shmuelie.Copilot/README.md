@@ -34,6 +34,14 @@ caller's `$LASTEXITCODE` and console encoding. `Install-CopilotPlugin` and
 `Register-CopilotMarketplace` terminate if their existing-item discovery fails,
 even under `-ErrorAction Continue`, rather than proceeding with a mutation.
 
+`Get-CopilotPlugin` uses `copilot plugin list --json` when the CLI supports it
+and falls back to legacy text parsing on older releases. Plugin results retain
+the existing `Name`, `FullName`, `Marketplace`, and `Version` contract, and now
+also expose `Enabled`, `Source`, `InstalledFrom`, and `Managed`. Built-in plugins
+and `--plugin-dir` mounts are discoverable, but mutation pipelines treat them as
+unmanaged so duplicate detection, uninstall, and update flows do not confuse them
+with installable marketplace or direct plugins.
+
 Compression and file-backed event repair require a successful `.bak` backup before
 rewriting events, unless `-NoBackup` is explicitly supplied. Backup copies are
 staged beside the event file before replacing the prior backup. A failed backup

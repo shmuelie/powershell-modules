@@ -6,6 +6,14 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+### Fixed
+- `Get-CopilotPlugin` now prefers the Copilot CLI's JSON plugin inventory,
+  preserving the existing plugin identity fields while adding enabled/source
+  metadata and failing closed on invalid results. Install duplicate checks now
+  distinguish managed marketplace/direct installs from built-in and
+  `--plugin-dir` plugins instead of treating a mismatched source as already
+  installed or silently empty. (#327)
+
 ## [0.6.0] - 2026-09-24
 
 ### Changed

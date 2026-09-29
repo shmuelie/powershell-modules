@@ -6,6 +6,37 @@ BeforeAll {
 
     $script:OriginalUserProfile = $env:USERPROFILE
     $script:OriginalPath = $env:PATH
+    $script:CopilotFixtureRoot = Join-Path (Split-Path $PSCommandPath -Parent) 'fixtures'
+
+    function Get-CopilotFixtureText {
+        param([Parameter(Mandatory)][string]$Name)
+
+        Get-Content -LiteralPath (Join-Path $script:CopilotFixtureRoot $Name) -Raw
+    }
+
+    function Get-ExpectedCopilotPluginsFromJson {
+        param([Parameter(Mandatory)][string]$Json)
+
+        $entries = $Json | ConvertFrom-Json -AsHashtable -NoEnumerate
+        if ($entries -isnot [System.Collections.IList]) {
+            $entries = @($entries)
+        }
+
+        @(
+            foreach ($entry in $entries) {
+                [pscustomobject]@{
+                    Name          = [string]$entry.name
+                    FullName      = if ($entry.marketplace) { "$($entry.name)@$($entry.marketplace)" } else { [string]$entry.name }
+                    Marketplace   = [string]$entry.marketplace
+                    Version       = [string]$entry.version
+                    Enabled       = [bool]$entry.enabled
+                    Source        = [string]$entry.source
+                    InstalledFrom = [string]$entry.installedFrom
+                    Managed       = $entry.source -notin @('builtin', 'plugin-dir')
+                }
+            }
+        )
+    }
 
     function Add-FakeCopilot {
         param(
@@ -1566,15 +1597,15 @@ Describe 'Copilot CLI UTF-8 output parsing' {
     }
 
     It 'parses plugin list output emitted as UTF-8 while the console starts non-UTF-8' {
-        $env:COPILOT_TEST_STDOUT = "  • dotnet@test-market (v1.2.3)$([Environment]::NewLine)"
+        $env:COPILOT_TEST_STDOUT = Get-CopilotFixtureText -Name 'CopilotPluginList.Mixed.json'
+        $expected = Get-ExpectedCopilotPluginsFromJson -Json $env:COPILOT_TEST_STDOUT
 
         $plugins = @(Get-CopilotPlugin)
+        $actual = @($plugins | Select-Object Name, FullName, Marketplace, Version, Enabled, Source, InstalledFrom, Managed)
 
-        $plugins | Should -HaveCount 1
-        $plugins[0].Name | Should -Be 'dotnet'
-        $plugins[0].FullName | Should -Be 'dotnet@test-market'
-        $plugins[0].Marketplace | Should -Be 'test-market'
-        $plugins[0].Version | Should -Be '1.2.3'
+        $plugins | Should -HaveCount 4
+        (ConvertTo-Json -InputObject $actual -Depth 4 -Compress) |
+            Should -Be (ConvertTo-Json -InputObject $expected -Depth 4 -Compress)
     }
 
     It 'parses marketplace list output emitted as UTF-8 while the console starts non-UTF-8' {
@@ -1673,8 +1704,8 @@ exit $response.ExitCode
 
     Context '<Reader>' -ForEach @(
         @{
-            Reader = 'Get-CopilotPlugin'; ReaderParameters = @{}; NativeArguments = 'plugin list'
-            Listing = "  • synthetic@curated (v1.2.3)`n"; ResultType = 'CopilotPlugin'
+            Reader = 'Get-CopilotPlugin'; ReaderParameters = @{}; NativeArguments = 'plugin list --json'
+            Fixture = 'CopilotPluginList.SingleMarketed.json'; ResultType = 'CopilotPlugin'
         }
         @{
             Reader = 'Get-CopilotMarketplace'; ReaderParameters = @{}; NativeArguments = 'plugin marketplace list'
@@ -1690,8 +1721,9 @@ exit $response.ExitCode
             @{ NativePreference = $true }
         ) {
             $global:PSNativeCommandUseErrorActionPreference = $NativePreference
+            $listingText = if ($Fixture) { Get-CopilotFixtureText -Name $Fixture } else { $Listing }
             Set-DiscoveryResponses @{ $NativeArguments = @{
-                ExitCode = 17; Output = $Listing + "synthetic stdout diagnostic`n"; Diagnostics = "synthetic stderr diagnostic`n"
+                ExitCode = 17; Output = $listingText + "synthetic stdout diagnostic`n"; Diagnostics = "synthetic stderr diagnostic`n"
             } }
             $discoveryErrors = @()
 
@@ -1715,7 +1747,8 @@ exit $response.ExitCode
             @{ NativePreference = $true }
         ) {
             $global:PSNativeCommandUseErrorActionPreference = $NativePreference
-            Set-DiscoveryResponses @{ $NativeArguments = @{ ExitCode = 17; Output = $Listing; Diagnostics = 'synthetic failure' } }
+            $listingText = if ($Fixture) { Get-CopilotFixtureText -Name $Fixture } else { $Listing }
+            Set-DiscoveryResponses @{ $NativeArguments = @{ ExitCode = 17; Output = $listingText; Diagnostics = 'synthetic failure' } }
 
             { & $Reader @ReaderParameters -ErrorAction Stop } | Should -Throw '*exit code 17*synthetic failure*'
 
@@ -1729,7 +1762,8 @@ exit $response.ExitCode
             @{ OutputKind = 'no output'; EmptyOutput = '' }
             @{ OutputKind = 'empty-list message'; EmptyOutput = 'No entries found.' }
         ) {
-            Set-DiscoveryResponses @{ $NativeArguments = @{ ExitCode = 0; Output = $EmptyOutput } }
+            $emptyOutput = if ($Reader -eq 'Get-CopilotPlugin' -and $OutputKind -eq 'empty-list message') { '[]' } else { $EmptyOutput }
+            Set-DiscoveryResponses @{ $NativeArguments = @{ ExitCode = 0; Output = $emptyOutput } }
             $discoveryErrors = @()
 
             $results = @(& $Reader @ReaderParameters -ErrorAction Stop -ErrorVariable discoveryErrors)
@@ -1742,7 +1776,8 @@ exit $response.ExitCode
         }
 
         It 'preserves successful typed UTF-8 parsing and the caller exit code' {
-            Set-DiscoveryResponses @{ $NativeArguments = @{ ExitCode = 0; Output = $Listing } }
+            $listingText = if ($Fixture) { Get-CopilotFixtureText -Name $Fixture } else { $Listing }
+            Set-DiscoveryResponses @{ $NativeArguments = @{ ExitCode = 0; Output = $listingText } }
 
             $results = @(& $Reader @ReaderParameters -ErrorAction Stop)
 
@@ -1754,6 +1789,10 @@ exit $response.ExitCode
                     $results[0].FullName | Should -Be 'synthetic@curated'
                     $results[0].Marketplace | Should -Be 'curated'
                     $results[0].Version | Should -Be '1.2.3'
+                    $results[0].Enabled | Should -BeTrue
+                    $results[0].Source | Should -Be 'marketplace'
+                    $results[0].InstalledFrom | Should -Be 'synthetic@curated'
+                    $results[0].Managed | Should -BeTrue
                 }
                 'Get-CopilotMarketplace' { $results[0].Repository | Should -Be 'example/marketplace' }
                 'Get-CopilotMarketplacePlugin' {
@@ -1771,7 +1810,12 @@ exit $response.ExitCode
             @{ ExitCode = 0; Action = 'Stop' }
             @{ ExitCode = 17; Action = 'Stop' }
         ) {
-            Set-DiscoveryResponses @{ $NativeArguments = @{ ExitCode = $ExitCode; Diagnostics = 'synthetic diagnostic' } }
+            $response = if ($Reader -eq 'Get-CopilotPlugin' -and $ExitCode -eq 0) {
+                @{ ExitCode = 0; Output = '[]' }
+            } else {
+                @{ ExitCode = $ExitCode; Diagnostics = 'synthetic diagnostic' }
+            }
+            Set-DiscoveryResponses @{ $NativeArguments = $response }
             Remove-Variable LASTEXITCODE -Scope Global -WhatIf:$false -Confirm:$false
 
             $invoke = {
@@ -1804,8 +1848,9 @@ exit $response.ExitCode
             @{ StatusKind = 'string zero'; NativeStatus = '0' }
             @{ StatusKind = 'Boolean false'; NativeStatus = $false }
         ) {
+            $listingText = if ($Fixture) { Get-CopilotFixtureText -Name $Fixture } else { $Listing }
             Mock -ModuleName Shmuelie.Copilot Invoke-WithUtf8Console {
-                [pscustomobject]@{ ExitCode = $NativeStatus; Output = @($Listing, 'synthetic completion diagnostic') }
+                [pscustomobject]@{ ExitCode = $NativeStatus; Output = @($listingText, 'synthetic completion diagnostic') }
             }
             $discoveryErrors = @()
 
@@ -1888,7 +1933,7 @@ exit $response.ExitCode
 
     It 'keeps successful discovery-to-update pipelines working' {
         Set-DiscoveryResponses @{
-            'plugin list' = @{ ExitCode = 0; Output = "  • synthetic@curated (v1.2.3)`n" }
+            'plugin list --json' = @{ ExitCode = 0; Output = (Get-CopilotFixtureText -Name 'CopilotPluginList.SingleMarketed.json') }
             'plugin update synthetic@curated' = @{ ExitCode = 0 }
         }
 
@@ -1897,14 +1942,14 @@ exit $response.ExitCode
         $results | Should -HaveCount 1
         $results[0].Name | Should -Be 'synthetic@curated'
         $results[0].Success | Should -BeTrue
-        @(Get-Content -LiteralPath $script:DiscoveryLog) | Should -Be @('plugin list', 'plugin update synthetic@curated')
+        @(Get-Content -LiteralPath $script:DiscoveryLog) | Should -Be @('plugin list --json', 'plugin update synthetic@curated')
     }
 
     It 'keeps successful marketplace-to-install pipelines working' {
         Set-DiscoveryResponses @{
             'plugin marketplace list' = @{ ExitCode = 0; Output = "  ◆ curated (GitHub: example/marketplace)`n" }
             'plugin marketplace browse curated' = @{ ExitCode = 0; Output = "  • synthetic - Synthetic description`n" }
-            'plugin list' = @{ ExitCode = 0 }
+            'plugin list --json' = @{ ExitCode = 0; Output = '[]' }
             'plugin install synthetic@curated' = @{ ExitCode = 0 }
         }
 
@@ -1913,7 +1958,7 @@ exit $response.ExitCode
             Install-CopilotPlugin -Confirm:$false -ErrorAction Stop
 
         @(Get-Content -LiteralPath $script:DiscoveryLog) | Should -Be @(
-            'plugin marketplace list', 'plugin marketplace browse curated', 'plugin list', 'plugin install synthetic@curated'
+            'plugin marketplace list', 'plugin marketplace browse curated', 'plugin list --json', 'plugin install synthetic@curated'
         )
     }
 
@@ -1923,13 +1968,13 @@ exit $response.ExitCode
 
     It 'does not invoke <Consumer> after <Reader> fails' -ForEach @(
         @{
-            Reader = 'Get-CopilotPlugin'; ReaderParameters = @{}; NativeArguments = 'plugin list'
-            Listing = "  • synthetic@curated (v1.2.3)`n"
+            Reader = 'Get-CopilotPlugin'; ReaderParameters = @{}; NativeArguments = 'plugin list --json'
+            Fixture = 'CopilotPluginList.SingleMarketed.json'
             Consumer = 'Update-CopilotPlugin'; ConsumerParameters = @{ Confirm = $false }
         }
         @{
-            Reader = 'Get-CopilotPlugin'; ReaderParameters = @{}; NativeArguments = 'plugin list'
-            Listing = "  • synthetic@curated (v1.2.3)`n"
+            Reader = 'Get-CopilotPlugin'; ReaderParameters = @{}; NativeArguments = 'plugin list --json'
+            Fixture = 'CopilotPluginList.SingleMarketed.json'
             Consumer = 'Uninstall-CopilotPlugin'; ConsumerParameters = @{ Confirm = $false }
         }
         @{
@@ -1948,7 +1993,8 @@ exit $response.ExitCode
             Consumer = 'Install-CopilotPlugin'; ConsumerParameters = @{ Confirm = $false }
         }
     ) {
-        Set-DiscoveryResponses @{ $NativeArguments = @{ ExitCode = 17; Output = $Listing; Diagnostics = 'synthetic failure' } }
+        $listingText = if ($Fixture) { Get-CopilotFixtureText -Name $Fixture } else { $Listing }
+        Set-DiscoveryResponses @{ $NativeArguments = @{ ExitCode = 17; Output = $listingText; Diagnostics = 'synthetic failure' } }
         $discoveryErrors = @()
 
         $results = @(& $Reader @ReaderParameters -ErrorAction Continue -ErrorVariable discoveryErrors 2>$null |
@@ -1960,7 +2006,7 @@ exit $response.ExitCode
     }
 
     Context '<Mutation> existence precheck' -ForEach @(
-        @{ Mutation = 'Install-CopilotPlugin'; Discovery = 'plugin list'; NativeMutation = 'plugin install example/marketplace'; Existing = "  • marketplace (v1.0.0)`n" }
+        @{ Mutation = 'Install-CopilotPlugin'; Discovery = 'plugin list --json'; NativeMutation = 'plugin install example/marketplace'; Existing = '[]' }
         @{ Mutation = 'Register-CopilotMarketplace'; Discovery = 'plugin marketplace list'; NativeMutation = 'plugin marketplace add example/marketplace'; Existing = "  ◆ synthetic (GitHub: example/marketplace)`n" }
     ) {
         It 'terminates on discovery failure even with ErrorAction Continue' {
@@ -1984,9 +2030,10 @@ exit $response.ExitCode
         }
 
         It 'still skips an already-present item' {
-            Set-DiscoveryResponses @{ $Discovery = @{ ExitCode = 0; Output = $Existing } }
+            $existingOutput = if ($Mutation -eq 'Install-CopilotPlugin') { Get-CopilotFixtureText -Name 'CopilotPluginList.SingleMarketed.json' } else { $Existing }
+            Set-DiscoveryResponses @{ $Discovery = @{ ExitCode = 0; Output = $existingOutput } }
 
-            & $Mutation -Source 'example/marketplace' -Confirm:$false -ErrorAction Stop
+            & $Mutation -Source $(if ($Mutation -eq 'Install-CopilotPlugin') { 'synthetic@curated' } else { 'example/marketplace' }) -Confirm:$false -ErrorAction Stop
 
             @(Get-Content -LiteralPath $script:DiscoveryLog) | Should -Be @($Discovery)
         }
@@ -1996,6 +2043,53 @@ exit $response.ExitCode
 
             Test-Path -LiteralPath $script:DiscoveryLog | Should -BeFalse
         }
+    }
+
+    It 'fails closed when plugin JSON discovery returns invalid schema' {
+        Set-DiscoveryResponses @{
+            'plugin list --json' = @{ ExitCode = 0; Output = (Get-CopilotFixtureText -Name 'CopilotPluginList.InvalidSchema.json') }
+        }
+        $discoveryErrors = @()
+
+        $results = @(Get-CopilotPlugin -ErrorAction Continue -ErrorVariable discoveryErrors 2>$null)
+
+        $results | Should -HaveCount 0
+        $discoveryErrors | Should -Not -BeNullOrEmpty
+        $discoveryErrors[-1].FullyQualifiedErrorId | Should -BeLike 'CopilotDiscoveryInvalidResult,*'
+        $discoveryErrors[-1].Exception.Message | Should -Match "Property 'enabled' must be a Boolean"
+        @(Get-Content -LiteralPath $script:DiscoveryLog) | Should -Be @('plugin list --json')
+    }
+
+    It 'does not confuse another marketplace with the requested plugin identity' {
+        Set-DiscoveryResponses @{
+            'plugin list --json' = @{ ExitCode = 0; Output = (Get-CopilotFixtureText -Name 'CopilotPluginList.SingleMarketed.json') }
+            'plugin install synthetic@other-curated' = @{ ExitCode = 0 }
+        }
+
+        Install-CopilotPlugin -Source 'synthetic@other-curated' -Confirm:$false -ErrorAction Stop
+
+        @(Get-Content -LiteralPath $script:DiscoveryLog) | Should -Be @('plugin list --json', 'plugin install synthetic@other-curated')
+    }
+
+    It 'does not confuse a plugin-dir mount with a managed install target' {
+        Set-DiscoveryResponses @{
+            'plugin list --json' = @{ ExitCode = 0; Output = (Get-CopilotFixtureText -Name 'CopilotPluginList.Mixed.json') }
+            'plugin install local-plugin@curated' = @{ ExitCode = 0 }
+        }
+
+        Install-CopilotPlugin -Source 'local-plugin@curated' -Confirm:$false -ErrorAction Stop
+
+        @(Get-Content -LiteralPath $script:DiscoveryLog) | Should -Be @('plugin list --json', 'plugin install local-plugin@curated')
+    }
+
+    It 'skips an exact direct-source match reported by installedFrom' {
+        Set-DiscoveryResponses @{
+            'plugin list --json' = @{ ExitCode = 0; Output = (Get-CopilotFixtureText -Name 'CopilotPluginList.Mixed.json') }
+        }
+
+        Install-CopilotPlugin -Source 'https://example.test/plugins/direct-plugin.zip' -Confirm:$false -ErrorAction Stop
+
+        @(Get-Content -LiteralPath $script:DiscoveryLog) | Should -Be @('plugin list --json')
     }
 }
 
@@ -4689,6 +4783,46 @@ Describe 'Copilot plugin, marketplace, and MCP removal cmdlets' {
         { Unregister-CopilotMcpServer -Name 'bad&server' -Confirm:$false } | Should -Throw '*Unsafe Name value*'
         Test-Path $script:CopilotTestLog | Should -BeFalse
     }
+
+    It 'rejects plugin-dir pipeline removals without invoking copilot' {
+        $env:COPILOT_TEST_STDOUT = Get-CopilotFixtureText -Name 'CopilotPluginList.Mixed.json'
+
+        {
+            Get-CopilotPlugin local-plugin | Uninstall-CopilotPlugin -Confirm:$false -ErrorAction Stop
+        } | Should -Throw '*--plugin-dir*'
+
+        @(Get-Content $script:CopilotTestLog) | Should -Be @('plugin list --json')
+    }
+}
+
+Describe 'Get-CopilotPlugin read-only CLI compatibility' -Tag 'CopilotCompatibility' {
+    BeforeEach {
+        $env:PATH = $script:OriginalPath
+    }
+
+    AfterEach {
+        $env:PATH = $script:OriginalPath
+    }
+
+    It 'matches the current CLI JSON inventory when copilot is available' {
+        $realCopilot = Get-Command copilot -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+        if (-not $realCopilot) {
+            Set-ItResult -Skipped -Because 'copilot is not available'
+            return
+        }
+
+        $rawJson = & $realCopilot.Source plugin list --json 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            throw "copilot plugin list --json failed with exit code ${LASTEXITCODE}: $($rawJson -join '; ')"
+        }
+
+        $expected = Get-ExpectedCopilotPluginsFromJson -Json (($rawJson | ForEach-Object { "$_" }) -join [Environment]::NewLine)
+        $actual = @(Get-CopilotPlugin -ErrorAction Stop)
+        $normalizedActual = @($actual | Select-Object Name, FullName, Marketplace, Version, Enabled, Source, InstalledFrom, Managed)
+
+        (ConvertTo-Json -InputObject @($normalizedActual) -Depth 4 -Compress) |
+            Should -Be (ConvertTo-Json -InputObject @($expected) -Depth 4 -Compress)
+    }
 }
 
 Describe 'Copilot MCP configuration link protection' {
@@ -4885,17 +5019,27 @@ Describe 'Update-CopilotPlugin' {
     }
 
     It 'accepts pipeline input from Get-CopilotPlugin' {
-        $env:COPILOT_TEST_STDOUT = "  • dotnet@test-market (v1.2.3)$([Environment]::NewLine)"
+        $env:COPILOT_TEST_STDOUT = Get-CopilotFixtureText -Name 'CopilotPluginList.SingleMarketed.json'
 
         $results = @(Get-CopilotPlugin | Update-CopilotPlugin -Confirm:$false)
 
         $results | Should -HaveCount 1
-        $results[0].Name | Should -Be 'dotnet@test-market'
+        $results[0].Name | Should -Be 'synthetic@curated'
         $results[0].Success | Should -BeTrue
         $results[0].Error | Should -BeNullOrEmpty
         $lines = @(Get-Content $script:CopilotTestLog)
-        $lines | Should -Contain 'plugin list'
-        $lines | Should -Contain 'plugin update dotnet@test-market'
+        $lines | Should -Contain 'plugin list --json'
+        $lines | Should -Contain 'plugin update synthetic@curated'
+    }
+
+    It 'returns a failure result instead of updating a plugin-dir mount from the pipeline' {
+        $env:COPILOT_TEST_STDOUT = Get-CopilotFixtureText -Name 'CopilotPluginList.Mixed.json'
+
+        $result = Get-CopilotPlugin local-plugin | Update-CopilotPlugin -Confirm:$false -WarningAction SilentlyContinue
+
+        $result.Success | Should -BeFalse
+        $result.Error | Should -Match '--plugin-dir'
+        @(Get-Content $script:CopilotTestLog) | Should -Be @('plugin list --json')
     }
 
     It 'retries once when a plugin update initially fails with EBUSY' {
