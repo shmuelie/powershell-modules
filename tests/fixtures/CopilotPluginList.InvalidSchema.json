@@ -1,0 +1,9 @@
+[
+  {
+    "name": "broken-plugin",
+    "marketplace": "",
+    "version": "1.0.0",
+    "enabled": "false",
+    "source": "marketplace"
+  }
+]

@@ -7,6 +7,12 @@ Versions change only when a release is cut; unreleased work stays under
 ## [Unreleased]
 
 ### Fixed
+- `Get-CopilotPlugin` now prefers the Copilot CLI's JSON plugin inventory,
+  preserving the existing plugin identity fields while adding enabled/source
+  metadata and failing closed on invalid results. Install duplicate checks now
+  distinguish managed marketplace/direct installs from built-in and
+  `--plugin-dir` plugins instead of treating a mismatched source as already
+  installed or silently empty. (#327)
 - Resume discovery, selection, `-ResumeSession` completion, and default session
   listing now recognize a moved GitHub worktree by repository and branch
   metadata. Legacy sessions use the recorded directory only when known identity
