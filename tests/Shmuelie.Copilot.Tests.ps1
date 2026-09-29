@@ -2145,6 +2145,7 @@ Describe 'Copilot effective launch directory' -Tag 'EffectiveLaunchDirectory' {
         } -ParameterFilter { $Name.Count -eq 1 -and $Name[0] -eq 'Get-CopilotLaunchPlan' }
         Mock -ModuleName Shmuelie.Copilot git {
             $script:DirectoryGitLocations.Add((Get-Location).Path)
+            if (($args -join ' ') -eq 'config --get-all remote.origin.url') { return }
             if (($args -join ' ') -ne 'symbolic-ref --short HEAD') { throw 'Unexpected git arguments.' }
             if ((Get-Location).Path -eq $directoryB) { 'branch-b' }
             elseif ((Get-Location).Path -eq $directoryA) { 'branch-a' }
@@ -2198,8 +2199,8 @@ Describe 'Copilot effective launch directory' -Tag 'EffectiveLaunchDirectory' {
             $plan.Args | Should -Not -Contain 'only-b'
             $plan.Args | Should -Not -Contain 'lazy'
             $plan.Args | Should -Not -Contain 'always'
-            Should -Invoke -ModuleName Shmuelie.Copilot git -Times 1 -Exactly
-            $script:DirectoryGitLocations.ToArray() | Should -Be @($directoryB)
+            Should -Invoke -ModuleName Shmuelie.Copilot git -Times 2 -Exactly
+            $script:DirectoryGitLocations.ToArray() | Should -Be @($directoryB, $directoryB)
             Should -Invoke -ModuleName Shmuelie.Copilot Get-Command -Times 1 -Exactly -ParameterFilter {
                 $Name[0] -eq 'copilot'
             }
@@ -3968,6 +3969,203 @@ Describe 'Copilot maintenance-session auto-resume exclusion' {
         $resumeArg = [array]::IndexOf($plan.Args, '--resume')
         $resumeArg | Should -BeGreaterOrEqual 0
         $plan.Args[$resumeArg + 1] | Should -Be $regularSessionId -Because 'the auto-resume exclusion still relies on these generated maintenance prompt names; update the exclusion and this regression test together if Copilot CLI changes that shape'
+    }
+}
+
+Describe 'Copilot repository and branch session scope' -Tag 'StableSessionScope' {
+    BeforeAll {
+        $script:ScopePlanCommand = Get-Command Shmuelie.Copilot\Get-CopilotLaunchPlan -ErrorAction Stop
+
+        function Add-ScopeSession {
+            param(
+                [string]$Id, [string]$Cwd, [string]$Repository, [string]$Branch,
+                [string]$UpdatedAt = '2026-08-12T22:00:00Z'
+            )
+            $path = New-CopilotSessionState -SessionRoot $script:ScopeSessionRoot -Id $Id -Cwd $Cwd -Summary $Id -UpdatedAt $UpdatedAt
+            if ($Repository) { Add-Content -LiteralPath (Join-Path $path 'workspace.yaml') -Value "repository: $Repository" }
+            if ($Branch) { Add-Content -LiteralPath (Join-Path $path 'workspace.yaml') -Value "branch: $Branch" }
+        }
+
+        function New-ScopeRepository {
+            param([string]$Path, [string]$Remote)
+            & git init -q -b main $Path
+            if ($LASTEXITCODE -ne 0) { throw 'Could not initialize test repository.' }
+            & git -C $Path -c user.name=Test -c user.email=test@example.test commit -q --allow-empty -m initial
+            if ($LASTEXITCODE -ne 0) { throw 'Could not commit in test repository.' }
+            & git -C $Path remote add origin $Remote
+            if ($LASTEXITCODE -ne 0) { throw 'Could not add test remote.' }
+        }
+    }
+
+    BeforeEach {
+        $root = Join-Path $TestDrive ([guid]::NewGuid().ToString())
+        $testHome = Join-Path $root 'home'
+        $script:ScopeSessionRoot = Join-Path $testHome '.copilot' 'session-state'
+        $script:ScopeOriginal = Join-Path $root 'original [topic]'
+        $script:ScopeMoved = Join-Path $root 'moved [topic]'
+        $script:ScopeOtherBranch = Join-Path $root 'other-branch'
+        $script:ScopeOtherRepo = Join-Path $root 'same-branch-other-repo'
+        $script:ScopePlain = Join-Path $root 'plain'
+        New-Item -ItemType Directory -Path $script:ScopePlain -Force | Out-Null
+        $repoA = Join-Path $root 'repo-a'
+        $repoB = Join-Path $root 'repo-b'
+        New-ScopeRepository -Path $repoA -Remote 'git@github.com:owner/repo-a.git'
+        New-ScopeRepository -Path $repoB -Remote 'https://github.com/other/repo-b.git'
+        & git -C $repoA worktree add -q -b feature/topic $script:ScopeOriginal
+        if ($LASTEXITCODE -ne 0) { throw 'Could not add topic worktree.' }
+        & git -C $repoA worktree add -q -b feature/other $script:ScopeOtherBranch
+        if ($LASTEXITCODE -ne 0) { throw 'Could not add other-branch worktree.' }
+        & git -C $repoB worktree add -q -b feature/topic $script:ScopeOtherRepo
+        if ($LASTEXITCODE -ne 0) { throw 'Could not add other-repo worktree.' }
+        & git -C $repoA worktree move $script:ScopeOriginal $script:ScopeMoved
+        if ($LASTEXITCODE -ne 0) { throw 'Could not move topic worktree.' }
+        Mock -ModuleName Shmuelie.Copilot Get-CopilotHome { $testHome }
+        Mock -ModuleName Shmuelie.Copilot Get-Command { [pscustomobject]@{ Source = 'unused-copilot' } } -ParameterFilter {
+            $Name.Count -eq 1 -and $Name[0] -eq 'copilot'
+        }
+        Mock -ModuleName Shmuelie.Copilot Get-Command { $script:ScopePlanCommand } -ParameterFilter {
+            $Name.Count -eq 1 -and $Name[0] -eq 'Get-CopilotLaunchPlan'
+        }
+        Mock -ModuleName Shmuelie.Copilot Invoke-CopilotSessionChoice { throw 'Unexpected session picker.' }
+        $script:ScopeCaller = Get-Location
+        Set-Location -LiteralPath $script:ScopeMoved
+    }
+
+    AfterEach {
+        Set-Location -LiteralPath $script:ScopeCaller.Path
+    }
+
+    It 'finds moved worktree sessions by both identity fields and keeps newest order and multiple candidates' {
+        Add-ScopeSession -Id older -Cwd $script:ScopeOriginal -Repository 'OWNER/REPO-A' -Branch feature/topic -UpdatedAt '2026-08-11T22:00:00Z'
+        Add-ScopeSession -Id newest -Cwd $script:ScopeOriginal -Repository owner/repo-a -Branch feature/topic -UpdatedAt '2026-08-13T22:00:00Z'
+        Add-ScopeSession -Id wrong-branch -Cwd $script:ScopeMoved -Repository owner/repo-a -Branch feature/other -UpdatedAt '2026-08-14T22:00:00Z'
+        Add-ScopeSession -Id wrong-repo -Cwd $script:ScopeMoved -Repository other/repo-b -Branch feature/topic
+        @(Get-CopilotSession).Id | Should -Be @('newest', 'older')
+        @(& (Get-Module Shmuelie.Copilot) { Get-CopilotResumeCandidate }).Id | Should -Be @('newest', 'older')
+        $latest = Get-CopilotLaunchPlan -ResumeLatest
+        $latest.Args[[array]::IndexOf($latest.Args, '--resume') + 1] | Should -Be 'newest'
+        $plan = Get-CopilotLaunchPlan -SessionSelector {
+            param($Sessions)
+            $Sessions.Id | Should -Be @('newest', 'older')
+            $Sessions[1]
+        }
+        $plan.Args[[array]::IndexOf($plan.Args, '--resume') + 1] | Should -Be 'older'
+    }
+
+    It 'isolates worktrees on different branches and distinct repositories with the same branch' {
+        Add-ScopeSession -Id first -Cwd $script:ScopeOriginal -Repository owner/repo-a -Branch feature/topic
+        Add-ScopeSession -Id second -Cwd $script:ScopeOtherBranch -Repository owner/repo-a -Branch feature/other
+        Add-ScopeSession -Id third -Cwd $script:ScopeOtherRepo -Repository other/repo-b -Branch feature/topic
+        @(Get-CopilotSession).Id | Should -Be @('first')
+        Set-Location -LiteralPath $script:ScopeOtherBranch
+        @(Get-CopilotSession).Id | Should -Be @('second')
+        Set-Location -LiteralPath $script:ScopeOtherRepo
+        @(Get-CopilotSession).Id | Should -Be @('third')
+    }
+
+    It 'falls back only for incomplete metadata at the same path with no conflicting known field' {
+        Add-ScopeSession -Id exact -Cwd $script:ScopeOriginal -Repository owner/repo-a -Branch feature/topic
+        Add-ScopeSession -Id legacy -Cwd $script:ScopeMoved
+        Add-ScopeSession -Id partial -Cwd $script:ScopeMoved -Repository owner/repo-a
+        Add-ScopeSession -Id conflicting-repo -Cwd $script:ScopeMoved -Repository other/repo-b
+        Add-ScopeSession -Id conflicting-branch -Cwd $script:ScopeMoved -Branch feature/other
+        Add-ScopeSession -Id old-path-legacy -Cwd $script:ScopeOriginal
+        @(Get-CopilotSession).Id | Should -Contain 'exact'
+        @(Get-CopilotSession).Id | Should -Contain 'legacy'
+        @(Get-CopilotSession).Id | Should -Contain 'partial'
+        @(Get-CopilotSession).Id | Should -Not -Contain 'conflicting-repo'
+        @(Get-CopilotSession).Id | Should -Not -Contain 'conflicting-branch'
+        @(Get-CopilotSession).Id | Should -Not -Contain 'old-path-legacy'
+        (Get-CopilotLaunchPlan -SessionSelector { throw 'Full identity must win over legacy candidates.' }).Args |
+            Should -Contain 'exact'
+        @(Get-CopilotSession -All).Id | Should -Contain 'conflicting-repo'
+        @(Get-CopilotSession -Cwd ([WildcardPattern]::Escape($script:ScopeMoved))).Id | Should -Contain 'conflicting-repo'
+        (Get-CopilotSession -Id old-path-legacy).Id | Should -Be 'old-path-legacy'
+    }
+
+    It 'uses exact directory fallback outside Git and does not conflate matching branch names' {
+        Add-ScopeSession -Id local -Cwd $script:ScopePlain -Repository owner/repo-a -Branch feature/other
+        Add-ScopeSession -Id distant -Cwd $script:ScopeOriginal -Repository owner/repo-a -Branch feature/topic
+        Set-Location -LiteralPath $script:ScopePlain
+        @(Get-CopilotSession).Id | Should -Be @('local')
+        (Get-CopilotLaunchPlan).Args | Should -Contain 'local'
+    }
+
+    It 'does not use a folder name or an ambiguous origin as a repository identity' {
+        Add-ScopeSession -Id local -Cwd $script:ScopeMoved -Repository other/repo-b -Branch feature/topic
+        Add-ScopeSession -Id distant -Cwd $script:ScopeOriginal -Repository owner/repo-a -Branch feature/topic
+        & git -C $script:ScopeMoved config --add remote.origin.url https://github.com/third/repo-c.git
+        if ($LASTEXITCODE -ne 0) { throw 'Could not add ambiguous remote.' }
+        @(Get-CopilotSession).Id | Should -Be @('local')
+    }
+
+    It 'resolves ChangeDir before matching for both launch entrypoints' -ForEach @(
+        @{ Entry = 'Get-CopilotLaunchPlan' }
+        @{ Entry = 'Start-Copilot' }
+    ) {
+        Add-ScopeSession -Id topic -Cwd $script:ScopeOriginal -Repository owner/repo-a -Branch feature/topic
+        Add-ScopeSession -Id other -Cwd $script:ScopeOriginal -Repository owner/repo-a -Branch feature/other
+        $entrypoint = Get-Command "Shmuelie.Copilot\$Entry"
+        $options = @{ ChangeDir = $script:ScopeOtherBranch; ResumeLatest = $true; ErrorAction = 'Stop' }
+        if ($Entry -eq 'Start-Copilot') { $options.PassThru = $true }
+        $plan = & $entrypoint @options
+        $plan.Args[[array]::IndexOf($plan.Args, '--resume') + 1] | Should -Be 'other'
+        (Get-Location).Path | Should -Be $script:ScopeMoved
+    }
+
+    It 'completes only scoped IDs for both entrypoints including ChangeDir' -ForEach @(
+        @{ Entry = 'Get-CopilotLaunchPlan' }
+        @{ Entry = 'Start-Copilot' }
+    ) {
+        Add-ScopeSession -Id topic -Cwd $script:ScopeOriginal -Repository owner/repo-a -Branch feature/topic
+        Add-ScopeSession -Id other -Cwd $script:ScopeOriginal -Repository owner/repo-a -Branch feature/other
+        Add-ScopeSession -Id legacy -Cwd $script:ScopeMoved
+        $attribute = (Get-Command "Shmuelie.Copilot\$Entry").Parameters['ResumeSession'].Attributes |
+            Where-Object { $_ -is [System.Management.Automation.ArgumentCompleterAttribute] }
+        $results = @(& $attribute.ScriptBlock $Entry 'ResumeSession' '' $null @{}).CompletionText
+        $results | Should -Contain 'topic'
+        $results | Should -Contain 'legacy'
+        $results | Should -Not -Contain 'other'
+        $results = @(& $attribute.ScriptBlock $Entry 'ResumeSession' '' $null @{ ChangeDir = $script:ScopeOtherBranch }).CompletionText
+        $results | Should -Contain 'other'
+        $results | Should -Not -Contain 'topic'
+        $results | Should -Not -Contain 'legacy'
+    }
+
+    It 'completes matching IDs without opening unrelated locked metadata or event histories for <Entry>' -ForEach @(
+        @{ Entry = 'Get-CopilotLaunchPlan' }
+        @{ Entry = 'Start-Copilot' }
+    ) {
+        Add-ScopeSession -Id topic -Cwd $script:ScopeOriginal -Repository owner/repo-a -Branch feature/topic
+        Add-ScopeSession -Id other -Cwd $script:ScopeOriginal -Repository owner/repo-a -Branch feature/other
+        Add-ScopeSession -Id locked-topic -Cwd $script:ScopeOriginal -Repository owner/repo-a -Branch feature/topic
+        Add-ScopeSession -Id locked-other -Cwd $script:ScopeOriginal -Repository owner/repo-a -Branch feature/other
+        Mock -ModuleName Shmuelie.Copilot Get-CopilotSession { throw 'Completion must not enumerate session event histories.' }
+        $attribute = (Get-Command "Shmuelie.Copilot\$Entry").Parameters['ResumeSession'].Attributes |
+            Where-Object { $_ -is [System.Management.Automation.ArgumentCompleterAttribute] }
+        $locks = [System.Collections.Generic.List[IO.FileStream]]::new()
+        try {
+            foreach ($id in 'topic', 'other', 'locked-topic', 'locked-other') {
+                $events = Join-Path $script:ScopeSessionRoot $id 'events.jsonl'
+                Set-Content -LiteralPath $events -Value '{"type":"synthetic"}'
+                $locks.Add([IO.File]::Open($events, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None))
+            }
+            foreach ($id in 'locked-topic', 'locked-other') {
+                $workspace = Join-Path $script:ScopeSessionRoot $id 'workspace.yaml'
+                $locks.Add([IO.File]::Open($workspace, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None))
+            }
+
+            $results = @(& $attribute.ScriptBlock $Entry 'ResumeSession' 'top' $null @{}).CompletionText
+            $results | Should -Be @('topic')
+            $results = @(& $attribute.ScriptBlock $Entry 'ResumeSession' 'oth' $null @{ ChangeDir = $script:ScopeOtherBranch }).CompletionText
+            $results | Should -Be @('other')
+            $results = @(& $attribute.ScriptBlock $Entry 'ResumeSession' 'oth' $null @{ C = $script:ScopeOtherBranch }).CompletionText
+            $results | Should -Be @('other')
+            (Get-Location).Path | Should -Be $script:ScopeMoved
+        } finally {
+            foreach ($lock in $locks) { $lock.Dispose() }
+        }
+        Should -Invoke -ModuleName Shmuelie.Copilot Get-CopilotSession -Times 0 -Exactly
     }
 }
 

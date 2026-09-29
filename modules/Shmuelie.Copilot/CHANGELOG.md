@@ -6,6 +6,13 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+### Fixed
+- Resume discovery, selection, `-ResumeSession` completion, and default session
+  listing now recognize a moved GitHub worktree by repository and branch
+  metadata. Legacy sessions use the recorded directory only when known identity
+  fields do not conflict; explicit global and directory filters retain their
+  existing behavior. (#326)
+
 ## [0.6.0] - 2026-09-24
 
 ### Changed
