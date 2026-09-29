@@ -91,6 +91,18 @@ repair without reading or writing session files.
 - **Sensible defaults** (`--allow-all --experimental`), each disablable with
   `-NoAllowAll` / `-NoExperimental`. Use `-AllowAllTools` for a middle ground
   that auto-approves tools while keeping file-path and URL verification.
+- **Current routing and retrieval flags** — typed mappings now cover native
+  `--fleet`, `--auto-tier`, repeated `--dynamic-retrieval`, `--no-mouse`, and
+  Windows `--no-eager-powershell-resolution`. `-Fleet` requires `-Prompt` or
+  `-Interactive`; if you also pass `-Model` with `-AutoTier`, it must be
+  `auto`. `-DynamicRetrieval` persists Copilot's saved retrieval setting only
+  when the CLI actually launches; `Get-CopilotLaunchPlan`,
+  `Start-Copilot -PassThru`, and `-WhatIf` are safe previews that do not start
+  a session or write settings.
+- **Compatibility switches kept** — `-Version` still forwards hidden native
+  `--prefer-version`, and `-EnableReasoningSummaries` still forwards hidden
+  `--enable-reasoning-summaries`, even though the current `copilot --help`
+  output omits them.
 - **More permission & scripting flags** — `-AssistedApproval`
   (`--assisted-approval` safety judge), `-UsageOutputFile` (write usage JSON to
   a file), and `-EnableMcpServer` (also re-enables a settings-disabled MCP
@@ -118,7 +130,10 @@ repair without reading or writing session files.
 
 ```powershell
 Start-Copilot "Add unit tests for the auth module"
+Start-Copilot -Prompt "Triage these failures" -Fleet
+Start-Copilot -Model auto -AutoTier intelligence
 Start-Copilot -Model claude-opus-4.7 -ReasoningEffort high
+Start-Copilot -PassThru -DynamicRetrieval 'skills=off'   # preview only; does not persist
 Start-Copilot -ResumeLatest
 Start-Copilot -C ..\another-repo -ResumeLatest
 Start-Copilot -NoResume -WhatIf   # preview the command line without launching

@@ -92,6 +92,11 @@ Highlights:
 
 - `Start-Copilot` adds session resume, a multi-session picker,
   safe git deny rules, and full Copilot CLI flag mapping.
+- Typed launcher flags cover fleet mode, Auto routing preferences, repeated
+  dynamic-retrieval settings, native `--no-mouse`, and Windows
+  `--no-eager-powershell-resolution`. Retrieval previews stay side-effect free,
+  while hidden compatibility switches `--prefer-version` and
+  `--enable-reasoning-summaries` remain forwarded.
 - `Start-Copilot -PassThru` returns the resolved launch plan without launching,
   so other tools can reuse the built arguments (`-DeferResume` also skips the
   resume picker so an overlay owns session selection).
