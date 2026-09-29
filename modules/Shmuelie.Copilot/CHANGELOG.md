@@ -6,6 +6,17 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+### Added
+- `Register-CopilotMcpServer` now supports native MCP tool filters via `-Tools`
+  (`'*'`, `''`, or a comma-separated list) and bounded millisecond timeouts via
+  `-TimeoutMilliseconds` / `-Timeout`, while retaining `-WhatIf`, `-Confirm`,
+  and the symlink-managed configuration refusal. (#328)
+
+### Changed
+- `Get-CopilotMcpServer` now surfaces each server's native `Enabled` state and
+  `Tools` filter from `copilot mcp list --json`, and fails closed on native or
+  JSON-shape errors instead of returning partial inventory objects. (#328)
+
 ## [0.6.0] - 2026-09-24
 
 ### Changed

@@ -22,7 +22,7 @@ Start-Copilot
 | Session maintenance | `Merge-CopilotSession`, `Compress-CopilotSession`, `Repair-CopilotSessionEvents` |
 | Plugins | `Get-CopilotPlugin`, `Install-CopilotPlugin`, `Update-CopilotPlugin`, `Uninstall-CopilotPlugin` |
 | Marketplaces | `Get-CopilotMarketplace`, `Register-CopilotMarketplace`, `Unregister-CopilotMarketplace`, `Get-CopilotMarketplacePlugin` |
-| MCP servers | `Get-CopilotMcpServer`, `Register-CopilotMcpServer`, `Unregister-CopilotMcpServer` (registration/removal protect symlink-managed configuration) |
+| MCP servers | `Get-CopilotMcpServer`, `Register-CopilotMcpServer`, `Unregister-CopilotMcpServer` (registration/removal protect symlink-managed configuration; MCP inventory includes enabled state and tool filters) |
 
 `Get-CopilotPlugin`, `Get-CopilotMarketplace`, and `Get-CopilotMarketplacePlugin`
 check the native exit code before parsing output. A failed discovery emits a
@@ -301,7 +301,16 @@ using the shared SHA-256 collision validation.
 
 `Register-CopilotMcpServer` and `Unregister-CopilotMcpServer` delegate to the
 native CLI for ordinary `~/.copilot/mcp-config.json` files, preserving native
-arguments and validation. If that file is a symbolic link, both commands fail
+arguments and validation. Registration also exposes the native `--tools` and
+`--timeout <ms>` options as `-Tools` and `-TimeoutMilliseconds` (`-Timeout`).
+`-Tools` preserves the CLI's three distinct meanings: `'*'` enables all tools,
+`''` enables none, and a comma-separated list limits the server to specific
+tools. `Get-CopilotMcpServer` exposes the native `Enabled` state and `Tools`
+filter from `copilot mcp list --json`, alongside the existing Name, Source,
+Type, Command/Args, and Url properties; native failures or invalid JSON now
+raise a PowerShell error instead of emitting partial results.
+
+If `~/.copilot/mcp-config.json` is a symbolic link, both mutation commands fail
 before invoking the native mutation, which would otherwise replace the link.
 This also applies to pipeline removal and to relative, chained, or dangling
 links; neither the link nor its target is modified.
@@ -310,7 +319,7 @@ For symlink-managed configuration, edit the target file directly or use the
 tool that manages it. The error identifies the link and its target; relative
 targets are relative to the link's containing directory. `-WhatIf` still
 previews the operation without invoking the native command, and `-Confirm`
-still controls whether an operation proceeds. `Get-CopilotMcpServer` is unchanged.
+still controls whether an operation proceeds.
 
 ## MCP autoConnect policy
 

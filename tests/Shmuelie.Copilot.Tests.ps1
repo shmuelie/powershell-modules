@@ -4794,6 +4794,34 @@ Describe 'Copilot MCP configuration link protection' {
         }
     }
 
+    It 'passes supported tool filters and timeout values through to native registration' {
+        Set-Content -LiteralPath $script:McpConfigPath -Value $script:McpOriginalContent -NoNewline
+
+        Register-CopilotMcpServer -Name 'all-tools' -Command 'node' -Tools '*' -TimeoutMilliseconds 1 -Confirm:$false
+        Register-CopilotMcpServer -Name 'no-tools' -Command 'node' -Tools '' -Timeout 4294967295 -Confirm:$false
+        Register-CopilotMcpServer -Name 'some-tools' -Transport sse -Url 'https://example.com/sse' -Tools 'resolve,fetch-item' -Confirm:$false
+        Register-CopilotMcpServer -Name 'remote-tools' -Transport http -Url 'https://example.com/mcp' -Tools 'resolve' -TimeoutMilliseconds 30000 -Confirm:$false
+
+        @(Get-Content -LiteralPath $script:CopilotTestLog) | Should -Be @(
+            'mcp add --transport stdio --tools * --timeout 1 all-tools -- node'
+            'mcp add --transport stdio --tools  --timeout 4294967295 no-tools -- node'
+            'mcp add --transport sse --tools resolve,fetch-item some-tools https://example.com/sse'
+            'mcp add --transport http --tools resolve --timeout 30000 remote-tools https://example.com/mcp'
+        )
+    }
+
+    It 'rejects invalid tool filters and timeout values before invoking native registration' -ForEach @(
+        @{ Name = 'empty list entry'; Script = { Register-CopilotMcpServer -Name 'test-server' -Command 'node' -Tools 'alpha,,beta' -Confirm:$false }; Message = '*comma-separated list*' }
+        @{ Name = 'unsafe tool token'; Script = { Register-CopilotMcpServer -Name 'test-server' -Command 'node' -Tools 'alpha,bad tool' -Confirm:$false }; Message = '*Unsafe Tools value*' }
+        @{ Name = 'too small timeout'; Script = { Register-CopilotMcpServer -Name 'test-server' -Command 'node' -TimeoutMilliseconds 0 -Confirm:$false }; Message = '*TimeoutMilliseconds*' }
+        @{ Name = 'too large timeout'; Script = { Register-CopilotMcpServer -Name 'test-server' -Command 'node' -TimeoutMilliseconds 4294967296 -Confirm:$false }; Message = '*TimeoutMilliseconds*' }
+    ) {
+        Set-Content -LiteralPath $script:McpConfigPath -Value $script:McpOriginalContent -NoNewline
+
+        $Script | Should -Throw $Message
+        Test-Path -LiteralPath $script:CopilotTestLog | Should -BeFalse
+    }
+
     It 'honors WhatIf for <ConfigKind> configuration without invoking native mutations' -ForEach @(
         @{ ConfigKind = 'regular' }
         @{ ConfigKind = 'symbolic link' }
@@ -4970,11 +4998,15 @@ Describe 'Get-CopilotMcpServer' {
                     command = 'pwsh'
                     args = @('-File', 'server.ps1')
                     source = 'user'
+                    enabled = $true
+                    tools = '*'
                 }
                 remote = [ordered]@{
                     type = 'http'
                     url = 'https://example.test/mcp'
                     source = 'plugin'
+                    enabled = $false
+                    tools = ''
                 }
             }
         } | ConvertTo-Json -Depth 5 -Compress
@@ -4990,12 +5022,59 @@ Describe 'Get-CopilotMcpServer' {
         $servers[0].Args | Should -Be '-File server.ps1'
         $servers[0].Url | Should -Be ''
         $servers[0].Source | Should -Be 'user'
+        $servers[0].Enabled | Should -BeTrue
+        $servers[0].Tools | Should -Be '*'
         $servers[1].Name | Should -Be 'remote'
         $servers[1].Command | Should -Be ''
         $servers[1].Url | Should -Be 'https://example.test/mcp'
+        $servers[1].Enabled | Should -BeFalse
+        $servers[1].Tools | Should -Be ''
         $filtered | Should -HaveCount 1
         $filtered[0].Name | Should -Be 'local'
         @(Get-Content $script:CopilotTestLog | Where-Object { $_ -eq 'mcp list --json' }) | Should -HaveCount 2
+    }
+
+    It 'fails closed when mcp list returns invalid JSON or missing enabled/tool fields' -ForEach @(
+        @{ Name = 'invalid JSON'; Json = '{not-json'; Message = '*invalid JSON*' }
+        @{ Name = 'missing enabled/tools'; Json = (@{ mcpServers = @{ local = @{ type = 'stdio'; command = 'pwsh'; source = 'user' } } } | ConvertTo-Json -Depth 5 -Compress); Message = '*Boolean ''enabled'' field*' }
+    ) {
+        $env:COPILOT_TEST_STDOUT = $Json
+
+        { Get-CopilotMcpServer -ErrorAction Stop } | Should -Throw $Message
+        @(Get-Content $script:CopilotTestLog | Where-Object { $_ -eq 'mcp list --json' }) | Should -HaveCount 1
+    }
+
+    It 'surfaces native mcp list failures before parsing output' {
+        Add-FakeCopilot -Path (Join-Path $TestDrive 'bin') -ExitCode 1
+        $env:COPILOT_TEST_STDOUT = '{"mcpServers":{}}'
+
+        { Get-CopilotMcpServer -ErrorAction Stop } | Should -Throw '*mcp list --json failed with exit code 1*'
+        @(Get-Content $script:CopilotTestLog | Where-Object { $_ -eq 'mcp list --json' }) | Should -HaveCount 1
+    }
+
+    It 'does not treat an empty JSON response as a successful empty inventory' {
+        $env:COPILOT_TEST_STDOUT = ''
+        $errors = @()
+
+        $servers = @(Get-CopilotMcpServer -ErrorAction SilentlyContinue -ErrorVariable errors)
+
+        $servers | Should -HaveCount 0
+        $errors | Should -HaveCount 1
+        $errors[0].FullyQualifiedErrorId | Should -BeLike 'CopilotMcpServerJsonInvalid,*'
+        { Get-CopilotMcpServer -ErrorAction Stop } | Should -Throw '*empty response*'
+    }
+
+    It 'reports one native error without synthesizing invalid JSON on continuing failures' {
+        Add-FakeCopilot -Path (Join-Path $TestDrive 'bin') -ExitCode 1
+        $env:COPILOT_TEST_STDOUT = ''
+        $errors = @()
+
+        $servers = @(Get-CopilotMcpServer -ErrorAction SilentlyContinue -ErrorVariable errors)
+
+        $servers | Should -HaveCount 0
+        $errors | Should -HaveCount 1
+        $errors[0].ToString() | Should -Match 'exit code 1'
+        $errors[0].FullyQualifiedErrorId | Should -BeLike 'CopilotDiscoveryFailed,*'
     }
 }
 
