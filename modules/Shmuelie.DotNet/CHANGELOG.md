@@ -5,6 +5,15 @@ Versions change only when a release is cut; pending work lives under [Unreleased
 
 ## [Unreleased]
 
+### Fixed
+
+- Report native discovery and update failures from `Get-DotNetTool` and
+  `Update-DotNetTool` as PowerShell errors, including exit status and diagnostics,
+  independently of native-error preferences. Do not parse failed output or emit
+  unchanged update results on failure; preserve successful shapes, streaming,
+  confirmation, location behavior, and fresh exit codes for adapters. Do not
+  install a tool when its prerequisite inventory check fails.
+
 ## [0.2.1] - 2026-09-18
 
 ### Fixed

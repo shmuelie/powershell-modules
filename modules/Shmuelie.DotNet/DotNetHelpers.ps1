@@ -5,6 +5,9 @@ function Get-DotNetTool {
     .DESCRIPTION
         Parses the output of 'dotnet tool list' into typed DotNetTool objects.
         By default lists globally installed tools. Use -Local for local manifest tools.
+        Native failures report PowerShell errors with the exit code and diagnostics,
+        regardless of PSNativeCommandUseErrorActionPreference. Failed or incomplete
+        discovery emits no tool objects; use -ErrorAction Stop to stop on failure.
     .PARAMETER Name
         Filter by package ID. Supports wildcards.
     .PARAMETER Local
@@ -29,7 +32,10 @@ function Get-DotNetTool {
     )
     $scope = if ($Local) { '--local' } else { '-g' }
     Invoke-InLocation -Location ~ -ScriptBlock {
-        dotnet tool list $scope 2>$null | Select-Object -Skip 2 | ForEach-Object {
+        $completion = Invoke-DotNetToolCommand -Arguments @('tool', 'list', $scope)
+        if ($null -eq $completion) { return }
+        $standardOutput = $completion.Output | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] }
+        $standardOutput | Select-Object -Skip 2 | ForEach-Object {
             $parts = $_ -split '\s{2,}'
             if ($parts.Count -ge 3) {
                 $tool = [PSCustomObject]@{
@@ -52,6 +58,10 @@ function Update-DotNetTool {
     .DESCRIPTION
         Wraps 'dotnet tool update' for global or local tools. Accepts pipeline
         input from Get-DotNetTool. Returns typed result objects.
+        A native failure reports a PowerShell error with its exit code and
+        diagnostics, not an unchanged result, regardless of
+        PSNativeCommandUseErrorActionPreference. Use -ErrorAction Stop to stop
+        subsequent pipeline records after a failure.
     .PARAMETER InputObject
         A DotNetTool object from Get-DotNetTool.
     .PARAMETER Name
@@ -85,7 +95,9 @@ function Update-DotNetTool {
         if ($PSCmdlet.ShouldProcess($toolName, 'dotnet tool update')) {
             Write-Verbose "Updating $toolName"
             $previousVersion = if ($PSCmdlet.ParameterSetName -eq 'ByObject') { $InputObject.Version } else { $null }
-            $output = dotnet tool update $toolName $scope 2>&1
+            $completion = Invoke-DotNetToolCommand -Arguments @('tool', 'update', $toolName, $scope)
+            if ($null -eq $completion) { return }
+            $output = $completion.Output
             $output | ForEach-Object { Write-Verbose $_ }
             $outputText = $output -join "`n"
 
@@ -124,7 +136,7 @@ function Install-DotNetTool {
         [string]$Name
     )
     if ($PSCmdlet.ShouldProcess($Name, 'dotnet tool install -g')) {
-        $existing = Get-DotNetTool -Name $Name
+        $existing = Get-DotNetTool -Name $Name -ErrorAction Stop
         if ($existing) {
             Write-Verbose "Tool '$Name' is already installed (v$($existing.Version))."
             return
