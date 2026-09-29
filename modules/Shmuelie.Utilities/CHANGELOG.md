@@ -6,6 +6,11 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+### Fixed
+- The lazy `Get-DotNetTool` and `Update-DotNetTool` compatibility commands inherit
+  canonical native-failure reporting from Shmuelie.DotNet, preserving errors and
+  `-ErrorAction Stop` without duplicate confirmation.
+
 ## [0.6.0] - 2026-09-10
 
 ### Added

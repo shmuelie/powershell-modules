@@ -331,7 +331,7 @@ Describe 'Utilities .NET tool forwarding parity' {
         @{ Command = 'Install-DotNetTool' }
         @{ Command = 'Uninstall-DotNetTool' }
     ) {
-        Mock -ModuleName Shmuelie.DotNet dotnet { $global:LASTEXITCODE = 1 }
+        Mock -ModuleName Shmuelie.DotNet dotnet { $global:LASTEXITCODE = if ($args[1] -eq 'list') { 0 } else { 1 } }
         $expectedErrors = @()
         $actualErrors = @()
         @(& "Shmuelie.DotNet\$Command" -Name 'new-tool' -Confirm:$false -ErrorAction SilentlyContinue -ErrorVariable expectedErrors) | Should -HaveCount 0

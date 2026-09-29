@@ -48,6 +48,10 @@ download or fallback implementation. Other Utilities commands need no DotNet mod
 New scripts should use `Shmuelie.DotNet\Get-DotNetTool` and the other
 module-qualified DotNet commands directly. Deprecation guidance is in each
 wrapper's help, not repeated warnings or success-stream output.
+The `Get-DotNetTool` and `Update-DotNetTool` wrappers also forward canonical
+native-failure errors and honor `-ErrorAction Stop`, without converting failed
+discovery into a successful empty inventory or failed updates into unchanged
+results. They do not add their own confirmation or native-invocation layer.
 
 - `Reset-TerminalModes` recovers a terminal left in a bad state (mouse tracking,
   alternate screen, bracketed paste, kitty keyboard flags) by a crashed TUI.

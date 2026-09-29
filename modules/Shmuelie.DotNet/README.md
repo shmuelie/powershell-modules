@@ -40,8 +40,23 @@ Get-DotNetTool old-tool | Uninstall-DotNetTool -WhatIf
 Discovery retains the existing Utilities working-directory behavior: both
 global and local lists run from the home directory, then restore the caller's
 location. Updates run from the caller's location; pipeline input selects scope
-using `Global`. Install and uninstall remain global-only. This migration does
-not change native output parsing or failure reporting.
+using `Global`. Install and uninstall remain global-only.
+
+`Get-DotNetTool` and `Update-DotNetTool` check native completion before parsing
+output, independently of `PSNativeCommandUseErrorActionPreference`. Nonzero or
+missing exit codes produce `DotNetToolCommandFailed` errors with diagnostics;
+the error's `TargetObject` contains `Arguments`, `ExitCode`, and captured
+`Output`. Failed discovery emits no tool objects, and a failed update emits no
+ordinary update result. Successful empty listings and unchanged updates keep
+their existing shapes. Successful listing stderr is not parsed as inventory.
+`Install-DotNetTool` stops if its prerequisite discovery fails rather than
+treating an unknown inventory as an absent tool.
+
+Use `-ErrorAction Stop` to stop subsequent pipeline work after an error.
+With continuing error handling, independent update records can still run.
+Fresh native `LASTEXITCODE` remains available to callers and aggregate guards;
+the command does not restore a stale pre-invocation value. Utilities compatibility
+wrappers forward the same errors without adding another confirmation prompt.
 
 ## Utilities compatibility
 
