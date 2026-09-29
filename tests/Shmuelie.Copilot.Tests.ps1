@@ -5051,12 +5051,12 @@ Describe 'Get-CopilotLaunchPlan additional flag mappings' {
             Should -Throw '*-Fleet requires -Prompt or -Interactive*'
     }
 
-    It 'maps -AutoTier with native -Model auto plus ChangeDir and Windows switches' {
+    It 'maps -AutoTier with native -Model auto plus portable flag forwarding' {
         $workspace = Join-Path $TestDrive 'workspace'
         New-Item -ItemType Directory -Path $workspace -Force | Out-Null
 
         $plan = Get-CopilotLaunchPlan -DeferResume -ChangeDir $workspace -Model auto `
-            -AutoTier intelligence -NoMouse -NoEagerPowerShellResolution
+            -AutoTier intelligence -NoMouse
 
         $modelIndex = [array]::IndexOf($plan.Args, '--model')
         $modelIndex | Should -BeGreaterOrEqual 0
@@ -5065,10 +5065,40 @@ Describe 'Get-CopilotLaunchPlan additional flag mappings' {
         $autoTierIndex | Should -BeGreaterOrEqual 0
         $plan.Args[$autoTierIndex + 1] | Should -Be 'intelligence'
         $plan.Args | Should -Contain '--no-mouse'
-        $plan.Args | Should -Contain '--no-eager-powershell-resolution'
         $changeDirIndex = [array]::IndexOf($plan.Args, '-C')
         $changeDirIndex | Should -BeGreaterOrEqual 0
         $plan.Args[$changeDirIndex + 1] | Should -Be $workspace
+    }
+
+    It 'maps -NoEagerPowerShellResolution on Windows only' -Skip:(-not $IsWindows) {
+        $plan = Get-CopilotLaunchPlan -DeferResume -NoEagerPowerShellResolution
+
+        $plan.Args | Should -Contain '--no-eager-powershell-resolution'
+    }
+
+    It 'rejects -NoEagerPowerShellResolution when the platform is not Windows' {
+        if (-not $IsWindows) {
+            { Get-CopilotLaunchPlan -DeferResume -NoEagerPowerShellResolution } |
+                Should -Throw '*-NoEagerPowerShellResolution is only supported on Windows*'
+            return
+        }
+
+        InModuleScope Shmuelie.Copilot {
+            $hadScriptIsWindows = Test-Path Variable:\script:IsWindows
+            if ($hadScriptIsWindows) { $originalScriptIsWindows = $script:IsWindows }
+            try {
+                $script:IsWindows = $false
+                { Get-CopilotLaunchPlan -DeferResume -NoEagerPowerShellResolution } |
+                    Should -Throw '*-NoEagerPowerShellResolution is only supported on Windows*'
+            }
+            finally {
+                if ($hadScriptIsWindows) {
+                    $script:IsWindows = $originalScriptIsWindows
+                } else {
+                    Remove-Variable -Scope Script -Name IsWindows -ErrorAction SilentlyContinue
+                }
+            }
+        }
     }
 
     It 'rejects -AutoTier when -Model is not auto' {
@@ -5101,17 +5131,16 @@ Describe 'Get-CopilotLaunchPlan additional flag mappings' {
         $values | Should -Contain 'server-b'
     }
 
-    It 'forwards the new flags from Start-Copilot -PassThru while preserving compatibility switches' {
+    It 'forwards the new portable flags from Start-Copilot -PassThru while preserving compatibility switches' {
         $target = Join-Path $TestDrive 'usage2.json'
         $plan = Start-Copilot -PassThru -DeferResume -Prompt 'Investigate this session' -Fleet `
             -Model auto -AutoTier balance -DynamicRetrieval 'skills=on' -NoMouse `
-            -NoEagerPowerShellResolution -Version '1.0.55' -EnableReasoningSummaries `
+            -Version '1.0.55' -EnableReasoningSummaries `
             -AssistedApproval -AllowAllTools -UsageOutputFile $target
         $plan.Args | Should -Contain '--fleet'
         $plan.Args | Should -Contain '--auto-tier'
         $plan.Args | Should -Contain '--dynamic-retrieval'
         $plan.Args | Should -Contain '--no-mouse'
-        $plan.Args | Should -Contain '--no-eager-powershell-resolution'
         $plan.Args | Should -Contain '--assisted-approval'
         $plan.Args | Should -Contain '--allow-all-tools'
         $plan.Args | Should -Not -Contain '--allow-all'
@@ -5122,6 +5151,12 @@ Describe 'Get-CopilotLaunchPlan additional flag mappings' {
         $usageIdx = [array]::IndexOf($plan.Args, '--usage-output-file')
         $usageIdx | Should -BeGreaterOrEqual 0
         $plan.Args[$usageIdx + 1] | Should -Be $target
+    }
+
+    It 'forwards -NoEagerPowerShellResolution through Start-Copilot -PassThru on Windows' -Skip:(-not $IsWindows) {
+        $plan = Start-Copilot -PassThru -DeferResume -NoEagerPowerShellResolution
+
+        $plan.Args | Should -Contain '--no-eager-powershell-resolution'
     }
 
     It 'warns when -AssistedApproval is combined with -NoExperimental' {
