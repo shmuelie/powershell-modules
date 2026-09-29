@@ -3971,6 +3971,34 @@ Describe 'Copilot maintenance-session auto-resume exclusion' {
     }
 }
 
+Describe 'Copilot model completion' {
+    It 'suggests auto and filters common models for <Command>' -ForEach @(
+        @{ Command = 'Get-CopilotLaunchPlan' }
+        @{ Command = 'Start-Copilot' }
+    ) {
+        $autoInput = "$Command -Model au"
+        $auto = [System.Management.Automation.CommandCompletion]::CompleteInput($autoInput, $autoInput.Length, $null)
+        @($auto.CompletionMatches.CompletionText) | Should -Be @('auto')
+
+        $modelInput = "$Command -Model gpt-5.4"
+        $models = [System.Management.Automation.CommandCompletion]::CompleteInput($modelInput, $modelInput.Length, $null)
+        @($models.CompletionMatches.CompletionText) | Should -Contain 'gpt-5.4'
+        @($models.CompletionMatches.CompletionText) | Should -Contain 'gpt-5.4-mini'
+
+        $unknownInput = "$Command -Model no-such-model"
+        $unknown = [System.Management.Automation.CommandCompletion]::CompleteInput($unknownInput, $unknownInput.Length, $null)
+        @($unknown.CompletionMatches) | Should -HaveCount 0
+    }
+
+    It 'passes auto and custom model strings through without rewriting them' {
+        $auto = Get-CopilotLaunchPlan -NoResume -Model auto
+        $custom = Start-Copilot -PassThru -NoResume -Model 'custom-model-not-in-suggestions'
+
+        $auto.Args[[array]::IndexOf($auto.Args, '--model') + 1] | Should -Be 'auto'
+        $custom.Args[[array]::IndexOf($custom.Args, '--model') + 1] | Should -Be 'custom-model-not-in-suggestions'
+    }
+}
+
 Describe 'Get-CopilotSession' {
     BeforeEach {
         $testHome = Join-Path $TestDrive 'home'

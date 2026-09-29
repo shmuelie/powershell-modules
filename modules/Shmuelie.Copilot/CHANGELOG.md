@@ -6,6 +6,11 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+### Fixed
+- Both launcher commands now suggest native `auto` model routing and use a
+  shared, non-exhaustive list for `-Model` completion. Explicit values are
+  forwarded unchanged. (#330)
+
 ## [0.6.0] - 2026-09-24
 
 ### Changed

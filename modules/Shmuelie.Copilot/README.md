@@ -77,6 +77,10 @@ repair without reading or writing session files.
   rebase, amend, `git pull`, and similar).
 - **Full flag mapping** — model, reasoning effort, MCP enable/disable, plan mode,
   attachments, remote control, and the rest of the Copilot CLI surface.
+- **Model completion** suggests `auto` (native model routing) and common model
+  names from one shared fallback list. The CLI does not expose a documented
+  non-interactive model inventory; these suggestions are not exhaustive, and
+  explicit `-Model` values pass through unchanged.
 - **Autopilot mode** when a prompt is provided; interactive otherwise.
 - **`-PassThru`** returns the resolved launch plan (`Exe`, `Args`,
   `Passthrough`) without launching, so other tools can reuse the built arguments

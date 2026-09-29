@@ -76,7 +76,8 @@ function Start-Copilot {
         shown (e.g. with -NoResume, -ResumeLatest, or -ResumeSession).
 
     .PARAMETER Model
-        The AI model to use for the session.
+        The AI model to use for the session. Use 'auto' for native model routing.
+        Tab completion suggests common models but does not limit accepted values.
 
     .PARAMETER SessionSelector
         Optional scriptblock replacing the native host picker, forwarded unchanged
@@ -437,12 +438,10 @@ function Start-Copilot {
 
         [ArgumentCompleter({
             param($commandName, $parameterName, $wordToComplete)
-            @(
-                'claude-sonnet-4.6', 'claude-sonnet-4.5', 'claude-haiku-4.5',
-                'claude-opus-4.7', 'claude-opus-4.7-1m', 'claude-opus-4.6', 'claude-opus-4.5', 'claude-sonnet-4',
-                'gpt-5.5', 'gpt-5.4', 'gpt-5.3-codex', 'gpt-5.2-codex', 'gpt-5.2',
-                'gpt-5.4-mini', 'gpt-5-mini', 'gpt-4.1'
-            ) | Where-Object { $_ -like "$wordToComplete*" }
+            & (Get-Module Shmuelie.Copilot) {
+                param($word)
+                Get-CopilotModelCompletion -WordToComplete $word
+            } $wordToComplete
         })]
         [string]$Model,
 
