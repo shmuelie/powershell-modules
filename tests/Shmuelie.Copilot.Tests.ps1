@@ -4573,6 +4573,50 @@ Describe 'Get-CopilotSession ID path traversal guard' {
     }
 }
 
+Describe 'Get-CopilotSession literal filesystem paths' {
+    BeforeEach {
+        $testHome = Join-Path $TestDrive 'home [literal]'
+        $script:SessionRoot = Join-Path $testHome '.copilot' 'session-state'
+        [System.IO.Directory]::CreateDirectory($script:SessionRoot) | Out-Null
+        Mock -ModuleName Shmuelie.Copilot -CommandName Get-CopilotHome -MockWith { $testHome }
+    }
+
+    It 'discovers and counts a session beneath literal wildcard home and session names' {
+        $id = 'session[1]'
+        $sessionPath = Join-Path $script:SessionRoot $id
+        [System.IO.Directory]::CreateDirectory($sessionPath) | Out-Null
+        $cwd = Join-Path $TestDrive 'workspace[1]'
+        Set-Content -LiteralPath (Join-Path $sessionPath 'workspace.yaml') -Value @(
+            "id: $id"
+            "cwd: $cwd"
+            'updated_at: 2026-08-20T18:00:00Z'
+            'created_at: 2026-08-20T17:00:00Z'
+            'name: Literal session'
+        )
+        Set-Content -LiteralPath (Join-Path $sessionPath 'events.jsonl') -Value '{"type":"session.start"}'
+
+        $all = @(Get-CopilotSession -All -ErrorAction Stop)
+        $exact = Get-CopilotSession -Id $id -ErrorAction Stop
+        $filtered = @(Get-CopilotSession -Cwd ([WildcardPattern]::Escape($cwd)) -ErrorAction Stop)
+
+        $all | Should -HaveCount 1
+        $all[0].Id | Should -Be $id
+        $all[0].EventCount | Should -Be 1
+        $all[0].EventSize | Should -BeGreaterThan 0
+        $all[0].Path | Should -Be $sessionPath
+        $exact.Id | Should -Be $id
+        $exact.EventCount | Should -Be 1
+        $filtered.Id | Should -Be $id
+    }
+
+    It 'reports a truly missing session root as empty without inventing sessions' {
+        [System.IO.Directory]::Delete($script:SessionRoot, $true)
+
+        @(Get-CopilotSession -All -ErrorAction Stop) | Should -HaveCount 0
+        @(Get-CopilotSession -Id 'session[1]' -ErrorAction Stop) | Should -HaveCount 0
+    }
+}
+
 Describe 'Remove-CopilotSession' {
     BeforeEach {
         $testHome = Join-Path $TestDrive 'home'

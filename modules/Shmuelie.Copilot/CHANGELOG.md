@@ -7,6 +7,10 @@ Versions change only when a release is cut; unreleased work stays under
 ## [Unreleased]
 
 ### Fixed
+- `Get-CopilotSession` now discovers sessions when the home or session
+  directory contains literal wildcard characters, including exact ID lookup.
+  Session filesystem paths no longer use wildcard matching; metadata filters
+  retain their documented wildcard behavior. (#334)
 - `Get-CopilotPlugin` now prefers the Copilot CLI's JSON plugin inventory,
   preserving the existing plugin identity fields while adding enabled/source
   metadata and failing closed on invalid results. Install duplicate checks now
