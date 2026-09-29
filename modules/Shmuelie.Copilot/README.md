@@ -107,6 +107,16 @@ repair without reading or writing session files.
   (`--assisted-approval` safety judge), `-UsageOutputFile` (write usage JSON to
   a file), and `-EnableMcpServer` (also re-enables a settings-disabled MCP
   server for the run).
+- **Scoped GitHub MCP authentication** via repeatable `-McpGitHubAuth
+  'server=https://host[:port]'` with an explicit `-AdditionalMcpConfig`. Requires
+  Copilot CLI **1.0.90-3+**. Only the named remote server at the matching
+  HTTPS origin may receive the signed-in GitHub account credential; literal
+  `127.0.0.1` or `[::1]` HTTP is also permitted. A missing server, mismatched
+  origin, or non-remote server fails before launch. Never pass a token in the
+  auth option. Plans retain explicit inline MCP configuration verbatim (do not
+  embed secrets there or expose plans publicly); `-WhatIf` redacts inline MCP
+  configuration in its displayed command. Neither `-PassThru` nor `-WhatIf`
+  retrieves or sends account credentials.
 - **Default deny rules** for destructive git operations (force push, hard reset,
   rebase, amend, `git pull`, and similar).
 - **Full flag mapping** — model, reasoning effort, MCP enable/disable, plan mode,
@@ -137,6 +147,8 @@ Start-Copilot -PassThru -DynamicRetrieval 'skills=off'   # preview only; does no
 Start-Copilot -ResumeLatest
 Start-Copilot -C ..\another-repo -ResumeLatest
 Start-Copilot -NoResume -WhatIf   # preview the command line without launching
+$config = '{"mcpServers":{"my-server":{"type":"http","url":"https://mcp.example.org/mcp"}}}'
+Start-Copilot -AdditionalMcpConfig $config -McpGitHubAuth 'my-server=https://mcp.example.org'
 ```
 
 ## Custom session selection

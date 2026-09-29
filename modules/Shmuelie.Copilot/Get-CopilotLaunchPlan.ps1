@@ -1,3 +1,73 @@
+function Assert-CopilotMcpGitHubAuth {
+    param(
+        [string[]]$McpGitHubAuth,
+        [string[]]$AdditionalMcpConfig
+    )
+
+    if (-not $AdditionalMcpConfig) {
+        throw '-McpGitHubAuth requires -AdditionalMcpConfig with the named remote server.'
+    }
+
+    $servers = [System.Collections.Generic.Dictionary[string, object]]::new([StringComparer]::Ordinal)
+    foreach ($source in $AdditionalMcpConfig) {
+        try {
+            if ($source.StartsWith('@', [StringComparison]::Ordinal)) {
+                $path = $source.Substring(1)
+                if ($path.StartsWith('~/', [StringComparison]::Ordinal)) {
+                    $path = Join-Path (Get-CopilotHome) $path.Substring(2)
+                }
+                $json = Get-Content -LiteralPath $path -Raw -ErrorAction Stop
+            } else {
+                $json = $source
+            }
+            $config = ConvertFrom-Json -InputObject $json -ErrorAction Stop
+        } catch {
+            throw 'Cannot read or parse -AdditionalMcpConfig for -McpGitHubAuth. No authentication was enabled.'
+        }
+        if ($null -eq $config -or $null -eq $config.mcpServers) {
+            throw '-AdditionalMcpConfig must contain mcpServers for -McpGitHubAuth.'
+        }
+        foreach ($server in $config.mcpServers.PSObject.Properties) {
+            if ($servers.ContainsKey($server.Name)) {
+                throw 'Duplicate explicit MCP server name in -AdditionalMcpConfig for -McpGitHubAuth.'
+            }
+            $servers.Add($server.Name, $server.Value)
+        }
+    }
+
+    $scopedNames = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($entry in $McpGitHubAuth) {
+        if ($entry -cnotmatch '\A([A-Za-z0-9][A-Za-z0-9._-]*)=(https?://(?:[A-Za-z0-9.-]+|\[::1\])(?::[0-9]{1,5})?)/?\z') {
+            throw 'Invalid -McpGitHubAuth entry. Use server=https://host[:port] (or literal loopback HTTP); never include a token, path, or credentials.'
+        }
+        $name = $Matches[1]
+        $originText = $Matches[2]
+        if (-not $scopedNames.Add($name)) {
+            throw "MCP server '$name' has more than one -McpGitHubAuth origin."
+        }
+        $origin = $null
+        if (-not [uri]::TryCreate($originText, [UriKind]::Absolute, [ref]$origin) -or
+            $origin.UserInfo -or
+            ($origin.Scheme -eq 'http' -and $origin.Host -notin @('127.0.0.1', '[::1]'))) {
+            throw 'Invalid -McpGitHubAuth origin. Use HTTPS or literal loopback HTTP without credentials, path, query, or fragment.'
+        }
+        if (-not $servers.ContainsKey($name)) {
+            throw "MCP server '$name' must be defined in -AdditionalMcpConfig for -McpGitHubAuth."
+        }
+        $server = $servers[$name]
+        $url = $null
+        if (($server.type -and $server.type -notin @('http', 'sse')) -or
+            $server.url -isnot [string] -or
+            -not [uri]::TryCreate($server.url, [UriKind]::Absolute, [ref]$url) -or
+            $url.UserInfo -or
+            $url.Scheme -ne $origin.Scheme -or
+            $url.IdnHost -ine $origin.IdnHost -or
+            $url.Port -ne $origin.Port) {
+            throw "MCP server '$name' must have a remote URL at the approved -McpGitHubAuth origin."
+        }
+    }
+}
+
 function Get-CopilotModelCompletion {
     param([string]$WordToComplete)
 
@@ -177,6 +247,14 @@ function Get-CopilotLaunchPlan {
 
     .PARAMETER AdditionalMcpConfig
         Additional MCP servers configuration as JSON string or file path (prefix with @).
+
+    .PARAMETER McpGitHubAuth
+        One or more server=origin entries for native --mcp-github-auth (Copilot CLI
+        1.0.90-3 or later). Sends the signed-in GitHub account credential only to
+        the named server in explicit -AdditionalMcpConfig at that exact origin.
+        Origins must be HTTPS, except literal 127.0.0.1 or [::1] HTTP. Never put
+        a token in this argument. Plans retain any inline -AdditionalMcpConfig
+        verbatim, so do not embed secrets there or share a plan publicly.
 
     .PARAMETER AllowTool
         One or more tools to allow without confirmation.
@@ -492,6 +570,8 @@ function Get-CopilotLaunchPlan {
 
         [string[]]$AdditionalMcpConfig,
 
+        [string[]]$McpGitHubAuth,
+
         [string[]]$AllowTool,
 
         [string[]]$DenyTool,
@@ -642,6 +722,10 @@ function Get-CopilotLaunchPlan {
             Set-Location -LiteralPath $ChangeDir -ErrorAction Stop
         }
 
+        if ($McpGitHubAuth) {
+            Assert-CopilotMcpGitHubAuth -McpGitHubAuth $McpGitHubAuth -AdditionalMcpConfig $AdditionalMcpConfig
+        }
+
         $copilotExe = (Get-Command copilot -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
 
         $copilotArgs = @()
@@ -723,6 +807,7 @@ function Get-CopilotLaunchPlan {
         if ($ShareGist) { $copilotArgs += '--share-gist' }
         if ($NoCustomInstructions) { $copilotArgs += '--no-custom-instructions' }
         if ($AdditionalMcpConfig) { foreach ($c in $AdditionalMcpConfig) { $copilotArgs += '--additional-mcp-config', $c } }
+        if ($McpGitHubAuth) { foreach ($entry in $McpGitHubAuth) { $copilotArgs += '--mcp-github-auth', $entry } }
         if ($AllowTool) { foreach ($t in $AllowTool) { $copilotArgs += '--allow-tool', $t } }
         if ($DenyTool) { foreach ($t in $DenyTool) { $copilotArgs += '--deny-tool', $t } }
         if ($AllowUrl) { foreach ($u in $AllowUrl) { $copilotArgs += '--allow-url', $u } }
