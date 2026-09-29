@@ -7,6 +7,10 @@ Versions change only when a release is cut; unreleased work stays under
 ## [Unreleased]
 
 ### Added
+- `Register-CopilotMcpServer` now supports native MCP tool filters via `-Tools`
+  (`'*'`, `''`, or a comma-separated list) and bounded millisecond timeouts via
+  `-TimeoutMilliseconds` / `-Timeout`, while retaining `-WhatIf`, `-Confirm`,
+  and the symlink-managed configuration refusal. (#328)
 - `Start-Copilot` and `Get-CopilotLaunchPlan` map repeatable scoped
   `-McpGitHubAuth` entries to Copilot CLI 1.0.90-3+ without handling tokens.
   Explicit additional MCP configuration and a matching remote origin are
@@ -19,6 +23,11 @@ Versions change only when a release is cut; unreleased work stays under
   `Get-CopilotLaunchPlan`, `-PassThru`, and `-WhatIf`, while hidden
   compatibility switches `-Version` (`--prefer-version`) and
   `-EnableReasoningSummaries` (`--enable-reasoning-summaries`) stay supported. (#329)
+
+### Changed
+- `Get-CopilotMcpServer` now surfaces each server's native `Enabled` state and
+  `Tools` filter from `copilot mcp list --json`, and fails closed on native or
+  JSON-shape errors instead of returning partial inventory objects. (#328)
 
 ### Fixed
 - `Get-CopilotSession` applies metadata and age filters before reading event
