@@ -7,6 +7,9 @@ Versions change only when a release is cut; unreleased work stays under
 ## [Unreleased]
 
 ### Fixed
+- Both launcher commands now suggest native `auto` model routing and use a
+  shared, non-exhaustive list for `-Model` completion. Explicit values are
+  forwarded unchanged. (#330)
 - `Get-CopilotSession` now discovers sessions when the home or session
   directory contains literal wildcard characters, including exact ID lookup.
   Session filesystem paths no longer use wildcard matching; metadata filters
