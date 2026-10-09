@@ -4470,6 +4470,74 @@ Describe 'Get-GitStatusSummary' {
     }
 }
 
+Describe 'In-progress worktree branch reporting' {
+    BeforeAll {
+        function New-ConflictingWorktree {
+            param([Parameter(Mandatory)][string]$Name)
+
+            $repo = New-TestRepo -Path (Join-Path $TestDrive "$Name-main")
+            $worktree = Join-Path $TestDrive "$Name-linked"
+            $branch = "feature/$Name"
+            Invoke-Git @('-C', $repo, 'branch', $branch)
+            Invoke-Git @('-C', $repo, 'worktree', 'add', '--quiet', $worktree, $branch)
+            Set-Content -LiteralPath (Join-Path $worktree 'README.md') -Value "change from $branch"
+            Invoke-Git @('-C', $worktree, 'add', 'README.md')
+            Invoke-TestCommit -Path $worktree -Message 'feature change'
+            Set-Content -LiteralPath (Join-Path $repo 'README.md') -Value 'change from main'
+            Invoke-Git @('-C', $repo, 'add', 'README.md')
+            Invoke-TestCommit -Path $repo -Message 'main change'
+            [PSCustomObject]@{ Repo = $repo; Worktree = $worktree; Branch = $branch }
+        }
+
+        $script:rebaseFixture = New-ConflictingWorktree -Name 'rebase'
+        $script:unrelatedDetached = Join-Path $TestDrive 'unrelated-detached'
+        Invoke-Git @('-C', $script:rebaseFixture.Repo, 'worktree', 'add', '--quiet', '--detach', $script:unrelatedDetached, 'HEAD')
+        & git -C $script:rebaseFixture.Worktree rebase main 2>$null | Out-Null
+        $LASTEXITCODE | Should -Be 1
+
+        $script:mergeFixture = New-ConflictingWorktree -Name 'merge'
+        & git -C $script:mergeFixture.Worktree merge main 2>$null | Out-Null
+        $LASTEXITCODE | Should -Be 1
+    }
+
+    It 'uses the original branch for a paused rebase in a linked worktree' {
+        $status = Get-GitStatusSummary -Path $script:rebaseFixture.Worktree
+        $status.Branch | Should -BeExactly $script:rebaseFixture.Branch
+        $status.Operation | Should -Match '^REBASE'
+        $status.StatusString | Should -Match '^\[feature/rebase\|REBASE'
+
+        $worktrees = @(Get-Worktrees -Path $script:rebaseFixture.Repo)
+        $rebaseWorktree = $worktrees | Where-Object Path -eq $script:rebaseFixture.Worktree
+        $rebaseWorktree.Branch | Should -BeExactly $script:rebaseFixture.Branch
+        $rebaseWorktree.Detached | Should -BeTrue
+        ($worktrees | Where-Object Path -eq $script:rebaseFixture.Repo).Branch | Should -BeExactly 'main'
+    }
+
+    It 'does not assign the rebased branch to an unrelated detached worktree' {
+        $status = Get-GitStatusSummary -Path $script:unrelatedDetached
+        $status.Branch | Should -BeExactly 'HEAD'
+        $status.Operation | Should -BeNullOrEmpty
+
+        $detachedWorktree = Get-Worktrees -Path $script:rebaseFixture.Repo |
+            Where-Object Path -eq $script:unrelatedDetached
+        $detachedWorktree.Branch | Should -BeExactly '(detached)'
+        $detachedWorktree.Detached | Should -BeTrue
+    }
+
+    It 'retains the target branch during a conflicted merge' {
+        $status = Get-GitStatusSummary -Path $script:mergeFixture.Worktree
+        $status.Branch | Should -BeExactly $script:mergeFixture.Branch
+        $status.Operation | Should -BeExactly 'MERGING'
+        $status.Conflicts | Should -BeGreaterThan 0
+        $status.StatusString | Should -Match '^\[feature/merge\|MERGING'
+
+        $mergeWorktree = Get-Worktrees -Path $script:mergeFixture.Repo |
+            Where-Object Path -eq $script:mergeFixture.Worktree
+        $mergeWorktree.Branch | Should -BeExactly $script:mergeFixture.Branch
+        $mergeWorktree.Detached | Should -BeFalse
+    }
+}
+
 Describe 'Get-GitStatusSummary porcelain counts' -Tag 'TrackedTypeChange' {
     BeforeEach {
         $statusFixture = (New-Item -ItemType Directory -Path (

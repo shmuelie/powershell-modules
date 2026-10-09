@@ -6,6 +6,12 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+### Fixed
+- `Get-GitStatusSummary` and `Get-Worktrees` report the original worktree branch
+  during a paused rebase instead of `HEAD` or `(detached)`. The worktree's
+  `Detached` flag continues to reflect Git's actual HEAD state; unrelated
+  detached worktrees and in-progress merges retain their branch identity. (#349)
+
 ## [0.10.3] - 2026-09-22
 
 ### Fixed
