@@ -18,10 +18,13 @@ function Start-Copilot {
         When a Prompt is provided, runs in non-interactive autopilot mode (-p --autopilot).
         When no Prompt is provided, starts interactively.
 
-        When the effective directory belongs to a GitHub worktree with an origin
-        and checked-out branch, sessions are scoped by recorded repository and
-        branch even after a worktree moves. Incomplete metadata falls back to
-        the exact directory when known fields do not conflict; non-Git or
+        When the effective directory belongs to a GitHub or Azure DevOps worktree
+        with one recognized origin and a checked-out branch, sessions are scoped
+        by recorded repository and branch even after a worktree moves. Azure
+        DevOps accepts dev.azure.com HTTPS, ssh.dev.azure.com SSH, and legacy
+        {organization}.visualstudio.com HTTPS, with optional .git, encoded
+        segments, and applicable DefaultCollection prefixes. Incomplete metadata
+        falls back to the exact directory when known fields do not conflict; non-Git or
         ambiguous origins use the directory. If exactly one eligible session exists it is
         resumed automatically. If multiple sessions exist, an interactive picker
         is shown -- except when only one of them is a *named* session (the rest

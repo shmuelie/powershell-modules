@@ -4269,6 +4269,115 @@ Describe 'Copilot repository and branch session scope' -Tag 'StableSessionScope'
         $results | Should -Not -Contain 'legacy'
     }
 
+    It 'matches moved ADO sessions for <Remote>' -ForEach @(
+        @{ Remote = 'https://dev.azure.com/acme/Project%20Name/_git/widget' }
+        @{ Remote = 'https://dev.azure.com/AcMe/Project%20Name/_git/widget.git' }
+        @{ Remote = 'https://dev.azure.com/acme/DefaultCollection/Project%20Name/_git/widget.git' }
+        @{ Remote = 'git@ssh.dev.azure.com:v3/acme/Project%20Name/widget' }
+        @{ Remote = 'ssh://git@ssh.dev.azure.com/v3/acme/Project%20Name/widget%2Egit' }
+        @{ Remote = 'https://acme.visualstudio.com/Project%20Name/_git/widget' }
+        @{ Remote = 'https://acme.visualstudio.com/DefaultCollection/Project%20Name/_git/widget.git' }
+    ) {
+        & git -C $script:ScopeMoved remote set-url origin $Remote
+        if ($LASTEXITCODE -ne 0) { throw 'Could not set ADO test remote.' }
+        Add-ScopeSession -Id moved -Cwd $script:ScopeOriginal -Repository 'ACME/Project Name/widget' -Branch feature/topic
+        Add-ScopeSession -Id wrong-repo -Cwd $script:ScopeMoved -Repository acme/Other/widget -Branch feature/topic
+        Add-ScopeSession -Id wrong-branch -Cwd $script:ScopeMoved -Repository 'acme/Project Name/widget' -Branch feature/other
+        Add-ScopeSession -Id old-legacy -Cwd $script:ScopeOriginal
+        @(Get-CopilotSession).Id | Should -Be @('moved')
+        @(& (Get-Module Shmuelie.Copilot) { Get-CopilotResumeCandidate }).Id | Should -Be @('moved')
+        (Get-CopilotLaunchPlan).Args | Should -Contain 'moved'
+    }
+
+    It 'uses ADO identity for automatic resume, selectors, ResumeLatest, completion and ChangeDir' {
+        & git -C $script:ScopeMoved remote set-url origin 'https://dev.azure.com/acme/Project%20Name/_git/widget.git'
+        if ($LASTEXITCODE -ne 0) { throw 'Could not set ADO test remote.' }
+        Add-ScopeSession -Id older -Cwd $script:ScopeOriginal -Repository 'acme/Project Name/widget' -Branch feature/topic -UpdatedAt '2026-08-11T22:00:00Z'
+        Add-ScopeSession -Id newer -Cwd $script:ScopeOriginal -Repository 'acme/Project Name/widget' -Branch feature/topic -UpdatedAt '2026-08-13T22:00:00Z'
+        Add-ScopeSession -Id different -Cwd $script:ScopeMoved -Repository 'acme/Project Name/widget' -Branch feature/other
+        Add-ScopeSession -Id local-legacy -Cwd $script:ScopeMoved -UpdatedAt '2026-08-10T22:00:00Z'
+        Add-ScopeSession -Id distant-legacy -Cwd $script:ScopeOriginal
+        @(Get-CopilotSession).Id | Should -Be @('newer', 'older', 'local-legacy')
+        $latest = Get-CopilotLaunchPlan -ResumeLatest
+        $latest.Args[[array]::IndexOf($latest.Args, '--resume') + 1] | Should -Be 'newer'
+        $selected = Get-CopilotLaunchPlan -SessionSelector {
+            param($Sessions)
+            $Sessions.Id | Should -Be @('newer', 'older')
+            $Sessions[1]
+        }
+        $selected.Args[[array]::IndexOf($selected.Args, '--resume') + 1] | Should -Be 'older'
+        foreach ($entry in 'Get-CopilotLaunchPlan', 'Start-Copilot') {
+            $attribute = (Get-Command "Shmuelie.Copilot\$entry").Parameters['ResumeSession'].Attributes |
+                Where-Object { $_ -is [System.Management.Automation.ArgumentCompleterAttribute] }
+            $completions = @(& $attribute.ScriptBlock $entry 'ResumeSession' '' $null @{}).CompletionText
+            $completions | Should -Contain 'newer'
+            $completions | Should -Contain 'older'
+            $completions | Should -Contain 'local-legacy'
+            $completions | Should -Not -Contain 'different'
+            $completions | Should -Not -Contain 'distant-legacy'
+        }
+
+        Set-Location -LiteralPath $script:ScopePlain
+        @(Get-CopilotSession).Count | Should -Be 0
+        $fromOtherDirectory = Get-CopilotLaunchPlan -ChangeDir $script:ScopeMoved -ResumeLatest
+        $fromOtherDirectory.Args[[array]::IndexOf($fromOtherDirectory.Args, '--resume') + 1] | Should -Be 'newer'
+        $startPlan = Start-Copilot -ChangeDir $script:ScopeMoved -ResumeLatest -PassThru
+        $startPlan.Args[[array]::IndexOf($startPlan.Args, '--resume') + 1] | Should -Be 'newer'
+        foreach ($entry in 'Get-CopilotLaunchPlan', 'Start-Copilot') {
+            $attribute = (Get-Command "Shmuelie.Copilot\$entry").Parameters['ResumeSession'].Attributes |
+                Where-Object { $_ -is [System.Management.Automation.ArgumentCompleterAttribute] }
+            $changeDirResults = @(& $attribute.ScriptBlock $entry 'ResumeSession' '' $null @{ ChangeDir = $script:ScopeMoved }).CompletionText
+            $changeDirResults | Should -Contain 'older'
+            $changeDirResults | Should -Not -Contain 'different'
+        }
+        (Get-Location).Path | Should -Be $script:ScopePlain
+    }
+
+    It 'keeps ADO legacy fallback at the exact directory only when known fields agree' {
+        & git -C $script:ScopeMoved remote set-url origin 'git@ssh.dev.azure.com:v3/acme/Project%20Name/widget'
+        if ($LASTEXITCODE -ne 0) { throw 'Could not set ADO test remote.' }
+        Add-ScopeSession -Id legacy -Cwd $script:ScopeMoved
+        Add-ScopeSession -Id partial-repo -Cwd $script:ScopeMoved -Repository 'acme/Project Name/widget' -UpdatedAt '2026-08-11T22:00:00Z'
+        Add-ScopeSession -Id partial-branch -Cwd $script:ScopeMoved -Branch feature/topic -UpdatedAt '2026-08-10T22:00:00Z'
+        Add-ScopeSession -Id conflicting-repo -Cwd $script:ScopeMoved -Repository acme/Other/widget
+        Add-ScopeSession -Id conflicting-branch -Cwd $script:ScopeMoved -Branch feature/other
+        Add-ScopeSession -Id complete-wrong -Cwd $script:ScopeMoved -Repository acme/Other/widget -Branch feature/topic
+        Add-ScopeSession -Id moved-legacy -Cwd $script:ScopeOriginal
+        @(Get-CopilotSession).Id | Should -Be @('legacy', 'partial-repo', 'partial-branch')
+        @(Get-CopilotSession -All).Id | Should -Contain 'complete-wrong'
+        @(Get-CopilotSession -Cwd ([WildcardPattern]::Escape($script:ScopeMoved))).Id | Should -Contain 'conflicting-repo'
+        (Get-CopilotSession -Id moved-legacy).Id | Should -Be 'moved-legacy'
+    }
+
+    It 'does not widen ADO scope for <Remote>' -ForEach @(
+        @{ Remote = 'https://dev.azure.com/acme/Project%2FName/_git/widget' }
+        @{ Remote = 'https://dev.azure.com/acme/Project%ZZName/_git/widget' }
+        @{ Remote = 'https://dev.azure.com/acme/Project Name/_git/widget' }
+        @{ Remote = 'https://dev.azure.com/acme/Project%20Name/_git/widget/extra' }
+        @{ Remote = 'https://dev.azure.com/acme/Project%20Name/_git/widget?extra=1' }
+        @{ Remote = 'https://user@dev.azure.com/acme/Project%20Name/_git/widget' }
+        @{ Remote = 'https://dev.azure.com/acme/Project%20Name/_git/%2Egit' }
+        @{ Remote = 'git@ssh.dev.azure.com:v3/acme/Project%20Name/widget/extra' }
+        @{ Remote = 'ssh://other@ssh.dev.azure.com/v3/acme/Project%20Name/widget' }
+        @{ Remote = 'https://acme.visualstudio.com/DefaultCollection/Project%20Name/_git/widget#fragment' }
+    ) {
+        & git -C $script:ScopeMoved remote set-url origin $Remote
+        if ($LASTEXITCODE -ne 0) { throw 'Could not set ADO test remote.' }
+        Add-ScopeSession -Id distant -Cwd $script:ScopeOriginal -Repository 'acme/Project Name/widget' -Branch feature/topic
+        Add-ScopeSession -Id local -Cwd $script:ScopeMoved
+        @(Get-CopilotSession).Id | Should -Be @('local')
+        (Get-CopilotLaunchPlan -ResumeLatest).Args | Should -Contain 'local'
+    }
+
+    It 'treats multiple origin URLs as ambiguous even when both encode the same ADO identity' {
+        & git -C $script:ScopeMoved remote set-url origin 'https://dev.azure.com/acme/Project%20Name/_git/widget'
+        & git -C $script:ScopeMoved config --add remote.origin.url 'git@ssh.dev.azure.com:v3/acme/Project%20Name/widget'
+        if ($LASTEXITCODE -ne 0) { throw 'Could not add ambiguous ADO origin.' }
+        Add-ScopeSession -Id distant -Cwd $script:ScopeOriginal -Repository 'acme/Project Name/widget' -Branch feature/topic
+        Add-ScopeSession -Id local -Cwd $script:ScopeMoved
+        @(Get-CopilotSession).Id | Should -Be @('local')
+    }
+
     It 'completes matching IDs without opening unrelated locked metadata or event histories for <Entry>' -ForEach @(
         @{ Entry = 'Get-CopilotLaunchPlan' }
         @{ Entry = 'Start-Copilot' }
