@@ -8,6 +8,24 @@ function ConvertTo-NativeGitPath {
     $Path
 }
 
+function Get-InProgressRebaseBranch {
+    param([Parameter(Mandatory)][string]$Path)
+
+    foreach ($stateDir in @('rebase-merge', 'rebase-apply')) {
+        $headNamePath = git -C $Path rev-parse --path-format=absolute --git-path "$stateDir/head-name" 2>$null
+        if ($LASTEXITCODE -ne 0 -or -not $headNamePath) { continue }
+
+        $headNamePath = ConvertTo-NativeGitPath $headNamePath
+        if (-not (Test-Path -LiteralPath $headNamePath -PathType Leaf)) { continue }
+        $headName = (Get-Content -LiteralPath $headNamePath -Raw -ErrorAction Stop).TrimEnd("`r", "`n")
+        if (-not $headName.StartsWith('refs/heads/', [System.StringComparison]::Ordinal)) { continue }
+
+        $branchName = $headName.Substring('refs/heads/'.Length)
+        $null = git check-ref-format --branch $branchName 2>$null
+        if ($LASTEXITCODE -eq 0) { return $branchName }
+    }
+}
+
 function Get-GitStatusSummary {
     <#
     .SYNOPSIS
@@ -18,6 +36,8 @@ function Get-GitStatusSummary {
         index/working file change counts, conflicts, untracked count, stash count,
         any in-progress operation (rebase/merge/cherry-pick/revert/bisect),
         repo name, relative path, and a formatted status string.
+        A paused rebase reports its original branch even while HEAD is detached;
+        a genuinely detached worktree continues to report HEAD.
 
         Tracked type changes (git's T status, such as a file becoming a symlink)
         count as IndexModified or WorkingModified in the corresponding column.
@@ -173,6 +193,10 @@ function Get-GitStatusSummary {
             elseif (Test-Path -LiteralPath (Join-Path $gitDir 'REVERT_HEAD')) { 'REVERTING' }
             elseif (Test-Path -LiteralPath (Join-Path $gitDir 'CHERRY_PICK_HEAD')) { 'CHERRY-PICKING' }
             elseif (Test-Path -LiteralPath (Join-Path $gitDir 'BISECT_LOG')) { 'BISECTING' }
+        }
+        if ($operation -like 'REBASE*' -and $branch -eq 'HEAD') {
+            $rebaseBranch = Get-InProgressRebaseBranch -Path $targetPath
+            if ($rebaseBranch) { $branch = $rebaseBranch }
         }
 
         # Repo name from remote URL or directory name
