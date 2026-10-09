@@ -59,7 +59,9 @@ function Get-Worktrees {
     with Path, Commit, and Branch properties, plus the remaining porcelain
     state: Bare, Detached, Locked/LockReason, and Prunable/PrunableReason. The
     boolean state fields are always present (defaulting to $false) and the
-    reason fields default to an empty string.
+    reason fields default to an empty string. During a rebase, Branch identifies
+    the branch being rebased even when Git temporarily detaches HEAD; Detached
+    still reflects Git's actual HEAD state.
     .PARAMETER Path
     Directory inside the git working tree to inspect. Defaults to the current location.
     .EXAMPLE
@@ -100,6 +102,10 @@ function Get-Worktrees {
         foreach ($line in $lines) {
             if ([string]::IsNullOrWhiteSpace($line)) {
                 if ($entry.ContainsKey('Path')) {
+                    if ($entry['Detached'] -and -not $entry['Prunable'] -and -not $entry['Bare']) {
+                        $rebaseBranch = Get-InProgressRebaseBranch -Path $entry['Path']
+                        if ($rebaseBranch) { $entry['Branch'] = $rebaseBranch }
+                    }
                     [PSCustomObject]$entry
                     $entry = & $newEntry
                 }
@@ -134,6 +140,10 @@ function Get-Worktrees {
         }
         # Emit the last entry
         if ($entry.ContainsKey('Path')) {
+            if ($entry['Detached'] -and -not $entry['Prunable'] -and -not $entry['Bare']) {
+                $rebaseBranch = Get-InProgressRebaseBranch -Path $entry['Path']
+                if ($rebaseBranch) { $entry['Branch'] = $rebaseBranch }
+            }
             [PSCustomObject]$entry
         }
     }

@@ -18,7 +18,7 @@ Import-Module Shmuelie.Git
 | `New-Repository` | Clone a URL into a standard `<root>/<org>/<repo>/<branch>` layout (parses GitHub and Azure DevOps URLs) |
 | `Repair-RepositoryLayout` | Conform existing clones and worktrees to that layout; standalone renames skip occupied exact destinations |
 | `Sync-GitRemote` | Fetch all remotes for the current or `-Path` repository with pruning, returning typed results; picks the right `gh` account per host (github.com/GHE) when several are signed in |
-| `Get-Worktrees` | List worktrees for the current or `-Path` repository |
+| `Get-Worktrees` | List worktrees for the current or `-Path` repository, including the original branch during a paused rebase (with the detached HEAD state preserved) |
 | `Get-Branch` | List local and cached remote-tracking refs as `GitBranch` objects, with current branch, commit, upstream, ahead/behind counts and symbolic target (`-Local` / `-Remote` filter the results; never fetches) |
 | `Set-Config` | Set one literal git configuration value with `-Location local` (default), `global` or `system`; supports `-Path`, `-WhatIf` and `-Confirm` |
 | `Get-CurrentWorktree` / `Get-RootWorktree` | Resolve the worktree for the current directory/`-Path` or the repository root |
@@ -35,7 +35,7 @@ Import-Module Shmuelie.Git
 | `Update-AllWorktrees` | Discover repositories under `$env:SOURCE_REPOS` or a supplied `-Path` root and update each repository in parallel (`-ChangedOnly` displays actionable results as wrapping multiline details) |
 | `Find-StaleBranch` | Find local branches in the current or `-Path` repository whose upstream branch is gone (`-IncludeNeverPushed` also includes local-only branches) |
 | `Remove-Branch` | Delete an exact local branch (`-Force` permits unmerged deletion) or a remote branch with `-Remote -RemoteName origin`; high-impact confirmation and `-WhatIf` protect every deletion |
-| `Get-GitStatusSummary` | Parse `git status` for the current or `-Path` repository into a typed object (branch, ahead/behind, tracked changes including type changes, conflicts, stash, operation) |
+| `Get-GitStatusSummary` | Parse `git status` for the current or `-Path` repository into a typed object (branch, ahead/behind, tracked changes including type changes, conflicts, stash, operation); paused rebases retain the original branch name |
 | `Get-GitTag` | Inspect local annotated/lightweight tags as typed objects, with case-sensitive exact/wildcard `-Name` filtering and standard repository `-Path` input; never fetches |
 | `Save-GitStash` | Save tracked changes with `git stash push`; opt into `-KeepIndex`, `-IncludeUntracked` or `-All`, and a literal `-Message`; supports pipeline repository paths and `-WhatIf`/`-Confirm` |
 | `Set-Branch` | Switch an existing working tree to a local branch; `-CreateNew` creates at HEAD, `-Track` creates from a remote-tracking branch, and `-Force` explicitly discards local changes; supports `-Path`, `-WhatIf` and `-Confirm` |
