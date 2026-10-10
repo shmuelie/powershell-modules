@@ -6,6 +6,8 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-10-09
+
 ### Fixed
 - Session discovery, automatic resume, `-ResumeLatest`, selector callbacks,
   `-ResumeSession` completion, and `-ChangeDir` now recognize moved Azure
