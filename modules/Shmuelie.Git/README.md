@@ -2,7 +2,7 @@
 
 Git repository, worktree, status, completion, and PSReadLine prediction helpers.
 
-**Version:** 0.10.3
+**Version:** 0.10.4
 
 ## Install
 
