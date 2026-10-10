@@ -108,10 +108,13 @@ function Get-CopilotLaunchPlan {
         When a Prompt is provided, the plan runs in non-interactive autopilot mode
         (-p --autopilot). When no Prompt is provided, it is interactive.
 
-        When the effective directory belongs to a GitHub worktree with an origin
-        and checked-out branch, sessions are scoped by recorded repository and
-        branch, even after a worktree moves. Incomplete session metadata falls
-        back only at the current directory when known fields do not conflict;
+        When the effective directory belongs to a GitHub or Azure DevOps worktree
+        with one recognized origin and a checked-out branch, sessions are scoped
+        by recorded repository and branch, even after a worktree moves. Azure
+        DevOps supports dev.azure.com HTTPS, ssh.dev.azure.com SSH, and legacy
+        {organization}.visualstudio.com HTTPS, including optional .git, encoded
+        segments, and applicable DefaultCollection prefixes. Incomplete metadata
+        falls back only at the current directory when known fields do not conflict;
         non-Git or ambiguous origins use the current directory. If exactly one
         eligible session exists it is
         resumed automatically. If multiple sessions exist, an interactive picker

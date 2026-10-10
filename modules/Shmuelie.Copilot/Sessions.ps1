@@ -8,11 +8,15 @@ function Get-CopilotSession {
         parses each workspace.yaml to extract session metadata. Includes
         EventCount and EventSize for diagnosing oversized sessions.
 
-        By default, in a GitHub worktree with an origin remote and a checked-out
-        branch, sessions with matching repository and branch metadata are returned
-        even after the worktree moves. Sessions missing either field fall back to
-        an exact recorded working-directory match, provided any known field does
-        not conflict. Without a resolvable identity, use the directory match.
+        By default, in a GitHub or Azure DevOps worktree with one recognized origin
+        remote and a checked-out branch, sessions with matching repository and
+        branch metadata are returned even after the worktree moves. Azure DevOps
+        accepts dev.azure.com HTTPS, ssh.dev.azure.com SSH, and legacy
+        {organization}.visualstudio.com HTTPS origins (including optional .git,
+        encoded segments, and applicable DefaultCollection prefixes). Sessions
+        missing either field fall back to an exact recorded working-directory
+        match, provided any known field does not conflict. Without a resolvable
+        identity, use the directory match.
         Use -All to search every directory, or -Cwd to replace the implicit current
         scope. Repository, Branch, and Summary filter within that scope.
         All supplied filters must match. String filters use case-insensitive

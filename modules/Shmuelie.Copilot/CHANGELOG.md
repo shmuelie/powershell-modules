@@ -6,6 +6,15 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+### Fixed
+- Session discovery, automatic resume, `-ResumeLatest`, selector callbacks,
+  `-ResumeSession` completion, and `-ChangeDir` now recognize moved Azure
+  DevOps worktrees by `organization/project/repository` and exact branch.
+  Supported origins include dev.azure.com HTTPS, ssh.dev.azure.com SSH, and
+  legacy organization.visualstudio.com HTTPS with optional `.git`, encoded
+  segments, and applicable `DefaultCollection` prefixes. Ambiguous or
+  malformed origins retain directory-only scoping. (#348)
+
 ## [0.7.0] - 2026-09-29
 
 ### Added

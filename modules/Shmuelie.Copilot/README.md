@@ -64,10 +64,18 @@ repair without reading or writing session files.
   automatically, multiple sessions show a picker, and a lone named session
   auto-resumes. Control it with `-NoResume`, `-ResumeLatest`, `-ResumeSession`,
   `-NoAutoResume`, and `-IncludeUnnamed`.
-- **Worktree moves** retain eligibility: a GitHub `origin` remote supplies the
-  case-insensitive `owner/repository` identity, paired with the exact checked-out
-  branch. Both fields must match, so another repository's same-named branch or
-  another worktree's branch cannot take its place. A session missing one or both
+- **Worktree moves** retain eligibility: one unambiguous GitHub `origin` supplies
+  the case-insensitive `owner/repository` identity; Azure DevOps `origin` URLs
+  supply `organization/project/repository`. Supported ADO forms are
+  `https://dev.azure.com/{organization}/{project}/_git/{repository}`,
+  `git@ssh.dev.azure.com:v3/{organization}/{project}/{repository}` (or
+  `ssh://git@ssh.dev.azure.com/v3/...`), and
+  `https://{organization}.visualstudio.com/{project}/_git/{repository}`.
+  ADO accepts URL-encoded segments, optional `.git`, and `DefaultCollection`
+  before the project in applicable HTTPS forms. Identity is paired with the
+  exact checked-out branch. Both metadata fields must match, so another
+  repository's same-named branch or another worktree's branch cannot take its
+  place. A session missing one or both
   fields falls back only when its recorded directory is the current directory
   and any known field agrees; complete but conflicting metadata never falls
   back. A non-Git directory, detached branch, missing or ambiguous origin, or

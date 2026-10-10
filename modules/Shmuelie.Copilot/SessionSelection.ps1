@@ -1,11 +1,49 @@
+function ConvertTo-CopilotAdoRepositoryIdentity {
+    param([Parameter(Mandatory)][string]$Url)
+
+    if ($Url -match '[\s\\]') { return $null }
+    $organization = $null
+    $project = $null
+    $repository = $null
+    if ($Url -match '^https://dev\.azure\.com/([^/]+)/(?:(?:DefaultCollection)/)?([^/]+)/_git/([^/]+)/?$' -or
+        $Url -match '^https://([a-z0-9](?:[a-z0-9-]*[a-z0-9])?)\.visualstudio\.com/(?:(?:DefaultCollection)/)?([^/]+)/_git/([^/]+)/?$' -or
+        $Url -match '^(?:git@ssh\.dev\.azure\.com:|ssh://git@ssh\.dev\.azure\.com/)v3/([^/]+)/([^/]+)/([^/]+)/?$') {
+        $organization, $project, $repository = $Matches[1], $Matches[2], $Matches[3]
+    } else {
+        return $null
+    }
+
+    $segments = @($organization, $project, $repository)
+    for ($i = 0; $i -lt $segments.Count; $i++) {
+        if ($segments[$i] -match '%(?![0-9a-fA-F]{2})') { return $null }
+        $segments[$i] = [uri]::UnescapeDataString($segments[$i])
+        if ($segments[$i] -match '[/\\?#\p{Cc}\p{Cf}\p{Zl}\p{Zp}\uFFFD]' -or
+            $segments[$i] -in @('.', '..') -or [string]::IsNullOrWhiteSpace($segments[$i]) -or
+            $segments[$i] -cne $segments[$i].Trim()) {
+            return $null
+        }
+    }
+    $organization, $project, $repository = $segments
+    if ($organization -notmatch '^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$') { return $null }
+    if ($repository.EndsWith('.git', [StringComparison]::OrdinalIgnoreCase)) {
+        $repository = $repository.Substring(0, $repository.Length - 4)
+    }
+    if ([string]::IsNullOrWhiteSpace($repository) -or $repository -in @('.', '..')) { return $null }
+    return "$($organization.ToLowerInvariant())/$project/$repository"
+}
+
 function Get-CopilotSessionScope {
     $cwd = (Get-Location).Path
     $branch = try { git symbolic-ref --short HEAD 2>$null } catch { $null }
     $repository = $null
     if ($branch) {
         $urls = @(try { git config --get-all remote.origin.url 2>$null } catch { @() })
-        if ($urls.Count -eq 1 -and $urls[0] -match '^(?:https://github\.com/|git@github\.com:|ssh://git@github\.com/)([a-z0-9_.-]+)/([a-z0-9_.-]+?)(?:\.git)?/?$') {
-            $repository = "$($Matches[1])/$($Matches[2])"
+        if ($urls.Count -eq 1) {
+            if ($urls[0] -match '^(?:https://github\.com/|git@github\.com:|ssh://git@github\.com/)([a-z0-9_.-]+)/([a-z0-9_.-]+?)(?:\.git)?/?$') {
+                $repository = "$($Matches[1])/$($Matches[2])"
+            } else {
+                $repository = ConvertTo-CopilotAdoRepositoryIdentity -Url $urls[0]
+            }
         }
     }
     [pscustomobject]@{ Cwd = $cwd; Repository = $repository; Branch = $branch }
