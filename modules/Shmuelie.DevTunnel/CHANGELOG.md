@@ -4,6 +4,8 @@ All notable changes to this module are documented here.
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-10-14
+
 ### Added
 - Initial DevTunnel CLI wrappers for accounts, tunnel lifecycle, hosting,
   connections, ports, access rules/tokens, default selection, and diagnostics.
