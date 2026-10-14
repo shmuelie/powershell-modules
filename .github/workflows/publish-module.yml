@@ -20,6 +20,7 @@ on:
           - Shmuelie.VisualStudio
           - Shmuelie.Windows
           - Shmuelie.PackageManagement
+          - Shmuelie.DevTunnel
 
 jobs:
   publish:
@@ -40,7 +41,7 @@ jobs:
           $module = $env:INPUT_MODULE
           $tagVersion = $null
           if (-not $module) {
-            if ($env:REF_NAME -notmatch '^(?<module>Shmuelie\.(?:Git|Copilot|Node|DotNet|Utilities|Dsc|VisualStudio|Windows|PackageManagement))-v(?<version>\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)$') {
+            if ($env:REF_NAME -notmatch '^(?<module>Shmuelie\.(?:Git|Copilot|Node|DotNet|Utilities|Dsc|VisualStudio|Windows|PackageManagement|DevTunnel))-v(?<version>\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)$') {
               throw "Invalid release tag: $env:REF_NAME"
             }
             $module = $Matches.module

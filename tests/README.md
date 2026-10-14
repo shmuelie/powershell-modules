@@ -32,6 +32,9 @@ packages cannot expose experimental commands, including with stale source assets
 - `Shmuelie.DotNet.Tests.ps1` - canonical .NET tool parsing, parameter and
   pipeline contracts, scope selection, typed results, failure reporting,
   `ShouldProcess`, isolated import, and publishable module layout.
+- `Shmuelie.DevTunnel.Tests.ps1` - deterministic CLI argument/output/error,
+  preview/confirmation, access-default, validation, and owned-process lifecycle
+  coverage using mocks and fake executables; no live authentication or tunnels.
 - `Invoke-Tests.Tests.ps1` - stable supported Pester version selection, bounded
   installation fallback, runner configuration, and failure propagation.
   Module discovery, installation, imports, and test execution are mocked.
