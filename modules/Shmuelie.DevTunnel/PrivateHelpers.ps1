@@ -125,7 +125,7 @@ function New-DevTunnelArguments {
     )
     $arguments = [System.Collections.Generic.List[string]]::new()
     $arguments.AddRange($Command)
-    if ($Parameters.Contains('TunnelId')) { $arguments.Add([string]$Parameters['TunnelId']) }
+    if ($Parameters.Keys -contains 'TunnelId') { $arguments.Add([string]$Parameters['TunnelId']) }
     $options = [ordered]@{
         PortNumber = 'port-number'; Protocol = 'protocol'; Description = 'description'
         Label = 'labels'; AllLabel = 'all-labels'; AddLabel = 'add-labels'; RemoveLabel = 'remove-labels'
@@ -134,7 +134,7 @@ function New-DevTunnelArguments {
         Size = 'size'; Interval = 'interval'
     }
     foreach ($name in $options.Keys) {
-        if ($Parameters.Contains($name)) {
+        if ($Parameters.Keys -contains $name) {
             foreach ($value in @($Parameters[$name])) {
                 $arguments.Add("--$($options[$name])=$value")
             }
@@ -145,7 +145,7 @@ function New-DevTunnelArguments {
         Deny = 'deny'; GitHub = 'github'; DeviceCode = 'use-device-code-auth'; Ping = 'ping'
     }
     foreach ($entry in $switches.GetEnumerator()) {
-        if ($Parameters.Contains($entry.Key) -and $Parameters[$entry.Key]) { $arguments.Add("--$($entry.Value)") }
+        if ($Parameters.Keys -contains $entry.Key -and $Parameters[$entry.Key]) { $arguments.Add("--$($entry.Value)") }
     }
     if ($Json) { $arguments.Add('--json') }
     $arguments.ToArray()
