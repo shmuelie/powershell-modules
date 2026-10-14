@@ -659,6 +659,13 @@ Describe 'DevTunnel parameter boundaries' {
         [Parameter(ValueFromRemainingArguments)][string[]]$Payload
     )
     $ErrorActionPreference = 'Stop'
+    function Publish-FakeState {
+        param([object]$Value)
+        $temporaryPath = "$StatePath.$PID.tmp"
+        [IO.File]::WriteAllText($temporaryPath, (ConvertTo-Json -InputObject $Value -Compress))
+        # Publish only after the writer closes; readers never see a partial PID.
+        [IO.File]::Move($temporaryPath, $StatePath, $true)
+    }
     switch ($Mode) {
         'argv' {
             $stdin = [Console]::In.ReadToEnd()
@@ -701,7 +708,7 @@ Describe 'DevTunnel parameter boundaries' {
             exit 0
         }
         'live-auth' {
-            @{ parent = $PID } | ConvertTo-Json -Compress | Set-Content -LiteralPath $StatePath
+            Publish-FakeState @{ parent = $PID }
             [Console]::Out.WriteLine('Open the browser before login exits.')
             [Console]::Out.WriteLine('Bearer fixture-live-access')
             [Console]::Error.WriteLine('Enter code ABCD-EFGH before login exits.')
@@ -730,11 +737,11 @@ Describe 'DevTunnel parameter boundaries' {
                 $child.StartInfo.ArgumentList.Add($arg)
             }
             $null = $child.Start()
-            @{ parent = $PID; child = $child.Id } | ConvertTo-Json -Compress | Set-Content -LiteralPath $StatePath
+            Publish-FakeState @{ parent = $PID; child = $child.Id }
             try { Start-Sleep -Seconds 60 } finally { $child.Dispose() }
         }
         'wait' {
-            Set-Content -LiteralPath $StatePath -Value $PID
+            Publish-FakeState $PID
             Start-Sleep -Seconds 60
         }
         default { throw 'Unexpected fake mode.' }
@@ -749,7 +756,29 @@ Describe 'DevTunnel parameter boundaries' {
                     $deadline = [Diagnostics.Stopwatch]::StartNew()
                     while ($deadline.Elapsed.TotalSeconds -lt 10) {
                         if (Test-Path -LiteralPath $Path) {
-                            try { return Get-Content -LiteralPath $Path -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop } catch {}
+                            try {
+                                # Allow atomic replacement while a reader holds the
+                                # previous empty file, including on Windows.
+                                $stream = [IO.FileStream]::new($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read,
+                                    [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete)
+                                $reader = [IO.StreamReader]::new($stream)
+                                try { $json = $reader.ReadToEnd() } finally { $reader.Dispose() }
+                                $candidate = $json | ConvertFrom-Json -ErrorAction Stop
+                                $pids = @()
+                                if ($candidate -is [int] -or $candidate -is [long]) {
+                                    $pids = @($candidate)
+                                } elseif ($candidate -is [pscustomobject] -and $candidate.PSObject.Properties['parent']) {
+                                    $pids = @($candidate.parent)
+                                    if ($candidate.PSObject.Properties['child']) { $pids += $candidate.child }
+                                }
+                                # Empty JSON returns null without throwing. Readiness
+                                # requires complete positive PID data, not existence.
+                                if ($pids.Count -gt 0 -and @($pids | Where-Object {
+                                    ($_ -isnot [int] -and $_ -isnot [long]) -or $_ -le 0 -or $_ -gt [int]::MaxValue
+                                }).Count -eq 0) {
+                                    return $candidate
+                                }
+                            } catch {}
                         }
                         Start-Sleep -Milliseconds 25
                     }
@@ -992,6 +1021,8 @@ Describe 'DevTunnel parameter boundaries' {
                 try {
                     # Starting in a runspace lets readiness be observed without timing
                     # assertions. No fake binds ports or executes devtunnel.
+                    # Force the previous exists-but-empty race deterministically.
+                    [IO.File]::WriteAllText($statePath, '')
                     $owner = Start-OwnedPipeline -Arguments (Get-FakeArguments wait $statePath) -TimeoutSeconds 1
                     $state = Wait-FakeState $statePath
                     [int]$state | Should -BeGreaterThan 0
