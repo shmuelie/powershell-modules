@@ -1095,21 +1095,21 @@ Describe 'DevTunnel CLI resolution version and JSON boundary' {
         }
 
         It 'uses file metadata without executing a version command' {
-            $path = [Environment]::ProcessPath
+            $path = [Management.Automation.PSObject].Assembly.Location
             $metadata = [Diagnostics.FileVersionInfo]::GetVersionInfo($path).ProductVersion
             $metadata | Should -Not -BeNullOrEmpty
-            # pwsh's newer major must be rejected from metadata without CLI fallback.
+            # PowerShell's managed PE has version metadata even when pwsh is ELF.
             { Get-DevTunnelCliVersion -FilePath $path } | Should -Throw '*Unsupported devtunnel CLI version*'
             Should -Invoke Invoke-DevTunnelProcess -Times 0 -Exactly
         }
 
         It 'accepts supported product metadata without a version subprocess' {
             # A TestDrive-only PE resource fixture; never execute this copy.
-            # Add-Type assemblies lack Windows version resources, so copy the
-            # running host and replace only its UTF-16 version resource text.
-            $path = Join-Path $TestDrive 'metadata-only-never-run.exe'
-            $original = [Diagnostics.FileVersionInfo]::GetVersionInfo([Environment]::ProcessPath).ProductVersion
-            $bytes = [IO.File]::ReadAllBytes([Environment]::ProcessPath)
+            # Copy the loaded managed PE, not the native host (ELF on Linux).
+            $path = Join-Path $TestDrive 'metadata-only-never-run.dll'
+            $sourcePath = [Management.Automation.PSObject].Assembly.Location
+            $original = [Diagnostics.FileVersionInfo]::GetVersionInfo($sourcePath).ProductVersion
+            $bytes = [IO.File]::ReadAllBytes($sourcePath)
             $text = [Text.Encoding]::Unicode.GetString($bytes)
             $original.Length | Should -BeGreaterOrEqual 8
             $replacement = [Text.Encoding]::Unicode.GetBytes('1.0.2115'.PadRight($original.Length, [char]0))
@@ -1119,6 +1119,17 @@ Describe 'DevTunnel CLI resolution version and JSON boundary' {
                 [array]::Copy($replacement, 0, $bytes, $offset * 2, $replacement.Length)
                 $offset = $text.IndexOf($original, $offset + $original.Length, [StringComparison]::Ordinal)
             }
+            # Unix FileVersionInfo reads the UTF-8 informational-version
+            # attribute, not the UTF-16 Win32 resource. Patch its serialized
+            # string length too; NUL padding alone would change the assertion.
+            $utf8 = [Text.Encoding]::UTF8.GetBytes($original)
+            $utf8.Length | Should -BeLessThan 128
+            [byte[]]$originalAttribute = @(1, 0, [byte]$utf8.Length) + $utf8 + @(0, 0)
+            $binaryText = [Text.Encoding]::Latin1.GetString($bytes)
+            $attributeOffset = $binaryText.IndexOf([Text.Encoding]::Latin1.GetString($originalAttribute), [StringComparison]::Ordinal)
+            $attributeOffset | Should -BeGreaterOrEqual 0
+            [byte[]]$replacementAttribute = @(1, 0, 8) + [Text.Encoding]::UTF8.GetBytes('1.0.2115') + @(0, 0)
+            [array]::Copy($replacementAttribute, 0, $bytes, $attributeOffset, $replacementAttribute.Length)
             [IO.File]::WriteAllBytes($path, $bytes)
             [Diagnostics.FileVersionInfo]::GetVersionInfo($path).ProductVersion | Should -BeExactly '1.0.2115'
             Get-DevTunnelCliVersion -FilePath $path | Should -Be ([version]'1.0.2115')
