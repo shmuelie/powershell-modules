@@ -8,6 +8,20 @@ title: Modules
 
 Each module is self-contained and independently versioned.
 
+## Shmuelie.DevTunnel
+
+Microsoft `devtunnel` CLI wrappers for Windows, Linux, and macOS.
+**Version 0.1.0.**
+[README](https://github.com/shmuelie/powershell-modules/blob/main/modules/Shmuelie.DevTunnel/README.md)
+
+Includes account login/status, tunnel lifecycle, foreground hosting/connections,
+ports, access rules/tokens, default selection, and diagnostics. Management output
+preserves CLI JSON envelopes; foreground commands stream text. State-changing
+operations support `-WhatIf` and confirmation. Requires CLI 1.0.2115 or compatible
+1.x, installed separately; import does not execute it or authenticate.
+Anonymous access is always explicit. See the README for cancellation and
+temporary-tunnel expiration behavior.
+
 ## Import startup cost
 
 The modules use a root-level script loader so newly added command and helper

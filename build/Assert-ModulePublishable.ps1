@@ -16,7 +16,7 @@ $ErrorActionPreference = 'Stop'
 $publishedModules = @(
     'Shmuelie.Git', 'Shmuelie.Copilot', 'Shmuelie.Node', 'Shmuelie.DotNet',
     'Shmuelie.Utilities', 'Shmuelie.Dsc', 'Shmuelie.VisualStudio',
-    'Shmuelie.Windows', 'Shmuelie.PackageManagement'
+    'Shmuelie.Windows', 'Shmuelie.PackageManagement', 'Shmuelie.DevTunnel'
 )
 if ($Module -notin $publishedModules) {
     throw "Module '$Module' is not publishable. Experimental AppInstallManager development remains on hold."

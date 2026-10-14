@@ -16,6 +16,7 @@ see [`docs/contributing.md`](../docs/contributing.md).
 | `Shmuelie.DotNet` | Canonical .NET tool discovery, installation, updates, and removal |
 | `Shmuelie.Utilities` | General developer utilities, plus .NET tool compatibility wrappers until Utilities 1.0 |
 | `Shmuelie.PackageManagement` | Provider-neutral package update orchestration; see its README for provider availability |
+| `Shmuelie.DevTunnel` | Microsoft devtunnel CLI accounts, tunnel/port/access management, foreground hosting, and diagnostics |
 
 ## Repository layout
 

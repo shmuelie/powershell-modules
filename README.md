@@ -1,7 +1,7 @@
 # Shmuelie PowerShell Modules
 
 Independently versioned PowerShell modules for Git, GitHub Copilot CLI, Node.js,
-.NET, Visual Studio, and general developer tooling.
+.NET, Visual Studio, Dev Tunnels, and general developer tooling.
 
 ```powershell
 Install-PSResource Shmuelie.Git
@@ -13,6 +13,7 @@ Install-PSResource Shmuelie.Windows
 Install-PSResource Shmuelie.Dsc
 Install-PSResource Shmuelie.VisualStudio
 Install-PSResource Shmuelie.PackageManagement
+Install-PSResource Shmuelie.DevTunnel
 ```
 
 ## Modules
@@ -28,6 +29,7 @@ Install-PSResource Shmuelie.PackageManagement
 | [Shmuelie.Dsc](docs/modules.md#shmuelie-dsc) | DSC v3 resources for setup: modules, symlinks, Copilot plugins/marketplaces, uv tools |
 | [Shmuelie.VisualStudio](docs/modules.md#shmuelie-visualstudio) | Visual Studio discovery, MSBuild resolution, and developer shell launch helpers |
 | [Shmuelie.PackageManagement](docs/modules.md#shmuelie-packagemanagement) | Package update orchestration; see the module README for provider availability |
+| [Shmuelie.DevTunnel](docs/modules.md#shmuelie-devtunnel) | Microsoft devtunnel CLI accounts, tunnels, ports, access, hosting, and diagnostics |
 
 ## Documentation
 
