@@ -64,8 +64,12 @@ JSON is converted to PowerShell objects without reshaping the CLI schema.
 For example, `(Get-DevTunnelCluster).clusters` contains the cluster records.
 Empty CLI output produces no object. Malformed JSON and nonzero exit codes
 terminate with an error, not an empty success result. Non-sensitive failures
-include stderr; authentication/token errors omit output to avoid echoing secrets.
-Successful management stderr is surfaced as a warning.
+include stderr; captured authentication/token failures omit output to avoid
+echoing secrets. Foreground authentication instructions are streamed immediately,
+with recognizable bearer, JWT, GitHub, and named token/secret values redacted
+before emission. A later login failure cannot retract instructions already
+displayed; its error does not replay them. Successful management stderr is
+surfaced as a warning.
 
 The initial surface intentionally does not forward arbitrary arguments,
 access-token inputs, service-principal/managed-identity authentication, header
@@ -157,6 +161,10 @@ to stop the invocation. Cleanup terminates and waits for only its owned process
 tree; unrelated CLI instances are not touched. Management/version commands close
 stdin and have a 60-second timeout. Authentication is explicit and uses the CLI
 browser/device-code flow, not a module-owned stdin prompt.
+Device-code instructions intentionally display a short-lived user code. Avoid
+transcribing login sessions or publishing their output. Redaction covers known
+credential formats, not arbitrary changes to a future CLI's text; only run a
+trusted CLI from `PATH`.
 
 The CLI normally deletes a temporary tunnel on graceful host exit. Pipeline
 cancellation can forcefully terminate the process, so service-side deletion is

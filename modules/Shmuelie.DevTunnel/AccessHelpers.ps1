@@ -8,7 +8,7 @@ function Get-DevTunnelAccess {
     [CmdletBinding()]
     param(
         [Parameter(ValueFromPipelineByPropertyName)][Alias('Id')]
-        [ValidatePattern('^[a-zA-Z0-9][a-zA-Z0-9.-]*$')][string]$TunnelId,
+        [ValidatePattern('\A[a-zA-Z0-9][a-zA-Z0-9.-]*\z')][string]$TunnelId,
         [ValidateRange(1, 65535)][int]$PortNumber
     )
     process {
@@ -29,7 +29,7 @@ function Add-DevTunnelAccess {
     [CmdletBinding(SupportsShouldProcess, DefaultParameterSetName = 'Anonymous')]
     param(
         [Parameter(ValueFromPipelineByPropertyName)][Alias('Id')]
-        [ValidatePattern('^[a-zA-Z0-9][a-zA-Z0-9.-]*$')][string]$TunnelId,
+        [ValidatePattern('\A[a-zA-Z0-9][a-zA-Z0-9.-]*\z')][string]$TunnelId,
         [ValidateRange(1, 65535)][int]$PortNumber,
         [Parameter(Mandatory, ParameterSetName = 'Anonymous')][switch]$Anonymous,
         [Parameter(Mandatory, ParameterSetName = 'Tenant')][switch]$Tenant,
@@ -62,7 +62,7 @@ function Remove-DevTunnelAccess {
     [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'High')]
     param(
         [Parameter(ValueFromPipelineByPropertyName)][Alias('Id')]
-        [ValidatePattern('^[a-zA-Z0-9][a-zA-Z0-9.-]*$')][string]$TunnelId,
+        [ValidatePattern('\A[a-zA-Z0-9][a-zA-Z0-9.-]*\z')][string]$TunnelId,
         [ValidateRange(1, 65535)][int]$PortNumber,
         [Parameter(Mandatory)][ValidateRange(0, [int]::MaxValue)][int]$Index
     )
@@ -83,7 +83,7 @@ function Reset-DevTunnelAccess {
     [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'High')]
     param(
         [Parameter(ValueFromPipelineByPropertyName)][Alias('Id')]
-        [ValidatePattern('^[a-zA-Z0-9][a-zA-Z0-9.-]*$')][string]$TunnelId,
+        [ValidatePattern('\A[a-zA-Z0-9][a-zA-Z0-9.-]*\z')][string]$TunnelId,
         [ValidateRange(1, 65535)][int]$PortNumber
     )
     process {
@@ -106,7 +106,7 @@ function New-DevTunnelToken {
     [CmdletBinding(SupportsShouldProcess)]
     param(
         [Parameter(ValueFromPipelineByPropertyName)][Alias('Id')]
-        [ValidatePattern('^[a-zA-Z0-9][a-zA-Z0-9.-]*$')][string]$TunnelId,
+        [ValidatePattern('\A[a-zA-Z0-9][a-zA-Z0-9.-]*\z')][string]$TunnelId,
         [Parameter(Mandatory)][ValidateNotNullOrEmpty()]
         [ValidateSet('create', 'manage', 'manage:ports', 'host', 'inspect', 'connect')][string[]]$Scope
     )

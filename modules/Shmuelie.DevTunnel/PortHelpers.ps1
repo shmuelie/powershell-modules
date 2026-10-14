@@ -8,7 +8,7 @@ function Get-DevTunnelPort {
     [CmdletBinding()]
     param(
         [Parameter(ValueFromPipelineByPropertyName)][Alias('Id')]
-        [ValidatePattern('^[a-zA-Z0-9][a-zA-Z0-9.-]*$')][string]$TunnelId,
+        [ValidatePattern('\A[a-zA-Z0-9][a-zA-Z0-9.-]*\z')][string]$TunnelId,
         [ValidateRange(1, 65535)][int]$PortNumber
     )
     process {
@@ -27,7 +27,7 @@ function New-DevTunnelPort {
     [CmdletBinding(SupportsShouldProcess)]
     param(
         [Parameter(ValueFromPipelineByPropertyName)][Alias('Id')]
-        [ValidatePattern('^[a-zA-Z0-9][a-zA-Z0-9.-]*$')][string]$TunnelId,
+        [ValidatePattern('\A[a-zA-Z0-9][a-zA-Z0-9.-]*\z')][string]$TunnelId,
         [Parameter(Mandatory)][ValidateRange(1, 65535)][int]$PortNumber,
         [ValidateSet('http', 'https', 'auto')][string]$Protocol,
         [ValidateNotNullOrEmpty()][string]$Description,
@@ -50,7 +50,7 @@ function Set-DevTunnelPort {
     [CmdletBinding(SupportsShouldProcess)]
     param(
         [Parameter(ValueFromPipelineByPropertyName)][Alias('Id')]
-        [ValidatePattern('^[a-zA-Z0-9][a-zA-Z0-9.-]*$')][string]$TunnelId,
+        [ValidatePattern('\A[a-zA-Z0-9][a-zA-Z0-9.-]*\z')][string]$TunnelId,
         [Parameter(Mandatory)][ValidateRange(1, 65535)][int]$PortNumber,
         [AllowEmptyString()][string]$Description,
         [ValidateNotNullOrEmpty()][string[]]$AddLabel,
@@ -73,7 +73,7 @@ function Remove-DevTunnelPort {
     [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'High')]
     param(
         [Parameter(ValueFromPipelineByPropertyName)][Alias('Id')]
-        [ValidatePattern('^[a-zA-Z0-9][a-zA-Z0-9.-]*$')][string]$TunnelId,
+        [ValidatePattern('\A[a-zA-Z0-9][a-zA-Z0-9.-]*\z')][string]$TunnelId,
         [Parameter(Mandatory)][ValidateRange(1, 65535)][int]$PortNumber
     )
     process {

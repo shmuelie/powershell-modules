@@ -13,7 +13,7 @@ function Get-DevTunnel {
     [CmdletBinding(DefaultParameterSetName = 'List')]
     param(
         [Parameter(Mandatory, ParameterSetName = 'Show', ValueFromPipelineByPropertyName)]
-        [Alias('Id')][ValidatePattern('^[a-zA-Z0-9][a-zA-Z0-9.-]*$')][string]$TunnelId,
+        [Alias('Id')][ValidatePattern('\A[a-zA-Z0-9][a-zA-Z0-9.-]*\z')][string]$TunnelId,
         [Parameter(Mandatory, ParameterSetName = 'LastUsed')][switch]$LastUsed,
         [Parameter(ParameterSetName = 'List')][ValidateNotNullOrEmpty()][string[]]$Label,
         [Parameter(ParameterSetName = 'List')][ValidateNotNullOrEmpty()][string[]]$AllLabel,
@@ -37,7 +37,7 @@ function New-DevTunnel {
     #>
     [CmdletBinding(SupportsShouldProcess)]
     param(
-        [ValidatePattern('^[a-zA-Z0-9][a-zA-Z0-9.-]*$')][string]$TunnelId,
+        [ValidatePattern('\A[a-zA-Z0-9][a-zA-Z0-9.-]*\z')][string]$TunnelId,
         [ValidateNotNullOrEmpty()][string]$Description,
         [ValidateNotNullOrEmpty()][string[]]$Label,
         [ValidateScript({ Test-DevTunnelExpiration $_ })][string]$Expiration,
@@ -59,7 +59,7 @@ function Set-DevTunnel {
     [CmdletBinding(SupportsShouldProcess)]
     param(
         [Parameter(ValueFromPipelineByPropertyName)][Alias('Id')]
-        [ValidatePattern('^[a-zA-Z0-9][a-zA-Z0-9.-]*$')][string]$TunnelId,
+        [ValidatePattern('\A[a-zA-Z0-9][a-zA-Z0-9.-]*\z')][string]$TunnelId,
         [AllowEmptyString()][string]$Description,
         [ValidateNotNullOrEmpty()][string[]]$AddLabel,
         [ValidateNotNullOrEmpty()][string[]]$RemoveLabel,
@@ -87,7 +87,7 @@ function Remove-DevTunnel {
     [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'High', DefaultParameterSetName = 'Single')]
     param(
         [Parameter(ParameterSetName = 'Single', ValueFromPipelineByPropertyName)][Alias('Id')]
-        [ValidatePattern('^[a-zA-Z0-9][a-zA-Z0-9.-]*$')][string]$TunnelId,
+        [ValidatePattern('\A[a-zA-Z0-9][a-zA-Z0-9.-]*\z')][string]$TunnelId,
         [Parameter(Mandatory, ParameterSetName = 'All')][switch]$All
     )
     process {
@@ -111,7 +111,7 @@ function Set-DevTunnelDefault {
     [CmdletBinding(SupportsShouldProcess)]
     param(
         [Parameter(Mandatory, ValueFromPipelineByPropertyName)][Alias('Id')]
-        [ValidatePattern('^[a-zA-Z0-9][a-zA-Z0-9.-]*$')][string]$TunnelId
+        [ValidatePattern('\A[a-zA-Z0-9][a-zA-Z0-9.-]*\z')][string]$TunnelId
     )
     process {
         if ($PSCmdlet.ShouldProcess($TunnelId, 'Set default tunnel')) {

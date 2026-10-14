@@ -30,24 +30,32 @@ function Invoke-DevTunnelProcess {
         $outRead = $process.StandardOutput.ReadLineAsync()
         $errRead = $process.StandardError.ReadLineAsync()
         while ($null -ne $outRead -or $null -ne $errRead -or -not $process.HasExited) {
+            $readCompleted = $false
             if (-not $Stream -and $timer.Elapsed.TotalSeconds -ge $TimeoutSeconds) {
                 throw "devtunnel timed out after $TimeoutSeconds seconds."
             }
             if ($null -ne $outRead -and $outRead.IsCompleted) {
+                $readCompleted = $true
                 $line = $outRead.GetAwaiter().GetResult()
                 if ($null -eq $line) {
                     $outRead = $null
                 } else {
-                    if ($Stream) { $line } else { $null = $stdout.AppendLine($line) }
+                    if ($Stream) {
+                        if ($Sensitive) { Protect-DevTunnelAuthenticationOutput -Text $line } else { $line }
+                    } else {
+                        $null = $stdout.AppendLine($line)
+                    }
                     $outRead = $process.StandardOutput.ReadLineAsync()
                 }
             }
             if ($null -ne $errRead -and $errRead.IsCompleted) {
+                $readCompleted = $true
                 $line = $errRead.GetAwaiter().GetResult()
                 if ($null -eq $line) {
                     $errRead = $null
                 } else {
                     if ($Stream) {
+                        if ($Sensitive) { $line = Protect-DevTunnelAuthenticationOutput -Text $line }
                         Write-Information $line -InformationAction Continue
                     } else {
                         $null = $stderr.AppendLine($line)
@@ -55,7 +63,7 @@ function Invoke-DevTunnelProcess {
                     $errRead = $process.StandardError.ReadLineAsync()
                 }
             }
-            Start-Sleep -Milliseconds 10
+            if (-not $readCompleted) { Start-Sleep -Milliseconds 10 }
         }
         $process.WaitForExit()
         if ($process.ExitCode -ne 0) {
@@ -83,6 +91,17 @@ function Invoke-DevTunnelProcess {
             }
         }
     }
+}
+
+function Protect-DevTunnelAuthenticationOutput {
+    param([AllowEmptyString()][string]$Text)
+    # Device-code instructions must arrive before login finishes; do not buffer them.
+    $text = [regex]::Replace($Text,
+        '(?i)(\b(?:access[_-]?token|refresh[_-]?token|id[_-]?token|authorization|client[_-]?secret)\b["'']?\s*[:=]\s*["'']?(?:bearer\s+)?)[^\s"'',;]+',
+        '${1}[REDACTED]')
+    $text = [regex]::Replace($text, '(?i)\bBearer\s+[A-Za-z0-9._~+/-]+=*', 'Bearer [REDACTED]')
+    $text = [regex]::Replace($text, '\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b', '[REDACTED]')
+    [regex]::Replace($text, '\b(?:gh[pousr]_[A-Za-z0-9]+|github_pat_[A-Za-z0-9_]+)\b', '[REDACTED]')
 }
 
 function Resolve-DevTunnelCli {
@@ -180,7 +199,7 @@ function Write-DevTunnelAnonymousWarning {
 
 function Test-DevTunnelExpiration {
     param([string]$Value)
-    if ($Value -notmatch '^(?<value>[1-9][0-9]{0,2})(?<unit>[hd])$') {
+    if ($Value -notmatch '\A(?<value>[1-9][0-9]{0,2})(?<unit>[hd])\z') {
         throw 'Expiration must be 1h through 720h or 1d through 30d.'
     }
     $maximum = if ($Matches.unit -eq 'h') { 720 } else { 30 }

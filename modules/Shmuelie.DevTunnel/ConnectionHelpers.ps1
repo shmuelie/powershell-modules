@@ -13,7 +13,7 @@ function Start-DevTunnel {
     #>
     [CmdletBinding(SupportsShouldProcess)]
     param(
-        [ValidatePattern('^[a-zA-Z0-9][a-zA-Z0-9.-]*$')][string]$TunnelId,
+        [ValidatePattern('\A[a-zA-Z0-9][a-zA-Z0-9.-]*\z')][string]$TunnelId,
         [ValidateNotNullOrEmpty()][ValidateRange(1, 65535)][int[]]$PortNumber,
         [ValidateSet('http', 'https', 'auto')][string]$Protocol,
         [ValidateNotNullOrEmpty()][string]$Description,
@@ -36,7 +36,7 @@ function Connect-DevTunnel {
     #>
     [CmdletBinding(SupportsShouldProcess)]
     param(
-        [ValidatePattern('^[a-zA-Z0-9][a-zA-Z0-9.-]*$')][string]$TunnelId
+        [ValidatePattern('\A[a-zA-Z0-9][a-zA-Z0-9.-]*\z')][string]$TunnelId
     )
     if ($PSCmdlet.ShouldProcess($(if ($TunnelId) { $TunnelId } else { 'last-used tunnel' }), 'Connect tunnel in foreground')) {
         Invoke-DevTunnelCommand -Arguments (New-DevTunnelArguments -Command connect -Parameters $PSBoundParameters) -Stream
