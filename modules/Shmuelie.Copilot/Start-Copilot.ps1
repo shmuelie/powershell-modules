@@ -241,7 +241,10 @@ function Start-Copilot {
         Only valid with -Prompt (non-interactive mode).
 
     .PARAMETER Remote
-        Enable remote control of the session from GitHub web and mobile.
+        Request remote control from GitHub web and mobile. Requires a Git
+        worktree with one recognized GitHub origin in the effective launch
+        directory. Otherwise warn and keep the session local with --no-remote.
+        Explicit -NoRemote takes precedence, including in previews.
 
     .PARAMETER NoRemote
         Disable remote control of the session from GitHub web and mobile.

@@ -6,6 +6,15 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+### Fixed
+- `Start-Copilot` and `Get-CopilotLaunchPlan` enable requested remote control
+  only for a Git worktree with one recognized GitHub `origin`. Ineligible
+  requests warn and continue locally with `--no-remote`; explicit disabling
+  takes precedence. The same policy covers directory overrides, resumed
+  sessions, raw remote switches, plans, and previews without changing
+  remote-export or help/update passthrough. `Resume-CopilotSession` applies
+  the same policy to raw remote switches. (#356)
+
 ## [0.7.1] - 2026-10-09
 
 ### Fixed

@@ -17,7 +17,7 @@ Start-Copilot
 
 | Area | Commands |
 |---|---|
-| Launcher | `Start-Copilot`, `Get-CopilotLaunchPlan` (directory-aware planning with `-ChangeDir` / `-C`; native host choices; optional `-SessionSelector`) |
+| Launcher | `Start-Copilot`, `Get-CopilotLaunchPlan` (directory-aware planning with `-ChangeDir` / `-C`; GitHub-origin-gated `-Remote`; native host choices; optional `-SessionSelector`) |
 | Sessions | `Get-CopilotSession` / `Select-CopilotSession` (composable metadata and age filters; native host choices or `-SessionSelector` on selection), `Resume-CopilotSession`, `Rename-CopilotSession`, `Remove-CopilotSession` |
 | Session maintenance | `Merge-CopilotSession`, `Compress-CopilotSession`, `Repair-CopilotSessionEvents` |
 | Plugins | `Get-CopilotPlugin`, `Install-CopilotPlugin`, `Update-CopilotPlugin`, `Uninstall-CopilotPlugin` |
@@ -129,6 +129,22 @@ repair without reading or writing session files.
   rebase, amend, `git pull`, and similar).
 - **Full flag mapping** — model, reasoning effort, MCP enable/disable, plan mode,
   attachments, remote control, and the rest of the Copilot CLI surface.
+- **Remote control eligibility** — `-Remote` (or raw `--remote` in
+  `-RemainingArgs`) requires a Git worktree with exactly one recognized GitHub
+  `origin`: HTTPS, `git@github.com:owner/repository`, or
+  `ssh://git@github.com/owner/repository`, with optional `.git`. Detection is
+  local, honors Git URL rewrites, and requires neither a tracking branch nor a
+  checked-out branch. The effective launch directory, including `-ChangeDir`,
+  determines eligibility for new and resumed sessions, not stale recorded
+  session metadata. Missing, ambiguous, non-GitHub, or unreadable origins warn
+  and emit `--no-remote`, keeping the session local. `-NoRemote` (or raw
+  `--no-remote`) wins over a simultaneous enable request. Eligible repositories
+  do not opt in automatically. Plans, `-PassThru`, `-WhatIf`, and launches use
+  the same policy; help/update passthrough and remote-export flags are unchanged.
+  `Resume-CopilotSession` applies this policy to raw remote switches too;
+  `Select-CopilotSession` first enters the recorded directory unless
+  `-StayInDirectory` is supplied. Tokens after a raw `--` separator remain
+  positional arguments, not remote switches.
 - **Model completion** suggests `auto` (native model routing) and common model
   names from one shared fallback list. The CLI does not expose a documented
   non-interactive model inventory; these suggestions are not exhaustive, and
