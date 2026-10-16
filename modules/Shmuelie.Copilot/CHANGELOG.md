@@ -6,6 +6,8 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-10-16
+
 ### Fixed
 - `Start-Copilot` and `Get-CopilotLaunchPlan` enable requested remote control
   only for a Git worktree with one recognized GitHub `origin`. Ineligible
