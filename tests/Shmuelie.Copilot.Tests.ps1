@@ -5857,6 +5857,283 @@ Describe 'Copilot scoped GitHub MCP authentication planning' {
     }
 }
 
+Describe 'Copilot remote repository eligibility' -Tag 'RemoteRepository' {
+    BeforeEach {
+        $root = Join-Path $TestDrive ([guid]::NewGuid().ToString())
+        $testHome = Join-Path $root 'home'
+        New-Item -ItemType Directory -Path $testHome -Force | Out-Null
+        Mock -ModuleName Shmuelie.Copilot Get-CopilotHome { $testHome }
+        Add-FakeCopilot -Path (Join-Path $root 'bin')
+        $script:CopilotTestLog = Join-Path $root 'copilot.log'
+        $env:COPILOT_TEST_LOG = $script:CopilotTestLog
+        $script:RemoteRepo = Join-Path $root 'repo [remote]'
+        $script:RemotePlain = Join-Path $root 'plain'
+        New-Item -ItemType Directory -Path $script:RemotePlain -Force | Out-Null
+        & git init -q -b main $script:RemoteRepo
+        if ($LASTEXITCODE -ne 0) { throw 'Could not initialize remote eligibility repository.' }
+        & git -C $script:RemoteRepo remote add origin 'https://github.com/owner/repository.git'
+        if ($LASTEXITCODE -ne 0) { throw 'Could not add remote eligibility origin.' }
+        $script:RemoteCaller = Get-Location
+        Set-Location -LiteralPath $script:RemoteRepo
+    }
+
+    AfterEach {
+        Set-Location -LiteralPath $script:RemoteCaller.Path
+    }
+
+    It 'enables requested remote control for a recognized GitHub origin (<Format>)' -ForEach @(
+        @{ Format = 'HTTPS'; Url = 'https://github.com/owner/repository.git' }
+        @{ Format = 'HTTPS without suffix'; Url = 'https://github.com/owner/repository' }
+        @{ Format = 'SCP SSH'; Url = 'git@github.com:owner/repository.git' }
+        @{ Format = 'SSH URI'; Url = 'ssh://git@github.com/owner/repository.git' }
+        @{ Format = 'case and trailing slash'; Url = 'https://GitHub.com/Owner/Repository.git/' }
+    ) {
+        & git remote set-url origin $Url
+        if ($LASTEXITCODE -ne 0) { throw 'Could not set test origin.' }
+        $plan = Get-CopilotLaunchPlan -DeferResume -Remote -WarningVariable warnings
+        @($plan.Args | Where-Object { $_ -eq '--remote' }) | Should -HaveCount 1
+        $plan.Args | Should -Not -Contain '--no-remote'
+        @($warnings) | Should -HaveCount 0
+        Test-Path -LiteralPath $script:CopilotTestLog | Should -BeFalse
+    }
+
+    It 'keeps an ineligible origin local with a warning (<Context>)' -ForEach @(
+        @{ Context = 'another host'; Url = 'https://gitlab.com/owner/repository.git' }
+        @{ Context = 'ADO'; Url = 'https://dev.azure.com/acme/project/_git/repository' }
+        @{ Context = 'lookalike host'; Url = 'https://github.com.example.org/owner/repository.git' }
+        @{ Context = 'extra path'; Url = 'https://github.com/owner/repository/extra' }
+        @{ Context = 'query'; Url = 'https://github.com/owner/repository?query=1' }
+        @{ Context = 'local path'; Url = '/local/repository.git' }
+        @{ Context = 'invalid owner'; Url = 'https://github.com/owner_name/repository.git' }
+        @{ Context = 'dot repository'; Url = 'https://github.com/owner/..' }
+        @{ Context = 'empty repository'; Url = 'https://github.com/owner/' }
+    ) {
+        & git remote set-url origin $Url
+        if ($LASTEXITCODE -ne 0) { throw 'Could not set ineligible test origin.' }
+        $plan = Get-CopilotLaunchPlan -DeferResume -Remote -WarningVariable warnings -WarningAction SilentlyContinue
+        $plan.Args | Should -Not -Contain '--remote'
+        $plan.Args | Should -Contain '--no-remote'
+        @($warnings) | Should -HaveCount 1
+        "$warnings" | Should -Match 'Continuing locally'
+    }
+
+    It 'rejects failed or unstamped origin discovery even with a GitHub URL (<Failure>)' -ForEach @(
+        @{ Failure = 'nonzero exit'; ExitCode = 128 }
+        @{ Failure = 'missing exit'; ExitCode = $null }
+    ) {
+        Mock -ModuleName Shmuelie.Copilot git {
+            $global:LASTEXITCODE = 0
+            'true'
+        } -ParameterFilter { $args[0] -eq 'rev-parse' }
+        Mock -ModuleName Shmuelie.Copilot git {
+            $global:LASTEXITCODE = $ExitCode
+            'https://github.com/owner/repository.git'
+        } -ParameterFilter { $args[0] -eq 'remote' }
+        $plan = Get-CopilotLaunchPlan -DeferResume -Remote -WarningVariable warnings -WarningAction SilentlyContinue
+        $plan.Args | Should -Not -Contain '--remote'
+        $plan.Args | Should -Contain '--no-remote'
+        @($warnings) | Should -HaveCount 1
+        Should -Invoke -ModuleName Shmuelie.Copilot git -Times 1 -Exactly -ParameterFilter { $args[0] -eq 'remote' }
+        "$warnings" | Should -Match 'Continuing locally'
+    }
+
+    It 'does not enable remote control without a repository or an unambiguous origin (<Context>)' -ForEach @(
+        @{ Context = 'non-Git directory' }
+        @{ Context = 'no origin' }
+        @{ Context = 'multiple origin URLs' }
+    ) {
+        switch ($Context) {
+            'non-Git directory' { Set-Location -LiteralPath $script:RemotePlain }
+            'no origin' { & git remote remove origin }
+            'multiple origin URLs' { & git config --add remote.origin.url 'https://github.com/other/repository.git' }
+        }
+        $plan = Get-CopilotLaunchPlan -DeferResume -Remote -WarningVariable warnings -WarningAction SilentlyContinue
+        $plan.Args | Should -Not -Contain '--remote'
+        $plan.Args | Should -Contain '--no-remote'
+        @($warnings) | Should -HaveCount 1
+    }
+
+    It 'keeps the session local when Git discovery throws or fails (<Failure>)' -ForEach @(
+        @{ Failure = 'missing command'; Throws = $true }
+        @{ Failure = 'unsuccessful command'; Throws = $false }
+    ) {
+        Mock -ModuleName Shmuelie.Copilot git {
+            if ($Throws) { throw 'Git discovery is unavailable.' }
+            $global:LASTEXITCODE = 128
+            'true'
+        } -ParameterFilter { $args[0] -eq 'rev-parse' }
+        $plan = Get-CopilotLaunchPlan -DeferResume -Remote -WarningVariable warnings -WarningAction SilentlyContinue
+        $plan.Args | Should -Not -Contain '--remote'
+        $plan.Args | Should -Contain '--no-remote'
+        @($warnings) | Should -HaveCount 1
+        Should -Invoke -ModuleName Shmuelie.Copilot git -Times 1 -Exactly -ParameterFilter { $args[0] -eq 'rev-parse' }
+    }
+
+    It 'does not opt an eligible repository into remote control (<Mode>)' -ForEach @(
+        @{ Mode = 'not requested'; Options = @{} }
+        @{ Mode = 'explicitly false'; Options = @{ Remote = $false } }
+    ) {
+        Mock -ModuleName Shmuelie.Copilot Test-CopilotRemoteRepository { throw 'Eligibility must not be inspected.' }
+        $plan = Get-CopilotLaunchPlan -DeferResume @Options
+        $plan.Args | Should -Not -Contain '--remote'
+        $plan.Args | Should -Not -Contain '--no-remote'
+    }
+
+    It 'gives explicit disabling precedence without inspecting Git (<Mode>)' -ForEach @(
+        @{ Mode = 'disable only'; Options = @{ NoRemote = $true } }
+        @{ Mode = 'typed enable and disable'; Options = @{ Remote = $true; NoRemote = $true } }
+        @{ Mode = 'typed disable and raw enable'; Options = @{ NoRemote = $true; RemainingArgs = @('--remote') } }
+        @{ Mode = 'raw disable and typed enable'; Options = @{ Remote = $true; RemainingArgs = @('--no-remote') } }
+    ) {
+        Mock -ModuleName Shmuelie.Copilot Test-CopilotRemoteRepository { throw 'Eligibility must not be inspected.' }
+        $plan = Get-CopilotLaunchPlan -DeferResume @Options -WarningVariable warnings
+        $plan.Args | Should -Not -Contain '--remote'
+        @($plan.Args | Where-Object { $_ -eq '--no-remote' }) | Should -HaveCount 1
+        @($warnings) | Should -HaveCount 0
+    }
+
+    It 'gates raw remote requests without altering remote export or prompt values' {
+        Set-Location -LiteralPath $script:RemotePlain
+        $plan = Get-CopilotLaunchPlan -DeferResume -Prompt '--remote' -RemoteExport `
+            -RemainingArgs '--remote', '--no-remote-export' -WarningAction SilentlyContinue
+        $promptIndex = [array]::IndexOf($plan.Args, '-p')
+        $promptIndex | Should -BeGreaterOrEqual 0
+        $plan.Args[$promptIndex + 1] | Should -Be '--remote'
+        @($plan.Args | Where-Object { $_ -eq '--remote' }) | Should -HaveCount 1
+        $plan.Args | Should -Contain '--no-remote'
+        $plan.Args | Should -Contain '--remote-export'
+        $plan.Args | Should -Contain '--no-remote-export'
+    }
+
+    It 'enables an eligible raw remote request exactly once' {
+        $plan = Get-CopilotLaunchPlan -DeferResume -Remote -RemainingArgs '--remote', '--debug'
+        @($plan.Args | Where-Object { $_ -eq '--remote' }) | Should -HaveCount 1
+        $plan.Args | Should -Not -Contain '--no-remote'
+        $plan.Args | Should -Contain '--debug'
+    }
+
+    It 'does not interpret positional remote text after the option separator' {
+        Mock -ModuleName Shmuelie.Copilot Test-CopilotRemoteRepository { throw 'Eligibility must not be inspected.' }
+        $plan = Get-CopilotLaunchPlan -DeferResume -RemainingArgs '--', '--remote', '--no-remote'
+        $separator = [array]::IndexOf($plan.Args, '--')
+        $plan.Args[($separator + 1)..($plan.Args.Count - 1)] | Should -Be @('--remote', '--no-remote')
+        @($plan.Args | Where-Object { $_ -eq '--remote' }) | Should -HaveCount 1
+        @($plan.Args | Where-Object { $_ -eq '--no-remote' }) | Should -HaveCount 1
+    }
+
+    It 'uses the effective directory for new and resumed plans (<Mode>)' -ForEach @(
+        @{ Mode = 'new'; Options = @{ NoResume = $true } }
+        @{ Mode = 'explicit resume'; Options = @{ ResumeSession = 'recorded-session' } }
+    ) {
+        Set-Location -LiteralPath $script:RemotePlain
+        $eligible = Start-Copilot -PassThru -ChangeDir $script:RemoteRepo -Remote @Options
+        $eligible.Args | Should -Contain '--remote'
+        (Get-Location).Path | Should -Be $script:RemotePlain
+        Set-Location -LiteralPath $script:RemoteRepo
+        $ineligible = Start-Copilot -PassThru -ChangeDir $script:RemotePlain -Remote @Options -WarningAction SilentlyContinue
+        $ineligible.Args | Should -Not -Contain '--remote'
+        $ineligible.Args | Should -Contain '--no-remote'
+        if ($Options.ResumeSession) {
+            $ineligible.Args[[array]::IndexOf($ineligible.Args, '--resume') + 1] | Should -Be 'recorded-session'
+        }
+        (Get-Location).Path | Should -Be $script:RemoteRepo
+    }
+
+    It 'uses the current origin rather than recorded metadata during automatic resume' {
+        $sessionRoot = Join-Path $testHome '.copilot' 'session-state'
+        $session = New-CopilotSessionState -SessionRoot $sessionRoot -Id recorded `
+            -Cwd $script:RemotePlain -Summary 'Existing session'
+        Add-Content -LiteralPath (Join-Path $session 'workspace.yaml') -Value 'repository: owner/repository'
+        Set-Location -LiteralPath $script:RemotePlain
+        $plan = Get-CopilotLaunchPlan -Remote -WarningAction SilentlyContinue
+        $plan.Args[[array]::IndexOf($plan.Args, '--resume') + 1] | Should -Be 'recorded'
+        $plan.Args | Should -Not -Contain '--remote'
+        $plan.Args | Should -Contain '--no-remote'
+    }
+
+    It 'allows a detached GitHub worktree without an upstream tracking branch' {
+        & git -c user.name=Test -c user.email=test@example.test commit -q --allow-empty -m initial
+        if ($LASTEXITCODE -ne 0) { throw 'Could not commit in remote eligibility repository.' }
+        & git checkout -q --detach
+        if ($LASTEXITCODE -ne 0) { throw 'Could not detach remote eligibility repository.' }
+        (Get-CopilotLaunchPlan -DeferResume -Remote).Args | Should -Contain '--remote'
+    }
+
+    It 'preserves the caller exit code while checking remote eligibility' {
+        $global:LASTEXITCODE = 37
+        (Get-CopilotLaunchPlan -DeferResume -Remote).Args | Should -Contain '--remote'
+        $global:LASTEXITCODE | Should -Be 37
+    }
+
+    It 'restores an absent caller exit code under WhatIf' {
+        Remove-Variable -Name LASTEXITCODE -Scope Global -ErrorAction Ignore
+        $plan = Start-Copilot -PassThru -WhatIf -DeferResume -Remote
+        $plan.Args | Should -Contain '--remote'
+        Get-Variable -Name LASTEXITCODE -Scope Global -ErrorAction Ignore | Should -BeNullOrEmpty
+    }
+
+    It 'gates raw remote flags during direct resume (<Eligible>)' -ForEach @(
+        @{ Eligible = $true }
+        @{ Eligible = $false }
+    ) {
+        $sessionRoot = Join-Path $testHome '.copilot' 'session-state'
+        New-CopilotSessionState -SessionRoot $sessionRoot -Id direct `
+            -Cwd $script:RemoteRepo -Summary 'Direct resume' | Out-Null
+        if (-not $Eligible) { Set-Location -LiteralPath $script:RemotePlain }
+        Resume-CopilotSession -Id direct -RemainingArgs '--remote', '--debug' -WarningAction SilentlyContinue
+        $log = Get-Content -LiteralPath $script:CopilotTestLog -Raw
+        $log | Should -Match '--resume direct'
+        $log | Should -Match '--debug'
+        if ($Eligible) {
+            $log | Should -Match '(?:^|\s)--remote(?:\s|$)'
+            $log | Should -Not -Match '--no-remote'
+        } else {
+            $log | Should -Not -Match '(?:^|\s)--remote(?:\s|$)'
+            $log | Should -Match '--no-remote'
+        }
+    }
+
+    It 'checks the resolved host after Git URL rewriting' {
+        & git config url.https://example.org/.insteadOf 'https://github.com/'
+        if ($LASTEXITCODE -ne 0) { throw 'Could not configure test URL rewrite.' }
+        $plan = Get-CopilotLaunchPlan -DeferResume -Remote -WarningAction SilentlyContinue
+        $plan.Args | Should -Not -Contain '--remote'
+        $plan.Args | Should -Contain '--no-remote'
+    }
+
+    It 'uses the same local-only arguments for plans previews and actual launches' {
+        $options = @{ ChangeDir = $script:RemotePlain; DeferResume = $true; Remote = $true; WarningAction = 'SilentlyContinue' }
+        $direct = Get-CopilotLaunchPlan @options
+        $preview = Start-Copilot @options -PassThru -WhatIf
+        $preview.Args | Should -Be $direct.Args
+        $transcript = Join-Path $TestDrive 'remote-preview.txt'
+        Start-Transcript -LiteralPath $transcript -Force | Out-Null
+        try {
+            Start-Copilot @options -WhatIf
+        } finally {
+            Stop-Transcript | Out-Null
+        }
+        $display = Get-Content -LiteralPath $transcript -Raw
+        "$display" | Should -Match '--no-remote'
+        "$display" | Should -Not -Match '(?:^|\s)--remote(?:\s|$)'
+        Test-Path -LiteralPath $script:CopilotTestLog | Should -BeFalse
+        Start-Copilot @options -Confirm:$false
+        $log = Get-Content -LiteralPath $script:CopilotTestLog -Raw
+        $log | Should -Match '--no-remote'
+        $log | Should -Not -Match '(?:^|\s)--remote(?:\s|$)'
+    }
+
+    It 'leaves help and update passthrough untouched (<Command>)' -ForEach @(
+        @{ Command = 'help' }
+        @{ Command = 'update' }
+    ) {
+        Mock -ModuleName Shmuelie.Copilot Test-CopilotRemoteRepository { throw 'Eligibility must not be inspected.' }
+        $plan = Get-CopilotLaunchPlan -Prompt $Command -Remote -RemainingArgs '--remote'
+        $plan.Passthrough | Should -BeTrue
+        $plan.Args | Should -Be @($Command, '--remote')
+    }
+}
+
 Describe 'Get-CopilotLaunchPlan additional flag mappings' {
     BeforeEach {
         $testHome = Join-Path $TestDrive 'home'

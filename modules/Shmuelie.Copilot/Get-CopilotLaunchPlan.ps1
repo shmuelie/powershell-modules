@@ -337,7 +337,10 @@ function Get-CopilotLaunchPlan {
         Only valid with -Prompt (non-interactive mode).
 
     .PARAMETER Remote
-        Enable remote control of the session from GitHub web and mobile.
+        Request remote control from GitHub web and mobile. Requires a Git
+        worktree with one recognized GitHub origin in the effective launch
+        directory. Otherwise warn and emit --no-remote, keeping the session
+        local. Explicit -NoRemote takes precedence.
 
     .PARAMETER NoRemote
         Disable remote control of the session from GitHub web and mobile.
@@ -849,8 +852,6 @@ function Get-CopilotLaunchPlan {
         if ($EnableMemory) { $copilotArgs += '--enable-memory' }
         if ($ChangeDir) { $copilotArgs += '-C', $ChangeDir }
         if ($Attachment) { foreach ($a in $Attachment) { $copilotArgs += '--attachment', $a } }
-        if ($Remote) { $copilotArgs += '--remote' }
-        if ($NoRemote) { $copilotArgs += '--no-remote' }
         if ($Mouse) { $copilotArgs += '--mouse', $Mouse }
         if ($NoMouse) { $copilotArgs += '--no-mouse' }
         if ($PSBoundParameters.ContainsKey('Connect')) {
@@ -960,6 +961,10 @@ function Get-CopilotLaunchPlan {
         # Apply deferred -Name if we didn't end up resuming a session
         if ($applyName -and $copilotArgs -notcontains '--resume') {
             $copilotArgs += '--name', $Name
+        }
+
+        if (-not $isPassthrough) {
+            $RemainingArgs = @(Resolve-CopilotRemoteArguments -Arguments $RemainingArgs -Remote:$Remote -NoRemote:$NoRemote)
         }
 
         # Compute the final argument vector for both the passthrough (update/help) and

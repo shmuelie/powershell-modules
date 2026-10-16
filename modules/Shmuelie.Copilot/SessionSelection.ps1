@@ -32,6 +32,75 @@ function ConvertTo-CopilotAdoRepositoryIdentity {
     return "$($organization.ToLowerInvariant())/$project/$repository"
 }
 
+function ConvertTo-CopilotGitHubRepositoryIdentity {
+    param([Parameter(Mandatory)][string]$Url)
+
+    if ($Url -match '\A(?:https://github\.com/|git@github\.com:|ssh://git@github\.com/)([a-z0-9](?:[a-z0-9-]*[a-z0-9])?)/([a-z0-9_.-]+?)(?:\.git)?/?\z' -and
+        $Matches[2] -notin @('.', '..', '.git')) {
+        return "$($Matches[1])/$($Matches[2])"
+    }
+}
+
+function Test-CopilotRemoteRepository {
+    $previousExitCode = Get-Variable -Name LASTEXITCODE -Scope Global -ErrorAction Ignore
+    $previousExitCodeValue = if ($previousExitCode) { $previousExitCode.Value }
+    $PSNativeCommandUseErrorActionPreference = $false
+    try {
+        $global:LASTEXITCODE = $null
+        $insideWorktree = git rev-parse --is-inside-work-tree 2>$null
+        if ($LASTEXITCODE -ne 0 -or $insideWorktree -cne 'true') { return $false }
+
+        $global:LASTEXITCODE = $null
+        $urls = @(git remote get-url --all origin 2>$null)
+        if ($LASTEXITCODE -ne 0 -or $urls.Count -ne 1) { return $false }
+        return [bool](ConvertTo-CopilotGitHubRepositoryIdentity -Url $urls[0])
+    } catch {
+        Write-Verbose "Cannot determine Copilot remote eligibility: $($_.Exception.Message)"
+        return $false
+    } finally {
+        if ($previousExitCode) {
+            $global:LASTEXITCODE = $previousExitCodeValue
+        } else {
+            Remove-Variable -Name LASTEXITCODE -Scope Global -WhatIf:$false -Confirm:$false
+        }
+    }
+}
+
+function Resolve-CopilotRemoteArguments {
+    param(
+        [string[]]$Arguments,
+        [switch]$Remote,
+        [switch]$NoRemote
+    )
+
+    $remoteRequested = [bool]$Remote
+    $remoteDisabled = [bool]$NoRemote
+    $remaining = [System.Collections.Generic.List[string]]::new()
+    $endOfOptions = $false
+    foreach ($argument in $Arguments) {
+        if (-not $endOfOptions -and $argument -ceq '--remote') {
+            $remoteRequested = $true
+        } elseif (-not $endOfOptions -and $argument -ceq '--no-remote') {
+            $remoteDisabled = $true
+        } else {
+            $remaining.Add($argument)
+            if ($argument -ceq '--') { $endOfOptions = $true }
+        }
+    }
+
+    if ($remoteDisabled) {
+        '--no-remote'
+    } elseif ($remoteRequested) {
+        if (Test-CopilotRemoteRepository) {
+            '--remote'
+        } else {
+            Write-Warning 'Copilot remote control was not enabled: the effective launch directory must be a Git worktree with one recognized GitHub origin. Continuing locally with --no-remote.'
+            '--no-remote'
+        }
+    }
+    $remaining.ToArray()
+}
+
 function Get-CopilotSessionScope {
     $cwd = (Get-Location).Path
     $branch = try { git symbolic-ref --short HEAD 2>$null } catch { $null }
@@ -39,9 +108,8 @@ function Get-CopilotSessionScope {
     if ($branch) {
         $urls = @(try { git config --get-all remote.origin.url 2>$null } catch { @() })
         if ($urls.Count -eq 1) {
-            if ($urls[0] -match '^(?:https://github\.com/|git@github\.com:|ssh://git@github\.com/)([a-z0-9_.-]+)/([a-z0-9_.-]+?)(?:\.git)?/?$') {
-                $repository = "$($Matches[1])/$($Matches[2])"
-            } else {
+            $repository = ConvertTo-CopilotGitHubRepositoryIdentity -Url $urls[0]
+            if (-not $repository) {
                 $repository = ConvertTo-CopilotAdoRepositoryIdentity -Url $urls[0]
             }
         }

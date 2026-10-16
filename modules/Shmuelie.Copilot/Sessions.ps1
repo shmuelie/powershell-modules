@@ -392,6 +392,9 @@ function Resume-CopilotSession {
 
     .PARAMETER RemainingArgs
         Any additional arguments passed through to the copilot executable.
+        Remote control (--remote) requires one recognized GitHub origin in
+        the current Git worktree; otherwise warn and continue locally.
+        Explicit --no-remote takes precedence.
 
     .EXAMPLE
         Resume-CopilotSession -Id "abc-123"
@@ -440,7 +443,7 @@ function Resume-CopilotSession {
         }
 
         if ($RemainingArgs) {
-            $copilotArgs += $RemainingArgs
+            $copilotArgs += @(Resolve-CopilotRemoteArguments -Arguments $RemainingArgs)
         }
 
         & $copilotExe @copilotArgs
