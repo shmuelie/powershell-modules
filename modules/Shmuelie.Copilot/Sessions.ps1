@@ -12,9 +12,11 @@ function Get-CopilotSession {
         remote and a checked-out branch, sessions with matching repository and
         branch metadata are returned even after the worktree moves. Azure DevOps
         accepts dev.azure.com HTTPS, ssh.dev.azure.com SSH, and legacy
-        {organization}.visualstudio.com HTTPS origins (including optional .git,
-        encoded segments, and applicable DefaultCollection prefixes). Sessions
-        missing either field first try read-only recovery from the latest
+        {organization}.visualstudio.com HTTPS origins, including username-prefixed
+        HTTPS, optional .git, encoded segments, and applicable DefaultCollection
+        prefixes. HTTPS may omit a project named after the repository; a collection
+        segment is not treated as that project. Sessions missing either field
+        first try read-only recovery from the latest
         applicable session.start/resume/context_changed journal context or a
         surviving recorded Git path's single recognized origin. Historical
         branches come only from recorded metadata or lifecycle context, never

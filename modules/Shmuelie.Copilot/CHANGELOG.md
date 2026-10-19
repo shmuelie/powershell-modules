@@ -14,6 +14,13 @@ Versions change only when a release is cut; unreleased work stays under
   sessions in canonical launch candidate preference. Listing, automatic/latest
   resume, selectors, completion, and `-ChangeDir` share the resolution policy;
   explicit ID, `-All`, and recorded-path filtering remain unchanged. (#359)
+- Session discovery recognizes username-prefixed modern and legacy Azure DevOps
+  HTTPS clone URLs, deriving the organization from the host/path rather than
+  the username. Project-omitted HTTPS forms use the normalized repository name
+  for the project, including applicable `DefaultCollection` forms. Listing,
+  automatic/latest resume, selectors, completion, and `-ChangeDir` share the
+  recognition fix while retaining strict single-origin/branch checks and
+  GitHub-only remote-control eligibility. (#360)
 
 ## [0.7.2] - 2026-10-16
 

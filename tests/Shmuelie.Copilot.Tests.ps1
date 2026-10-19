@@ -4355,7 +4355,7 @@ Describe 'Copilot repository and branch session scope' -Tag 'StableSessionScope'
         @{ Remote = 'https://dev.azure.com/acme/Project Name/_git/widget' }
         @{ Remote = 'https://dev.azure.com/acme/Project%20Name/_git/widget/extra' }
         @{ Remote = 'https://dev.azure.com/acme/Project%20Name/_git/widget?extra=1' }
-        @{ Remote = 'https://user@dev.azure.com/acme/Project%20Name/_git/widget' }
+        @{ Remote = 'https://@dev.azure.com/acme/Project%20Name/_git/widget' }
         @{ Remote = 'https://dev.azure.com/acme/Project%20Name/_git/%2Egit' }
         @{ Remote = 'git@ssh.dev.azure.com:v3/acme/Project%20Name/widget/extra' }
         @{ Remote = 'ssh://other@ssh.dev.azure.com/v3/acme/Project%20Name/widget' }
@@ -6718,5 +6718,318 @@ Describe 'Get-CopilotLaunchPlan additional flag mappings' {
             if ($plan.Args[$j] -eq '--enable-mcp-server') { $plan.Args[$j + 1] }
         }
         $values | Should -Contain 'server-a'
+    }
+}
+
+Describe 'Copilot documented ADO origin identities' -Tag 'Issue360AdoOrigins' {
+    It 'derives the documented ADO identity for <Case>' -ForEach @(
+        @{ Case = 'modern explicit project'; Url = 'https://dev.azure.com/acme/Project/_git/widget'; Expected = 'acme/Project/widget' }
+        @{ Case = 'modern username differs from organization'; Url = 'https://another-user@dev.azure.com/acme/Project/_git/widget'; Expected = 'acme/Project/widget' }
+        @{ Case = 'modern username and encoded segments'; Url = 'https://another-user@dev.azure.com/AcMe/Project%20Name/_git/widget%20name%2Egit/'; Expected = 'acme/Project Name/widget name' }
+        @{ Case = 'modern explicit collection'; Url = 'https://dev.azure.com/acme/DefaultCollection/Project/_git/widget.git'; Expected = 'acme/Project/widget' }
+        @{ Case = 'modern username and explicit collection'; Url = 'https://another-user@dev.azure.com/acme/DefaultCollection/Project/_git/widget.git'; Expected = 'acme/Project/widget' }
+        @{ Case = 'modern omitted project'; Url = 'https://dev.azure.com/acme/_git/widget'; Expected = 'acme/widget/widget' }
+        @{ Case = 'modern username and omitted project'; Url = 'https://another-user@dev.azure.com/acme/_git/widget.git'; Expected = 'acme/widget/widget' }
+        @{ Case = 'modern encoded omitted project'; Url = 'https://dev.azure.com/AcMe/_git/Widget%20Name%2Egit/'; Expected = 'acme/Widget Name/Widget Name' }
+        @{ Case = 'legacy explicit project'; Url = 'https://acme.visualstudio.com/Project/_git/widget.git'; Expected = 'acme/Project/widget' }
+        @{ Case = 'legacy username differs from organization'; Url = 'https://another-user@acme.visualstudio.com/Project/_git/widget'; Expected = 'acme/Project/widget' }
+        @{ Case = 'legacy explicit collection'; Url = 'https://acme.visualstudio.com/DefaultCollection/Project/_git/widget'; Expected = 'acme/Project/widget' }
+        @{ Case = 'legacy omitted project'; Url = 'https://acme.visualstudio.com/_git/widget'; Expected = 'acme/widget/widget' }
+        @{ Case = 'legacy username and omitted project'; Url = 'https://another-user@acme.visualstudio.com/_git/widget'; Expected = 'acme/widget/widget' }
+        @{ Case = 'legacy collection and omitted project'; Url = 'https://acme.visualstudio.com/DefaultCollection/_git/widget'; Expected = 'acme/widget/widget' }
+        @{ Case = 'legacy username collection and omitted project'; Url = 'https://another-user@acme.visualstudio.com/DefaultCollection/_git/widget.git'; Expected = 'acme/widget/widget' }
+        @{ Case = 'legacy encoded omitted project'; Url = 'https://AcMe.visualstudio.com/DefaultCollection/_git/Widget%20Name%2Egit/'; Expected = 'acme/Widget Name/Widget Name' }
+        @{ Case = 'SCP SSH explicit project'; Url = 'git@ssh.dev.azure.com:v3/acme/Project%20Name/widget.git'; Expected = 'acme/Project Name/widget' }
+        @{ Case = 'URI SSH explicit project'; Url = 'ssh://git@ssh.dev.azure.com/v3/AcMe/Project%20Name/widget%2Egit/'; Expected = 'acme/Project Name/widget' }
+    ) {
+        $identity = & (Get-Module Shmuelie.Copilot) {
+            param($Origin)
+            ConvertTo-CopilotAdoRepositoryIdentity -Url $Origin
+        } $Url
+
+        $identity | Should -BeExactly $Expected
+    }
+
+    It 'rejects malformed or ambiguous ADO origins for <Case>' -ForEach @(
+        @{ Case = 'password authority'; Url = 'https://sample-user:synthetic-password@dev.azure.com/acme/Project/_git/widget' }
+        @{ Case = 'empty username'; Url = 'https://@dev.azure.com/acme/Project/_git/widget' }
+        @{ Case = 'multiple authority separators'; Url = 'https://one@two@dev.azure.com/acme/Project/_git/widget' }
+        @{ Case = 'HTTP'; Url = 'http://dev.azure.com/acme/Project/_git/widget' }
+        @{ Case = 'lookalike modern host'; Url = 'https://dev.azure.com.example.test/acme/Project/_git/widget' }
+        @{ Case = 'lookalike legacy host'; Url = 'https://acme.visualstudio.com.example.test/Project/_git/widget' }
+        @{ Case = 'unsupported port'; Url = 'https://dev.azure.com:443/acme/Project/_git/widget' }
+        @{ Case = 'raw space'; Url = 'https://dev.azure.com/acme/Project Name/_git/widget' }
+        @{ Case = 'raw backslash'; Url = 'https://dev.azure.com/acme/Project\Name/_git/widget' }
+        @{ Case = 'malformed percent'; Url = 'https://dev.azure.com/acme/Project%ZZ/_git/widget' }
+        @{ Case = 'incomplete percent'; Url = 'https://dev.azure.com/acme/_git/widget%2' }
+        @{ Case = 'encoded project separator'; Url = 'https://dev.azure.com/acme/Project%2FName/_git/widget' }
+        @{ Case = 'encoded repository separator'; Url = 'https://dev.azure.com/acme/_git/widget%2Fextra' }
+        @{ Case = 'encoded backslash'; Url = 'https://dev.azure.com/acme/_git/widget%5Cextra' }
+        @{ Case = 'encoded query'; Url = 'https://dev.azure.com/acme/_git/widget%3Fquery' }
+        @{ Case = 'encoded fragment'; Url = 'https://acme.visualstudio.com/DefaultCollection/_git/widget%23fragment' }
+        @{ Case = 'encoded control'; Url = 'https://dev.azure.com/acme/Project/_git/widget%00' }
+        @{ Case = 'encoded line feed'; Url = 'https://dev.azure.com/acme/Project/_git/widget%0A' }
+        @{ Case = 'encoded format control'; Url = 'https://dev.azure.com/acme/Project/_git/widget%E2%80%8B' }
+        @{ Case = 'encoded leading space'; Url = 'https://dev.azure.com/acme/_git/%20widget' }
+        @{ Case = 'encoded trailing space'; Url = 'https://dev.azure.com/acme/_git/widget%20' }
+        @{ Case = 'dot project'; Url = 'https://dev.azure.com/acme/./_git/widget' }
+        @{ Case = 'dot repository'; Url = 'https://dev.azure.com/acme/_git/%2E' }
+        @{ Case = 'parent repository'; Url = 'https://acme.visualstudio.com/DefaultCollection/_git/%2E%2E' }
+        @{ Case = 'suffix only repository'; Url = 'https://dev.azure.com/acme/_git/%2Egit' }
+        @{ Case = 'empty repository'; Url = 'https://dev.azure.com/acme/_git/' }
+        @{ Case = 'empty explicit project'; Url = 'https://dev.azure.com/acme//_git/widget' }
+        @{ Case = 'extra path'; Url = 'https://dev.azure.com/acme/_git/widget/extra' }
+        @{ Case = 'query'; Url = 'https://dev.azure.com/acme/_git/widget?query=1' }
+        @{ Case = 'fragment'; Url = 'https://acme.visualstudio.com/DefaultCollection/_git/widget#fragment' }
+        @{ Case = 'extra collection path'; Url = 'https://acme.visualstudio.com/OtherCollection/Project/_git/widget' }
+        @{ Case = 'missing organization'; Url = 'https://dev.azure.com/_git/widget' }
+        @{ Case = 'invalid organization'; Url = 'https://dev.azure.com/acme_name/Project/_git/widget' }
+        @{ Case = 'omitted SCP SSH project'; Url = 'git@ssh.dev.azure.com:v3/acme/widget' }
+        @{ Case = 'omitted URI SSH project'; Url = 'ssh://git@ssh.dev.azure.com/v3/acme/widget' }
+        @{ Case = 'unexpected SSH username'; Url = 'ssh://another-user@ssh.dev.azure.com/v3/acme/Project/widget' }
+        @{ Case = 'SSH extra path'; Url = 'git@ssh.dev.azure.com:v3/acme/Project/widget/extra' }
+    ) {
+        $identities = @(& (Get-Module Shmuelie.Copilot) {
+            param($Origin)
+            ConvertTo-CopilotAdoRepositoryIdentity -Url $Origin
+        } $Url)
+
+        @($identities | Where-Object { $null -ne $_ }) | Should -HaveCount 0
+    }
+}
+
+Describe 'Copilot documented ADO origin consumers' -Tag 'Issue360AdoOrigins' {
+    BeforeAll {
+        $script:Ado360PlanCommand = Get-Command Shmuelie.Copilot\Get-CopilotLaunchPlan -ErrorAction Stop
+        $script:Ado360StartCommand = Get-Command Shmuelie.Copilot\Start-Copilot -ErrorAction Stop
+
+        function Add-Ado360Session {
+            param(
+                [string]$Root, [string]$Id, [string]$Cwd,
+                [string]$Repository, [string]$Branch,
+                [string]$UpdatedAt = '2026-08-10T22:00:00Z'
+            )
+            $path = New-CopilotSessionState -SessionRoot $Root -Id $Id -Cwd $Cwd -Summary $Id -UpdatedAt $UpdatedAt
+            if ($Repository) { Add-Content -LiteralPath (Join-Path $path 'workspace.yaml') -Value "repository: $Repository" }
+            if ($Branch) { Add-Content -LiteralPath (Join-Path $path 'workspace.yaml') -Value "branch: $Branch" }
+        }
+
+        function Get-Ado360FixtureSnapshot {
+            param([string]$Root)
+            @(Get-ChildItem -LiteralPath $Root -File -Recurse | Sort-Object FullName | ForEach-Object {
+                '{0}:{1}' -f $_.FullName, (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash
+            })
+        }
+
+        function Get-Ado360ResumeValue {
+            param($Plan)
+            $index = [array]::IndexOf($Plan.Args, '--resume')
+            $index | Should -BeGreaterOrEqual 0
+            $Plan.Args[$index + 1]
+        }
+    }
+
+    Context '<Case>' -ForEach @(
+        @{ Case = 'generic HTTPS'; Origin = 'https://dev.azure.com/acme/Project/_git/widget'; Identity = 'acme/Project/widget' }
+        @{ Case = 'username HTTPS'; Origin = 'https://another-user@dev.azure.com/acme/Project/_git/widget'; Identity = 'acme/Project/widget' }
+        @{ Case = 'modern omitted project'; Origin = 'https://dev.azure.com/acme/_git/widget.git'; Identity = 'acme/widget/widget' }
+        @{ Case = 'username and omitted project'; Origin = 'https://another-user@dev.azure.com/acme/_git/widget.git'; Identity = 'acme/widget/widget' }
+        @{ Case = 'legacy username HTTPS'; Origin = 'https://another-user@acme.visualstudio.com/Project/_git/widget'; Identity = 'acme/Project/widget' }
+        @{ Case = 'legacy omitted project'; Origin = 'https://acme.visualstudio.com/DefaultCollection/_git/widget.git'; Identity = 'acme/widget/widget' }
+        @{ Case = 'encoded omitted project'; Origin = 'https://another-user@acme.visualstudio.com/DefaultCollection/_git/Widget%20Name%2Egit/'; Identity = 'acme/Widget Name/Widget Name' }
+        @{ Case = 'SSH regression'; Origin = 'git@ssh.dev.azure.com:v3/acme/Project/widget.git'; Identity = 'acme/Project/widget' }
+    ) {
+        BeforeEach {
+            $ado360Root = Join-Path $TestDrive ([guid]::NewGuid().ToString())
+            $ado360Home = Join-Path $ado360Root 'home'
+            $ado360Sessions = Join-Path $ado360Home '.copilot' 'session-state'
+            $ado360Caller = Join-Path $ado360Root 'caller'
+            $ado360Target = Join-Path $ado360Root 'moved [topic]'
+            $ado360OldPath = Join-Path $ado360Root 'old [topic]'
+            New-Item -ItemType Directory -Path $ado360Caller, $ado360Target -Force | Out-Null
+            $ado360Origins = @($Origin)
+            $ado360Branch = 'feature/topic'
+            $ado360KnownCalls = [System.Collections.Generic.List[string]]::new()
+            Mock -ModuleName Shmuelie.Copilot Get-CopilotHome { $ado360Home }
+            Mock -ModuleName Shmuelie.Copilot Get-Command { throw 'Unexpected command discovery.' }
+            Mock -ModuleName Shmuelie.Copilot Get-Command {
+                [pscustomobject]@{ Source = 'Invoke-Issue360BlockedCopilot' }
+            } -ParameterFilter { $Name.Count -eq 1 -and $Name[0] -eq 'copilot' -and $CommandType -eq 'Application' }
+            Mock -ModuleName Shmuelie.Copilot Get-Command {
+                $script:Ado360PlanCommand
+            } -ParameterFilter { $Name.Count -eq 1 -and $Name[0] -eq 'Get-CopilotLaunchPlan' }
+            Mock -ModuleName Shmuelie.Copilot Resolve-CliExe { throw 'Native CLI execution is forbidden.' }
+            Mock -ModuleName Shmuelie.Copilot Invoke-CopilotSessionChoice { throw 'Unexpected interactive input.' }
+            Mock -ModuleName Shmuelie.Copilot Read-Host { throw 'Unexpected console input.' }
+            Mock -ModuleName Shmuelie.Copilot git {
+                $command = $args -join ' '
+                $ado360KnownCalls.Add($command)
+                $global:LASTEXITCODE = 0
+                switch -Exact ($command) {
+                    'symbolic-ref --short HEAD' {
+                        if ((Get-Location).Path -eq $ado360Target) { $ado360Branch } else { 'main' }
+                    }
+                    'config --get-all remote.origin.url' {
+                        if ((Get-Location).Path -eq $ado360Target) { $ado360Origins }
+                    }
+                    'rev-parse --is-inside-work-tree' { 'true' }
+                    'remote get-url --all origin' {
+                        if ((Get-Location).Path -eq $ado360Target) { $ado360Origins }
+                    }
+                    default { throw 'Unexpected Git operation: only allowlisted reads are permitted.' }
+                }
+            }
+            $ado360PreviousLocation = Get-Location
+            Set-Location -LiteralPath $ado360Target
+            Add-Ado360Session -Root $ado360Sessions -Id newest -Cwd $ado360OldPath -Repository $Identity.ToUpperInvariant() -Branch feature/topic -UpdatedAt '2026-08-13T22:00:00Z'
+            Add-Ado360Session -Root $ado360Sessions -Id older -Cwd $ado360OldPath -Repository $Identity -Branch feature/topic -UpdatedAt '2026-08-12T22:00:00Z'
+            Add-Ado360Session -Root $ado360Sessions -Id wrong-organization -Cwd $ado360Target -Repository "other/$($Identity.Split('/')[1])/$($Identity.Split('/')[2])" -Branch feature/topic
+            Add-Ado360Session -Root $ado360Sessions -Id wrong-project -Cwd $ado360Target -Repository "acme/Other/$($Identity.Split('/')[2])" -Branch feature/topic
+            Add-Ado360Session -Root $ado360Sessions -Id wrong-repository -Cwd $ado360Target -Repository "acme/$($Identity.Split('/')[1])/Other" -Branch feature/topic
+            Add-Ado360Session -Root $ado360Sessions -Id wrong-branch -Cwd $ado360Target -Repository $Identity -Branch feature/other
+            Add-Ado360Session -Root $ado360Sessions -Id branch-case-conflict -Cwd $ado360Target -Repository $Identity -Branch Feature/topic
+            Add-Ado360Session -Root $ado360Sessions -Id local-legacy -Cwd $ado360Target -UpdatedAt '2026-08-05T22:00:00Z'
+            Add-Ado360Session -Root $ado360Sessions -Id partial-repository -Cwd $ado360Target -Repository $Identity -UpdatedAt '2026-08-04T22:00:00Z'
+            Add-Ado360Session -Root $ado360Sessions -Id partial-branch -Cwd $ado360Target -Branch feature/topic -UpdatedAt '2026-08-03T22:00:00Z'
+            Add-Ado360Session -Root $ado360Sessions -Id partial-repository-conflict -Cwd $ado360Target -Repository acme/Other/Other
+            Add-Ado360Session -Root $ado360Sessions -Id partial-branch-conflict -Cwd $ado360Target -Branch Feature/topic
+            Add-Ado360Session -Root $ado360Sessions -Id distant-legacy -Cwd $ado360OldPath
+        }
+
+        AfterEach {
+            try {
+                (Get-Location).Path | Should -Be $ado360Target
+                Should -Invoke -ModuleName Shmuelie.Copilot Resolve-CliExe -Times 0 -Exactly
+                Should -Invoke -ModuleName Shmuelie.Copilot Invoke-CopilotSessionChoice -Times 0 -Exactly
+                Should -Invoke -ModuleName Shmuelie.Copilot Read-Host -Times 0 -Exactly
+                @($ado360KnownCalls | Where-Object { $_ -notin @(
+                    'symbolic-ref --short HEAD', 'config --get-all remote.origin.url',
+                    'rev-parse --is-inside-work-tree', 'remote get-url --all origin'
+                ) }) | Should -HaveCount 0
+            } finally {
+                Set-Location -LiteralPath $ado360PreviousLocation.Path
+            }
+        }
+
+        It 'lists moved identities while rejecting conflicting repository and exact branch metadata' {
+            @(Get-CopilotSession).Id | Should -Be @('newest', 'older', 'local-legacy', 'partial-repository', 'partial-branch')
+            @(& (Get-Module Shmuelie.Copilot) { Get-CopilotResumeCandidate }).Id | Should -Be @('newest', 'older')
+        }
+
+        It 'plans ResumeLatest and selector candidates using the same exact identity' {
+            Get-Ado360ResumeValue (Get-CopilotLaunchPlan -ResumeLatest) | Should -BeExactly 'newest'
+            $selected = Get-CopilotLaunchPlan -SessionSelector {
+                param($Sessions)
+                $Sessions.Id | Should -Be @('newest', 'older')
+                $Sessions[1]
+            }
+            Get-Ado360ResumeValue $selected | Should -BeExactly 'older'
+        }
+
+        It 'automatically resumes the sole moved identity without a picker' {
+            $singleHome = Join-Path $ado360Root 'single-home'
+            $singleRoot = Join-Path $singleHome '.copilot' 'session-state'
+            Add-Ado360Session -Root $singleRoot -Id auto-only -Cwd $ado360OldPath -Repository $Identity -Branch feature/topic
+            Mock -ModuleName Shmuelie.Copilot Get-CopilotHome { $singleHome }
+
+            Get-Ado360ResumeValue (Get-CopilotLaunchPlan) | Should -BeExactly 'auto-only'
+            Get-Ado360ResumeValue (Start-Copilot -PassThru) | Should -BeExactly 'auto-only'
+        }
+
+        It 'completes scoped IDs for <Entry> with <DirectoryMode>' -ForEach @(
+            @{ Entry = 'Get-CopilotLaunchPlan'; DirectoryMode = 'current directory' }
+            @{ Entry = 'Start-Copilot'; DirectoryMode = 'current directory' }
+            @{ Entry = 'Get-CopilotLaunchPlan'; DirectoryMode = 'ChangeDir' }
+            @{ Entry = 'Start-Copilot'; DirectoryMode = 'ChangeDir' }
+            @{ Entry = 'Get-CopilotLaunchPlan'; DirectoryMode = 'C alias' }
+            @{ Entry = 'Start-Copilot'; DirectoryMode = 'C alias' }
+        ) {
+            $command = if ($Entry -eq 'Start-Copilot') { $script:Ado360StartCommand } else { $script:Ado360PlanCommand }
+            $attribute = $command.Parameters['ResumeSession'].Attributes |
+                Where-Object { $_ -is [System.Management.Automation.ArgumentCompleterAttribute] }
+            $bound = @{}
+            if ($DirectoryMode -ne 'current directory') {
+                Set-Location -LiteralPath $ado360Caller
+                $bound[$(if ($DirectoryMode -eq 'C alias') { 'C' } else { 'ChangeDir' })] = $ado360Target
+            }
+            $before = (Get-Location).Path
+            try {
+                $results = @(& $attribute.ScriptBlock $Entry 'ResumeSession' '' $null $bound)
+                $results.CompletionText | Should -Be @('newest', 'older', 'local-legacy', 'partial-repository', 'partial-branch')
+                @(& $attribute.ScriptBlock $Entry 'ResumeSession' 'new' $null $bound).CompletionText | Should -Be @('newest')
+                (Get-Location).Path | Should -Be $before
+            } finally {
+                Set-Location -LiteralPath $ado360Target
+            }
+        }
+
+        It 'uses effective ChangeDir for <Entry> with <DirectoryMode>' -ForEach @(
+            @{ Entry = 'Get-CopilotLaunchPlan'; DirectoryMode = 'ChangeDir' }
+            @{ Entry = 'Start-Copilot'; DirectoryMode = 'ChangeDir' }
+            @{ Entry = 'Get-CopilotLaunchPlan'; DirectoryMode = 'C alias' }
+            @{ Entry = 'Start-Copilot'; DirectoryMode = 'C alias' }
+        ) {
+            Set-Location -LiteralPath $ado360Caller
+            $options = @{ ResumeLatest = $true }
+            $options[$(if ($DirectoryMode -eq 'C alias') { 'C' } else { 'ChangeDir' })] = $ado360Target
+            if ($Entry -eq 'Start-Copilot') { $options.PassThru = $true }
+            $command = if ($Entry -eq 'Start-Copilot') { $script:Ado360StartCommand } else { $script:Ado360PlanCommand }
+            try {
+                @(Get-CopilotSession) | Should -HaveCount 0
+                $plan = & $command @options
+                Get-Ado360ResumeValue $plan | Should -BeExactly 'newest'
+                $index = [array]::IndexOf($plan.Args, '-C')
+                $index | Should -BeGreaterOrEqual 0
+                $plan.Args[$index + 1] | Should -BeExactly $ado360Target
+                (Get-Location).Path | Should -Be $ado360Caller
+            } finally {
+                Set-Location -LiteralPath $ado360Target
+            }
+        }
+
+        It 'uses exact directory fallback for <FallbackCase>' -ForEach @(
+            @{ FallbackCase = 'no origins'; OriginCount = 0 }
+            @{ FallbackCase = 'multiple identical origins'; OriginCount = 2 }
+            @{ FallbackCase = 'malformed encoded path'; OriginCount = 1 }
+        ) {
+            $ado360Origins = switch ($OriginCount) {
+                0 { @() }
+                1 { @('https://dev.azure.com/acme/Project%2FName/_git/widget') }
+                2 { @($Origin, $Origin) }
+            }
+            Add-Ado360Session -Root $ado360Sessions -Id only-local -Cwd $ado360Target -Branch feature/topic -UpdatedAt '2026-08-14T22:00:00Z'
+
+            $results = @(Get-CopilotSession).Id
+            $results | Should -Contain 'only-local'
+            $results | Should -Contain 'wrong-project'
+            $results | Should -Not -Contain 'newest'
+            $results | Should -Not -Contain 'older'
+            Get-Ado360ResumeValue (Get-CopilotLaunchPlan -ResumeLatest) | Should -BeExactly 'only-local'
+        }
+
+        It 'keeps ADO local without exposing its origin or mutating synthetic state' {
+            $before = Get-Ado360FixtureSnapshot -Root $ado360Root
+            $diagnostics = @()
+            $plan = Get-CopilotLaunchPlan -ResumeLatest -Remote -Verbose -WarningAction SilentlyContinue -WarningVariable warnings -VerboseVariable diagnostics
+
+            $plan.Args | Should -Not -Contain '--remote'
+            @($plan.Args | Where-Object { $_ -ceq '--no-remote' }) | Should -HaveCount 1
+            @($warnings) | Should -HaveCount 1
+            "$warnings $diagnostics $($plan.Args -join ' ')" | Should -Not -Match 'another-user|visualstudio\.com|dev\.azure\.com'
+            Get-Ado360FixtureSnapshot -Root $ado360Root | Should -Be $before
+        }
+
+        It 'does not expose credential-shaped authority text during conservative fallback' {
+            $ado360Origins = @('https://sample-user:synthetic-password@dev.azure.com/acme/Project/_git/widget')
+            $before = Get-Ado360FixtureSnapshot -Root $ado360Root
+            $diagnostics = @()
+
+            $plan = Get-CopilotLaunchPlan -ResumeLatest -Remote -Verbose -WarningAction SilentlyContinue -WarningVariable warnings -VerboseVariable diagnostics
+
+            $plan.Args | Should -Not -Contain '--remote'
+            $plan.Args | Should -Contain '--no-remote'
+            "$warnings $diagnostics $($plan.Args -join ' ')" | Should -Not -Match 'sample-user|synthetic-password|dev\.azure\.com'
+            Get-Ado360FixtureSnapshot -Root $ado360Root | Should -Be $before
+        }
     }
 }
