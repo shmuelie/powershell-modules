@@ -4415,6 +4415,391 @@ Describe 'Copilot repository and branch session scope' -Tag 'StableSessionScope'
     }
 }
 
+Describe 'Copilot read-only session identity recovery' -Tag 'SessionIdentity' {
+    BeforeAll {
+        $script:RecoveryPlanCommand = Get-Command Shmuelie.Copilot\Get-CopilotLaunchPlan -ErrorAction Stop
+
+        function Add-RecoverySession {
+            param(
+                [string]$Id = 'recovered', [string]$Cwd = $script:RecoveryOld,
+                [string]$Repository, [string]$Branch, [object[]]$Contexts,
+                [string]$UpdatedAt = '2026-08-13T22:00:00Z'
+            )
+            $path = Join-Path $script:RecoverySessionRoot $Id
+            New-Item -ItemType Directory -Path $path -Force | Out-Null
+            $lines = @("name: $Id", "updated_at: $UpdatedAt")
+            if ($Cwd) { $lines += "cwd: $Cwd" }
+            if ($Repository) { $lines += "repository: $Repository" }
+            if ($Branch) { $lines += "branch: $Branch" }
+            Set-Content -LiteralPath (Join-Path $path 'workspace.yaml') -Value $lines
+            if ($null -ne $Contexts) {
+                $index = 0
+                $events = @(foreach ($context in $Contexts) {
+                    New-CopilotTestEventLine -Type $(if ($index++ -eq 0) { 'session.start' } else { 'session.resume' }) `
+                        -Id "$Id-$index" -Timestamp '2026-08-13T22:00:00Z' -Data @{ sessionId = $Id; context = $context }
+                })
+                Set-Content -LiteralPath (Join-Path $path 'events.jsonl') -Value $events
+            }
+            return $path
+        }
+
+        function New-RecoveryContext {
+            param(
+                [string]$Repository = 'acme/Project/widget', [string]$Branch = 'feature/topic',
+                [string]$Cwd = $script:RecoveryOld, [string]$HostName, [string]$GitRoot
+            )
+            $context = @{ repository = $Repository; branch = $Branch; cwd = $Cwd }
+            if ($HostName) { $context.repositoryHost = $HostName; $context.hostType = 'ado' }
+            if ($GitRoot) { $context.gitRoot = $GitRoot }
+            return $context
+        }
+    }
+
+    BeforeEach {
+        $root = Join-Path $TestDrive ([guid]::NewGuid().ToString())
+        $script:RecoveryHome = Join-Path $root 'home'
+        $script:RecoverySessionRoot = Join-Path $script:RecoveryHome '.copilot' 'session-state'
+        $script:RecoveryOld = Join-Path $root 'unavailable [old]'
+        $script:RecoveryCurrent = Join-Path $root 'current [topic]'
+        $script:RecoveryOther = Join-Path $root 'other branch'
+        New-Item -ItemType Directory -Path $script:RecoveryCurrent, $script:RecoveryOther -Force | Out-Null
+        $script:RecoveryOrigins = @{}
+        Mock -ModuleName Shmuelie.Copilot Get-CopilotHome { $script:RecoveryHome }
+        Mock -ModuleName Shmuelie.Copilot Get-CopilotSessionScope {
+            [pscustomobject]@{
+                Cwd = (Get-Location).Path
+                Repository = 'acme/Project/widget'
+                Branch = if ((Get-Location).Path -eq $script:RecoveryOther) { 'feature/other' } else { 'feature/topic' }
+            }
+        }
+        Mock -ModuleName Shmuelie.Copilot git {
+            if ($args.Count -ne 4 -or $args[0] -cne '-C' -or -not $script:RecoveryOrigins.ContainsKey($args[1])) {
+                throw "Unexpected Git identity probe: $args"
+            }
+            $global:LASTEXITCODE = 0
+            if ($args[2] -ceq 'rev-parse' -and $args[3] -ceq '--is-inside-work-tree') { return 'true' }
+            throw "Unexpected Git identity arguments: $args"
+        }
+        # All native boundaries fail closed; the only allowed commands read synthetic origins.
+        Mock -ModuleName Shmuelie.Copilot git {
+            $global:LASTEXITCODE = 0
+            $script:RecoveryOrigins[$args[1]]
+        } -ParameterFilter {
+            $args.Count -eq 5 -and $args[0] -ceq '-C' -and $args[2] -ceq 'config' -and
+            $args[3] -ceq '--get-all' -and $args[4] -ceq 'remote.origin.url' -and
+            $script:RecoveryOrigins.ContainsKey($args[1])
+        }
+        Mock -ModuleName Shmuelie.Copilot Get-Command { throw "Unexpected discovery: $Name" }
+        Mock -ModuleName Shmuelie.Copilot Get-Command { [pscustomobject]@{ Source = 'unused-copilot' } } -ParameterFilter {
+            $Name.Count -eq 1 -and $Name[0] -eq 'copilot' -and $CommandType -eq 'Application'
+        }
+        Mock -ModuleName Shmuelie.Copilot Get-Command { $script:RecoveryPlanCommand } -ParameterFilter {
+            $Name.Count -eq 1 -and $Name[0] -eq 'Get-CopilotLaunchPlan'
+        }
+        Mock -ModuleName Shmuelie.Copilot Invoke-CopilotSessionChoice { throw 'Unexpected interactive selection.' }
+        $script:RecoveryCaller = Get-Location
+        Set-Location -LiteralPath $script:RecoveryCurrent
+    }
+
+    AfterEach { Set-Location -LiteralPath $script:RecoveryCaller.Path }
+
+    It 'recovers absent fields from lifecycle without changing recorded metadata - <Case>' -ForEach @(
+        @{ Case = 'repository'; Repository = ''; Branch = 'feature/topic'; MissingCwd = $false }
+        @{ Case = 'branch'; Repository = 'acme/Project/widget'; Branch = ''; MissingCwd = $false }
+        @{ Case = 'both'; Repository = ''; Branch = ''; MissingCwd = $false }
+        @{ Case = 'directory too'; Repository = ''; Branch = ''; MissingCwd = $true }
+    ) {
+        $cwd = if ($MissingCwd) { '' } else { $script:RecoveryOld }
+        $path = Add-RecoverySession -Cwd $cwd -Repository $Repository -Branch $Branch -Contexts (New-RecoveryContext)
+        $before = Get-AtomicMergeSourceSnapshot -Path $path
+        $session = Get-CopilotSession -ErrorAction Stop
+        $session.Id | Should -Be 'recovered'
+        $session.Repository | Should -Be $(if ($Repository) { $Repository } else { $null })
+        $session.Branch | Should -Be $(if ($Branch) { $Branch } else { $null })
+        $session.Cwd | Should -Be $(if ($cwd) { $cwd } else { $null })
+        $candidate = & (Get-Module Shmuelie.Copilot) { Get-CopilotResumeCandidate }
+        $candidate.Repository | Should -Be 'acme/Project/widget'
+        $candidate.Branch | Should -Be 'feature/topic'
+        $candidate.Cwd | Should -Be $script:RecoveryOld
+        @(Get-CopilotSession -Repository '*' -Branch '*' -ErrorAction Stop) | Should -HaveCount 0
+        Get-AtomicMergeSourceSnapshot -Path $path | Should -Be $before
+    }
+
+    It 'normalizes legacy identity only with independent hostname evidence - <Case>' -ForEach @(
+        @{ Case = 'collection'; Repository = 'DefaultCollection/Project/widget'; HostOnly = $false }
+        @{ Case = 'organization-less'; Repository = 'Project/widget'; HostOnly = $false }
+        @{ Case = 'hostname only'; Repository = 'DefaultCollection/Project/widget'; HostOnly = $true }
+    ) {
+        $context = New-RecoveryContext -Repository $(if ($HostOnly) { '' } else { $Repository }) -HostName 'AcMe.visualstudio.com'
+        $path = Add-RecoverySession -Repository $Repository -Branch feature/topic -Contexts $context
+        $before = Get-AtomicMergeSourceSnapshot -Path $path
+        @(Get-CopilotSession -ErrorAction Stop).Id | Should -Be @('recovered')
+        (Get-CopilotLaunchPlan).Args | Should -Contain 'recovered'
+        Get-AtomicMergeSourceSnapshot -Path $path | Should -Be $before
+    }
+
+    It 'does not infer an organization from current scope, suffixes or unavailable paths - <Case>' -ForEach @(
+        @{ Case = 'no journal'; Contexts = $null }
+        @{ Case = 'legacy context only'; Contexts = @(@{ repository = 'DefaultCollection/Project/widget'; branch = 'feature/topic' }) }
+        @{ Case = 'organization-less context only'; Contexts = @(@{ repository = 'Project/widget'; branch = 'feature/topic' }) }
+    ) {
+        Add-RecoverySession -Repository 'DefaultCollection/Project/widget' -Branch feature/topic -Contexts $Contexts | Out-Null
+        @(Get-CopilotSession -ErrorAction Stop) | Should -HaveCount 0
+        @(& (Get-Module Shmuelie.Copilot) { Get-CopilotResumeCandidate }) | Should -HaveCount 0
+    }
+
+    It 'uses the latest lifecycle snapshot rather than an earlier matching context - <Case>' -ForEach @(
+        @{ Case = 'resume'; Type = 'session.resume'; Latest = @{ repository = 'acme/Project/widget'; branch = 'feature/other' }; Expected = 'recovered' }
+        @{ Case = 'context change'; Type = 'session.context_changed'; Latest = @{ repository = 'acme/Project/widget'; branch = 'feature/other' }; Expected = 'recovered' }
+        @{ Case = 'other organization'; Type = 'session.resume'; Latest = @{ repository = 'other/Project/widget'; branch = 'feature/other' }; Expected = $null }
+        @{ Case = 'missing new context'; Type = 'session.resume'; Latest = $null; Expected = $null }
+        @{ Case = 'partial new context'; Type = 'session.context_changed'; Latest = @{ branch = 'feature/other' }; Expected = $null }
+    ) {
+        $path = Add-RecoverySession -Contexts (New-RecoveryContext)
+        Add-Content -LiteralPath (Join-Path $path 'events.jsonl') -Value (
+            New-CopilotTestEventLine -Type $Type -Id later -Timestamp '2026-08-14T22:00:00Z' -Data @{ context = $Latest })
+        Set-Location -LiteralPath $script:RecoveryOther
+        $actual = @(Get-CopilotSession -ErrorAction Stop)
+        if ($Expected) { $actual.Id | Should -Be @($Expected) } else { $actual | Should -HaveCount 0 }
+    }
+
+    It 'never overwrites conflicting known metadata or borrows unrelated directory context - <Case>' -ForEach @(
+        @{ Case = 'known repository'; Repository = 'other/Project/widget'; Branch = ''; ContextRepository = 'acme/Project/widget'; ContextBranch = 'feature/topic'; DifferentCwd = $false }
+        @{ Case = 'conflicting context repository'; Repository = 'acme/Project/widget'; Branch = ''; ContextRepository = 'other/Project/widget'; ContextBranch = 'feature/topic'; DifferentCwd = $false }
+        @{ Case = 'known branch'; Repository = ''; Branch = 'feature/other'; ContextRepository = 'acme/Project/widget'; ContextBranch = 'feature/topic'; DifferentCwd = $false }
+        @{ Case = 'conflicting context branch'; Repository = ''; Branch = 'feature/topic'; ContextRepository = 'acme/Project/widget'; ContextBranch = 'feature/other'; DifferentCwd = $false }
+        @{ Case = 'branch case'; Repository = ''; Branch = 'Feature/topic'; ContextRepository = 'acme/Project/widget'; ContextBranch = 'feature/topic'; DifferentCwd = $false }
+        @{ Case = 'different directory'; Repository = ''; Branch = ''; ContextRepository = 'acme/Project/widget'; ContextBranch = 'feature/topic'; DifferentCwd = $true }
+    ) {
+        $context = New-RecoveryContext -Repository $ContextRepository -Branch $ContextBranch -Cwd $(if ($DifferentCwd) { $script:RecoveryOther } else { $script:RecoveryOld })
+        Add-RecoverySession -Repository $Repository -Branch $Branch -Contexts $context | Out-Null
+        @(Get-CopilotSession -ErrorAction Stop) | Should -HaveCount 0
+        @(& (Get-Module Shmuelie.Copilot) { Get-CopilotResumeCandidate }) | Should -HaveCount 0
+    }
+
+    It 'accepts an applicable lifecycle git root without replacing the recorded directory' {
+        $context = New-RecoveryContext -Cwd (Join-Path $script:RecoveryOld 'subdirectory') -GitRoot $script:RecoveryOld
+        Add-RecoverySession -Contexts $context | Out-Null
+        $session = Get-CopilotSession -ErrorAction Stop
+        $session.Id | Should -Be 'recovered'
+        $session.Cwd | Should -Be $script:RecoveryOld
+        (Get-CopilotLaunchPlan -ErrorAction Stop).Args | Should -Contain 'recovered'
+    }
+
+    It 'rejects a conflicting lifecycle git root when no context cwd is available' {
+        Add-RecoverySession -Contexts (
+            New-RecoveryContext -Cwd '' -GitRoot $script:RecoveryOther) | Out-Null
+        @(Get-CopilotSession -ErrorAction Stop) | Should -HaveCount 0
+        @(& (Get-Module Shmuelie.Copilot) { Get-CopilotResumeCandidate }) | Should -HaveCount 0
+    }
+
+    It 'rejects identical project and repository names in another verified organization' {
+        Add-RecoverySession -Repository 'DefaultCollection/Project/widget' -Branch feature/topic -Contexts (
+            New-RecoveryContext -Repository 'DefaultCollection/Project/widget' -HostName 'other.visualstudio.com') | Out-Null
+        @(Get-CopilotSession -ErrorAction Stop) | Should -HaveCount 0
+        (Get-CopilotSession -Id recovered).Repository | Should -Be 'DefaultCollection/Project/widget'
+    }
+
+    It 'validates lifecycle host evidence without borrowing organization from a modern host - <Case>' -ForEach @(
+        @{ Case = 'modern canonical'; HostName = 'dev.azure.com'; Repository = 'acme/Project/widget'; HostType = 'ado'; Expected = $true }
+        @{ Case = 'SSH canonical'; HostName = 'ssh.dev.azure.com'; Repository = 'acme/Project/widget'; HostType = 'azure-devops'; Expected = $true }
+        @{ Case = 'modern legacy unresolved'; HostName = 'dev.azure.com'; Repository = 'Project/widget'; HostType = 'ado'; Expected = $false }
+        @{ Case = 'hostname conflicts with organization'; HostName = 'other.visualstudio.com'; Repository = 'acme/Project/widget'; HostType = 'ado'; Expected = $false }
+        @{ Case = 'hostname conflicts with provider'; HostName = 'acme.visualstudio.com'; Repository = 'Project/widget'; HostType = 'github'; Expected = $false }
+        @{ Case = 'GitHub host conflicts with ADO'; HostName = 'github.com'; Repository = 'acme/Project/widget'; HostType = 'github'; Expected = $false }
+    ) {
+        $context = New-RecoveryContext -Repository $Repository -HostName $HostName
+        $context.hostType = $HostType
+        Add-RecoverySession -Contexts $context | Out-Null
+        $sessions = @(Get-CopilotSession -ErrorAction Stop)
+        if ($Expected) { $sessions.Id | Should -Be @('recovered') }
+        else { $sessions | Should -HaveCount 0 }
+    }
+
+    It 'recognizes lifecycle envelopes independently of JSON property order and escaping - <Case>' -ForEach @(
+        @{ Case = 'data before type'; EscapedType = $false }
+        @{ Case = 'escaped type'; EscapedType = $true }
+    ) {
+        $path = Add-RecoverySession
+        $line = [ordered]@{ data = @{ context = (New-RecoveryContext) }; id = 'ordered'; type = 'session.start' } |
+            ConvertTo-Json -Depth 10 -Compress
+        if ($EscapedType) { $line = $line.Replace('"type":"session.start"', '"ty\u0070e":"session\u002estart"') }
+        Set-Content -LiteralPath (Join-Path $path 'events.jsonl') -Value $line
+        @(Get-CopilotSession -ErrorAction Stop).Id | Should -Be @('recovered')
+    }
+
+    It 'recovers from one surviving recorded origin without reading its present branch - <Case>' -ForEach @(
+        @{ Case = 'missing repository'; Repository = ''; Journal = $false }
+        @{ Case = 'legacy collection'; Repository = 'DefaultCollection/Project/widget'; Journal = $false }
+        @{ Case = 'organization-less'; Repository = 'Project/widget'; Journal = $false }
+        @{ Case = 'context git root'; Repository = 'DefaultCollection/Project/widget'; Journal = $true }
+    ) {
+        $surviving = if ($Journal) { Join-Path $TestDrive 'surviving git root' } else { $script:RecoveryOld }
+        New-Item -ItemType Directory -Path $surviving -Force | Out-Null
+        $script:RecoveryOrigins[$surviving] = @('https://dev.azure.com/acme/Project/_git/widget')
+        $contexts = if ($Journal) { @(New-RecoveryContext -Repository $Repository -GitRoot $surviving) } else { $null }
+        Add-RecoverySession -Repository $Repository -Branch feature/topic -Contexts $contexts | Out-Null
+        @(Get-CopilotSession -ErrorAction Stop).Id | Should -Be @('recovered')
+        Should -Invoke -ModuleName Shmuelie.Copilot git -Times 0 -ParameterFilter {
+            $args -contains 'HEAD' -or $args -contains 'symbolic-ref' -or $args -contains '--show-current'
+        }
+    }
+
+    It 'does not replace a missing historical branch with the current recorded worktree branch' {
+        New-Item -ItemType Directory -Path $script:RecoveryOld -Force | Out-Null
+        $script:RecoveryOrigins[$script:RecoveryOld] = @('https://dev.azure.com/acme/Project/_git/widget')
+        Add-RecoverySession | Out-Null
+        @(Get-CopilotSession -ErrorAction Stop) | Should -HaveCount 0
+        @(& (Get-Module Shmuelie.Copilot) { Get-CopilotResumeCandidate }) | Should -HaveCount 0
+        Should -Invoke -ModuleName Shmuelie.Copilot git -Times 0 -ParameterFilter { $args -contains 'symbolic-ref' }
+    }
+
+    It 'does not recover from incompatible or conflicting surviving origins - <Case>' -ForEach @(
+        @{ Case = 'different organization'; Origin = @('https://dev.azure.com/other/Project/_git/widget'); Second = $null; Diagnostic = $false }
+        @{ Case = 'different repository'; Origin = @('https://dev.azure.com/acme/Project/_git/other'); Second = $null; Diagnostic = $false }
+        @{ Case = 'ambiguous equivalent URLs'; Origin = @('https://dev.azure.com/acme/Project/_git/widget', 'git@ssh.dev.azure.com:v3/acme/Project/widget'); Second = $null; Diagnostic = $true }
+        @{ Case = 'missing origin'; Origin = @(); Second = $null; Diagnostic = $true }
+        @{ Case = 'unrecognized origin'; Origin = @('https://example.test/Project/widget'); Second = $null; Diagnostic = $true }
+        @{ Case = 'conflicting recorded paths'; Origin = @('https://dev.azure.com/acme/Project/_git/widget'); Second = 'https://dev.azure.com/other/Project/_git/widget'; Diagnostic = $false }
+    ) {
+        New-Item -ItemType Directory -Path $script:RecoveryOld -Force | Out-Null
+        $script:RecoveryOrigins[$script:RecoveryOld] = $Origin
+        $contexts = if ($Second) {
+            $gitRoot = Join-Path $TestDrive 'second recorded root'
+            New-Item -ItemType Directory -Path $gitRoot -Force | Out-Null
+            $script:RecoveryOrigins[$gitRoot] = @($Second)
+            @(New-RecoveryContext -Repository 'DefaultCollection/Project/widget' -GitRoot $gitRoot)
+        } else { $null }
+        Add-RecoverySession -Repository 'DefaultCollection/Project/widget' -Branch feature/topic -Contexts $contexts | Out-Null
+        $errors = @()
+        @(Get-CopilotSession -ErrorAction SilentlyContinue -ErrorVariable errors) | Should -HaveCount 0
+        if ($Diagnostic) {
+            $errors.Count | Should -BeGreaterThan 0
+            $errors[-1].FullyQualifiedErrorId | Should -BeLike 'InvalidCopilotSessionIdentity*'
+        } else { $errors | Should -HaveCount 0 }
+    }
+
+    It 'puts recovered sessions in canonical preference across all launch and completion surfaces - <Entry>' -ForEach @(
+        @{ Entry = 'Get-CopilotLaunchPlan' }
+        @{ Entry = 'Start-Copilot' }
+    ) {
+        Add-RecoverySession -Contexts (New-RecoveryContext) | Out-Null
+        Add-RecoverySession -Id canonical -Repository acme/Project/widget -Branch feature/topic -UpdatedAt '2026-08-12T22:00:00Z' | Out-Null
+        Add-RecoverySession -Id unresolved -Cwd $script:RecoveryCurrent -UpdatedAt '2026-08-14T22:00:00Z' | Out-Null
+        $script:RecoveryOrigins[$script:RecoveryCurrent] = @('https://dev.azure.com/acme/Project/_git/widget')
+        @(Get-CopilotSession).Id | Should -Be @('unresolved', 'recovered', 'canonical')
+        @(& (Get-Module Shmuelie.Copilot) { Get-CopilotResumeCandidate }).Id | Should -Be @('recovered', 'canonical')
+        $entrypoint = Get-Command "Shmuelie.Copilot\$Entry"
+        $options = @{ ChangeDir = $script:RecoveryCurrent; ResumeLatest = $true }
+        if ($Entry -eq 'Start-Copilot') { $options.PassThru = $true }
+        Set-Location -LiteralPath $script:RecoveryOther
+        $plan = & $entrypoint @options
+        $plan.Args[[array]::IndexOf($plan.Args, '--resume') + 1] | Should -Be 'recovered'
+        $options.Remove('ResumeLatest')
+        $options.SessionSelector = {
+            param($Sessions)
+            $Sessions.Id | Should -Be @('recovered', 'canonical')
+            $Sessions[0].Repository | Should -Be 'acme/Project/widget'
+            $Sessions[0]
+        }
+        $plan = & $entrypoint @options
+        $plan.Args[[array]::IndexOf($plan.Args, '--resume') + 1] | Should -Be 'recovered'
+        $attribute = $entrypoint.Parameters['ResumeSession'].Attributes |
+            Where-Object { $_ -is [System.Management.Automation.ArgumentCompleterAttribute] }
+        @(& $attribute.ScriptBlock $Entry 'ResumeSession' '' $null @{ C = $script:RecoveryCurrent }).CompletionText |
+            Should -Be @('unresolved', 'recovered', 'canonical')
+        (Get-Location).Path | Should -Be $script:RecoveryOther
+    }
+
+    It 'automatically resumes the lone recovered identity instead of a newer unresolved fallback' {
+        Add-RecoverySession -Contexts (New-RecoveryContext) | Out-Null
+        Add-RecoverySession -Id unresolved -Cwd $script:RecoveryCurrent -UpdatedAt '2026-08-14T22:00:00Z' | Out-Null
+        $script:RecoveryOrigins[$script:RecoveryCurrent] = @('https://dev.azure.com/acme/Project/_git/widget')
+        $plan = Get-CopilotLaunchPlan -SessionSelector { throw 'Recovered canonical identity must win.' }
+        $plan.Args[[array]::IndexOf($plan.Args, '--resume') + 1] | Should -Be 'recovered'
+    }
+
+    It 'retains conservative same-directory fallback and explicit ID, All and Cwd semantics' {
+        Add-RecoverySession -Id fallback -Cwd $script:RecoveryCurrent -Branch feature/topic | Out-Null
+        $script:RecoveryOrigins[$script:RecoveryCurrent] = @('https://dev.azure.com/acme/Project/_git/widget')
+        $path = Add-RecoverySession -Repository 'other/Project/widget' -Branch feature/other
+        Set-Content -LiteralPath (Join-Path $path 'events.jsonl') -Value '{"type":"session.start","data":{"context":42}}'
+        @(Get-CopilotSession -ErrorAction Stop).Id | Should -Be @('fallback')
+        Mock -ModuleName Shmuelie.Copilot Resolve-CopilotSessionIdentity { throw 'Explicit scope must not perform recovery.' }
+        @(Get-CopilotSession -All -ErrorAction Stop).Count | Should -Be 2
+        (Get-CopilotSession -Id recovered -ErrorAction Stop).Repository | Should -Be 'other/Project/widget'
+        @(Get-CopilotSession -Cwd ([WildcardPattern]::Escape($script:RecoveryOld)) -ErrorAction Stop).Id | Should -Be @('recovered')
+        (Get-CopilotLaunchPlan -ResumeSession recovered).Args | Should -Contain 'recovered'
+    }
+
+    It 'diagnoses malformed recovery evidence and supports ErrorAction Stop - <Case>' -ForEach @(
+        @{ Case = 'invalid JSON'; Journal = '{"type":"session.start","data":' }
+        @{ Case = 'invalid data'; Journal = '{"type":"session.start","data":[]}' }
+        @{ Case = 'invalid context'; Journal = '{"type":"session.start","data":{"context":42}}' }
+        @{ Case = 'invalid field'; Journal = '{"type":"session.start","data":{"context":{"repository":42}}}' }
+        @{ Case = 'wrong session ID'; Journal = '{"type":"session.start","data":{"sessionId":"someone-else","context":{}}}' }
+        @{ Case = 'host suffix attack'; Journal = '{"type":"session.start","data":{"context":{"repository":"Project/widget","branch":"feature/topic","repositoryHost":"acme.visualstudio.com.evil.test"}}}' }
+        @{ Case = 'host with path'; Journal = '{"type":"session.start","data":{"context":{"repository":"Project/widget","branch":"feature/topic","repositoryHost":"acme.visualstudio.com/DefaultCollection"}}}' }
+    ) {
+        $path = Add-RecoverySession
+        Set-Content -LiteralPath (Join-Path $path 'events.jsonl') -Value $Journal
+        $errors = @()
+        @(Get-CopilotSession -ErrorAction SilentlyContinue -ErrorVariable errors) | Should -HaveCount 0
+        $errors[-1].FullyQualifiedErrorId | Should -BeLike 'InvalidCopilotSessionIdentity*'
+        $errors[-1].Exception.Message | Should -BeLike '*recovered*'
+        { Get-CopilotSession -ErrorAction Stop } | Should -Throw '*identity recovery evidence*'
+        { Get-CopilotLaunchPlan -ErrorAction Stop } | Should -Throw '*identity recovery evidence*'
+        { & (Get-Module Shmuelie.Copilot) { Complete-CopilotResumeSession -WordToComplete rec -ErrorAction Stop } } |
+            Should -Throw '*identity recovery evidence*'
+    }
+
+    It 'honors exact journal recovery scan boundaries without using partial evidence - <Case>' -ForEach @(
+        @{ Case = 'line before'; ByteLimit = $false; Size = 8191; Accepted = $true }
+        @{ Case = 'line at'; ByteLimit = $false; Size = 8192; Accepted = $true }
+        @{ Case = 'line after'; ByteLimit = $false; Size = 8193; Accepted = $false }
+        @{ Case = 'byte before'; ByteLimit = $true; Size = (8MB - 1); Accepted = $true }
+        @{ Case = 'byte at'; ByteLimit = $true; Size = 8MB; Accepted = $true }
+        @{ Case = 'byte after'; ByteLimit = $true; Size = (8MB + 1); Accepted = $false }
+    ) {
+        $path = Add-RecoverySession -Contexts (New-RecoveryContext)
+        $journal = Join-Path $path 'events.jsonl'
+        if ($ByteLimit) {
+            $original = [IO.File]::ReadAllText($journal)
+            $padding = $Size - [Text.Encoding]::UTF8.GetByteCount($original)
+            [IO.File]::WriteAllText($journal, ($original + (' ' * $padding)), [Text.UTF8Encoding]::new($false))
+        } else {
+            Add-Content -LiteralPath $journal -Value (@(' ') * ($Size - 1))
+        }
+        $errors = @()
+        $sessions = @(Get-CopilotSession -ErrorAction SilentlyContinue -ErrorVariable errors)
+        if ($Accepted) {
+            $sessions.Id | Should -Be @('recovered')
+            $errors | Should -HaveCount 0
+        } else {
+            $sessions | Should -HaveCount 0
+            $errors[-1].Exception.Message | Should -BeLike '*limit*'
+        }
+    }
+
+    It 'does not parse conversation payloads or read complete and unrelated identity journals' {
+        $path = Add-RecoverySession -Contexts (New-RecoveryContext)
+        $nestedConversation = [ordered]@{
+            data = @{ content = @{ type = 'session.resume'; data = @{ context = (New-RecoveryContext -Branch feature/other) } } }
+            type = 'assistant.message'
+        } | ConvertTo-Json -Depth 10 -Compress
+        Add-Content -LiteralPath (Join-Path $path 'events.jsonl') -Value $nestedConversation
+        Add-Content -LiteralPath (Join-Path $path 'events.jsonl') -Value '{"type":"assistant.message", intentionally not valid lifecycle JSON'
+        @(Get-CopilotSession -ErrorAction Stop).Id | Should -Be @('recovered')
+        Add-RecoverySession -Id complete -Repository acme/Project/widget -Branch feature/topic | Out-Null
+        Add-RecoverySession -Id unrelated -Branch feature/other | Out-Null
+        foreach ($id in 'complete', 'unrelated') {
+            Set-Content -LiteralPath (Join-Path $script:RecoverySessionRoot $id 'events.jsonl') -Value '{"type":"session.start","data":{"context":42}}'
+        }
+        @(Get-CopilotSession -ErrorAction Stop).Id | Should -Contain 'complete'
+        @(& (Get-Module Shmuelie.Copilot) { Get-CopilotResumeCandidate }).Id | Should -Contain 'recovered'
+    }
+}
+
 Describe 'Get-CopilotSession' {
     BeforeEach {
         $testHome = Join-Path $TestDrive 'home'
