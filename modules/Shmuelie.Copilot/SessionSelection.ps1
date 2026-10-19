@@ -136,6 +136,7 @@ function Test-CopilotSessionScope {
 }
 
 function Complete-CopilotResumeSession {
+    [CmdletBinding()]
     param(
         [string]$WordToComplete,
         [System.Collections.IDictionary]$BoundParameters
@@ -168,7 +169,9 @@ function Complete-CopilotResumeSession {
             $sessionCwd = Get-CopilotWorkspaceField -Content $content -Field 'cwd'
             $sessionRepository = Get-CopilotWorkspaceField -Content $content -Field 'repository'
             $sessionBranch = Get-CopilotWorkspaceField -Content $content -Field 'branch'
-            if (Test-CopilotSessionScope -Scope $scope -Cwd $sessionCwd -Repository $sessionRepository -Branch $sessionBranch) {
+            $identity = Resolve-CopilotSessionIdentity -SessionPath $_.FullName -Cwd $sessionCwd -Repository $sessionRepository -Branch $sessionBranch -Scope $scope
+            if ($identity.RecoveryError) { $PSCmdlet.WriteError($identity.RecoveryError) }
+            if (Test-CopilotSessionScope -Scope $scope -Cwd $identity.Cwd -Repository $identity.Repository -Branch $identity.Branch) {
                 $name = Get-CopilotWorkspaceField -Content $content -Field 'name'
                 if ($name) { $name = ($name -split '\r?\n', 2)[0].Trim() }
                 $summary = Get-CopilotWorkspaceField -Content $content -Field 'summary'
@@ -217,20 +220,22 @@ function Get-CopilotResumeCandidate {
                 $summary = Get-CopilotWorkspaceField -Content $content -Field 'summary'
                 $sessionBranch = Get-CopilotWorkspaceField -Content $content -Field 'branch'
                 $sessionRepository = Get-CopilotWorkspaceField -Content $content -Field 'repository'
+                $identity = Resolve-CopilotSessionIdentity -SessionPath $sessionPath -Cwd $sessionCwd -Repository $sessionRepository -Branch $sessionBranch -Scope $scope
+                if ($identity.RecoveryError) { $PSCmdlet.WriteError($identity.RecoveryError) }
                 $sessionName = Get-CopilotWorkspaceField -Content $content -Field 'name'
                 if ($sessionName) { $sessionName = ($sessionName -split '\r?\n', 2)[0].Trim() }
                 $displayName = $sessionName ?? $summary ?? '(no summary)'
-                if ((Test-CopilotSessionScope -Scope $scope -Cwd $sessionCwd -Repository $sessionRepository -Branch $sessionBranch) -and
+                if ((Test-CopilotSessionScope -Scope $scope -Cwd $identity.Cwd -Repository $identity.Repository -Branch $identity.Branch) -and
                     $updatedAt -and $sessionName -notin $ignoredSessionNames) {
                     [PSCustomObject]@{
                         PSTypeName = 'CopilotSession'
                         Id         = $_.Name
                         Name       = $displayName
                         Summary    = $displayName
-                        Branch     = $sessionBranch
-                        Repository = $sessionRepository
+                        Branch     = $identity.Branch
+                        Repository = $identity.Repository
                         UpdatedAt  = [DateTimeOffset]::Parse($updatedAt)
-                        Cwd        = $sessionCwd
+                        Cwd        = $identity.Cwd
                     }
                 }
             }

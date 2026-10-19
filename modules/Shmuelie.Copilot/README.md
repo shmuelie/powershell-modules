@@ -75,17 +75,36 @@ repair without reading or writing session files.
   before the project in applicable HTTPS forms. Identity is paired with the
   exact checked-out branch. Both metadata fields must match, so another
   repository's same-named branch or another worktree's branch cannot take its
-  place. A session missing one or both
-  fields falls back only when its recorded directory is the current directory
+  place. Missing fields are first recovered, when possible, from the latest
+  applicable `session.start`, `session.resume`, or `session.context_changed`
+  journal context. A later lifecycle boundary replaces, rather than merges with,
+  earlier context; conflicting known fields are never overwritten. Legacy
+  `DefaultCollection/project/repository` and `project/repository` identities
+  require independent organization evidence: a validated
+  `organization.visualstudio.com` context hostname, canonical lifecycle identity,
+  or one recognized, compatible origin at surviving recorded Git paths. The
+  current checkout, matching suffixes, and branch/folder names do not supply an
+  organization. Recorded paths never supply today's branch as a historical
+  branch. Conflicting origins or provider/hostname evidence do not recover identity.
+  An unresolved session falls back only when its recorded directory is the current directory
   and any known field agrees; complete but conflicting metadata never falls
   back. A non-Git directory, detached branch, missing or ambiguous origin, or
   unsupported remote uses exact recorded-directory matching instead. The
-  launcher prefers complete identity matches over legacy directory-only
+  launcher prefers complete and positively recovered identity matches over unresolved directory-only
   candidates; multiple matching sessions retain newest-first selection.
   `-ResumeSession` completion uses the same scope, including `-ChangeDir`.
   `Get-CopilotSession` defaults to this scope; `-All` still searches globally,
   explicit `-Cwd` replaces it with the recorded-path wildcard filter, and `-Id`
   remains an exact global lookup. Other filters narrow rather than expand it.
+  Listing output and wildcard filters retain the recorded workspace values;
+  only scope matching and launch candidates use the effective identity.
+  Recovery never rewrites workspace files, journals, databases, remotes, or CLI
+  configuration. Complete identities and known out-of-scope identities avoid
+  journal reads. Recovery scans at most 8 MiB and 8192 lines and deserializes
+  lifecycle events only, not conversation contents. Missing journals/worktrees
+  leave unresolved metadata; malformed, unreadable, or oversized recovery
+  evidence emits `InvalidCopilotSessionIdentity` and retains the conservative
+  recorded fallback. Use `-ErrorAction Stop` to fail closed.
 - **Effective launch directory** via `-ChangeDir` (alias `-C`) on both
   `Start-Copilot` and `Get-CopilotLaunchPlan`. Session candidates, branch
   preference, selectors, and MCP path policy use that directory, including

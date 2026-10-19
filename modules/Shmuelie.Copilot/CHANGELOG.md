@@ -6,6 +6,15 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+### Fixed
+- Discover incomplete and legacy Azure DevOps session identities using bounded,
+  read-only lifecycle context and verified surviving recorded Git origins.
+  Preserve recorded metadata and known conflicts, require independent organization
+  evidence and an exact historical branch, and include positively recovered
+  sessions in canonical launch candidate preference. Listing, automatic/latest
+  resume, selectors, completion, and `-ChangeDir` share the resolution policy;
+  explicit ID, `-All`, and recorded-path filtering remain unchanged. (#359)
+
 ## [0.7.2] - 2026-10-16
 
 ### Fixed

@@ -14,14 +14,28 @@ function Get-CopilotSession {
         accepts dev.azure.com HTTPS, ssh.dev.azure.com SSH, and legacy
         {organization}.visualstudio.com HTTPS origins (including optional .git,
         encoded segments, and applicable DefaultCollection prefixes). Sessions
-        missing either field fall back to an exact recorded working-directory
-        match, provided any known field does not conflict. Without a resolvable
-        identity, use the directory match.
+        missing either field first try read-only recovery from the latest
+        applicable session.start/resume/context_changed journal context or a
+        surviving recorded Git path's single recognized origin. Historical
+        branches come only from recorded metadata or lifecycle context, never
+        today's Git branch. Legacy DefaultCollection/project/repository and
+        project/repository identities require independent organization evidence,
+        such as a validated organization.visualstudio.com context hostname or
+        compatible recorded-path origin. Conflicting known fields are preserved.
+        Unresolved sessions fall back to an exact recorded working-directory
+        match only when known fields do not conflict. Without a resolvable
+        current identity, use the directory match.
         Use -All to search every directory, or -Cwd to replace the implicit current
         scope. Repository, Branch, and Summary filter within that scope.
         All supplied filters must match. String filters use case-insensitive
         PowerShell wildcards against recorded metadata, without resolving paths.
         Results remain sorted by UpdatedAt descending.
+        Returned fields and wildcard filters always use recorded workspace
+        values, not the derived identity. No session files or Git configuration
+        are rewritten. Recovery scans at most 8 MiB and 8192 journal lines and
+        deserializes lifecycle events only; complete identities need no scan.
+        Malformed or oversized recovery evidence emits InvalidCopilotSessionIdentity;
+        use -ErrorAction Stop to abort rather than retain directory-only fallback.
 
         Missing repository, branch, or cwd metadata does not match even '*'.
         Summary matches the displayed Summary (name, then legacy summary, then
@@ -185,8 +199,12 @@ function Get-CopilotSession {
                 }
             }
 
+            $identity = if ($scope) {
+                Resolve-CopilotSessionIdentity -SessionPath $_.FullName -Cwd $sessionCwd -Repository $sessionRepository -Branch $sessionBranch -Scope $scope
+            }
+            if ($identity.RecoveryError) { $PSCmdlet.WriteError($identity.RecoveryError) }
             if ($All -or $Id -or $filters.ContainsKey('Cwd') -or
-                (Test-CopilotSessionScope -Scope $scope -Cwd $sessionCwd -Repository $sessionRepository -Branch $sessionBranch)) {
+                (Test-CopilotSessionScope -Scope $scope -Cwd $identity.Cwd -Repository $identity.Repository -Branch $identity.Branch)) {
                 [PSCustomObject]@{
                     PSTypeName = 'CopilotSession'
                     Id         = $_.Name
