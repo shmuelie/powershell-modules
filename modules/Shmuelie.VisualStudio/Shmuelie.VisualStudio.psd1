@@ -5,10 +5,10 @@
     Author               = 'Shmueli Englard'
     CompanyName          = 'Shmuelie'
     Copyright            = '(c) Shmueli Englard. All rights reserved.'
-    Description          = 'Visual Studio discovery, MSBuild resolution, and developer shell helpers for PowerShell.'
+    Description          = 'Visual Studio discovery, current-session initialization, MSBuild resolution, and nested developer shells for PowerShell.'
     PowerShellVersion    = '7.4'
     CompatiblePSEditions = @('Core')
-    FunctionsToExport    = @('Get-InstalledVsVersion', 'Resolve-MSBuild', 'Start-DevShell')
+    FunctionsToExport    = @('Get-InstalledVsVersion', 'Resolve-MSBuild', 'Set-VS2017', 'Set-VS2019', 'Set-VS2022', 'Set-VS2026', 'Start-DevShell')
     CmdletsToExport      = @()
     VariablesToExport    = @()
     AliasesToExport      = @()

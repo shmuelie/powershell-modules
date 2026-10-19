@@ -31,21 +31,69 @@ function Invoke-VsWhere {
         return
     }
 
-    $programFilesX86 = ${env:ProgramFiles(x86)}
-    if (-not $programFilesX86) {
-        $programFilesX86 = [Environment]::GetFolderPath('ProgramFilesX86')
+    $installerPath = Get-VsInstallerPath
+    $vsWhere = if ($installerPath) { Join-Path $installerPath 'vswhere.exe' }
+    if (-not $vsWhere -or -not (Test-Path -LiteralPath $vsWhere -PathType Leaf -ErrorAction Stop)) {
+        throw 'Cannot discover Visual Studio developer environments: vswhere.exe was not found. Install or repair Visual Studio Installer.'
     }
-    if (-not $programFilesX86) { return @() }
 
-    $vsWhere = Join-Path $programFilesX86 'Microsoft Visual Studio\Installer\vswhere.exe'
-    if (-not (Test-Path -LiteralPath $vsWhere)) { return @() }
+    $json = Invoke-DeveloperVsWhere -Path $vsWhere
+    if (-not $json) {
+        throw 'Cannot discover Visual Studio developer environments: vswhere.exe returned no JSON.'
+    }
+    $instances = ConvertFrom-Json -InputObject ($json -join "`n") -NoEnumerate -ErrorAction Stop
+    if ($instances -isnot [array]) {
+        throw 'Cannot discover Visual Studio developer environments: vswhere.exe did not return a JSON array.'
+    }
+    $instances
+}
 
-    $json = & $vsWhere -all -format json -utf8 2>$null
-    if ($LASTEXITCODE -ne 0 -or -not $json) { return @() }
+function Invoke-DeveloperVsWhere {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path
+    )
 
-    $parsed = $json | ConvertFrom-Json -ErrorAction SilentlyContinue
-    if ($null -eq $parsed) { return @() }
-    return @($parsed)
+    $PSNativeCommandUseErrorActionPreference = $false
+    $output = & $Path -products '*' -format json -utf8 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "Cannot discover Visual Studio developer environments: vswhere.exe exited with code $LASTEXITCODE. $($output -join "`n")"
+    }
+    $output
+}
+
+function Get-VsDeveloperInstallation {
+    [CmdletBinding()]
+    param(
+        [ValidateSet(2017, 2019, 2022, 2026)]
+        [int]$Year
+    )
+
+    $installations = foreach ($instance in @(Invoke-VsWhere -ErrorAction Stop)) {
+        $version = $null
+        if (-not [version]::TryParse([string]$instance.installationVersion, [ref]$version) -or
+            -not $instance.installationPath -or
+            -not [IO.Path]::IsPathFullyQualified([string]$instance.installationPath)) {
+            throw 'Cannot discover Visual Studio developer environments: invalid installation metadata.'
+        }
+        $installedYear = ConvertTo-VsYear -InstallationVersion ([string]$instance.installationVersion)
+        if (-not $installedYear -or ($Year -and $Year -ne $installedYear)) { continue }
+        if ($instance.isComplete -ne $true -or $instance.isLaunchable -ne $true -or $instance.isPrerelease -eq $true) { continue }
+
+        $scriptPath = Join-Path $instance.installationPath 'Common7' 'Tools' 'VsDevCmd.bat'
+        if (-not (Test-Path -LiteralPath $scriptPath -PathType Leaf -ErrorAction Stop)) { continue }
+        [pscustomobject]@{
+            Year             = $installedYear
+            Version          = $version.ToString()
+            InstallationPath = [IO.Path]::GetFullPath([string]$instance.installationPath)
+            ScriptPath       = $scriptPath
+        }
+    }
+    $installations | Sort-Object -Property @(
+        @{ Expression = { [version]$_.Version }; Descending = $true },
+        @{ Expression = { $_.InstallationPath }; Ascending = $true }
+    )
 }
 
 function ConvertTo-VsYear {
@@ -74,19 +122,18 @@ function Get-InstalledVsVersion {
         Lists installed Visual Studio years that can be loaded in PowerShell.
 
     .DESCRIPTION
-        Uses vswhere.exe to enumerate Visual Studio instances, maps each
-        instance's installationVersion major number to a Visual Studio year, and
-        returns only years that also have a matching Set-VS<year> command
-        available. This makes the output suitable for Start-DevShell tab
-        completion.
+        Uses vswhere.exe to enumerate complete, launchable release installations,
+        including Build Tools, that contain Common7/Tools/VsDevCmd.bat. Returns
+        sorted unique years for Visual Studio 2017, 2019, 2022, and 2026.
+        No PSVSEnv or Set-VS provider command is required. Preview installations
+        are excluded. Discovery errors terminate rather than hiding failures.
 
         The catalog_productLineVersion field is intentionally ignored because it
         can be inconsistent across Visual Studio products.
 
     .EXAMPLE
         Get-InstalledVsVersion
-        Returns years such as 2022 or 2026 when both Visual Studio and the
-        matching Set-VS<year> command are available.
+        Returns years such as 2022 or 2026 for eligible installed toolsets.
     #>
     [OutputType([int])]
     [CmdletBinding()]
@@ -94,16 +141,5 @@ function Get-InstalledVsVersion {
 
     Assert-WindowsOnly -CommandName $MyInvocation.MyCommand.Name
 
-    $instances = @(Invoke-VsWhere)
-    if ($instances.Count -eq 0) { return }
-
-    $years = foreach ($instance in $instances) {
-        if ($instance.installationVersion) {
-            ConvertTo-VsYear -InstallationVersion ([string]$instance.installationVersion)
-        }
-    }
-
-    $years |
-        Where-Object { $null -ne $_ -and (Get-Command "Set-VS$_" -ErrorAction SilentlyContinue) } |
-        Sort-Object -Unique
+    Get-VsDeveloperInstallation | Select-Object -ExpandProperty Year | Sort-Object -Unique
 }

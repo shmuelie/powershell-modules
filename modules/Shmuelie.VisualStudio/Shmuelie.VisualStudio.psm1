@@ -16,4 +16,4 @@ Register-ArgumentCompleter -CommandName Start-DevShell -ParameterName Version -S
     }
 }
 
-Export-ModuleMember -Function @('Get-InstalledVsVersion', 'Resolve-MSBuild', 'Start-DevShell')
+Export-ModuleMember -Function @('Get-InstalledVsVersion', 'Resolve-MSBuild', 'Set-VS2017', 'Set-VS2019', 'Set-VS2022', 'Set-VS2026', 'Start-DevShell')
