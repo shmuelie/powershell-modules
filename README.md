@@ -27,7 +27,7 @@ Install-PSResource Shmuelie.DevTunnel
 | [Shmuelie.Utilities](docs/modules.md#shmuelie-utilities) | Python, VS Code, terminal helpers, and legacy .NET tool entry points |
 | [Shmuelie.Windows](docs/modules.md#shmuelie-windows) | Windows-only installed-apps, Terminal, WPR, and service helpers |
 | [Shmuelie.Dsc](docs/modules.md#shmuelie-dsc) | DSC v3 resources for setup: modules, symlinks, Copilot plugins/marketplaces, uv tools |
-| [Shmuelie.VisualStudio](docs/modules.md#shmuelie-visualstudio) | Visual Studio discovery, MSBuild resolution, and developer shell launch helpers |
+| [Shmuelie.VisualStudio](docs/modules.md#shmuelie-visualstudio) | Visual Studio discovery, current-session initialization, MSBuild resolution, and nested developer shells |
 | [Shmuelie.PackageManagement](docs/modules.md#shmuelie-packagemanagement) | Package update orchestration; see the module README for provider availability |
 | [Shmuelie.DevTunnel](docs/modules.md#shmuelie-devtunnel) | Microsoft devtunnel CLI accounts, tunnels, ports, access, hosting, and diagnostics |
 

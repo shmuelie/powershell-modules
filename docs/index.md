@@ -22,7 +22,7 @@ install and upgrade each module on its own.
 | [Shmuelie.Utilities](modules.md#shmuelie-utilities) | Python, VS Code, terminal helpers, and legacy .NET tool entry points | 0.6.2 |
 | [Shmuelie.Windows](modules.md#shmuelie-windows) | Windows-only installed-apps, Terminal, WPR, and service helpers | 0.2.3 |
 | [Shmuelie.Dsc](modules.md#shmuelie-dsc) | DSC v3 resources for setup: modules, symlinks, Copilot plugins/marketplaces, uv tools | 0.1.2 |
-| [Shmuelie.VisualStudio](modules.md#shmuelie-visualstudio) | Visual Studio discovery, MSBuild resolution, and developer shell launch helpers | 0.2.0 |
+| [Shmuelie.VisualStudio](modules.md#shmuelie-visualstudio) | Visual Studio discovery, current-session initialization, MSBuild resolution, and nested developer shells | 0.2.0 |
 | [Shmuelie.PackageManagement](modules.md#shmuelie-packagemanagement) | Package update orchestration; see the module README for provider availability | 0.3.0 |
 | [Shmuelie.DevTunnel](modules.md#shmuelie-devtunnel) | Microsoft devtunnel CLI accounts, tunnels, hosting, ports, access, and diagnostics | 0.1.0 |
 
