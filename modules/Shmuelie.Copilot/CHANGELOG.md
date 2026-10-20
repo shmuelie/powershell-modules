@@ -6,6 +6,8 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+## [0.7.3] - 2026-10-20
+
 ### Fixed
 - Discover incomplete and legacy Azure DevOps session identities using bounded,
   read-only lifecycle context and verified surviving recorded Git origins.

@@ -4,7 +4,7 @@ Visual Studio discovery, current-session initialization, MSBuild resolution, and
 nested developer shells for PowerShell. Uses Visual Studio's own discovery and
 initialization tools; **PSVSEnv and third-party provider commands are not required**.
 
-**Version:** 0.2.0
+**Version:** 0.3.0
 
 ## Install
 
