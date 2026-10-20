@@ -4918,11 +4918,16 @@ Describe 'Copilot read-only session identity recovery' -Tag 'SessionIdentity' {
         $exclusive.Dispose()
     }
 
-    It 'discards recovery when a journal changes during the scan' {
+    It 'discards recovery when a journal changes during the scan - <Case>' -ForEach @(
+        @{ Case = 'appended'; Delete = $false }
+        @{ Case = 'removed'; Delete = $true }
+    ) {
         $path = Add-RecoverySession -Contexts (New-RecoveryContext)
         $script:ChangingRecoveryJournal = Join-Path $path 'events.jsonl'
+        $script:DeleteRecoveryJournal = $Delete
         Mock -ModuleName Shmuelie.Copilot ConvertFrom-Json {
-            [IO.File]::AppendAllText($script:ChangingRecoveryJournal, "`n")
+            if ($script:DeleteRecoveryJournal) { [IO.File]::Delete($script:ChangingRecoveryJournal) }
+            else { [IO.File]::AppendAllText($script:ChangingRecoveryJournal, "`n") }
             & $script:RecoveryJsonCommand -InputObject $InputObject -AsHashtable -ErrorAction Stop
         } -ParameterFilter { $AsHashtable }
         $output = @(Get-CopilotSession -Verbose -ErrorAction Stop 4>&1)

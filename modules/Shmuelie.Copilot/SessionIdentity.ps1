@@ -46,7 +46,7 @@ function Get-CopilotLifecycleContext {
         $records.Dispose()
     }
     $snapshot.Refresh()
-    if ($snapshot.Length -ne $length -or $snapshot.LastWriteTimeUtc -ne $modified) {
+    if (-not $snapshot.Exists -or $snapshot.Length -ne $length -or $snapshot.LastWriteTimeUtc -ne $modified) {
         throw [IO.EndOfStreamException]::new('Identity recovery journal changed while being read.')
     }
     if ($latest) {
