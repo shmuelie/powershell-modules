@@ -6865,12 +6865,22 @@ Describe 'Copilot documented ADO origin consumers' -Tag 'Issue360AdoOrigins' {
                 $command = $args -join ' '
                 $ado360KnownCalls.Add($command)
                 $global:LASTEXITCODE = 0
+                $directory = (Get-Location).Path
+                if ($args[0] -ceq '-C') {
+                    $directory = $args[1]
+                    $command = $args[2..($args.Count - 1)] -join ' '
+                    if ($directory -cne $ado360Target -or $command -cnotin @(
+                        'rev-parse --is-inside-work-tree', 'config --get-all remote.origin.url'
+                    )) {
+                        throw 'Unexpected recorded-path Git operation: only fixture origin reads are permitted.'
+                    }
+                }
                 switch -Exact ($command) {
                     'symbolic-ref --short HEAD' {
                         if ((Get-Location).Path -eq $ado360Target) { $ado360Branch } else { 'main' }
                     }
                     'config --get-all remote.origin.url' {
-                        if ((Get-Location).Path -eq $ado360Target) { $ado360Origins }
+                        if ($directory -eq $ado360Target) { $ado360Origins }
                     }
                     'rev-parse --is-inside-work-tree' { 'true' }
                     'remote get-url --all origin' {
@@ -6904,7 +6914,9 @@ Describe 'Copilot documented ADO origin consumers' -Tag 'Issue360AdoOrigins' {
                 Should -Invoke -ModuleName Shmuelie.Copilot Read-Host -Times 0 -Exactly
                 @($ado360KnownCalls | Where-Object { $_ -notin @(
                     'symbolic-ref --short HEAD', 'config --get-all remote.origin.url',
-                    'rev-parse --is-inside-work-tree', 'remote get-url --all origin'
+                    'rev-parse --is-inside-work-tree', 'remote get-url --all origin',
+                    "-C $ado360Target rev-parse --is-inside-work-tree",
+                    "-C $ado360Target config --get-all remote.origin.url"
                 ) }) | Should -HaveCount 0
             } finally {
                 Set-Location -LiteralPath $ado360PreviousLocation.Path
@@ -6913,14 +6925,14 @@ Describe 'Copilot documented ADO origin consumers' -Tag 'Issue360AdoOrigins' {
 
         It 'lists moved identities while rejecting conflicting repository and exact branch metadata' {
             @(Get-CopilotSession).Id | Should -Be @('newest', 'older', 'local-legacy', 'partial-repository', 'partial-branch')
-            @(& (Get-Module Shmuelie.Copilot) { Get-CopilotResumeCandidate }).Id | Should -Be @('newest', 'older')
+            @(& (Get-Module Shmuelie.Copilot) { Get-CopilotResumeCandidate }).Id | Should -Be @('newest', 'older', 'partial-branch')
         }
 
         It 'plans ResumeLatest and selector candidates using the same exact identity' {
             Get-Ado360ResumeValue (Get-CopilotLaunchPlan -ResumeLatest) | Should -BeExactly 'newest'
             $selected = Get-CopilotLaunchPlan -SessionSelector {
                 param($Sessions)
-                $Sessions.Id | Should -Be @('newest', 'older')
+                $Sessions.Id | Should -Be @('newest', 'older', 'partial-branch')
                 $Sessions[1]
             }
             Get-Ado360ResumeValue $selected | Should -BeExactly 'older'
