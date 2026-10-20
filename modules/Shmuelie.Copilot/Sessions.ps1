@@ -34,9 +34,12 @@ function Get-CopilotSession {
         Results remain sorted by UpdatedAt descending.
         Returned fields and wildcard filters always use recorded workspace
         values, not the derived identity. No session files or Git configuration
-        are rewritten. Recovery scans at most 8 MiB and 8192 journal lines and
-        deserializes lifecycle events only; complete identities need no scan.
-        Malformed or oversized recovery evidence emits InvalidCopilotSessionIdentity;
+        are rewritten. Recovery scans the complete journal without size, line-count,
+        or processing-time cutoffs, skipping conversation records in fixed-size
+        buffers and deserializing lifecycle events only. Complete identities
+        need no scan. Incomplete trailing records or concurrent journal changes
+        discard partial recovery evidence and emit verbose output only.
+        Malformed or unreadable recovery evidence emits InvalidCopilotSessionIdentity;
         use -ErrorAction Stop to abort rather than retain directory-only fallback.
 
         Missing repository, branch, or cwd metadata does not match even '*'.

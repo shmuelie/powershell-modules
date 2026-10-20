@@ -4418,6 +4418,21 @@ Describe 'Copilot repository and branch session scope' -Tag 'StableSessionScope'
 Describe 'Copilot read-only session identity recovery' -Tag 'SessionIdentity' {
     BeforeAll {
         $script:RecoveryPlanCommand = Get-Command Shmuelie.Copilot\Get-CopilotLaunchPlan -ErrorAction Stop
+        $script:RecoveryJsonCommand = Get-Command ConvertFrom-Json -ErrorAction Stop
+
+        function Add-RecoveryConversation {
+            param([string]$SessionPath, [int]$Megabytes = 9)
+
+            $writer = [IO.File]::AppendText((Join-Path $SessionPath 'events.jsonl'))
+            try {
+                $writer.Write('{"data":{"content":"')
+                $block = 'x' * 1MB
+                for ($i = 0; $i -lt $Megabytes; $i++) { $writer.Write($block) }
+                $writer.WriteLine('","type":"session.resume"},"type":"assistant.message"}')
+            } finally {
+                $writer.Dispose()
+            }
+        }
 
         function Add-RecoverySession {
             param(
@@ -4617,13 +4632,18 @@ Describe 'Copilot read-only session identity recovery' -Tag 'SessionIdentity' {
     }
 
     It 'recognizes lifecycle envelopes independently of JSON property order and escaping - <Case>' -ForEach @(
-        @{ Case = 'data before type'; EscapedType = $false }
-        @{ Case = 'escaped type'; EscapedType = $true }
+        @{ Case = 'data before type'; EscapedType = $false; FullyEscaped = $false }
+        @{ Case = 'escaped type'; EscapedType = $true; FullyEscaped = $false }
+        @{ Case = 'fully escaped type'; EscapedType = $true; FullyEscaped = $true }
     ) {
         $path = Add-RecoverySession
         $line = [ordered]@{ data = @{ context = (New-RecoveryContext) }; id = 'ordered'; type = 'session.start' } |
             ConvertTo-Json -Depth 10 -Compress
         if ($EscapedType) { $line = $line.Replace('"type":"session.start"', '"ty\u0070e":"session\u002estart"') }
+        if ($FullyEscaped) {
+            $escaped = -join ('session.start'.ToCharArray() | ForEach-Object { '\u{0:x4}' -f [int]$_ })
+            $line = $line.Replace('session\u002estart', $escaped)
+        }
         Set-Content -LiteralPath (Join-Path $path 'events.jsonl') -Value $line
         @(Get-CopilotSession -ErrorAction Stop).Id | Should -Be @('recovered')
     }
@@ -4683,7 +4703,8 @@ Describe 'Copilot read-only session identity recovery' -Tag 'SessionIdentity' {
         @{ Entry = 'Get-CopilotLaunchPlan' }
         @{ Entry = 'Start-Copilot' }
     ) {
-        Add-RecoverySession -Contexts (New-RecoveryContext) | Out-Null
+        $path = Add-RecoverySession -Contexts (New-RecoveryContext)
+        Add-RecoveryConversation -SessionPath $path
         Add-RecoverySession -Id canonical -Repository acme/Project/widget -Branch feature/topic -UpdatedAt '2026-08-12T22:00:00Z' | Out-Null
         Add-RecoverySession -Id unresolved -Cwd $script:RecoveryCurrent -UpdatedAt '2026-08-14T22:00:00Z' | Out-Null
         $script:RecoveryOrigins[$script:RecoveryCurrent] = @('https://dev.azure.com/acme/Project/_git/widget')
@@ -4753,13 +4774,13 @@ Describe 'Copilot read-only session identity recovery' -Tag 'SessionIdentity' {
             Should -Throw '*identity recovery evidence*'
     }
 
-    It 'honors exact journal recovery scan boundaries without using partial evidence - <Case>' -ForEach @(
-        @{ Case = 'line before'; ByteLimit = $false; Size = 8191; Accepted = $true }
-        @{ Case = 'line at'; ByteLimit = $false; Size = 8192; Accepted = $true }
-        @{ Case = 'line after'; ByteLimit = $false; Size = 8193; Accepted = $false }
-        @{ Case = 'byte before'; ByteLimit = $true; Size = (8MB - 1); Accepted = $true }
-        @{ Case = 'byte at'; ByteLimit = $true; Size = 8MB; Accepted = $true }
-        @{ Case = 'byte after'; ByteLimit = $true; Size = (8MB + 1); Accepted = $false }
+    It 'recovers on both sides of former journal scan limits - <Case>' -ForEach @(
+        @{ Case = 'line before'; ByteLimit = $false; Size = 8191 }
+        @{ Case = 'line at'; ByteLimit = $false; Size = 8192 }
+        @{ Case = 'line after'; ByteLimit = $false; Size = 8193 }
+        @{ Case = 'byte before'; ByteLimit = $true; Size = (8MB - 1) }
+        @{ Case = 'byte at'; ByteLimit = $true; Size = 8MB }
+        @{ Case = 'byte after'; ByteLimit = $true; Size = (8MB + 1) }
     ) {
         $path = Add-RecoverySession -Contexts (New-RecoveryContext)
         $journal = Join-Path $path 'events.jsonl'
@@ -4772,12 +4793,157 @@ Describe 'Copilot read-only session identity recovery' -Tag 'SessionIdentity' {
         }
         $errors = @()
         $sessions = @(Get-CopilotSession -ErrorAction SilentlyContinue -ErrorVariable errors)
-        if ($Accepted) {
+        $sessions.Id | Should -Be @('recovered')
+        $errors | Should -HaveCount 0
+    }
+
+    It 'uses only the latest lifecycle beyond a large conversation record - <Case>' -ForEach @(
+        @{ Case = 'new branch'; Context = @{ repository = 'acme/Project/widget'; branch = 'feature/other' }; Expected = $true }
+        @{ Case = 'missing context'; Context = $null; Expected = $false }
+        @{ Case = 'partial context'; Context = @{ branch = 'feature/other' }; Expected = $false }
+        @{ Case = 'other repository'; Context = @{ repository = 'other/Project/widget'; branch = 'feature/other' }; Expected = $false }
+    ) {
+        $path = Add-RecoverySession -Contexts (New-RecoveryContext)
+        Add-RecoveryConversation -SessionPath $path
+        Add-Content -LiteralPath (Join-Path $path 'events.jsonl') -Value (
+            New-CopilotTestEventLine -Type session.context_changed -Id latest -Timestamp '2026-08-14T22:00:00Z' -Data @{ context = $Context })
+        Set-Location -LiteralPath $script:RecoveryOther
+        $before = Get-AtomicMergeSourceSnapshot -Path $path
+        $sessions = @(Get-CopilotSession -ErrorAction Stop)
+        if ($Expected) { $sessions.Id | Should -Be @('recovered') }
+        else { $sessions | Should -HaveCount 0 }
+        Get-AtomicMergeSourceSnapshot -Path $path | Should -Be $before
+    }
+
+    It 'skips a large conversation line without allocating its payload' {
+        $path = Add-RecoverySession -Contexts (New-RecoveryContext)
+        Add-RecoveryConversation -SessionPath $path -Megabytes 16
+        @(Get-CopilotSession -ErrorAction Stop).Id | Should -Be @('recovered')
+        $before = [GC]::GetAllocatedBytesForCurrentThread()
+        $records = [Shmuelie.Copilot.SessionIdentityJournal]::Read((Join-Path $path 'events.jsonl'))
+        try {
+            $records.MoveNext() | Should -BeTrue
+            $records.Current.Json | Should -BeLike '*session.start*'
+            $records.MoveNext() | Should -BeFalse
+        } finally {
+            $records.Dispose()
+        }
+        ([GC]::GetAllocatedBytesForCurrentThread() - $before) | Should -BeLessThan 2MB
+    }
+
+    It 'finds lifecycle changes beyond the former line limit - <Case>' -ForEach @(
+        @{ Case = 'later branch'; Context = @{ repository = 'acme/Project/widget'; branch = 'feature/other' }; Expected = $true }
+        @{ Case = 'later missing context'; Context = $null; Expected = $false }
+    ) {
+        $path = Add-RecoverySession -Contexts (New-RecoveryContext)
+        $journal = Join-Path $path 'events.jsonl'
+        $conversation = New-CopilotTestEventLine -Type assistant.message -Id filler -Timestamp '2026-08-14T22:00:00Z' -Data @{ content = 'not lifecycle context' }
+        $writer = [IO.File]::AppendText($journal)
+        try {
+            for ($i = 0; $i -lt 9000; $i++) { $writer.WriteLine($conversation) }
+        } finally {
+            $writer.Dispose()
+        }
+        Add-Content -LiteralPath $journal -Value (
+            New-CopilotTestEventLine -Type session.resume -Id latest -Timestamp '2026-08-14T22:00:00Z' -Data @{ context = $Context })
+        Set-Location -LiteralPath $script:RecoveryOther
+        $sessions = @(Get-CopilotSession -ErrorAction Stop)
+        if ($Expected) { $sessions.Id | Should -Be @('recovered') }
+        else { $sessions | Should -HaveCount 0 }
+    }
+
+    It 'preserves Unicode and physical record boundaries - <Case>' -ForEach @(
+        @{ Case = 'UTF-8 with BOM and CRLF'; Encoding = [Text.UTF8Encoding]::new($true); Newline = "`r`n" }
+        @{ Case = 'UTF-16 little endian and LF'; Encoding = [Text.Encoding]::Unicode; Newline = "`n" }
+        @{ Case = 'UTF-16 big endian and CR'; Encoding = [Text.Encoding]::BigEndianUnicode; Newline = "`r" }
+    ) {
+        $path = Add-RecoverySession
+        $context = New-RecoveryContext
+        $context.cwd = $script:RecoveryOld
+        $lifecycle = New-CopilotTestEventLine -Type session.start -Id unicode -Timestamp '2026-08-14T22:00:00Z' -Data @{ context = $context }
+        $payload = ([string][char]0x03bb * 16383) + '\"}\\'
+        $conversation = '{"data":{"content":"' + $payload + '"},"type":"assistant.message"}'
+        [IO.File]::WriteAllText((Join-Path $path 'events.jsonl'),
+            $conversation + $Newline + $lifecycle + $Newline, $Encoding)
+        @(Get-CopilotSession -ErrorAction Stop).Id | Should -Be @('recovered')
+    }
+
+    It 'leaves incomplete recovery unresolved with verbose-only diagnostics - <Case>' -ForEach @(
+        @{ Case = 'lifecycle'; Tail = '{"type":"session.resume","data":{"context":'; SameDirectory = $false }
+        @{ Case = 'conversation'; Tail = '{"type":"assistant.message","data":{"content":"unfinished'; SameDirectory = $false }
+        @{ Case = 'unknown envelope'; Tail = '{"data":{"context":'; SameDirectory = $false }
+        @{ Case = 'recorded fallback'; Tail = '{"type":"session.resume","data":'; SameDirectory = $true }
+    ) {
+        $cwd = if ($SameDirectory) { $script:RecoveryCurrent } else { $script:RecoveryOld }
+        $path = Add-RecoverySession -Cwd $cwd -Branch feature/topic -Contexts (New-RecoveryContext -Cwd $cwd)
+        [IO.File]::AppendAllText((Join-Path $path 'events.jsonl'), $Tail)
+        $before = Get-AtomicMergeSourceSnapshot -Path $path
+        $errors = @()
+        $warnings = @()
+        $output = @(Get-CopilotSession -Verbose -ErrorAction Stop -ErrorVariable errors -WarningVariable warnings 4>&1)
+        @($output | Where-Object { $_ -is [System.Management.Automation.VerboseRecord] }).Message |
+            Should -Contain "Identity recovery unavailable for Copilot session 'recovered': Identity recovery journal has an incomplete trailing record."
+        $sessions = @($output | Where-Object { $_ -isnot [System.Management.Automation.VerboseRecord] })
+        $candidates = @(& (Get-Module Shmuelie.Copilot) { Get-CopilotResumeCandidate -ErrorAction Stop })
+        if ($SameDirectory) {
             $sessions.Id | Should -Be @('recovered')
-            $errors | Should -HaveCount 0
+            $candidates.Id | Should -Be @('recovered')
+            $candidates[0].Repository | Should -BeNullOrEmpty
+            $candidates[0].Branch | Should -Be 'feature/topic'
         } else {
             $sessions | Should -HaveCount 0
-            $errors[-1].Exception.Message | Should -BeLike '*limit*'
+            $candidates | Should -HaveCount 0
+            (Get-CopilotLaunchPlan -ErrorAction Stop).Args | Should -Not -Contain 'recovered'
+        }
+        $errors | Should -HaveCount 0
+        $warnings | Should -HaveCount 0
+        Get-AtomicMergeSourceSnapshot -Path $path | Should -Be $before
+    }
+
+    It 'accepts a complete final lifecycle record without a newline' {
+        $path = Add-RecoverySession
+        $line = New-CopilotTestEventLine -Type session.start -Id complete -Timestamp '2026-08-14T22:00:00Z' -Data @{
+            context = (New-RecoveryContext)
+        }
+        [IO.File]::WriteAllText((Join-Path $path 'events.jsonl'), $line)
+        @(Get-CopilotSession -ErrorAction Stop).Id | Should -Be @('recovered')
+    }
+
+    It 'closes journal readers after lifecycle validation fails' {
+        $path = Add-RecoverySession
+        $journal = Join-Path $path 'events.jsonl'
+        Set-Content -LiteralPath $journal -Value '{"type":"session.start","data":[]}'
+        { Get-CopilotSession -ErrorAction Stop } | Should -Throw '*identity recovery evidence*'
+        $exclusive = [IO.File]::Open($journal, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+        $exclusive.Dispose()
+    }
+
+    It 'discards recovery when a journal changes during the scan - <Case>' -ForEach @(
+        @{ Case = 'appended'; Delete = $false }
+        @{ Case = 'removed'; Delete = $true }
+    ) {
+        $path = Add-RecoverySession -Contexts (New-RecoveryContext)
+        $script:ChangingRecoveryJournal = Join-Path $path 'events.jsonl'
+        $script:DeleteRecoveryJournal = $Delete
+        Mock -ModuleName Shmuelie.Copilot ConvertFrom-Json {
+            if ($script:DeleteRecoveryJournal) { [IO.File]::Delete($script:ChangingRecoveryJournal) }
+            else { [IO.File]::AppendAllText($script:ChangingRecoveryJournal, "`n") }
+            & $script:RecoveryJsonCommand -InputObject $InputObject -AsHashtable -ErrorAction Stop
+        } -ParameterFilter { $AsHashtable }
+        $output = @(Get-CopilotSession -Verbose -ErrorAction Stop 4>&1)
+        @($output | Where-Object { $_ -isnot [System.Management.Automation.VerboseRecord] }) | Should -HaveCount 0
+        @($output | Where-Object { $_ -is [System.Management.Automation.VerboseRecord] }).Message |
+            Should -Contain "Identity recovery unavailable for Copilot session 'recovered': Identity recovery journal changed while being read."
+    }
+
+    It 'retains errors for unreadable recovery journals' {
+        $path = Add-RecoverySession -Contexts (New-RecoveryContext)
+        $locked = [IO.File]::Open((Join-Path $path 'events.jsonl'), [IO.FileMode]::Open,
+            [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+        try {
+            { Get-CopilotSession -ErrorAction Stop } | Should -Throw '*identity recovery evidence*'
+        } finally {
+            $locked.Dispose()
         }
     }
 

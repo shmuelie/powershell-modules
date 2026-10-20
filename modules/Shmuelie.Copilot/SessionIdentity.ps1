@@ -9,57 +9,27 @@ function Test-CopilotRepositoryCompatibility {
         $Recorded -ieq "DefaultCollection/$($parts[1])/$($parts[2])")
 }
 
-function Get-CopilotEventEnvelopeType {
-    param([Parameter(Mandatory)][string]$Line)
-
-    # Inspect top-level headers without deserializing conversation payloads.
-    # JSON property order is immaterial, including data preceding type.
-    $depth = 0
-    $expectType = $false
-    foreach ($token in [regex]::Matches($Line, '(?<string>"(?<text>(?:[^"\\]|\\.)*)")(?<property>\s*:)?|(?<open>[\{\[])|(?<close>[\}\]])')) {
-        if ($token.Groups['open'].Success) {
-            if ($expectType) { throw [FormatException]::new('Event type must be a string.') }
-            $depth++
-        } elseif ($token.Groups['close'].Success) {
-            $depth--
-        } elseif ($depth -eq 1) {
-            if ($token.Groups['property'].Success) {
-                $property = $token.Groups['text'].Value
-                if ($property.Contains('\')) {
-                    $property = ConvertFrom-Json -InputObject $token.Groups['string'].Value -ErrorAction Stop
-                }
-                $expectType = $property -ceq 'type'
-            } elseif ($expectType) {
-                return (ConvertFrom-Json -InputObject $token.Groups['string'].Value -ErrorAction Stop)
-            }
-        }
-    }
-}
-
 function Get-CopilotLifecycleContext {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$SessionPath)
 
     $journal = Join-Path $SessionPath 'events.jsonl'
     if (-not (Test-Path -LiteralPath $journal -PathType Leaf -ErrorAction Stop)) { return }
-    # Bound both allocation and scanning. Never trust a partial scan's old context.
-    if ((Get-Item -LiteralPath $journal -ErrorAction Stop).Length -gt 8MB) {
-        throw [FormatException]::new('Identity recovery journal exceeds the 8 MiB limit.')
+    if (-not ('Shmuelie.Copilot.SessionIdentityJournal' -as [type])) {
+        Add-Type -Path (Join-Path $PSScriptRoot 'Classes' 'SessionIdentityJournal.cs') -ErrorAction Stop
     }
-    $reader = [IO.StreamReader]::new($journal)
+    $snapshot = Get-Item -LiteralPath $journal -ErrorAction Stop
+    $length = $snapshot.Length
+    $modified = $snapshot.LastWriteTimeUtc
+    $latest = $null
+    $records = [Shmuelie.Copilot.SessionIdentityJournal]::Read($journal)
     try {
-        $latest = $null
-        $lineCount = 0
-        while ($null -ne ($line = $reader.ReadLine())) {
-            if (++$lineCount -gt 8192 -or $reader.BaseStream.Position -gt 8MB) {
-                throw [FormatException]::new('Identity recovery journal exceeds the scan limit.')
+        while ($records.MoveNext()) {
+            $record = $records.Current
+            if ($record.Incomplete) {
+                throw [IO.EndOfStreamException]::new('Identity recovery journal has an incomplete trailing record.')
             }
-            if ([string]::IsNullOrWhiteSpace($line)) { continue }
-            $type = Get-CopilotEventEnvelopeType -Line $line
-            if ($type -cnotin @('session.start', 'session.resume', 'session.context_changed')) {
-                continue
-            }
-            $event = ConvertFrom-Json -InputObject $line -AsHashtable -ErrorAction Stop
+            $event = ConvertFrom-Json -InputObject $record.Json -AsHashtable -ErrorAction Stop
             if ($event.data -isnot [System.Collections.IDictionary]) {
                 throw [FormatException]::new('Lifecycle data must be an object.')
             }
@@ -72,16 +42,20 @@ function Get-CopilotLifecycleContext {
                 throw [FormatException]::new('Lifecycle context must be an object.')
             }
         }
-        if ($latest) {
-            foreach ($field in 'repository', 'branch', 'cwd', 'gitRoot', 'hostType', 'repositoryHost') {
-                if ($null -ne $latest[$field] -and $latest[$field] -isnot [string]) {
-                    throw [FormatException]::new("Lifecycle context $field must be a string.")
-                }
-            }
-            return $latest
-        }
     } finally {
-        $reader.Dispose()
+        $records.Dispose()
+    }
+    $snapshot.Refresh()
+    if (-not $snapshot.Exists -or $snapshot.Length -ne $length -or $snapshot.LastWriteTimeUtc -ne $modified) {
+        throw [IO.EndOfStreamException]::new('Identity recovery journal changed while being read.')
+    }
+    if ($latest) {
+        foreach ($field in 'repository', 'branch', 'cwd', 'gitRoot', 'hostType', 'repositoryHost') {
+            if ($null -ne $latest[$field] -and $latest[$field] -isnot [string]) {
+                throw [FormatException]::new("Lifecycle context $field must be a string.")
+            }
+        }
+        return $latest
     }
 }
 
@@ -222,6 +196,10 @@ function Resolve-CopilotSessionIdentity {
         }
         [pscustomobject]@{ Cwd = $effectiveCwd; Repository = $effectiveRepository; Branch = $effectiveBranch }
     } catch {
+        if ($_.Exception.GetBaseException() -is [IO.EndOfStreamException]) {
+            Write-Verbose "Identity recovery unavailable for Copilot session '$(Split-Path $SessionPath -Leaf)': $($_.Exception.GetBaseException().Message)"
+            return $recorded
+        }
         $message = "Invalid identity recovery evidence for Copilot session '$(Split-Path $SessionPath -Leaf)' in '$SessionPath': $($_.Exception.Message)"
         $recorded | Add-Member -NotePropertyName RecoveryError -NotePropertyValue ([System.Management.Automation.ErrorRecord]::new(
             [FormatException]::new($message), 'InvalidCopilotSessionIdentity',
