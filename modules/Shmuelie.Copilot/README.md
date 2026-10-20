@@ -72,7 +72,17 @@ repair without reading or writing session files.
   `ssh://git@ssh.dev.azure.com/v3/...`), and
   `https://{organization}.visualstudio.com/{project}/_git/{repository}`.
   ADO accepts URL-encoded segments, optional `.git`, and `DefaultCollection`
-  before the project in applicable HTTPS forms. Identity is paired with the
+  before the project in applicable HTTPS forms. Both HTTPS hosts also accept a
+  username prefix, such as `https://user@dev.azure.com/...`; the username never
+  supplies the organization. HTTPS forms may omit a project that has the
+  repository's name: `https://dev.azure.com/{organization}/_git/{repository}`
+  and `https://{organization}.visualstudio.com/DefaultCollection/_git/{repository}`
+  resolve to `organization/repository/repository`. The repository is decoded and
+  its optional `.git` suffix removed before supplying the omitted project.
+  Collection names are not mistaken for project names. Password-bearing,
+  malformed, and ambiguous authorities remain unsupported and are never logged.
+  SSH still requires explicit organization, project, and repository segments.
+  Identity is paired with the
   exact checked-out branch. Both metadata fields must match, so another
   repository's same-named branch or another worktree's branch cannot take its
   place. Missing fields are first recovered, when possible, from the latest

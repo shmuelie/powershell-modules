@@ -5,14 +5,25 @@ function ConvertTo-CopilotAdoRepositoryIdentity {
     $organization = $null
     $project = $null
     $repository = $null
-    if ($Url -match '^https://dev\.azure\.com/([^/]+)/(?:(?:DefaultCollection)/)?([^/]+)/_git/([^/]+)/?$' -or
-        $Url -match '^https://([a-z0-9](?:[a-z0-9-]*[a-z0-9])?)\.visualstudio\.com/(?:(?:DefaultCollection)/)?([^/]+)/_git/([^/]+)/?$' -or
-        $Url -match '^(?:git@ssh\.dev\.azure\.com:|ssh://git@ssh\.dev\.azure\.com/)v3/([^/]+)/([^/]+)/([^/]+)/?$') {
-        $organization, $project, $repository = $Matches[1], $Matches[2], $Matches[3]
+    if ($Url -match '^https://(?:(?<username>[^@/:?#]+)@)?dev\.azure\.com/(?<organization>[^/]+)/(?:(?:DefaultCollection)/)?(?:(?<project>[^/]+)/)?_git/(?<repository>[^/]+)/?$' -or
+        $Url -match '^https://(?:(?<username>[^@/:?#]+)@)?(?<organization>[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)\.visualstudio\.com/(?:(?:DefaultCollection)/)?(?:(?<project>[^/]+)/)?_git/(?<repository>[^/]+)/?$' -or
+        $Url -match '^(?:git@ssh\.dev\.azure\.com:|ssh://git@ssh\.dev\.azure\.com/)v3/(?<organization>[^/]+)/(?<project>[^/]+)/(?<repository>[^/]+)/?$') {
+        $organization, $project, $repository = $Matches['organization'], $Matches['project'], $Matches['repository']
+        $username = $Matches['username']
     } else {
         return $null
     }
 
+    if ($username) {
+        if ($username -match '%(?![0-9a-fA-F]{2})') { return $null }
+        $username = [uri]::UnescapeDataString($username)
+        if ($username -match '[/\\:?#\p{Cc}\p{Cf}\p{Zl}\p{Zp}\uFFFD]' -or
+            [string]::IsNullOrWhiteSpace($username) -or $username -cne $username.Trim()) {
+            return $null
+        }
+    }
+    $projectOmitted = -not $project
+    if ($projectOmitted) { $project = $repository }
     $segments = @($organization, $project, $repository)
     for ($i = 0; $i -lt $segments.Count; $i++) {
         if ($segments[$i] -match '%(?![0-9a-fA-F]{2})') { return $null }
@@ -29,6 +40,7 @@ function ConvertTo-CopilotAdoRepositoryIdentity {
         $repository = $repository.Substring(0, $repository.Length - 4)
     }
     if ([string]::IsNullOrWhiteSpace($repository) -or $repository -in @('.', '..')) { return $null }
+    if ($projectOmitted) { $project = $repository }
     return "$($organization.ToLowerInvariant())/$project/$repository"
 }
 

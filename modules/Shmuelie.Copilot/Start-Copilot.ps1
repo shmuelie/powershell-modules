@@ -22,14 +22,17 @@ function Start-Copilot {
         with one recognized origin and a checked-out branch, sessions are scoped
         by recorded repository and branch even after a worktree moves. Azure
         DevOps accepts dev.azure.com HTTPS, ssh.dev.azure.com SSH, and legacy
-        {organization}.visualstudio.com HTTPS, with optional .git, encoded
-        segments, and applicable DefaultCollection prefixes. Missing fields and
-        legacy ADO identities can be recovered read-only from the latest applicable
+        {organization}.visualstudio.com HTTPS, including username-prefixed HTTPS,
+        optional .git, encoded segments, and applicable DefaultCollection prefixes.
+        HTTPS may omit the project when it has the repository's name; a collection
+        segment is not treated as that project. Missing fields and legacy ADO
+        identities can be recovered read-only from the latest applicable
         lifecycle context or a surviving recorded Git path's single recognized
         origin. Independent organization evidence is required for legacy shapes;
         today's branch never supplies a missing historical branch. Known conflicts
         are preserved, and recovered sessions enter canonical candidate preference.
-        Unresolved metadata falls back to the exact directory when known fields do not conflict; non-Git or
+        Unresolved metadata falls back to the exact directory when known fields
+        do not conflict; non-Git or
         ambiguous origins use the directory. If exactly one eligible session exists it is
         resumed automatically. If multiple sessions exist, an interactive picker
         is shown -- except when only one of them is a *named* session (the rest
