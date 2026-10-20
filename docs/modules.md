@@ -99,7 +99,7 @@ bypassing confirmation or escalating after a failure.
 ## Shmuelie.Copilot
 
 GitHub Copilot CLI sessions, plugins, marketplaces, MCP servers, and the
-`Start-Copilot` launcher. **Version 0.7.2.**
+`Start-Copilot` launcher. **Version 0.7.3.**
 [README](https://github.com/shmuelie/powershell-modules/blob/main/modules/Shmuelie.Copilot/README.md)
 
 Highlights:
@@ -218,7 +218,7 @@ Highlights:
 
 ## Shmuelie.VisualStudio
 
-Visual Studio discovery, MSBuild resolution, and developer shell helpers for PowerShell. **Version 0.2.0.**
+Visual Studio discovery, MSBuild resolution, and developer shell helpers for PowerShell. **Version 0.3.0.**
 [README](https://github.com/shmuelie/powershell-modules/blob/main/modules/Shmuelie.VisualStudio/README.md)
 
 Highlights:

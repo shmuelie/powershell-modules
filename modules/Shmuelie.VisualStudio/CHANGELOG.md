@@ -6,6 +6,8 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-20
+
 ### Added
 - `Set-VS2017`, `Set-VS2019`, `Set-VS2022`, and `Set-VS2026` initialize the
   current session using Visual Studio's own `VsDevCmd.bat`, without PSVSEnv.
