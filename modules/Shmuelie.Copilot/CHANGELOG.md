@@ -6,6 +6,14 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+### Fixed
+- Recover incomplete session identities from complete journals larger than
+  8 MiB or 8192 lines without processing-time cutoffs. Stream conversation
+  records through fixed-size buffers, including large individual lines, while
+  preserving latest-lifecycle validation and read-only discovery. Incomplete
+  trailing writes and concurrent journal changes discard partial recovery
+  evidence and report through verbose output only.
+
 ## [0.7.3] - 2026-10-20
 
 ### Fixed

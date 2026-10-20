@@ -110,9 +110,13 @@ repair without reading or writing session files.
   only scope matching and launch candidates use the effective identity.
   Recovery never rewrites workspace files, journals, databases, remotes, or CLI
   configuration. Complete identities and known out-of-scope identities avoid
-  journal reads. Recovery scans at most 8 MiB and 8192 lines and deserializes
-  lifecycle events only, not conversation contents. Missing journals/worktrees
-  leave unresolved metadata; malformed, unreadable, or oversized recovery
+  journal reads. Recovery scans the complete journal without size, line-count,
+  or processing-time cutoffs. Fixed-size buffers skip conversation contents,
+  including large individual lines; only lifecycle records are materialized
+  and deserialized. Missing journals/worktrees leave unresolved metadata.
+  An incomplete trailing record or a journal modified during the scan leaves
+  recovery unavailable, discards partial evidence, and reports through verbose
+  output only. Malformed or unreadable recovery
   evidence emits `InvalidCopilotSessionIdentity` and retains the conservative
   recorded fallback. Use `-ErrorAction Stop` to fail closed.
 - **Effective launch directory** via `-ChangeDir` (alias `-C`) on both
