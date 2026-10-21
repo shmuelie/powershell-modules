@@ -119,6 +119,22 @@ repair without reading or writing session files.
   output only. Malformed or unreadable recovery
   evidence emits `InvalidCopilotSessionIdentity` and retains the conservative
   recorded fallback. Use `-ErrorAction Stop` to fail closed.
+- **Resume discovery performance:** automatic/latest resume and picker preparation
+  read each workspace once and extract their six metadata fields in one pass,
+  retaining the same quoted/block-scalar handling and first-field semantics.
+  Ordinary unquoted, comment-free scalars use their trimmed text directly;
+  quoted/commented values and block scalars retain the existing shared decoders.
+  Every invocation discovers the current inventory; there is no persistent or
+  cross-invocation cache to invalidate after sessions or identity evidence change.
+  No session is dropped because of its age, position, or journal size.
+  Directory/path validation, identity recovery, canonical preference and
+  newest-first ordering are unchanged. Complete and metadata-excluded identities
+  still require no lifecycle journal or recorded-path Git reads. Large incomplete
+  or legacy inventories may remain dominated by necessary journal recovery.
+  This is module-side discovery, not native CLI conversation loading; ordinary
+  `Get-CopilotSession` event counting is a separate path.
+  See the [fictional-inventory benchmark and measurements](../../tests/benchmarks/README.md)
+  for reproducible cold-process/repeated-invocation results and work counts.
 - **Effective launch directory** via `-ChangeDir` (alias `-C`) on both
   `Start-Copilot` and `Get-CopilotLaunchPlan`. Session candidates, branch
   preference, selectors, and MCP path policy use that directory, including

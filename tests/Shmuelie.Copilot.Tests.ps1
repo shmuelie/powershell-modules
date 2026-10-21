@@ -3837,6 +3837,113 @@ Describe 'Start-Copilot' {
 }
 
 Describe 'Copilot workspace.yaml helpers' {
+    It 'bulk reads the same first scalar values with <Case> newlines' -ForEach @(
+        @{ Case = 'LF'; Newline = "`n" }
+        @{ Case = 'CRLF'; Newline = "`r`n" }
+        @{ Case = 'CR'; Newline = "`r" }
+    ) {
+        $content = @(
+            'NAME: "first\nsecond" # comment'
+            'name: duplicate'
+            "summary: 'It''s # literal'"
+            'branch: feature/topic # ignored'
+            'cwd: "/fictional/quoted\\path"'
+            'repository: ACME/Project/widget'
+            'updated_at: ""'
+            'UPDATED_AT: must-not-replace-empty'
+        ) -join $Newline
+        InModuleScope Shmuelie.Copilot -Parameters @{ Content = $content } {
+            $expected = @{
+                name = "first`nsecond"; summary = "It's # literal"
+                branch = 'feature/topic'; cwd = '/fictional/quoted\path'
+                repository = 'ACME/Project/widget'; updated_at = ''
+            }
+            $actual = Get-CopilotWorkspaceFields -Content $Content -Fields @($expected.Keys + 'absent')
+            $actual.Count | Should -Be 6
+            foreach ($field in $expected.Keys) {
+                $actual[$field] | Should -BeExactly $expected[$field]
+                $actual[$field] | Should -BeExactly (Get-CopilotWorkspaceField -Content $Content -Field $field)
+            }
+            $actual.ContainsKey('absent') | Should -BeFalse
+        }
+    }
+
+    It 'bulk skips block bodies and decodes requested blocks for <Style> with <Ending>' -ForEach @(
+        foreach ($style in @(
+            @{ Case = 'literal'; Header = '|'; Text = "first`nsecond`n" }
+            @{ Case = 'literal clipped'; Header = '|-'; Text = "first`nsecond" }
+            @{ Case = 'literal keep'; Header = '|+'; Text = "first`nsecond`n" }
+            @{ Case = 'folded'; Header = '>'; Text = "first second`n" }
+            @{ Case = 'folded clipped'; Header = '>-'; Text = 'first second' }
+            @{ Case = 'folded keep'; Header = '>+'; Text = "first second`n" }
+        )) {
+            foreach ($ending in @(
+                @{ Case = 'LF'; Value = "`n" }
+                @{ Case = 'CRLF'; Value = "`r`n" }
+                @{ Case = 'CR'; Value = "`r" }
+            )) {
+                @{ Style = $style.Case; Header = $style.Header; Text = $style.Text; Ending = $ending.Case; Newline = $ending.Value }
+            }
+        }
+    ) {
+        $content = @(
+            "notes: $Header # unknown block still hides fake fields"
+            '  repository: other/Project/widget'
+            '  name: fake'
+            ''
+            "  branch: wrong"
+            "name: $Header"
+            '  first'
+            '  second'
+            'branch: feature/topic'
+            'summary: "|-"'
+            'cwd: /fictional/old'
+            'repository: acme/Project/widget'
+        ) -join $Newline
+        InModuleScope Shmuelie.Copilot -Parameters @{ Content = $content; Text = $Text } {
+            $actual = Get-CopilotWorkspaceFields -Content $Content -Fields @('name', 'summary', 'branch', 'cwd', 'repository', 'updated_at')
+            $expected = @{ name = $Text; summary = '|-'; branch = 'feature/topic'; cwd = '/fictional/old'; repository = 'acme/Project/widget' }
+            $actual.Count | Should -Be 5
+            foreach ($field in $expected.Keys) {
+                $actual[$field] | Should -BeExactly $expected[$field]
+                $actual[$field] | Should -BeExactly (Get-CopilotWorkspaceField -Content $Content -Field $field)
+            }
+            $actual.ContainsKey('updated_at') | Should -BeFalse
+        }
+    }
+
+    It 'bulk preserves plain indicator text, indentation, absent and empty fields' {
+        $content = "notes: |suffix`n`tbranch: feature/topic`n  name:   `nsummary: text >-`ncwd: '/fictional/It''s here'"
+        InModuleScope Shmuelie.Copilot -Parameters @{ Content = $content } {
+            $actual = Get-CopilotWorkspaceFields -Content $Content -Fields @('branch', 'name', 'summary', 'cwd', 'repository')
+            $actual['branch'] | Should -BeExactly 'feature/topic'
+            $actual['name'] | Should -BeExactly ''
+            $actual['summary'] | Should -BeExactly 'text >-'
+            $actual['cwd'] | Should -BeExactly "/fictional/It's here"
+            $actual.ContainsKey('repository') | Should -BeFalse
+            (Get-CopilotWorkspaceFields -Content '' -Fields @('name')).Count | Should -Be 0
+            (Get-CopilotWorkspaceFields -Content $null -Fields @('name')).Count | Should -Be 0
+            $nullText = Get-CopilotWorkspaceFields -Content "name: null`nbranch:   " -Fields @('name', 'branch')
+            $nullText.Count | Should -Be 2
+            $nullText['name'] | Should -BeExactly 'null'
+            $nullText['branch'] | Should -BeExactly ''
+        }
+    }
+
+    It 'bulk preserves invariant-culture first-field matching for <Case>' -ForEach @(
+        @{ Case = 'case variant'; Key = 'NAME' }
+        @{ Case = 'soft hyphen'; Key = ('na' + [char]0x00ad + 'me') }
+        @{ Case = 'zero width space'; Key = ('na' + [char]0x200b + 'me') }
+    ) {
+        $content = "${Key}: first`nname: second"
+        InModuleScope Shmuelie.Copilot -Parameters @{ Content = $content } {
+            $actual = Get-CopilotWorkspaceFields -Content $Content -Fields @('name')
+            $actual.Count | Should -Be 1
+            $actual['name'] | Should -BeExactly 'first'
+            $actual['name'] | Should -BeExactly (Get-CopilotWorkspaceField -Content $Content -Field 'name')
+        }
+    }
+
     It 'skips block content for exact reads and replacements: <Header>, <Ending>, <IndentName>' -ForEach @(
         foreach ($header in '|', '|-', '|+', '>', '>-', '>+') {
             foreach ($ending in @(
@@ -6884,6 +6991,214 @@ Describe 'Get-CopilotLaunchPlan additional flag mappings' {
             if ($plan.Args[$j] -eq '--enable-mcp-server') { $plan.Args[$j + 1] }
         }
         $values | Should -Contain 'server-a'
+    }
+}
+
+Describe 'Copilot single-pass resume discovery' -Tag 'ResumeDiscoveryPerformance' {
+    BeforeAll {
+        $script:Resume369Plan = Get-Command Shmuelie.Copilot\Get-CopilotLaunchPlan
+        $script:Resume369Read = Get-Command Microsoft.PowerShell.Management\Get-Content
+        $script:Resume369Split = & (Get-Module Shmuelie.Copilot) { (Get-Command Split-CopilotWorkspaceLines).ScriptBlock }
+
+        function Add-Resume369Session {
+            param([string]$Id, [System.Collections.IDictionary]$Fields = @{})
+            $path = Join-Path $script:Resume369State $Id
+            [void][IO.Directory]::CreateDirectory($path)
+            $metadata = [ordered]@{
+                cwd = $script:Resume369Old; updated_at = '2026-01-01T00:00:00Z'
+                name = $Id; repository = 'acme/Project/widget'; branch = 'feature/topic'
+            }
+            foreach ($key in $Fields.Keys) { $metadata[$key] = $Fields[$key] }
+            $lines = foreach ($key in $metadata.Keys) {
+                if ($null -ne $metadata[$key]) { "${key}: $($metadata[$key])" }
+            }
+            [IO.File]::WriteAllText((Join-Path $path 'workspace.yaml'), ($lines -join "`n"))
+            return $path
+        }
+
+        function Get-Resume369Candidates {
+            @(& (Get-Module Shmuelie.Copilot) { Get-CopilotResumeCandidate -ErrorAction Stop })
+        }
+
+        function Get-Resume369Id {
+            param($Plan)
+            $index = [array]::IndexOf($Plan.Args, '--resume')
+            $index | Should -BeGreaterOrEqual 0
+            $Plan.Args[$index + 1]
+        }
+    }
+
+    BeforeEach {
+        $script:Resume369Home = Join-Path $TestDrive ([guid]::NewGuid().ToString())
+        $script:Resume369State = Join-Path $script:Resume369Home '.copilot' 'session-state'
+        $script:Resume369Old = Join-Path $script:Resume369Home 'missing-old'
+        $script:Resume369Current = Join-Path $script:Resume369Home 'current'
+        [void][IO.Directory]::CreateDirectory($script:Resume369Current)
+        Mock -ModuleName Shmuelie.Copilot Get-CopilotHome { $script:Resume369Home }
+        Mock -ModuleName Shmuelie.Copilot Get-CopilotSessionScope {
+            [pscustomobject]@{ Cwd = $script:Resume369Current; Repository = 'acme/Project/widget'; Branch = 'feature/topic' }
+        }
+        Mock -ModuleName Shmuelie.Copilot git { throw 'Native Git is forbidden in resume fixtures.' }
+        Mock -ModuleName Shmuelie.Copilot Get-CopilotRecordedOriginIdentity { $null } -ParameterFilter {
+            $Path -in @($script:Resume369Current, $script:Resume369Old)
+        }
+        Mock -ModuleName Shmuelie.Copilot Resolve-CliExe { throw 'Native Copilot is forbidden in resume fixtures.' }
+        Mock -ModuleName Shmuelie.Copilot Invoke-CopilotSessionChoice { throw 'Unexpected host input.' }
+        Mock -ModuleName Shmuelie.Copilot Get-Command { throw "Unexpected command discovery: $Name" }
+        Mock -ModuleName Shmuelie.Copilot Get-Command { [pscustomobject]@{ Source = 'blocked-fictional-copilot' } } -ParameterFilter {
+            $Name.Count -eq 1 -and $Name[0] -eq 'copilot' -and $CommandType -eq 'Application'
+        }
+        Mock -ModuleName Shmuelie.Copilot Get-Command { $script:Resume369Plan } -ParameterFilter {
+            $Name.Count -eq 1 -and $Name[0] -eq 'Get-CopilotLaunchPlan'
+        }
+    }
+
+    AfterEach {
+        Should -Invoke -ModuleName Shmuelie.Copilot git -Times 0 -Exactly
+        Should -Invoke -ModuleName Shmuelie.Copilot Resolve-CliExe -Times 0 -Exactly
+        Should -Invoke -ModuleName Shmuelie.Copilot Invoke-CopilotSessionChoice -Times 0 -Exactly
+    }
+
+    It 'reads and splits each workspace once without single-field rescans or ordinary block probes' {
+        Add-Resume369Session moved | Out-Null
+        Add-Resume369Session case-match @{ repository = 'ACME/PROJECT/WIDGET'; updated_at = '2026-01-02T00:00:00Z' } | Out-Null
+        Add-Resume369Session branch-case @{ branch = 'Feature/topic'; cwd = $script:Resume369Current } | Out-Null
+        Add-Resume369Session wrong-repository @{ repository = 'other/Project/widget'; cwd = $script:Resume369Current } | Out-Null
+        Add-Resume369Session excluded-incomplete @{ repository = $null; branch = 'feature/other' } | Out-Null
+        Mock -ModuleName Shmuelie.Copilot Get-CopilotWorkspaceField { throw 'Repeated field scans are forbidden.' }
+        Mock -ModuleName Shmuelie.Copilot Get-CopilotWorkspaceBlockScalarInfo { throw 'Plain values need no block scan.' }
+        Mock -ModuleName Shmuelie.Copilot ConvertFrom-CopilotWorkspaceFlowScalar { throw 'Ordinary unquoted fields need no decoder callback.' }
+        Mock -ModuleName Shmuelie.Copilot Get-CopilotLifecycleContext { throw 'Complete and metadata-excluded identities need no journal.' }
+        Mock -ModuleName Shmuelie.Copilot Get-CopilotRecordedOriginIdentity { throw 'Complete and metadata-excluded identities need no Git probe.' }
+        Mock -ModuleName Shmuelie.Copilot Split-CopilotWorkspaceLines { & $script:Resume369Split -Content $Content }
+        Mock -ModuleName Shmuelie.Copilot Get-Content {
+            & $script:Resume369Read -LiteralPath $Path -Raw -ErrorAction Stop
+        } -ParameterFilter { $Raw -and $Path.StartsWith($script:Resume369State) -and $Path.EndsWith('workspace.yaml') }
+
+        $actual = Get-Resume369Candidates
+
+        $actual.Id | Should -Be @('case-match', 'moved')
+        $actual[0].Repository | Should -BeExactly 'ACME/PROJECT/WIDGET'
+        $actual[1].Cwd | Should -BeExactly $script:Resume369Old
+        $actual[1].Summary | Should -BeExactly 'moved'
+        $actual[1].UpdatedAt | Should -Be ([DateTimeOffset]::Parse('2026-01-01T00:00:00Z'))
+        Should -Invoke -ModuleName Shmuelie.Copilot Get-Content -Times 5 -Exactly
+        Should -Invoke -ModuleName Shmuelie.Copilot Split-CopilotWorkspaceLines -Times 5 -Exactly
+        Should -Invoke -ModuleName Shmuelie.Copilot Get-CopilotWorkspaceField -Times 0 -Exactly
+        Should -Invoke -ModuleName Shmuelie.Copilot Get-CopilotWorkspaceBlockScalarInfo -Times 0 -Exactly
+        Should -Invoke -ModuleName Shmuelie.Copilot ConvertFrom-CopilotWorkspaceFlowScalar -Times 0 -Exactly
+        Should -Invoke -ModuleName Shmuelie.Copilot Get-CopilotLifecycleContext -Times 0 -Exactly
+        Should -Invoke -ModuleName Shmuelie.Copilot Get-CopilotRecordedOriginIdentity -Times 0 -Exactly
+    }
+
+    It 'retains recovered canonical preference over newer Cwd fallback for <Case>' -ForEach @(
+        @{ Case = 'incomplete metadata'; Recorded = $null; ContextRepository = 'acme/Project/widget'; HostName = $null }
+        @{ Case = 'legacy metadata'; Recorded = 'Project/widget'; ContextRepository = 'Project/widget'; HostName = 'acme.visualstudio.com' }
+    ) {
+        $recovered = Add-Resume369Session recovered @{ repository = $Recorded }
+        Add-Resume369Session fallback @{ cwd = $script:Resume369Current; repository = $null; updated_at = '2026-01-03T00:00:00Z' } | Out-Null
+        $context = @{ cwd = $script:Resume369Old; branch = 'feature/topic'; repository = $ContextRepository }
+        if ($HostName) { $context.repositoryHost = $HostName; $context.hostType = 'ado' }
+        Set-CopilotTestEvents -SessionPath $recovered -Lines @(
+            New-CopilotTestEventLine -Type session.start -Id start -Timestamp '2026-01-01T00:00:00Z' -Data @{ context = $context }
+        )
+
+        $actual = Get-Resume369Candidates
+
+        $actual.Id | Should -Be @('recovered')
+        $actual[0].Repository | Should -BeExactly 'acme/Project/widget'
+        $actual[0].Branch | Should -BeExactly 'feature/topic'
+        $actual[0].Cwd | Should -BeExactly $script:Resume369Old
+        Get-Resume369Id (Get-CopilotLaunchPlan -ResumeLatest) | Should -BeExactly 'recovered'
+    }
+
+    It 'preserves timestamp ties, unnamed displays, missing timestamps and internal-name exclusions' {
+        $z = Add-Resume369Session z-last @{ updated_at = '2026-01-02T00:00:00Z' }
+        $b = Add-Resume369Session b-tie @{ name = $null; summary = 'Fallback summary' }
+        $a = Add-Resume369Session a-tie @{ name = $null; summary = $null }
+        $ignored = Add-Resume369Session ignored @{ name = "Session File Path:`n  fictional"; updated_at = '2026-01-04T00:00:00Z' }
+        $undated = Add-Resume369Session undated @{ updated_at = $null }
+        $script:Resume369Enumeration = @($b, $ignored, $z, $a, $undated) | ForEach-Object { [IO.DirectoryInfo]::new($_) }
+        Mock -ModuleName Shmuelie.Copilot Get-ChildItem { $script:Resume369Enumeration } -ParameterFilter {
+            $Directory -and $Path.Count -eq 1 -and $Path[0] -eq $script:Resume369State
+        }
+
+        $actual = Get-Resume369Candidates
+
+        $actual.Id | Should -Be @('z-last', 'b-tie', 'a-tie')
+        $actual.Summary | Should -Be @('z-last', 'Fallback summary', '(no summary)')
+        Get-Resume369Id (Get-CopilotLaunchPlan -ResumeLatest) | Should -BeExactly 'z-last'
+        $selected = Get-CopilotLaunchPlan -NoAutoResume -IncludeUnnamed -SessionSelector {
+            param($Sessions)
+            $Sessions.Id | Should -Be @('z-last', 'b-tie', 'a-tie')
+            $Sessions[1]
+        }
+        Get-Resume369Id $selected | Should -BeExactly 'b-tie'
+        $cancelled = Get-CopilotLaunchPlan -NoAutoResume -SessionSelector {
+            param($Sessions)
+            $Sessions.Id | Should -Be @('z-last', 'b-tie')
+            $null
+        }
+        $cancelled.Args | Should -Not -Contain '--resume'
+    }
+
+    It 'retains conservative Cwd fallback and branch preference without canonical matches' {
+        Add-Resume369Session branch-only @{ cwd = $script:Resume369Current; repository = $null } | Out-Null
+        Add-Resume369Session directory-only @{ cwd = $script:Resume369Current; repository = $null; branch = $null; updated_at = '2026-01-02T00:00:00Z' } | Out-Null
+        Add-Resume369Session distant-unknown @{ repository = $null; branch = $null } | Out-Null
+        Add-Resume369Session conflicting @{ cwd = $script:Resume369Current; repository = 'other/Project/widget'; branch = $null } | Out-Null
+
+        $actual = Get-Resume369Candidates
+
+        $actual.Id | Should -Be @('branch-only')
+        $actual[0].Cwd | Should -BeExactly $script:Resume369Current
+        $actual[0].Repository | Should -BeNullOrEmpty
+        $actual[0].Branch | Should -BeExactly 'feature/topic'
+    }
+
+    It 'sees new, rewritten, renamed and deleted fictional sessions on every invocation' {
+        $original = Add-Resume369Session original
+        (Get-Resume369Candidates).Id | Should -Be @('original')
+        $added = Add-Resume369Session added @{ updated_at = '2026-01-02T00:00:00Z' }
+        (Get-Resume369Candidates).Id | Should -Be @('added', 'original')
+        [IO.File]::WriteAllText((Join-Path $added 'workspace.yaml'), "repository: other/Project/widget`nbranch: feature/topic`nupdated_at: 2026-01-02T00:00:00Z")
+        (Get-Resume369Candidates).Id | Should -Be @('original')
+        $renamed = Join-Path $script:Resume369State 'renamed'
+        [IO.Directory]::Move($original, $renamed)
+        (Get-Resume369Candidates).Id | Should -Be @('renamed')
+        [IO.Directory]::Delete($renamed, $true)
+        @(Get-Resume369Candidates) | Should -HaveCount 0
+    }
+
+    It 'auto resumes one parsed candidate and restores ChangeDir without launching' {
+        Add-Resume369Session only @{ name = '  "Fictional work"'; summary = 'Old summary' } | Out-Null
+        $before = (Get-Location).Path
+        Mock -ModuleName Shmuelie.Copilot Get-CopilotSessionScope {
+            (Get-Location).Path | Should -BeExactly $script:Resume369Current
+            [pscustomobject]@{ Cwd = $script:Resume369Current; Repository = 'acme/Project/widget'; Branch = 'feature/topic' }
+        }
+        $plan = Start-Copilot -PassThru -ChangeDir $script:Resume369Current -SessionSelector { throw 'Single candidate must auto resume.' }
+        Get-Resume369Id $plan | Should -BeExactly 'only'
+        $plan.Exe | Should -BeExactly 'blocked-fictional-copilot'
+        (Get-Location).Path | Should -BeExactly $before
+    }
+
+    It 'bypasses global discovery for <Case>' -ForEach @(
+        @{ Case = 'explicit resume'; Options = @{ ResumeSession = 'fictional-explicit' }; Flag = '--resume'; Value = 'fictional-explicit' }
+        @{ Case = 'assigned session ID'; Options = @{ SessionId = 'fictional-new' }; Flag = '--session-id'; Value = 'fictional-new' }
+        @{ Case = 'no resume'; Options = @{ NoResume = $true }; Flag = $null; Value = $null }
+        @{ Case = 'deferred resume'; Options = @{ DeferResume = $true }; Flag = $null; Value = $null }
+    ) {
+        Mock -ModuleName Shmuelie.Copilot Get-CopilotResumeCandidate { throw 'Global discovery is forbidden for bypass modes.' }
+        $plan = Get-CopilotLaunchPlan @Options
+        if ($Flag) {
+            $index = [array]::IndexOf($plan.Args, $Flag)
+            $index | Should -BeGreaterOrEqual 0
+            $plan.Args[$index + 1] | Should -BeExactly $Value
+        } else {
+            $plan.Args | Should -Not -Contain '--resume'
+        }
+        Should -Invoke -ModuleName Shmuelie.Copilot Get-CopilotResumeCandidate -Times 0 -Exactly
     }
 }
 
