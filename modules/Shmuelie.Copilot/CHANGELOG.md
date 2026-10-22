@@ -6,6 +6,15 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+### Changed
+- Reduce automatic resume discovery overhead by extracting workspace metadata
+  in a single pass instead of scanning it separately for each field, with a
+  direct path for ordinary unquoted, comment-free scalar text. Preserve
+  identity recovery, moved-worktree matching, candidate ordering, and launcher
+  selection policy without a cache or history cutoffs. Add deterministic
+  equivalence/work-avoidance regressions and a reproducible fictional-inventory
+  benchmark that separates discovery from native conversation loading. (#369)
+
 ## [0.7.4] - 2026-10-20
 
 ### Fixed

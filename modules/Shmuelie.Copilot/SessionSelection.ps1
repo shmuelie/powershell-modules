@@ -227,14 +227,17 @@ function Get-CopilotResumeCandidate {
             $wsFile = Join-Path $sessionPath 'workspace.yaml'
             if (Test-Path $wsFile) {
                 $content = Get-Content $wsFile -Raw
-                $sessionCwd = Get-CopilotWorkspaceField -Content $content -Field 'cwd'
-                $updatedAt = Get-CopilotWorkspaceField -Content $content -Field 'updated_at'
-                $summary = Get-CopilotWorkspaceField -Content $content -Field 'summary'
-                $sessionBranch = Get-CopilotWorkspaceField -Content $content -Field 'branch'
-                $sessionRepository = Get-CopilotWorkspaceField -Content $content -Field 'repository'
+                $workspace = Get-CopilotWorkspaceFields -Content $content -Fields @(
+                    'cwd', 'updated_at', 'summary', 'branch', 'repository', 'name'
+                )
+                $sessionCwd = $workspace['cwd']
+                $updatedAt = $workspace['updated_at']
+                $summary = $workspace['summary']
+                $sessionBranch = $workspace['branch']
+                $sessionRepository = $workspace['repository']
                 $identity = Resolve-CopilotSessionIdentity -SessionPath $sessionPath -Cwd $sessionCwd -Repository $sessionRepository -Branch $sessionBranch -Scope $scope
                 if ($identity.RecoveryError) { $PSCmdlet.WriteError($identity.RecoveryError) }
-                $sessionName = Get-CopilotWorkspaceField -Content $content -Field 'name'
+                $sessionName = $workspace['name']
                 if ($sessionName) { $sessionName = ($sessionName -split '\r?\n', 2)[0].Trim() }
                 $displayName = $sessionName ?? $summary ?? '(no summary)'
                 if ((Test-CopilotSessionScope -Scope $scope -Cwd $identity.Cwd -Repository $identity.Repository -Branch $identity.Branch) -and

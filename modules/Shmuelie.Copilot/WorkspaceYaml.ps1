@@ -186,6 +186,48 @@ function ConvertTo-CopilotWorkspaceFlowScalar {
     '"' + $escaped + '"'
 }
 
+function Get-CopilotWorkspaceFields {
+    # Private bulk reader for discovery. Keep the scalar grammar, first-match
+    # behavior and block-body skipping of Get-CopilotWorkspaceField, but split
+    # and walk each workspace only once instead of once per requested field.
+    param(
+        [AllowEmptyString()][string]$Content,
+        [Parameter(Mandatory)][string[]]$Fields
+    )
+
+    # PowerShell's field comparison is invariant-culture, not ordinal. Use the
+    # same comparer for first-match tracking and canonical-key lookup.
+    $values = [System.Collections.Generic.Dictionary[string, string]]::new([StringComparer]::InvariantCultureIgnoreCase)
+    $lines = Split-CopilotWorkspaceLines $Content
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        $mapping = [regex]::Match($lines[$i], '^(?<indent>[ \t]*)(?<field>[^:#]+?)\s*:\s*(?<value>.*)$')
+        if (-not $mapping.Success) { continue }
+
+        $field = $mapping.Groups['field'].Value
+        $value = $mapping.Groups['value'].Value.Trim()
+        $first = if ($value.Length) { $value[0] } else { $null }
+        $block = if ($first -eq '|' -or $first -eq '>') {
+            Get-CopilotWorkspaceBlockScalarInfo -Lines $lines -StartIndex $i `
+                -BaseIndent $mapping.Groups['indent'].Value.Length -Value $value
+        }
+        if ($field -in $Fields -and -not $values.ContainsKey($field)) {
+            $values[$field] = if ($null -ne $block) {
+                ConvertFrom-CopilotWorkspaceBlockScalar -Lines $lines -StartIndex $i `
+                    -EndIndex $block.EndIndex -Style $block.Style -Chomp $block.Chomp
+            } elseif ($first -ne "'" -and $first -ne '"' -and -not $value.Contains('#')) {
+                # The common unquoted, comment-free scalar is exactly its trimmed
+                # text. Avoid another function call/regex for each ordinary field;
+                # keep the shared decoder for all quoting and comment rules.
+                $value
+            } else {
+                ConvertFrom-CopilotWorkspaceFlowScalar $value
+            }
+        }
+        if ($null -ne $block) { $i = $block.EndIndex - 1 }
+    }
+    return $values
+}
+
 function Get-CopilotWorkspaceField {
     <#
     .SYNOPSIS
