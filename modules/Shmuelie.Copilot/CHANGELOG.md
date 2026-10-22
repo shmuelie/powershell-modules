@@ -6,6 +6,8 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+## [0.7.5] - 2026-10-22
+
 ### Changed
 - Reduce automatic resume discovery overhead by extracting workspace metadata
   in a single pass instead of scanning it separately for each field, with a

@@ -578,10 +578,10 @@ public sealed class RepositoryNavigationUI : PSHostUserInterface {
         (Get-Location).ProviderPath | Should -BeExactly $navigationOutside
     }
 
-    It 'exports the command from both loaders with help and no aliases or version bump' {
+    It 'exports the command from both loaders with matching manifest version, help and no aliases' {
         $manifest = Import-PowerShellDataFile $navigationManifest
         $manifest.FunctionsToExport | Should -Contain 'Set-Repository'
-        $manifest.ModuleVersion | Should -BeExactly '0.10.4'
+        (Get-Module Shmuelie.Git).Version.ToString() | Should -BeExactly $manifest.ModuleVersion
         $manifest.AliasesToExport | Should -HaveCount 0
         (Get-Command Set-Repository -Module Shmuelie.Git).Parameters.Keys | Should -Contain 'WhatIf'
         (Get-Help Set-Repository).Description.Text | Should -Match 'read-only'
