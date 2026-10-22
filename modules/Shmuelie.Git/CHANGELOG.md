@@ -6,6 +6,12 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+### Added
+- `Set-Repository` navigates to existing local repositories by name and optional
+  organization, using `-Root` or `$env:SOURCE_REPOS`. Exact branch/worktree
+  selection resolves ambiguity without assuming a default branch; local literal
+  completion, validation, `-WhatIf` and `-Confirm` never change repository contents. (#368)
+
 ## [0.10.4] - 2026-10-09
 
 ### Fixed

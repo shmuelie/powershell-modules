@@ -16,6 +16,7 @@ Import-Module Shmuelie.Git
 | Command | Purpose |
 |---|---|
 | `New-Repository` | Clone a URL into a standard `<root>/<org>/<repo>/<branch>` layout (parses GitHub and Azure DevOps URLs) |
+| `Set-Repository` | Navigate to an existing local repository by name/organization; choose an exact branch or worktree when ambiguous, with local completion and `-WhatIf` / `-Confirm` |
 | `Repair-RepositoryLayout` | Conform existing clones and worktrees to that layout; standalone renames skip occupied exact destinations |
 | `Sync-GitRemote` | Fetch all remotes for the current or `-Path` repository with pruning, returning typed results; picks the right `gh` account per host (github.com/GHE) when several are signed in |
 | `Get-Worktrees` | List worktrees for the current or `-Path` repository, including the original branch during a paused rebase (with the detached HEAD state preserved) |
@@ -43,6 +44,46 @@ Import-Module Shmuelie.Git
 | `Restore-Items` | Restore explicit literal `-Files` from the index (unstaged changes only); `-IncludeIndex` restores index and working tree from HEAD, `-Source` overrides the source; high-impact `-WhatIf`/`-Confirm` protection |
 | `Format-GitStatusSegment` | Render a `GitStatusSummary` as a colored posh-git-style prompt segment (`$PSStyle` string; `-ShowChangeCounts` toggles the change counts) |
 | `Update-WorktreePrediction` | Refresh the bundled predictor for the current directory |
+
+## Navigate between local repositories
+
+`Set-Repository` works from any directory. `-Root` overrides `$env:SOURCE_REPOS`
+and must identify an existing filesystem directory; it never falls back when an
+explicit root is invalid. Repository names resolve at `<root>/<org>/<repo>`.
+Use `-Org` or `org/name` qualification when the same name occurs in several
+organizations. Names are exact, case-sensitive directory names, not wildcard
+patterns. Quote spaces and shell-sensitive characters as literal arguments.
+
+```powershell
+Set-Repository terminal -Org microsoft
+Set-Repository dotnet/runtime -Branch release/10.0
+Set-Repository 'my repo' -Org 'my org' -Root '/src/repos' -Worktree 'topic folder'
+Set-Repository terminal -Org microsoft -Worktree main -WhatIf
+Set-Repository terminal -Org microsoft -Worktree main -Confirm
+```
+
+Only actual Git working-tree roots at or below the repository directory are
+eligible: direct clones, branch-folder layouts (including nested `release/10.0`
+folders), linked trees and detached trees. The repository container itself is
+not a destination unless it is a working tree. Discovery stops at each `.git`
+boundary, does not search Git metadata or follow directory links, and excludes
+bare or broken repositories. Registered trees outside this directory are not
+discovered; use `Set-Worktree -Path` for those.
+
+A **sole valid tree** may be selected automatically. Multiple eligible trees
+**always error**, even if one is named `main`. `-Branch` matches the exact
+checked-out branch, not its directory name, and does not check out anything.
+Alternatively, `-Worktree` selects an exact absolute path or a path relative to
+the repository directory (not the caller's directory). The selectors cannot be
+combined. Detached trees use `-Worktree`; subdirectories and outside paths fail.
+Missing roots/repositories/trees and ambiguous selections leave location unchanged.
+
+`Name` and `Org` tab completion only reads local directory names, respects
+`-Root`/`-Org`, and inserts quoted literal arguments. It never navigates, runs
+Git or accesses the network; directory suggestions are not proof of a valid tree.
+Navigation itself performs read-only local Git validation, never clone, fetch,
+pull, checkout or worktree creation. `-WhatIf` and native `-Confirm` guard the
+location change.
 
 ## Worktree predictor
 

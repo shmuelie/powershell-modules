@@ -2,6 +2,13 @@ foreach ($script in Get-ChildItem $PSScriptRoot -Filter '*.ps1' -File | Sort-Obj
     . $script.FullName
 }
 
+foreach ($parameter in 'Name', 'Org') {
+    Register-ArgumentCompleter -CommandName Set-Repository -ParameterName $parameter -ScriptBlock {
+        param($commandName, $parameterName, $wordToComplete, $commandAst, $fakeBoundParameters)
+        Get-LocalRepositoryCompletion -ParameterName $parameterName -WordToComplete $wordToComplete -CommandAst $commandAst -BoundParameters $fakeBoundParameters
+    }
+}
+
 Register-ArgumentCompleter -CommandName Set-Worktree, Remove-Worktree, Move-Worktree -ParameterName BranchName -ScriptBlock {
     param($commandName, $parameterName, $wordToComplete, $commandAst, $fakeBoundParameters)
     Get-WorktreeBranchCompletion -WordToComplete $wordToComplete -CommandAst $commandAst -BoundParameters $fakeBoundParameters
@@ -91,6 +98,7 @@ Export-ModuleMember -Function @(
     'Update-AllWorktrees',
     'Find-StaleBranch',
     'New-Repository',
+    'Set-Repository',
     'Repair-RepositoryLayout',
     'Update-WorktreePrediction'
 )

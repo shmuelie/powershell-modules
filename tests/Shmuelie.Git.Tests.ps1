@@ -94,6 +94,521 @@ BeforeAll {
     }
 }
 
+Describe 'Set-Repository' -Tag 'SetRepository' {
+    BeforeAll {
+        $navigationManifest = Join-Path $repoRoot 'modules/Shmuelie.Git/Shmuelie.Git.psd1'
+        function Get-NavigationEnvironmentState {
+            $state = [ordered]@{}
+            foreach ($entry in Get-ChildItem Env: | Where-Object { $_.Name -like 'GIT_*' -or $_.Name -eq 'SOURCE_REPOS' } |
+                Sort-Object Name) {
+                $state[$entry.Name] = $entry.Value
+            }
+            # A present empty value is retained; an absent key is not invented.
+            $state | ConvertTo-Json -Compress
+        }
+        $navigationInitialEnvironmentState = Get-NavigationEnvironmentState
+        function New-NavigationRepo {
+            param([string]$Name = 'widget', [string]$Org = 'owner', [string]$Folder = 'trunk')
+            New-TestRepo -Path (Join-Path $navigationRoot $Org $Name $Folder)
+        }
+        function Get-NavigationSnapshot {
+            # Include metadata bytes, not status (which can refresh the index).
+            @(Get-ChildItem -LiteralPath $navigationRoot -File -Force -Recurse |
+                Sort-Object FullName | ForEach-Object {
+                    [pscustomobject]@{
+                        Path = [IO.Path]::GetRelativePath($navigationRoot, $_.FullName)
+                        Bytes = [Convert]::ToBase64String([IO.File]::ReadAllBytes($_.FullName))
+                    }
+                }) | ConvertTo-Json -Depth 4 -Compress
+        }
+        if (-not ('RepositoryNavigationHost' -as [type])) {
+            Add-Type -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.Collections.ObjectModel;
+using System.Globalization;
+using System.Management.Automation;
+using System.Management.Automation.Host;
+using System.Security;
+public sealed class RepositoryNavigationHost : PSHost {
+    public readonly RepositoryNavigationUI PromptUI = new RepositoryNavigationUI();
+    public override Guid InstanceId { get; } = Guid.NewGuid();
+    public override string Name => "RepositoryNavigationHost";
+    public override Version Version => new Version(1, 0);
+    public override PSHostUserInterface UI => PromptUI;
+    public override CultureInfo CurrentCulture => CultureInfo.InvariantCulture;
+    public override CultureInfo CurrentUICulture => CultureInfo.InvariantCulture;
+    public override void SetShouldExit(int exitCode) { }
+    public override void EnterNestedPrompt() => throw new NotSupportedException();
+    public override void ExitNestedPrompt() => throw new NotSupportedException();
+    public override void NotifyBeginApplication() { }
+    public override void NotifyEndApplication() { }
+}
+public sealed class RepositoryNavigationUI : PSHostUserInterface {
+    public bool Accept;
+    public int PromptCount;
+    public string Message;
+    public override PSHostRawUserInterface RawUI => null;
+    public override int PromptForChoice(string caption, string message, Collection<ChoiceDescription> choices, int defaultChoice) {
+        PromptCount++; Message = message;
+        for (int i = 0; i < choices.Count; i++)
+            if (choices[i].Label.Replace("&", "") == (Accept ? "Yes" : "No")) return i;
+        throw new InvalidOperationException("Missing native confirmation choice.");
+    }
+    public override string ReadLine() => throw new NotSupportedException();
+    public override SecureString ReadLineAsSecureString() => throw new NotSupportedException();
+    public override Dictionary<string, PSObject> Prompt(string caption, string message, Collection<FieldDescription> descriptions) => throw new NotSupportedException();
+    public override PSCredential PromptForCredential(string caption, string message, string userName, string targetName) => throw new NotSupportedException();
+    public override PSCredential PromptForCredential(string caption, string message, string userName, string targetName, PSCredentialTypes types, PSCredentialUIOptions options) => throw new NotSupportedException();
+    public override void Write(string value) { }
+    public override void Write(ConsoleColor foreground, ConsoleColor background, string value) { }
+    public override void WriteLine(string value) { }
+    public override void WriteErrorLine(string value) { }
+    public override void WriteDebugLine(string value) { }
+    public override void WriteVerboseLine(string value) { }
+    public override void WriteWarningLine(string value) { }
+    public override void WriteProgress(long sourceId, ProgressRecord record) { }
+}
+'@
+        }
+    }
+    BeforeEach {
+        $navigationExpectedEnvironmentState = Get-NavigationEnvironmentState
+        $navigationEnvironment = @{}
+        foreach ($entry in Get-ChildItem Env: | Where-Object Name -Like 'GIT_*') {
+            $navigationEnvironment[$entry.Name] = $entry.Value
+            Remove-Item -LiteralPath "Env:$($entry.Name)" -ErrorAction Stop
+        }
+        $navigationSourceRoot = $env:SOURCE_REPOS
+        $navigationRoot = (New-Item -ItemType Directory -Path (Join-Path $TestDrive ([guid]::NewGuid().ToString('N')))).FullName
+        $navigationOutside = (New-Item -ItemType Directory -Path (Join-Path $TestDrive ([guid]::NewGuid().ToString('N')))).FullName
+        $env:GIT_CONFIG_GLOBAL = Join-Path $navigationRoot 'no-global'
+        $env:GIT_CONFIG_SYSTEM = Join-Path $navigationRoot 'no-system'
+        $env:GIT_CONFIG_NOSYSTEM = '1'
+        $env:GIT_CONFIG_COUNT = '0'
+        $env:SOURCE_REPOS = $navigationRoot
+        Push-Location -LiteralPath $navigationOutside -ErrorAction Stop
+    }
+    AfterEach {
+        Pop-Location -ErrorAction Stop
+        $env:SOURCE_REPOS = $navigationSourceRoot
+        foreach ($entry in Get-ChildItem Env: | Where-Object Name -Like 'GIT_*') {
+            Remove-Item -LiteralPath "Env:$($entry.Name)" -ErrorAction Stop
+        }
+        foreach ($key in $navigationEnvironment.Keys) {
+            [Environment]::SetEnvironmentVariable($key, $navigationEnvironment[$key], 'Process')
+        }
+        Get-NavigationEnvironmentState | Should -BeExactly $navigationExpectedEnvironmentState
+    }
+    AfterAll {
+        Get-NavigationEnvironmentState | Should -BeExactly $navigationInitialEnvironmentState
+        # Run after the final fixture teardown, not inside BeforeEach's cleaned
+        # environment. Empty leaked GIT_DIR/GIT_WORK_TREE entries break this.
+        $postFixture = New-TestRepo -Path (Join-Path $TestDrive 'navigation-post-fixture')
+        Invoke-Git @('-C', $postFixture, 'rev-parse', '--is-inside-work-tree') | Should -BeExactly 'true'
+        Write-Host 'POST_FIXTURE_ENVIRONMENT=exact (absent keys distinct from empty); POST_FIXTURE_REAL_GIT=true'
+    }
+
+    It 'enters the sole valid tree from outside using SOURCE_REPOS without assuming main' {
+        $tree = New-NavigationRepo -Folder 'release/next'
+        Invoke-Git @('-C', $tree, 'branch', '-m', 'stable')
+        Set-Repository widget -ErrorAction Stop
+        (Get-Location).ProviderPath | Should -BeExactly $tree
+        Invoke-Git @('-C', $tree, 'symbolic-ref', '--short', 'HEAD') | Should -BeExactly 'stable'
+    }
+
+    It 'uses an explicit relative root instead of SOURCE_REPOS' {
+        $tree = New-NavigationRepo
+        $env:SOURCE_REPOS = Join-Path $navigationOutside 'missing'
+        $relative = [IO.Path]::GetRelativePath($navigationOutside, $navigationRoot)
+        Set-Repository widget -Root $relative -ErrorAction Stop
+        (Get-Location).ProviderPath | Should -BeExactly $tree
+    }
+
+    It 'resolves duplicate names only with organization qualification using <Case>' -ForEach @(
+        @{ Case = 'Org parameter'; Qualified = $false },
+        @{ Case = 'qualified name'; Qualified = $true }
+    ) {
+        $null = New-NavigationRepo -Org 'other'
+        $tree = New-NavigationRepo
+        { Set-Repository widget -ErrorAction Stop } | Should -Throw '*ambiguous*owner/widget*Specify -Org*'
+        (Get-Location).ProviderPath | Should -BeExactly $navigationOutside
+        if ($Qualified) { Set-Repository owner/widget -ErrorAction Stop }
+        else { Set-Repository widget -Org owner -ErrorAction Stop }
+        (Get-Location).ProviderPath | Should -BeExactly $tree
+    }
+
+    It 'never guesses main when several valid trees exist and selects the actual branch' {
+        $first = New-NavigationRepo -Folder 'main'
+        $second = Join-Path $navigationRoot 'owner/widget/topic/nested'
+        Invoke-Git @('-C', $first, 'worktree', 'add', '-b', 'feature/exact', $second, '--quiet')
+        { Set-Repository widget -ErrorAction Stop } | Should -Throw '*Working tree selection is ambiguous*'
+        (Get-Location).ProviderPath | Should -BeExactly $navigationOutside
+        { Set-Repository widget -Branch 'topic/nested' -ErrorAction Stop } | Should -Throw '*No valid Git working tree*'
+        (Get-Location).ProviderPath | Should -BeExactly $navigationOutside
+        Set-Repository widget -Branch 'feature/exact' -ErrorAction Stop
+        (Get-Location).ProviderPath | Should -BeExactly $second
+        Invoke-Git @('-C', $first, 'symbolic-ref', '--short', 'HEAD') | Should -BeExactly 'main'
+        Invoke-Git @('-C', $second, 'symbolic-ref', '--short', 'HEAD') | Should -BeExactly 'feature/exact'
+    }
+
+    It 'selects a detached tree by exact <Case> worktree path' -ForEach @(
+        @{ Case = 'relative'; Absolute = $false },
+        @{ Case = 'absolute'; Absolute = $true }
+    ) {
+        $first = New-NavigationRepo
+        $second = Join-Path $navigationRoot 'owner/widget/detached tree'
+        Invoke-Git @('-C', $first, 'worktree', 'add', '--detach', $second, 'HEAD', '--quiet')
+        { Set-Repository widget -Branch '(detached)' -ErrorAction Stop } | Should -Throw '*No valid Git working tree*'
+        (Get-Location).ProviderPath | Should -BeExactly $navigationOutside
+        $selection = if ($Absolute) { $second } else { 'detached tree' }
+        Set-Repository widget -Worktree $selection -ErrorAction Stop
+        (Get-Location).ProviderPath | Should -BeExactly $second
+    }
+
+    It 'rejects duplicate checked-out branches until an exact tree is selected' {
+        $first = New-NavigationRepo
+        $second = Join-Path $navigationRoot 'owner/widget/duplicate'
+        Invoke-Git @('-C', $first, 'worktree', 'add', '--force', $second, 'main', '--quiet')
+        { Set-Repository widget -Branch main -ErrorAction Stop } | Should -Throw '*selection is ambiguous*'
+        (Get-Location).ProviderPath | Should -BeExactly $navigationOutside
+        Set-Repository widget -Worktree duplicate -ErrorAction Stop
+        (Get-Location).ProviderPath | Should -BeExactly $second
+    }
+
+    It 'supports a direct clone without descending into its nested repositories' {
+        $tree = New-TestRepo -Path (Join-Path $navigationRoot 'owner/direct')
+        $null = New-TestRepo -Path (Join-Path $tree 'nested')
+        Set-Repository direct -ErrorAction Stop
+        (Get-Location).ProviderPath | Should -BeExactly $tree
+    }
+
+    It 'treats names and selectors with spaces and shell characters literally' {
+        $org = 'org [x] & $data'
+        $name = "repo 'quoted'; café"
+        $folder = "tree [x] & 'literal'"
+        $tree = New-NavigationRepo -Org $org -Name $name -Folder $folder
+        $branch = 'feature/$literal&value'
+        Invoke-Git @('-C', $tree, 'branch', '-m', $branch)
+        Set-Repository $name -Org $org -Branch $branch -Root $navigationRoot -ErrorAction Stop
+        (Get-Location).ProviderPath | Should -BeExactly $tree
+        Set-Location -LiteralPath $navigationOutside
+        Set-Repository $name -Org $org -Worktree $folder -ErrorAction Stop
+        (Get-Location).ProviderPath | Should -BeExactly $tree
+    }
+
+    It 'fails without navigation for <Case> roots' -ForEach @(
+        @{ Case = 'unset'; Kind = 'Unset' },
+        @{ Case = 'missing explicit'; Kind = 'Missing' },
+        @{ Case = 'file'; Kind = 'File' },
+        @{ Case = 'non-filesystem'; Kind = 'Provider' }
+    ) {
+        $null = New-NavigationRepo
+        $arguments = @{ Name = 'widget'; ErrorAction = 'Stop' }
+        $message = '*Repository root must be an existing FileSystem directory*'
+        switch ($Kind) {
+            Unset { $env:SOURCE_REPOS = $null; $message = '*No repository root specified*' }
+            Missing { $arguments.Root = Join-Path $navigationOutside 'not-there' }
+            File { $arguments.Root = Join-Path $navigationRoot 'file'; Set-Content -LiteralPath $arguments.Root 'not a directory' }
+            Provider { $arguments.Root = 'Env:' }
+        }
+        { Set-Repository @arguments } | Should -Throw $message
+        (Get-Location).ProviderPath | Should -BeExactly $navigationOutside
+    }
+
+    It 'rejects missing repositories and organizations without moving' {
+        $null = New-NavigationRepo
+        { Set-Repository absent -ErrorAction Stop } | Should -Throw '*was not found*'
+        { Set-Repository widget -Org absent -ErrorAction Stop } | Should -Throw '*was not found*'
+        { Set-Repository Widget -ErrorAction Stop } | Should -Throw '*was not found*'
+        (Get-Location).ProviderPath | Should -BeExactly $navigationOutside
+    }
+
+    It 'rejects invalid or conflicting name selections using <Case>' -ForEach @(
+        @{ Case = 'parent traversal'; Arguments = @{ Name = '..' } },
+        @{ Case = 'nested qualification'; Arguments = @{ Name = 'owner/widget/child' } },
+        @{ Case = 'empty qualification'; Arguments = @{ Name = '/widget' } },
+        @{ Case = 'backslash path'; Arguments = @{ Name = 'owner\widget' } },
+        @{ Case = 'NUL name'; Arguments = @{ Name = "bad$([char]0)name" } },
+        @{ Case = 'parent organization'; Arguments = @{ Name = 'widget'; Org = '..' } },
+        @{ Case = 'conflicting organization'; Arguments = @{ Name = 'owner/widget'; Org = 'owner' } },
+        @{ Case = 'conflicting selectors'; Arguments = @{ Name = 'widget'; Branch = 'main'; Worktree = 'trunk' } }
+    ) {
+        $null = New-NavigationRepo
+        { Set-Repository @Arguments -ErrorAction Stop } | Should -Throw
+        (Get-Location).ProviderPath | Should -BeExactly $navigationOutside
+    }
+
+    It 'excludes invalid containers bare repositories and broken markers' {
+        $container = Join-Path $navigationRoot 'owner/invalid'
+        $null = New-Item -ItemType Directory -Path (Join-Path $container 'empty')
+        $bare = Join-Path $container 'bare'
+        $null = New-Item -ItemType Directory -Path $bare
+        Invoke-Git @('init', '--bare', '--quiet', $bare)
+        $broken = Join-Path $container 'broken'
+        $null = New-Item -ItemType Directory -Path $broken
+        Set-Content -LiteralPath (Join-Path $broken '.git') 'gitdir: missing'
+        { Set-Repository invalid -ErrorAction Stop } | Should -Throw '*No valid Git working tree*'
+        (Get-Location).ProviderPath | Should -BeExactly $navigationOutside
+        # Invalid siblings cannot make a sole valid tree ambiguous.
+        $valid = New-NavigationRepo -Name invalid -Folder valid
+        Set-Repository invalid -ErrorAction Stop
+        (Get-Location).ProviderPath | Should -BeExactly $valid
+    }
+
+    It 'rejects non-root missing and outside worktree paths using <Case>' -ForEach @(
+        @{ Case = 'container'; Selection = '.' },
+        @{ Case = 'missing'; Selection = 'missing' },
+        @{ Case = 'subdirectory'; Selection = 'trunk/sub' },
+        @{ Case = 'outside'; Selection = '../../../outside' }
+    ) {
+        $tree = New-NavigationRepo
+        $null = New-Item -ItemType Directory -Path (Join-Path $tree 'sub')
+        { Set-Repository widget -Worktree $Selection -ErrorAction Stop } | Should -Throw '*No valid Git working tree*'
+        (Get-Location).ProviderPath | Should -BeExactly $navigationOutside
+    }
+
+    It 'ignores external registered worktrees and rejects an explicit foreign tree' {
+        $tree = New-NavigationRepo
+        $external = Join-Path $navigationOutside 'external'
+        Invoke-Git @('-C', $tree, 'worktree', 'add', '-b', 'external', $external, '--quiet')
+        { Set-Repository widget -Worktree $external -ErrorAction Stop } | Should -Throw '*No valid Git working tree*'
+        (Get-Location).ProviderPath | Should -BeExactly $navigationOutside
+        Set-Repository widget -ErrorAction Stop
+        (Get-Location).ProviderPath | Should -BeExactly $tree
+    }
+
+    It 'does not navigate after nonterminating validation errors' {
+        $null = New-NavigationRepo
+        $null = New-NavigationRepo -Folder other
+        $records = @()
+        Set-Repository widget -ErrorAction SilentlyContinue -ErrorVariable records
+        $records | Should -HaveCount 1
+        $records[0].Exception.Message | Should -Match 'ambiguous'
+        (Get-Location).ProviderPath | Should -BeExactly $navigationOutside
+    }
+
+    It 'previews without moving or changing any repository bytes' {
+        $tree = New-NavigationRepo
+        Set-Content -LiteralPath (Join-Path $tree 'README.md') 'dirty work must survive'
+        $before = Get-NavigationSnapshot
+        Set-Repository widget -WhatIf -Confirm:$false -ErrorAction Stop
+        (Get-Location).ProviderPath | Should -BeExactly $navigationOutside
+        Get-NavigationSnapshot | Should -BeExactly $before
+        Set-Repository widget -Confirm:$false -ErrorAction Stop
+        (Get-Location).ProviderPath | Should -BeExactly $tree
+        Get-NavigationSnapshot | Should -BeExactly $before
+    }
+
+    It 'honors native confirmation using <Case>' -ForEach @(
+        @{ Case = 'decline'; Accept = $false; Preview = $false },
+        @{ Case = 'accept'; Accept = $true; Preview = $false },
+        @{ Case = 'preview with confirmation'; Accept = $true; Preview = $true }
+    ) {
+        $tree = New-NavigationRepo
+        $before = Get-NavigationSnapshot
+        $confirmationHost = [RepositoryNavigationHost]::new()
+        $confirmationHost.PromptUI.Accept = $Accept
+        $runspace = [runspacefactory]::CreateRunspace($confirmationHost)
+        $pipeline = [powershell]::Create()
+        try {
+            $runspace.Open()
+            $pipeline.Runspace = $runspace
+            $null = $pipeline.AddScript({
+                param($Manifest, $Root, $Outside, $Preview)
+                $ErrorActionPreference = 'Stop'
+                Set-Location -LiteralPath $Outside
+                Import-Module $Manifest -Force
+                Set-Repository widget -Root $Root -Confirm -WhatIf:$Preview -ErrorAction Stop
+                (Get-Location).ProviderPath
+            }).AddArgument($navigationManifest).AddArgument($navigationRoot).AddArgument($navigationOutside).AddArgument($Preview)
+            $output = $pipeline.Invoke()
+            $pipeline.HadErrors | Should -BeFalse -Because ($pipeline.Streams.Error -join '; ')
+            if ($Preview) {
+                $confirmationHost.PromptUI.PromptCount | Should -Be 0
+            } else {
+                $confirmationHost.PromptUI.PromptCount | Should -Be 1
+                $confirmationHost.PromptUI.Message | Should -BeLike "*$tree*"
+            }
+            $expected = if ($Accept -and -not $Preview) { $tree } else { $navigationOutside }
+            $output | Should -Be @($expected)
+        } finally { $pipeline.Dispose(); $runspace.Dispose() }
+        Get-NavigationSnapshot | Should -BeExactly $before
+        (Get-Location).ProviderPath | Should -BeExactly $navigationOutside
+    }
+
+    It 'validates locally despite ambient Git repository overrides' {
+        $tree = New-NavigationRepo
+        $foreign = New-TestRepo -Path (Join-Path $navigationOutside 'foreign')
+        $env:GIT_DIR = Join-Path $foreign '.git'
+        $env:GIT_WORK_TREE = $foreign
+        $invalid = Join-Path $navigationRoot 'owner/invalid/fake'
+        $null = New-Item -ItemType Directory -Path $invalid
+        Set-Content -LiteralPath (Join-Path $invalid '.git') 'gitdir: missing'
+        { Set-Repository invalid -ErrorAction Stop } | Should -Throw '*No valid Git working tree*'
+        (Get-Location).ProviderPath | Should -BeExactly $navigationOutside
+        Set-Repository widget -ErrorAction Stop
+        (Get-Location).ProviderPath | Should -BeExactly $tree
+        $env:GIT_DIR | Should -BeExactly (Join-Path $foreign '.git')
+        $env:GIT_WORK_TREE | Should -BeExactly $foreign
+    }
+
+    It 'completes only local literal names and organizations without Git or navigation' {
+        $org = "org [x] & 'quoted'"
+        $name = 'repo $value; café'
+        $null = New-NavigationRepo -Name $name -Org $org
+        $null = New-NavigationRepo -Name other -Org other
+        Mock Invoke-GitProcess -ModuleName Shmuelie.Git { throw 'Completion must not run Git.' }
+        foreach ($scenario in @(
+            @{ Line = 'Set-Repository -Name repo'; Value = $name },
+            @{ Line = 'Set-Repository -Org org'; Value = $org },
+            @{ Line = "Set-Repository -Org '$($org.Replace("'", "''"))' -Name repo"; Value = $name }
+        )) {
+            $result = [Management.Automation.CommandCompletion]::CompleteInput($scenario.Line, $scenario.Line.Length, $null)
+            $matches = @($result.CompletionMatches | Where-Object ResultType -EQ ParameterValue)
+            $matches.ListItemText | Should -Be @($scenario.Value)
+            $text = $matches[0].CompletionText
+            $text | Should -BeExactly ("'" + $scenario.Value.Replace("'", "''") + "'")
+            $accepted = $scenario.Line.Substring(0, $result.ReplacementIndex) + $text
+            $tokens = $null; $parseErrors = $null
+            $ast = [Management.Automation.Language.Parser]::ParseInput($accepted, [ref]$tokens, [ref]$parseErrors)
+            $parseErrors | Should -BeNullOrEmpty
+            $ast.EndBlock.Statements | Should -HaveCount 1
+            $ast.EndBlock.Statements[0].PipelineElements | Should -HaveCount 1
+            $command = $ast.EndBlock.Statements[0].PipelineElements[0]
+            $command.Redirections | Should -HaveCount 0
+            $command.CommandElements[-1].Value | Should -BeExactly $scenario.Value
+        }
+        Should -Invoke Invoke-GitProcess -ModuleName Shmuelie.Git -Times 0 -Exactly
+        (Get-Location).ProviderPath | Should -BeExactly $navigationOutside
+    }
+
+    It 'completes qualified names and respects explicit root precedence' {
+        $null = New-NavigationRepo
+        $null = New-NavigationRepo -Name unwanted -Org other
+        $env:SOURCE_REPOS = Join-Path $navigationOutside 'missing'
+        $line = "Set-Repository -Root '$navigationRoot' -Name owner/w"
+        $result = [Management.Automation.CommandCompletion]::CompleteInput($line, $line.Length, $null)
+        @($result.CompletionMatches | Where-Object ResultType -EQ ParameterValue).ListItemText | Should -Be @('owner/widget')
+        (Get-Location).ProviderPath | Should -BeExactly $navigationOutside
+    }
+
+    It 'fails closed during completion for <Case>' -ForEach @(
+        @{ Case = 'missing root'; Suffix = "-Root 'missing' -Name w" },
+        @{ Case = 'unresolved root'; Suffix = '-Root $unknown -Name w' },
+        @{ Case = 'unevaluated root'; Suffix = '-Root $(throw "never evaluate") -Name w' },
+        @{ Case = 'unresolved organization'; Suffix = '-Org $unknown -Name w' },
+        @{ Case = 'missing organization'; Suffix = '-Org missing -Name w' }
+    ) {
+        $null = New-NavigationRepo
+        $line = 'Set-Repository ' + $Suffix
+        $result = [Management.Automation.CommandCompletion]::CompleteInput($line, $line.Length, $null)
+        @($result.CompletionMatches | Where-Object ResultType -EQ ParameterValue) | Should -HaveCount 0
+        (Get-Location).ProviderPath | Should -BeExactly $navigationOutside
+    }
+
+    It 'matches branch names case sensitively without checking out a different branch' {
+        $tree = New-NavigationRepo
+        Invoke-Git @('-C', $tree, 'branch', '-m', 'Feature/Exact')
+        { Set-Repository widget -Branch 'feature/exact' -ErrorAction Stop } | Should -Throw '*No valid Git working tree*'
+        (Get-Location).ProviderPath | Should -BeExactly $navigationOutside
+        Set-Repository widget -Branch 'Feature/Exact' -ErrorAction Stop
+        (Get-Location).ProviderPath | Should -BeExactly $tree
+        Invoke-Git @('-C', $tree, 'symbolic-ref', '--short', 'HEAD') | Should -BeExactly 'Feature/Exact'
+    }
+
+    It 'resolves a literal root containing wildcard and shell characters' {
+        $literalRoot = Join-Path $navigationRoot "root [x] & 'quoted'"
+        $tree = New-TestRepo -Path (Join-Path $literalRoot 'owner/widget/trunk')
+        Set-Repository widget -Root $literalRoot -ErrorAction Stop
+        (Get-Location).ProviderPath | Should -BeExactly $tree
+    }
+
+    It 'does not follow directory links to outside candidates' {
+        $tree = New-NavigationRepo
+        $foreign = New-TestRepo -Path (Join-Path $navigationOutside 'foreign')
+        $link = Join-Path $navigationRoot 'owner/widget/linked'
+        $kind = if ($IsWindows) { 'Junction' } else { 'SymbolicLink' }
+        $null = New-Item -ItemType $kind -Path $link -Target $foreign -ErrorAction Stop
+        { Set-Repository widget -Worktree linked -ErrorAction Stop } | Should -Throw '*No valid Git working tree*'
+        (Get-Location).ProviderPath | Should -BeExactly $navigationOutside
+        Set-Repository widget -ErrorAction Stop
+        (Get-Location).ProviderPath | Should -BeExactly $tree
+        Test-Path -LiteralPath (Join-Path $foreign 'README.md') | Should -BeTrue
+    }
+
+    It 'uses only discrete read-only Git inspection commands for navigation' {
+        $tree = New-NavigationRepo
+        Mock Invoke-GitProcess -ModuleName Shmuelie.Git {
+            [pscustomobject]@{ ExitCode = 0; StandardOutput = "true`n`n"; StandardError = '' }
+        } -ParameterFilter {
+            $Arguments.Count -eq 5 -and $Arguments[0] -ceq '-C' -and
+            $Arguments[1] -ceq $tree -and ($Arguments[2..4] -join '|') -ceq 'rev-parse|--is-inside-work-tree|--show-prefix'
+        }
+        Mock Invoke-GitProcess -ModuleName Shmuelie.Git {
+            [pscustomobject]@{ ExitCode = 0; StandardOutput = "refs/heads/main`n"; StandardError = '' }
+        } -ParameterFilter {
+            $Arguments.Count -eq 5 -and $Arguments[0] -ceq '-C' -and
+            $Arguments[1] -ceq $tree -and ($Arguments[2..4] -join '|') -ceq 'symbolic-ref|--quiet|HEAD'
+        }
+        Set-Repository widget -ErrorAction Stop
+        (Get-Location).ProviderPath | Should -BeExactly $tree
+        Should -Invoke Invoke-GitProcess -ModuleName Shmuelie.Git -Exactly -Times 2
+    }
+
+    It 'filters repository completion by organization rather than prefix alone' {
+        $null = New-NavigationRepo -Name 'widget-owner'
+        $null = New-NavigationRepo -Name 'widget-other' -Org other
+        foreach ($prefix in 'widget', '') {
+            $line = 'Set-Repository -Org owner -Name ' + $prefix
+            $result = [Management.Automation.CommandCompletion]::CompleteInput($line, $line.Length, $null)
+            @($result.CompletionMatches | Where-Object ResultType -EQ ParameterValue).ListItemText | Should -Be @('widget-owner')
+        }
+        (Get-Location).ProviderPath | Should -BeExactly $navigationOutside
+    }
+
+    It 'uses explicit roots for organization completion without falling back' {
+        $null = New-NavigationRepo -Org expected
+        $null = New-Item -ItemType Directory -Path (Join-Path $navigationRoot '.git/objects')
+        $env:SOURCE_REPOS = $navigationOutside
+        $null = New-Item -ItemType Directory -Path (Join-Path $navigationOutside 'excluded')
+        $line = "Set-Repository -Root '$navigationRoot' -Org "
+        $result = [Management.Automation.CommandCompletion]::CompleteInput($line, $line.Length, $null)
+        @($result.CompletionMatches | Where-Object ResultType -EQ ParameterValue).ListItemText | Should -Be @('expected')
+        (Get-Location).ProviderPath | Should -BeExactly $navigationOutside
+    }
+
+    It 'exports the command from both loaders with help and no aliases or version bump' {
+        $manifest = Import-PowerShellDataFile $navigationManifest
+        $manifest.FunctionsToExport | Should -Contain 'Set-Repository'
+        $manifest.ModuleVersion | Should -BeExactly '0.10.4'
+        $manifest.AliasesToExport | Should -HaveCount 0
+        (Get-Command Set-Repository -Module Shmuelie.Git).Parameters.Keys | Should -Contain 'WhatIf'
+        (Get-Help Set-Repository).Description.Text | Should -Match 'read-only'
+        (Get-Help Set-Repository).Examples.Example | Should -HaveCount 4
+        $module = Import-Module (Join-Path $repoRoot 'modules/Shmuelie.Git/Shmuelie.Git.psm1') -Force -PassThru
+        $module.ExportedFunctions.Keys | Should -Contain 'Set-Repository'
+        $module.ExportedFunctions.Keys | Should -Not -Contain 'Get-LocalRepositoryWorkingTree'
+        $module.ExportedAliases.Keys | Should -HaveCount 0
+        Import-Module $navigationManifest -Force
+    }
+
+    It 'preserves New-Repository preview behavior and Set-Worktree branch navigation' {
+        $tree = New-NavigationRepo
+        $linked = Join-Path $navigationRoot 'owner/widget/legacy-tree'
+        Invoke-Git @('-C', $tree, 'worktree', 'add', '-b', 'legacy/existing', $linked, '--quiet')
+        $before = Get-NavigationSnapshot
+        New-Repository 'https://example.com/owner/new-repo' -Root $navigationRoot -Branch existing -WhatIf
+        (Get-Location).ProviderPath | Should -BeExactly $navigationOutside
+        Test-Path -LiteralPath (Join-Path $navigationRoot 'owner/new-repo') | Should -BeFalse
+        Get-NavigationSnapshot | Should -BeExactly $before
+        Set-Location -LiteralPath $tree
+        Set-Worktree -BranchName 'legacy/existing' -ErrorAction Stop
+        (Get-Location).ProviderPath | Should -BeExactly $linked
+        Get-NavigationSnapshot | Should -BeExactly $before
+    }
+}
+
 Describe 'Worktree predictor literal arguments' -Tag 'PredictorLiteralArguments' {
     BeforeAll {
         $predictionRoot = (New-Item -ItemType Directory -Path (
