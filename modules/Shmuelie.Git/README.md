@@ -16,7 +16,7 @@ Import-Module Shmuelie.Git
 | Command | Purpose |
 |---|---|
 | `New-Repository` | Clone a URL into a standard `<root>/<org>/<repo>/<branch>` layout (parses GitHub and Azure DevOps URLs) |
-| `Set-Repository` | Navigate to an existing local repository by name/organization; choose an exact branch or worktree when ambiguous, with local completion and `-WhatIf` / `-Confirm` |
+| `Set-Repository` | Navigate to an existing local repository's default-branch or primary worktree; exact branch/worktree overrides, repository-aware completion, and `-WhatIf` / `-Confirm` |
 | `Repair-RepositoryLayout` | Conform existing clones and worktrees to that layout; standalone renames skip occupied exact destinations |
 | `Sync-GitRemote` | Fetch all remotes for the current or `-Path` repository with pruning, returning typed results; picks the right `gh` account per host (github.com/GHE) when several are signed in |
 | `Get-Worktrees` | List worktrees for the current or `-Path` repository, including the original branch during a paused rebase (with the detached HEAD state preserved) |
@@ -70,8 +70,17 @@ boundary, does not search Git metadata or follow directory links, and excludes
 bare or broken repositories. Registered trees outside this directory are not
 discovered; use `Set-Worktree -Path` for those.
 
-A **sole valid tree** may be selected automatically. Multiple eligible trees
-**always error**, even if one is named `main`. `-Branch` matches the exact
+A **sole valid tree** is selected automatically. With multiple eligible trees
+belonging to the same Git repository, the default is its worktree on the branch
+identified by the locally stored `refs/remotes/origin/HEAD`. This need not be
+named `main`. If that reference is unavailable or its branch has no eligible
+worktree, the command falls back to Git's primary worktree, provided it is in
+the discovery scope. The default-branch worktree wins when the primary worktree
+is on another branch. No remote lookup or fetch is performed. Multiple default
+branch matches, unrelated clones, or the absence of a unique eligible fallback
+require an explicit selector; a directory named `main` has no special meaning.
+
+`-Branch` overrides this default and matches the exact
 checked-out branch, not its directory name, and does not check out anything.
 Alternatively, `-Worktree` selects an exact absolute path or a path relative to
 the repository directory (not the caller's directory). The selectors cannot be
@@ -81,6 +90,13 @@ Missing roots/repositories/trees and ambiguous selections leave location unchang
 `Name` and `Org` tab completion only reads local directory names, respects
 `-Root`/`-Org`, and inserts quoted literal arguments. It never navigates, runs
 Git or accesses the network; directory suggestions are not proof of a valid tree.
+`-Branch` tab completion instead validates the selected repository's working
+trees with local Git and suggests only their checked-out branches, not branches
+without an eligible tree. `-Worktree` suggests the eligible tree roots, including
+nested and detached trees, relative to the repository directory or absolute when
+completing an absolute path. Both selectors respect the repository name, owner
+and root regardless of the caller's directory, safely quote literal arguments,
+and do not fall back to unrelated filesystem suggestions when no target matches.
 Navigation itself performs read-only local Git validation, never clone, fetch,
 pull, checkout or worktree creation. `-WhatIf` and native `-Confirm` guard the
 location change.

@@ -6,6 +6,17 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+### Added
+- `Set-Repository -Branch` and `-Worktree` offer repository-aware local tab
+  completion, including nested and detached worktree roots, safely quoted
+  literal values, and no unrelated filesystem fallback. (#375, #376)
+
+### Changed
+- `Set-Repository` without an explicit selector prefers the locally known
+  default-branch worktree, then Git's primary worktree, instead of rejecting
+  every multi-worktree repository. Explicit selection and fail-closed handling
+  of ambiguous targets are preserved; no `main` branch name is assumed. (#374)
+
 ## [0.11.0] - 2026-10-22
 
 ### Added
