@@ -53,6 +53,9 @@ Git repository, worktree, status, completion, and PSReadLine prediction helpers.
 Highlights:
 
 - `New-Repository` clones into a standard `<root>/<org>/<repo>/<branch>` layout.
+- `Set-Repository` navigates by repository name, preferring its default-branch
+  worktree and then its primary worktree, with exact branch/worktree overrides
+  and repository-aware local tab completion.
 - Worktree lifecycle: `New-Worktree`, `Add-Worktree`, `Set-Worktree`,
   `Remove-Worktree`, `Update-Worktrees`.
 - `Get-GitStatusSummary` returns a typed status object.

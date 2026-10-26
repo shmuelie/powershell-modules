@@ -111,6 +111,36 @@ Describe 'Set-Repository' -Tag 'SetRepository' {
             param([string]$Name = 'widget', [string]$Org = 'owner', [string]$Folder = 'trunk')
             New-TestRepo -Path (Join-Path $navigationRoot $Org $Name $Folder)
         }
+        function Set-NavigationDefaultBranch {
+            param([string]$Path, [string]$Branch)
+            # Entirely local metadata: no remote, fetch, or network dependency.
+            Invoke-Git @('-C', $Path, 'update-ref', "refs/remotes/origin/$Branch", 'HEAD')
+            Invoke-Git @('-C', $Path, 'symbolic-ref', 'refs/remotes/origin/HEAD', "refs/remotes/origin/$Branch")
+        }
+        function Assert-NavigationCompletion {
+            param([string]$Line, [AllowEmptyCollection()][string[]]$Expected)
+            $result = [Management.Automation.CommandCompletion]::CompleteInput($Line, $Line.Length, $null)
+            $matches = @($result.CompletionMatches)
+            # Inspect every result, not only ParameterValue: filesystem fallback
+            # must not quietly leak unrelated paths when context has no matches.
+            $matches | Should -HaveCount $Expected.Count
+            @($matches.ListItemText | Sort-Object -CaseSensitive) |
+                Should -BeExactly @($Expected | Sort-Object -CaseSensitive)
+            foreach ($match in $matches) {
+                $match.ResultType | Should -Be ([Management.Automation.CompletionResultType]::ParameterValue)
+                $match.CompletionText | Should -BeExactly ("'" + $match.ListItemText.Replace("'", "''") + "'")
+                $accepted = $Line.Substring(0, $result.ReplacementIndex) + $match.CompletionText
+                $tokens = $null; $parseErrors = $null
+                $ast = [Management.Automation.Language.Parser]::ParseInput($accepted, [ref]$tokens, [ref]$parseErrors)
+                $parseErrors | Should -HaveCount 0
+                $ast.EndBlock.Statements | Should -HaveCount 1
+                $command = $ast.EndBlock.Statements[0].PipelineElements
+                $command | Should -HaveCount 1
+                $command[0].Redirections | Should -HaveCount 0
+                $command[0].CommandElements[-1].Value | Should -BeExactly $match.ListItemText
+            }
+            (Get-Location).ProviderPath | Should -BeExactly $navigationOutside
+        }
         function Get-NavigationSnapshot {
             # Include metadata bytes, not status (which can refresh the index).
             @(Get-ChildItem -LiteralPath $navigationRoot -File -Force -Recurse |
@@ -238,18 +268,103 @@ public sealed class RepositoryNavigationUI : PSHostUserInterface {
         (Get-Location).ProviderPath | Should -BeExactly $tree
     }
 
-    It 'never guesses main when several valid trees exist and selects the actual branch' {
-        $first = New-NavigationRepo -Folder 'main'
-        $second = Join-Path $navigationRoot 'owner/widget/topic/nested'
+    It 'prefers the metadata primary rather than a folder named main and preserves explicit selectors' {
+        $first = New-NavigationRepo -Folder 'actual-primary'
+        Invoke-Git @('-C', $first, 'branch', '-m', 'stable')
+        $second = Join-Path $navigationRoot 'owner/widget/main'
         Invoke-Git @('-C', $first, 'worktree', 'add', '-b', 'feature/exact', $second, '--quiet')
-        { Set-Repository widget -ErrorAction Stop } | Should -Throw '*Working tree selection is ambiguous*'
-        (Get-Location).ProviderPath | Should -BeExactly $navigationOutside
-        { Set-Repository widget -Branch 'topic/nested' -ErrorAction Stop } | Should -Throw '*No valid Git working tree*'
+        $before = Get-NavigationSnapshot
+        Set-Repository widget -ErrorAction Stop
+        (Get-Location).ProviderPath | Should -BeExactly $first
+        Set-Location -LiteralPath $navigationOutside
+        { Set-Repository widget -Branch main -ErrorAction Stop } | Should -Throw '*No valid Git working tree*'
         (Get-Location).ProviderPath | Should -BeExactly $navigationOutside
         Set-Repository widget -Branch 'feature/exact' -ErrorAction Stop
         (Get-Location).ProviderPath | Should -BeExactly $second
-        Invoke-Git @('-C', $first, 'symbolic-ref', '--short', 'HEAD') | Should -BeExactly 'main'
+        Set-Location -LiteralPath $navigationOutside
+        Set-Repository widget -Worktree main -ErrorAction Stop
+        (Get-Location).ProviderPath | Should -BeExactly $second
+        Invoke-Git @('-C', $first, 'symbolic-ref', '--short', 'HEAD') | Should -BeExactly 'stable'
         Invoke-Git @('-C', $second, 'symbolic-ref', '--short', 'HEAD') | Should -BeExactly 'feature/exact'
+        Get-NavigationSnapshot | Should -BeExactly $before
+    }
+
+    It 'prefers the unique locally known default branch over the primary without modifying Git' {
+        $primary = New-NavigationRepo
+        $default = Join-Path $navigationRoot 'owner/widget/release/nested'
+        Invoke-Git @('-C', $primary, 'worktree', 'add', '-b', 'release/stable', $default, '--quiet')
+        Set-NavigationDefaultBranch $primary 'release/stable'
+        Set-Content -LiteralPath (Join-Path $default 'README.md') 'dirty default must survive'
+        $before = Get-NavigationSnapshot
+        Set-Repository widget -WhatIf -Confirm:$false -ErrorAction Stop
+        (Get-Location).ProviderPath | Should -BeExactly $navigationOutside
+        Get-NavigationSnapshot | Should -BeExactly $before
+        Set-Repository widget -Confirm:$false -ErrorAction Stop
+        (Get-Location).ProviderPath | Should -BeExactly $default
+        Set-Location -LiteralPath $navigationOutside
+        Set-Repository widget -Branch main -ErrorAction Stop
+        (Get-Location).ProviderPath | Should -BeExactly $primary
+        Set-Location -LiteralPath $navigationOutside
+        Set-Repository widget -Worktree trunk -ErrorAction Stop
+        (Get-Location).ProviderPath | Should -BeExactly $primary
+        Get-NavigationSnapshot | Should -BeExactly $before
+    }
+
+    It 'falls back to the metadata primary for <Case> local default references' -ForEach @(
+        @{ Case = 'absent'; Default = $null },
+        @{ Case = 'not checked out'; Default = 'release/unused' },
+        @{ Case = 'case mismatch'; Default = 'FEATURE/OTHER' },
+        @{ Case = 'detached primary'; Default = $null; Detached = $true }
+    ) {
+        $primary = New-NavigationRepo -Folder 'not-main'
+        $other = Join-Path $navigationRoot 'owner/widget/main'
+        Invoke-Git @('-C', $primary, 'worktree', 'add', '-b', 'feature/other', $other, '--quiet')
+        if ($Detached) { Invoke-Git @('-C', $primary, 'checkout', '--detach', '--quiet') }
+        if ($Default) { Set-NavigationDefaultBranch $primary $Default }
+        $before = Get-NavigationSnapshot
+        Set-Repository widget -ErrorAction Stop
+        (Get-Location).ProviderPath | Should -BeExactly $primary
+        Get-NavigationSnapshot | Should -BeExactly $before
+    }
+
+    It 'fails closed when the locally known default branch has duplicate eligible trees' {
+        $primary = New-NavigationRepo
+        $duplicate = Join-Path $navigationRoot 'owner/widget/duplicate'
+        Invoke-Git @('-C', $primary, 'worktree', 'add', '--force', $duplicate, 'main', '--quiet')
+        Set-NavigationDefaultBranch $primary main
+        $before = Get-NavigationSnapshot
+        { Set-Repository widget -ErrorAction Stop } | Should -Throw '*selection is ambiguous*'
+        (Get-Location).ProviderPath | Should -BeExactly $navigationOutside
+        Get-NavigationSnapshot | Should -BeExactly $before
+    }
+
+    It 'handles an out of scope primary using <Case>' -ForEach @(
+        @{ Case = 'no eligible default'; EligibleDefault = $false },
+        @{ Case = 'eligible default'; EligibleDefault = $true }
+    ) {
+        $primary = New-TestRepo -Path (Join-Path $navigationOutside 'external-primary')
+        $first = Join-Path $navigationRoot 'owner/widget/one'
+        $second = Join-Path $navigationRoot 'owner/widget/nested/two'
+        Invoke-Git @('-C', $primary, 'worktree', 'add', '-b', 'feature/one', $first, '--quiet')
+        Invoke-Git @('-C', $primary, 'worktree', 'add', '-b', 'feature/two', $second, '--quiet')
+        Set-NavigationDefaultBranch $primary $(if ($EligibleDefault) { 'feature/two' } else { 'main' })
+        if ($EligibleDefault) {
+            Set-Repository widget -ErrorAction Stop
+            (Get-Location).ProviderPath | Should -BeExactly $second
+        } else {
+            { Set-Repository widget -ErrorAction Stop } | Should -Throw '*selection is ambiguous*'
+            (Get-Location).ProviderPath | Should -BeExactly $navigationOutside
+        }
+    }
+
+    It 'does not resolve unrelated primary repositories by a shared default branch name' {
+        $first = New-NavigationRepo -Folder one
+        $second = New-NavigationRepo -Folder two
+        Invoke-Git @('-C', $second, 'branch', '-m', 'feature/independent')
+        Set-NavigationDefaultBranch $first main
+        Set-NavigationDefaultBranch $second main
+        { Set-Repository widget -ErrorAction Stop } | Should -Throw '*selection is ambiguous*'
+        (Get-Location).ProviderPath | Should -BeExactly $navigationOutside
     }
 
     It 'selects a detached tree by exact <Case> worktree path' -ForEach @(
@@ -405,7 +520,10 @@ public sealed class RepositoryNavigationUI : PSHostUserInterface {
         @{ Case = 'accept'; Accept = $true; Preview = $false },
         @{ Case = 'preview with confirmation'; Accept = $true; Preview = $true }
     ) {
-        $tree = New-NavigationRepo
+        $primary = New-NavigationRepo
+        $tree = Join-Path $navigationRoot 'owner/widget/default-tree'
+        Invoke-Git @('-C', $primary, 'worktree', 'add', '-b', 'default/selected', $tree, '--quiet')
+        Set-NavigationDefaultBranch $primary 'default/selected'
         $before = Get-NavigationSnapshot
         $confirmationHost = [RepositoryNavigationHost]::new()
         $confirmationHost.PromptUI.Accept = $Accept
@@ -491,6 +609,212 @@ public sealed class RepositoryNavigationUI : PSHostUserInterface {
         $result = [Management.Automation.CommandCompletion]::CompleteInput($line, $line.Length, $null)
         @($result.CompletionMatches | Where-Object ResultType -EQ ParameterValue).ListItemText | Should -Be @('owner/widget')
         (Get-Location).ProviderPath | Should -BeExactly $navigationOutside
+    }
+
+    It 'completes only eligible checked out branches with exact case and safe literal quoting' {
+        $primary = New-NavigationRepo
+        $upper = Join-Path $navigationRoot 'owner/widget/nested/upper'
+        $lower = Join-Path $navigationRoot 'owner/widget/lower'
+        $literal = Join-Path $navigationRoot 'owner/widget/literal'
+        $detached = Join-Path $navigationRoot 'owner/widget/detached'
+        $duplicate = Join-Path $navigationRoot 'owner/widget/duplicate'
+        $branch = "topic/'quoted;`$literal&café"
+        Invoke-Git @('-C', $primary, 'worktree', 'add', '-b', 'Feature/Exact', $upper, '--quiet')
+        Invoke-Git @('-C', $primary, 'worktree', 'add', '-b', 'feature/lower', $lower, '--quiet')
+        Invoke-Git @('-C', $primary, 'worktree', 'add', '-b', $branch, $literal, '--quiet')
+        Invoke-Git @('-C', $primary, 'worktree', 'add', '--detach', $detached, 'HEAD', '--quiet')
+        Invoke-Git @('-C', $primary, 'worktree', 'add', '--force', $duplicate, 'main', '--quiet')
+        Invoke-Git @('-C', $primary, 'worktree', 'add', '-b', 'external/hidden', (Join-Path $navigationOutside 'external'), '--quiet')
+        Invoke-Git @('-C', $primary, 'branch', 'unavailable/local')
+        $nested = New-TestRepo -Path (Join-Path $primary 'nested-repository')
+        Invoke-Git @('-C', $nested, 'branch', '-m', 'nested/hidden')
+        $null = New-NavigationRepo -Name unrelated
+        Set-Content -LiteralPath (Join-Path $navigationOutside 'unavailable-file.txt') 'filesystem bait'
+        $before = Get-NavigationSnapshot
+        Assert-NavigationCompletion 'Set-Repository widget -Branch ' @('main', 'Feature/Exact', 'feature/lower', $branch)
+        Assert-NavigationCompletion 'Set-Repository widget -Branch Feature/' @('Feature/Exact')
+        Assert-NavigationCompletion 'Set-Repository widget -Branch feature/' @('feature/lower')
+        Assert-NavigationCompletion "Set-Repository widget -Branch 'topic/" @($branch)
+        Assert-NavigationCompletion 'Set-Repository widget -Branch FEATURE/' @()
+        Assert-NavigationCompletion 'Set-Repository widget -Branch unavailable' @()
+        Get-NavigationSnapshot | Should -BeExactly $before
+    }
+
+    It 'completes only eligible worktree roots including nested detached and literal paths' {
+        $primaryName = "primary [x] & 'quoted'; café"
+        $primary = New-NavigationRepo -Folder $primaryName
+        $nestedName = Join-Path nested "detached [x] & 'literal'"
+        $nested = Join-Path $navigationRoot 'owner/widget' $nestedName
+        Invoke-Git @('-C', $primary, 'worktree', 'add', '--detach', $nested, 'HEAD', '--quiet')
+        $outside = Join-Path $navigationOutside 'external'
+        Invoke-Git @('-C', $primary, 'worktree', 'add', '-b', 'external/hidden', $outside, '--quiet')
+        $null = New-Item -ItemType Directory -Path (Join-Path $primary 'subdir')
+        $null = New-TestRepo -Path (Join-Path $primary 'nested-repository')
+        $container = Join-Path $navigationRoot 'owner/widget'
+        $null = New-Item -ItemType Directory -Path (Join-Path $container 'arbitrary')
+        $broken = (New-Item -ItemType Directory -Path (Join-Path $container 'broken')).FullName
+        Set-Content -LiteralPath (Join-Path $broken '.git') 'gitdir: missing'
+        Invoke-Git @('init', '--bare', '--quiet', (Join-Path $container 'bare'))
+        $kind = if ($IsWindows) { 'Junction' } else { 'SymbolicLink' }
+        $null = New-Item -ItemType $kind -Path (Join-Path $container 'linked') -Target $outside -ErrorAction Stop
+        $null = New-NavigationRepo -Name unrelated
+        $before = Get-NavigationSnapshot
+        Assert-NavigationCompletion 'Set-Repository widget -Worktree ' @($primaryName, $nestedName)
+        Assert-NavigationCompletion 'Set-Repository widget -Worktree nested' @($nestedName)
+        Assert-NavigationCompletion 'Set-Repository widget -Worktree ./nested/' @($nestedName)
+        Assert-NavigationCompletion "Set-Repository widget -Worktree 'primary [x]" @($primaryName)
+        foreach ($prefix in 'arbitrary', 'broken', 'bare', 'linked', ($primaryName + '/subdir')) {
+            $quotedPrefix = "'" + $prefix.Replace("'", "''") + "'"
+            Assert-NavigationCompletion ("Set-Repository widget -Worktree " + $quotedPrefix) @()
+        }
+        $absolutePrefix = "'" + (Join-Path $container 'nested').Replace("'", "''")
+        Assert-NavigationCompletion ("Set-Repository widget -Worktree " + $absolutePrefix) @($nested)
+        foreach ($excluded in $outside, (Join-Path $primary 'subdir')) {
+            $quotedPrefix = "'" + $excluded.Replace("'", "''")
+            Assert-NavigationCompletion ("Set-Repository widget -Worktree " + $quotedPrefix) @()
+        }
+        if ($IsWindows) {
+            $slashPrefix = $absolutePrefix.Replace('\', '/')
+            Assert-NavigationCompletion ("Set-Repository widget -Worktree " + $slashPrefix) @($nested)
+        }
+        Get-NavigationSnapshot | Should -BeExactly $before
+    }
+
+    It 'completes a direct clone root without descending into nested repositories' {
+        $tree = New-TestRepo -Path (Join-Path $navigationRoot 'owner/direct')
+        $nested = New-TestRepo -Path (Join-Path $tree 'nested')
+        Invoke-Git @('-C', $nested, 'branch', '-m', 'hidden/nested')
+        $before = Get-NavigationSnapshot
+        Assert-NavigationCompletion 'Set-Repository direct -Branch ' @('main')
+        Assert-NavigationCompletion 'Set-Repository direct -Worktree ' @('.')
+        Assert-NavigationCompletion ("Set-Repository direct -Worktree '" + $tree.Replace("'", "''")) @($tree)
+        Get-NavigationSnapshot | Should -BeExactly $before
+    }
+
+    It 'scopes selector completion by <Case> context for <Selector>' -ForEach @(
+        foreach ($selector in 'Branch', 'Worktree') {
+            foreach ($case in 'positional name', 'named parameter', 'qualified name', 'organization parameter', 'explicit root', 'relative root') {
+                @{ Case = $case; Selector = $selector }
+            }
+        }
+    ) {
+        $primary = New-NavigationRepo
+        $selected = Join-Path $navigationRoot 'owner/widget/nested/selected'
+        Invoke-Git @('-C', $primary, 'worktree', 'add', '-b', 'feature/selected', $selected, '--quiet')
+        $foreign = New-NavigationRepo -Name unrelated -Org other -Folder unwanted
+        Invoke-Git @('-C', $foreign, 'branch', '-m', 'unrelated/hidden')
+        $context = switch ($Case) {
+            'positional name' { 'widget' }
+            'named parameter' { '-Name widget' }
+            'qualified name' {
+                $null = New-NavigationRepo -Org other -Folder unwanted
+                'owner/widget'
+            }
+            'organization parameter' {
+                $null = New-NavigationRepo -Org other -Folder unwanted
+                '-Name widget -Org owner'
+            }
+            'explicit root' {
+                $foreignRoot = (New-Item -ItemType Directory -Path (Join-Path $navigationOutside 'foreign-root')).FullName
+                $null = New-TestRepo -Path (Join-Path $foreignRoot 'owner/widget/unwanted')
+                $env:SOURCE_REPOS = $foreignRoot
+                "widget -Root '$navigationRoot'"
+            }
+            'relative root' {
+                $env:SOURCE_REPOS = Join-Path $navigationOutside 'missing'
+                $relative = [IO.Path]::GetRelativePath($navigationOutside, $navigationRoot)
+                "widget -Root '$relative'"
+            }
+        }
+        $expected = if ($Selector -eq 'Branch') { @('main', 'feature/selected') }
+            else { @('trunk', (Join-Path nested selected)) }
+        $before = Get-NavigationSnapshot
+        Assert-NavigationCompletion ("Set-Repository $context -$Selector ") $expected
+        $prefix = if ($Selector -eq 'Branch') { 'feature/' } else { 'nested/' }
+        Assert-NavigationCompletion ("Set-Repository $context -$Selector $prefix") @($expected[1])
+        Get-NavigationSnapshot | Should -BeExactly $before
+    }
+
+    It 'quotes literal repository context safely during <Selector> completion' -ForEach @(
+        @{ Selector = 'Branch' }, @{ Selector = 'Worktree' }
+    ) {
+        $org = "org [x] & 'literal'"
+        $name = 'repo $value; café'
+        $folder = "tree [x] & 'literal'"
+        $tree = New-NavigationRepo -Org $org -Name $name -Folder $folder
+        $branch = "feature/'quoted;`$literal&value"
+        Invoke-Git @('-C', $tree, 'branch', '-m', $branch)
+        $context = "'$($name.Replace("'", "''"))' -Org '$($org.Replace("'", "''"))'"
+        $expected = if ($Selector -eq 'Branch') { $branch } else { $folder }
+        Assert-NavigationCompletion ("Set-Repository $context -$Selector ") @($expected)
+    }
+
+    It 'suppresses filesystem fallback for <Case> context during <Selector> completion' -ForEach @(
+        foreach ($selector in 'Branch', 'Worktree') {
+            foreach ($case in @(
+                'missing name', 'missing repository', 'no eligible worktrees', 'wrong case name', 'ambiguous name',
+                'unresolved name', 'unevaluated name', 'invalid name', 'conflicting organization',
+                'missing organization', 'unresolved organization', 'unevaluated organization',
+                'unset root', 'missing explicit root', 'unresolved root', 'unevaluated root',
+                'non-filesystem root', 'file root', 'conflicting selectors'
+            )) { @{ Case = $case; Selector = $selector } }
+        }
+    ) {
+        $null = New-NavigationRepo
+        $null = New-Item -ItemType Directory -Path (Join-Path $navigationOutside 'filesystem-bait')
+        Set-Content -LiteralPath (Join-Path $navigationOutside 'filesystem-bait.txt') 'must not be suggested'
+        $context = switch ($Case) {
+            'missing name' { '' }
+            'missing repository' { 'absent' }
+            'no eligible worktrees' {
+                $broken = (New-Item -ItemType Directory -Path (Join-Path $navigationRoot 'owner/invalid/broken')).FullName
+                Set-Content -LiteralPath (Join-Path $broken '.git') 'gitdir: missing'
+                'invalid'
+            }
+            'wrong case name' { 'Widget' }
+            'ambiguous name' { $null = New-NavigationRepo -Org other; 'widget' }
+            'unresolved name' { '-Name $unknown' }
+            'unevaluated name' { '-Name $(throw "never evaluate name")' }
+            'invalid name' { '-Name ..' }
+            'conflicting organization' { 'owner/widget -Org owner' }
+            'missing organization' { 'widget -Org absent' }
+            'unresolved organization' { 'widget -Org $unknown' }
+            'unevaluated organization' { 'widget -Org $(throw "never evaluate organization")' }
+            'unset root' { $env:SOURCE_REPOS = $null; 'widget' }
+            'missing explicit root' { 'widget -Root missing' }
+            'unresolved root' { 'widget -Root $unknown' }
+            'unevaluated root' { 'widget -Root $(throw "never evaluate root")' }
+            'non-filesystem root' { 'widget -Root Env:' }
+            'file root' {
+                $file = Join-Path $navigationOutside 'not-a-directory'
+                Set-Content -LiteralPath $file 'file'
+                "widget -Root '$file'"
+            }
+            'conflicting selectors' {
+                if ($Selector -eq 'Branch') { 'widget -Worktree trunk' }
+                else { 'widget -Branch main' }
+            }
+        }
+        Assert-NavigationCompletion ("Set-Repository $context -$Selector ") @()
+    }
+
+    It 'uses only read only Git discovery during branch and worktree completion' {
+        $tree = New-NavigationRepo
+        Mock Invoke-GitProcess -ModuleName Shmuelie.Git {
+            [pscustomobject]@{ ExitCode = 0; StandardOutput = "true`n`n"; StandardError = '' }
+        } -ParameterFilter {
+            $Arguments.Count -eq 5 -and $Arguments[0] -ceq '-C' -and $Arguments[1] -ceq $tree -and
+            ($Arguments[2..4] -join '|') -ceq 'rev-parse|--is-inside-work-tree|--show-prefix'
+        }
+        Mock Invoke-GitProcess -ModuleName Shmuelie.Git {
+            [pscustomobject]@{ ExitCode = 0; StandardOutput = "refs/heads/main`n"; StandardError = '' }
+        } -ParameterFilter {
+            $Arguments.Count -eq 5 -and $Arguments[0] -ceq '-C' -and $Arguments[1] -ceq $tree -and
+            ($Arguments[2..4] -join '|') -ceq 'symbolic-ref|--quiet|HEAD'
+        }
+        Assert-NavigationCompletion 'Set-Repository widget -Branch ' @('main')
+        Assert-NavigationCompletion 'Set-Repository widget -Worktree ' @('trunk')
+        Should -Invoke Invoke-GitProcess -ModuleName Shmuelie.Git -Times 4 -Exactly
     }
 
     It 'fails closed during completion for <Case>' -ForEach @(
