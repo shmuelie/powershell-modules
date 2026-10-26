@@ -6,6 +6,8 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-10-26
+
 ### Added
 - `Set-Repository -Branch` and `-Worktree` offer repository-aware local tab
   completion, including nested and detached worktree roots, safely quoted
