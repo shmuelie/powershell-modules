@@ -47,7 +47,7 @@ no longer eagerly imports PSReadLine before registering the predictor.
 ## Shmuelie.Git
 
 Git repository, worktree, status, completion, and PSReadLine prediction helpers.
-**Version 0.11.0.**
+**Version 0.12.0.**
 [README](https://github.com/shmuelie/powershell-modules/blob/main/modules/Shmuelie.Git/README.md)
 
 Highlights:

@@ -1,6 +1,6 @@
 @{
     RootModule        = 'Shmuelie.Git.psm1'
-    ModuleVersion = '0.11.0'
+    ModuleVersion = '0.12.0'
     GUID              = 'c94a90e6-22f7-44b9-9db0-fdf51f245693'
     Author            = 'Shmueli Englard'
     CompanyName       = 'Shmuelie'
