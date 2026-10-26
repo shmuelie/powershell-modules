@@ -741,8 +741,13 @@ Describe 'DevTunnel parameter boundaries' {
             try { Start-Sleep -Seconds 60 } finally { $child.Dispose() }
         }
         'wait' {
-            Publish-FakeState $PID
-            Start-Sleep -Seconds 60
+            # Model slow startup without importing Utility just to serialize a
+            # scalar PID. Its decimal representation is already complete JSON.
+            if ($Payload.Count) { [Threading.Thread]::Sleep([int]$Payload[0]) }
+            $temporaryPath = "$StatePath.$PID.tmp"
+            [IO.File]::WriteAllText($temporaryPath, [string]$PID)
+            [IO.File]::Move($temporaryPath, $StatePath, $true)
+            [Threading.Thread]::Sleep(60000)
         }
         default { throw 'Unexpected fake mode.' }
     }
@@ -752,8 +757,9 @@ Describe 'DevTunnel parameter boundaries' {
                     @('-NoLogo', '-NoProfile', '-NonInteractive', '-File', $script:fakePath, $Mode, $StatePath, $script:pwshPath) + $Payload
                 }
                 function Wait-FakeState {
-                    param([string]$Path)
+                    param([string]$Path, [object]$Owner)
                     $deadline = [Diagnostics.Stopwatch]::StartNew()
+                    $lastReadFailure = 'No complete PID state was published.'
                     while ($deadline.Elapsed.TotalSeconds -lt 10) {
                         if (Test-Path -LiteralPath $Path) {
                             try {
@@ -778,11 +784,14 @@ Describe 'DevTunnel parameter boundaries' {
                                 }).Count -eq 0) {
                                     return $candidate
                                 }
-                            } catch {}
+                            } catch { $lastReadFailure = $_.Exception.Message }
+                        }
+                        if ($Owner -and $Owner.Async.IsCompleted) {
+                            throw "Owned fake setup failed before readiness: pipeline=$($Owner.Pipeline.InvocationStateInfo.State); reason=$($Owner.Pipeline.InvocationStateInfo.Reason); state=$lastReadFailure"
                         }
                         Start-Sleep -Milliseconds 25
                     }
-                    throw 'Owned fake did not become ready within ten seconds.'
+                    throw "Owned fake setup did not become ready within ten seconds. $lastReadFailure"
                 }
                 function Test-OwnedPidAlive {
                     param([int]$OwnedPid)
@@ -945,7 +954,7 @@ Describe 'DevTunnel parameter boundaries' {
                 $state = $null
                 try {
                     $owner = Start-OwnedPipeline -Arguments (Get-FakeArguments -Mode live-auth -StatePath $statePath -Payload @([string]$ExitCode)) -Stream -Sensitive -ObserveOutput
-                    $state = Wait-FakeState $statePath
+                    $state = Wait-FakeState $statePath -Owner $owner
                     $deadline = [Diagnostics.Stopwatch]::StartNew()
                     while ($deadline.Elapsed.TotalSeconds -lt 8 -and -not $owner.Async.IsCompleted -and
                         ($owner.Output.Count -lt 2 -or $owner.Pipeline.Streams.Information.Count -lt 2)) {
@@ -1019,23 +1028,42 @@ Describe 'DevTunnel parameter boundaries' {
                 $owner = $null
                 $state = $null
                 try {
-                    # Starting in a runspace lets readiness be observed without timing
-                    # assertions. No fake binds ports or executes devtunnel.
+                    # Capture includes pwsh startup. Exercise readiness beyond
+                    # the former one-second budget with a custom deadline still
+                    # well below the sixty-second default.
                     # Force the previous exists-but-empty race deterministically.
                     [IO.File]::WriteAllText($statePath, '')
-                    $owner = Start-OwnedPipeline -Arguments (Get-FakeArguments wait $statePath) -TimeoutSeconds 1
-                    $state = Wait-FakeState $statePath
+                    $owner = Start-OwnedPipeline -Arguments (Get-FakeArguments -Mode wait -StatePath $statePath -Payload @('1250')) -TimeoutSeconds 5
+                    $state = Wait-FakeState $statePath -Owner $owner
                     [int]$state | Should -BeGreaterThan 0
+                    Test-OwnedPidAlive $state | Should -BeTrue
                     $owner.Async.AsyncWaitHandle.WaitOne(10000) | Should -BeTrue
                     $failure = $null
                     try { $null = $owner.Pipeline.EndInvoke($owner.Async) } catch { $failure = $_ }
                     $diagnostic = @([string]$failure) + @($owner.Pipeline.Streams.Error | ForEach-Object { [string]$_ })
-                    ($diagnostic -join ' ') | Should -BeLike '*timed out after 1 seconds*'
+                    [string]$owner.Pipeline.InvocationStateInfo.State | Should -BeExactly 'Failed'
+                    ($diagnostic -join ' ') | Should -BeLike '*timed out after 5 seconds*'
                     Wait-OwnedPidExit $state | Should -BeTrue
                 } finally {
                     if ($owner) { $owner.Pipeline.Stop(); $owner.Pipeline.Dispose() }
                     if ($state) { Stop-OwnedPid $state }
                 }
+            }
+
+            It 'reports an early owned pipeline failure as a readiness setup failure' {
+                $statePath = Join-Path $TestDrive 'failed-startup.json'
+                [IO.File]::WriteAllText($statePath, '')
+                $owner = [pscustomobject]@{
+                    Async = [pscustomobject]@{ IsCompleted = $true }
+                    Pipeline = [pscustomobject]@{
+                        InvocationStateInfo = [pscustomobject]@{
+                            State = 'Failed'
+                            Reason = [InvalidOperationException]::new('synthetic executable startup failed')
+                        }
+                    }
+                }
+                { Wait-FakeState $statePath -Owner $owner } |
+                    Should -Throw '*setup failed before readiness: pipeline=Failed; reason=*synthetic executable startup failed*'
             }
 
             It 'stops only the owned tree on runspace cancellation and preserves an unrelated sentinel' {

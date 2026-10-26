@@ -7,6 +7,9 @@ between releases this file tracks catalog-level changes under `[Unreleased]`.
 ## [Unreleased]
 
 ### Fixed
+- DevTunnel's synthetic capture-timeout test separates owned-child readiness
+  failures from timeout assertions, removes JSON-module startup from PID
+  publication, and covers delayed startup with exact-PID cleanup. (Fixes #371.)
 - Literal build-path fixtures derive the stage version from the copied module
   manifest, preserving path and neighbor checks across module releases.
 - `Build-Module.ps1` treats source, output, copy, lookup, and cleanup paths
