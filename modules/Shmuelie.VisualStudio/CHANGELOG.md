@@ -6,6 +6,17 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+### Added
+- `Get-InstalledVsVersion`, the `Set-VS<year>` commands, and `Start-DevShell`
+  support explicit `-Channel Release|Preview` selection. Release remains the
+  default, Preview candidates must be complete and launchable with `VsDevCmd.bat`,
+  and selection never falls back between channels.
+- Nested developer shells pass `VSDEV_CHANNEL` to profile initialization.
+  Year commands honor it only when `-Channel` is omitted, preserving exact
+  installation reuse and conflicting-toolset checks after profiles run.
+- Preview environment identity checks accept semantic prerelease version
+  markers such as `18.14.0-canary` while retaining path and architecture checks.
+
 ## [0.3.0] - 2026-10-20
 
 ### Added

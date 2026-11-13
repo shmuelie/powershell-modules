@@ -16,13 +16,13 @@ Install-PSResource Shmuelie.VisualStudio
 
 | Command | Purpose |
 |---|---|
-| `Get-InstalledVsVersion` | List eligible installed Visual Studio years without a provider dependency. |
+| `Get-InstalledVsVersion` | List eligible installed Visual Studio years in the Release or Preview channel. |
 | `Resolve-MSBuild` | Resolve the newest compatible Visual Studio `MSBuild.exe`, optionally by year/version and executable architecture. |
-| `Set-VS2017` | Initialize Visual Studio 2017 in the current PowerShell session. |
-| `Set-VS2019` | Initialize Visual Studio 2019 in the current PowerShell session. |
-| `Set-VS2022` | Initialize Visual Studio 2022 in the current PowerShell session. |
-| `Set-VS2026` | Initialize Visual Studio 2026 in the current PowerShell session. |
-| `Start-DevShell` | Start and initialize a nested developer `pwsh` inline, after its normal profiles run. |
+| `Set-VS2017` | Initialize Visual Studio 2017 from the selected channel in the current session. |
+| `Set-VS2019` | Initialize Visual Studio 2019 from the selected channel in the current session. |
+| `Set-VS2022` | Initialize Visual Studio 2022 from the selected channel in the current session. |
+| `Set-VS2026` | Initialize Visual Studio 2026 from the selected channel in the current session. |
+| `Start-DevShell` | Start a Release or Preview developer `pwsh` inline, after its normal profiles run. |
 
 ## Initialize the current session
 
@@ -33,13 +33,20 @@ Shmuelie.VisualStudio\Set-VS2022 -Architecture amd64 -HostArchitecture amd64
 # The short parameter names also work:
 Set-VS2026 -Arch arm64 -HostArch amd64
 Set-VS2019 -WhatIf
+
+# Preview is an explicit, separate channel:
+Get-InstalledVsVersion -Channel Preview
+Set-VS2026 -Channel Preview -Arch amd64 -HostArch amd64
 ```
 
-The year commands select the newest complete, launchable release installation
+The year commands select the newest complete, launchable installation
 for that year, including standalone Build Tools, with `Common7\Tools\VsDevCmd.bat`.
-Preview installations are excluded. Numeric installation versions sort newest
-first, with installation path ascending as the tie-breaker. Discovery does not
-require a particular workload; initialization fails if the selected installation
+`-Channel Release` is the default; `-Channel Preview` selects only Preview
+installations. There is no fallback between channels, even when the requested
+channel has no healthy installation. Numeric installation versions sort newest
+first within the selected channel, with installation path ascending as the
+tie-breaker. Discovery does not require a particular workload; initialization
+fails if the selected installation
 does not support the requested tools or architecture. No architecture fallback
 occurs.
 
@@ -53,9 +60,18 @@ Initialization uses an isolated, bounded helper process and applies its validate
 environment only after success. Values containing equals signs, newlines, or
 Unicode are preserved. Working directory and unrelated environment variables are
 preserved. Repeating an exactly matching installation and architecture is a no-op.
+Preview version markers may contain semantic prerelease labels such as `-canary`;
+the installation path, major version, and both architectures must still match.
 If a different or incomplete environment is active, initialization fails: use
 `Start-DevShell` for a fresh session rather than switching or stacking toolsets.
 The commands support `-WhatIf` and `-Confirm`.
+
+When a year command's `-Channel` is omitted, it honors `VSDEV_CHANNEL` if set.
+`Start-DevShell` sets that variable only in its child process so existing
+profile calls select the requested channel without modification. An explicit
+`-Channel` always takes precedence; invalid channel values fail closed.
+`Get-InstalledVsVersion` and `Start-DevShell` remain release-only by default,
+independent of an inherited `VSDEV_CHANNEL`.
 
 Installation and PowerShell executable paths must be fully qualified and cannot
 contain cmd.exe expansion/control characters such as `%`, `!`, `^`, `&`, `|`,
@@ -67,6 +83,7 @@ unsafely to the batch initializer. Normal spaces and parentheses are supported.
 ```powershell
 Start-DevShell 2022
 Start-DevShell -Version 2026 -Arch arm64 -HostArch amd64
+Start-DevShell 2026 -Channel Preview
 ```
 
 `Start-DevShell` starts `pwsh` in the current window and waits for it to exit.
@@ -87,7 +104,8 @@ Shmuelie.VisualStudio\Set-VS2026 -Arch amd64 -HostArch amd64
 ```
 
 If the profile is also used by `Start-DevShell`, honor the child's requested year
-and architectures rather than hardcoding a conflicting toolset:
+and architectures rather than hardcoding a conflicting toolset. Leave `-Channel`
+unbound to honor the child's `VSDEV_CHANNEL` request:
 
 ```powershell
 Import-Module Shmuelie.VisualStudio
@@ -107,6 +125,10 @@ than selecting another toolset. Arbitrary legacy profile code cannot be prevente
 from reinitializing tools: migrate unconditional PSVSEnv calls explicitly.
 Bootstrap failures exit unsuccessfully instead of opening an uninitialized
 interactive shell.
+
+Profiles that explicitly force `-Channel Release` cannot be reused for a Preview
+shell without updating that call. A conflicting initialized installation is
+still rejected rather than overwritten.
 
 Visual Studio 2010-2015, WAIK, and PSVSEnv's command aliases are not provided.
 This module exports functions, not command aliases. It does not install providers
