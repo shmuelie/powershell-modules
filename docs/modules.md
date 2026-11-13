@@ -226,13 +226,16 @@ Visual Studio discovery, MSBuild resolution, and developer shell helpers for Pow
 
 Highlights:
 
-- `Get-InstalledVsVersion` lists eligible complete, launchable release
-  installations without a provider dependency; preview installations are excluded.
+- `Get-InstalledVsVersion` lists years with complete, launchable installations
+  without a provider dependency. `-Channel Release` is the default;
+  `-Channel Preview` lists only Preview installations.
 - `Set-VS2017`, `Set-VS2019`, `Set-VS2022`, and `Set-VS2026` initialize the current
   session using Visual Studio's own tooling, without PSVSEnv. They retain x86
   defaults, support `-Architecture`/`-HostArchitecture` (`-Arch`/`-HostArch`),
-  and honor `-WhatIf`/`-Confirm`. Exact matches are reused; conflicting active
-  toolsets fail rather than switching or stacking environments.
+  and honor `-WhatIf`/`-Confirm`. `-Channel Preview` explicitly selects Preview;
+  an omitted channel honors `VSDEV_CHANNEL` when set, otherwise Release.
+  Exact matches are reused; conflicting active toolsets fail rather than
+  switching or stacking environments.
 - `Resolve-MSBuild` resolves Visual Studio's real `MSBuild.exe` (not
   `dotnet msbuild`) using `vswhere`, including standalone Build Tools. Optional
   year/version-prefix and executable-architecture filters select the newest
@@ -240,7 +243,9 @@ Highlights:
   typed installation metadata or a path with `-PathOnly`, without running a
   build or changing `PATH`. Windows-only; module import remains cross-platform.
 - `Start-DevShell` launches a nested `pwsh` inline with clean toolset state and
-  the existing `VSDEV_VERSION`, `VSDEV_ARCH`, and `VSDEV_HOSTARCH` handoff.
+  the `VSDEV_VERSION`, `VSDEV_CHANNEL`, `VSDEV_ARCH`, and `VSDEV_HOSTARCH` handoff.
+  It defaults to Release; `-Channel Preview` explicitly selects Preview without
+  falling back to Release.
   Normal profiles run first, then the module initializes or reuses the exact
   requested environment. It retains amd64 defaults and the caller's filesystem
   directory without changing the parent environment. See the module README

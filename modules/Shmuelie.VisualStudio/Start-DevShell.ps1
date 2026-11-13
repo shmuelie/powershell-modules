@@ -138,7 +138,8 @@ function Start-DevShell {
     .DESCRIPTION
         Starts pwsh inline in the current window and waits until the nested shell
         exits. The selected Visual Studio year is passed to the child process via
-        VSDEV_VERSION, with VSDEV_ARCH and VSDEV_HOSTARCH carrying architecture
+        VSDEV_VERSION, with VSDEV_CHANNEL carrying the selected channel and
+        VSDEV_ARCH and VSDEV_HOSTARCH carrying architecture
         choices. Normal PowerShell profiles run first; the module then initializes
         the exact selected installation using VsDevCmd.bat before interactive use.
         No PSVSEnv or custom profile initialization is required. A profile may
@@ -148,16 +149,20 @@ function Start-DevShell {
         The child receives a clean login PATH and restored or cleared inherited
         toolset variables. The parent's environment is unchanged. The caller's
         filesystem working directory is restored after profiles have run.
-        Complete, launchable releases of Visual Studio 2017, 2019, 2022, and
-        2026, including Build Tools, are supported; previews are excluded.
+        Complete, launchable installations of Visual Studio 2017, 2019, 2022,
+        and 2026, including Build Tools, are supported. Release installations
+        are selected by default; -Channel Preview selects only Previews.
 
     .PARAMETER Version
         Visual Studio year to request, such as 2022 or 2026. Defaults to the
-        latest year returned by Get-InstalledVsVersion.
+        latest year available in the selected channel.
 
     .PARAMETER Arch
         Target architecture to pass to the child session through VSDEV_ARCH.
         Defaults to amd64.
+
+    .PARAMETER Channel
+        Installation channel to select: Release (default) or Preview.
 
     .PARAMETER HostArch
         Host architecture to pass to the child session through VSDEV_HOSTARCH.
@@ -175,13 +180,17 @@ function Start-DevShell {
         Start-DevShell 2022 -WhatIf
         Shows the nested developer shell that would be launched without
         starting a child process.
+    .EXAMPLE
+        Start-DevShell 2026 -Channel Preview
+        Starts a nested shell using VS 2026 Preview.
     #>
     [CmdletBinding(SupportsShouldProcess)]
     param(
         [Parameter(Position = 0)]
         [ArgumentCompleter({
             param($commandName, $parameterName, $wordToComplete, $commandAst, $fakeBoundParameters)
-            Get-InstalledVsVersion |
+            $channel = if ($fakeBoundParameters.ContainsKey('Channel')) { $fakeBoundParameters['Channel'] } else { 'Release' }
+            Get-InstalledVsVersion -Channel $channel |
                 Where-Object { "$_" -like "$wordToComplete*" } |
                 ForEach-Object { "$_" }
         })]
@@ -191,31 +200,35 @@ function Start-DevShell {
         [string]$Arch = 'amd64',
 
         [ValidateSet('x86', 'amd64', 'arm64')]
-        [string]$HostArch = 'amd64'
+        [string]$HostArch = 'amd64',
+
+        [ValidateSet('Release', 'Preview')]
+        [string]$Channel = 'Release'
     )
 
     Assert-WindowsOnly -CommandName $MyInvocation.MyCommand.Name
 
-    $installations = @(Get-VsDeveloperInstallation)
+    $installations = @(Get-VsDeveloperInstallation -Channel $Channel)
     if ($installations.Count -eq 0) {
-        throw 'No complete, launchable Visual Studio release installations with VsDevCmd.bat were found.'
+        throw "No complete, launchable Visual Studio $Channel installations with VsDevCmd.bat were found."
     }
 
     $selectedVersion = if ($PSBoundParameters.ContainsKey('Version')) { $Version } else { $installations[0].Year }
     $installation = $installations | Where-Object Year -EQ $selectedVersion | Select-Object -First 1
     if (-not $installation) {
         $installedVersions = @($installations.Year | Sort-Object -Descending -Unique)
-        throw "Visual Studio $selectedVersion is not available. Available versions: $($installedVersions -join ', ')."
+        throw "Visual Studio $selectedVersion is not available in the $Channel channel. Available versions: $($installedVersions -join ', ')."
     }
 
     $location = Get-Location
     if ($location.Provider.Name -ne 'FileSystem') {
         throw 'Start-DevShell requires a filesystem working directory.'
     }
-    $target = "Visual Studio $selectedVersion ($Arch, host $HostArch) in $($location.Path)"
+    $target = "Visual Studio $selectedVersion $Channel ($Arch, host $HostArch) in $($location.Path)"
     if ($PSCmdlet.ShouldProcess($target, 'Start nested developer shell')) {
         $environment = Get-VsCleanChildEnvironment
         $environment['VSDEV_VERSION'] = [string]$selectedVersion
+        $environment['VSDEV_CHANNEL'] = $Channel
         $environment['VSDEV_ARCH'] = $Arch
         $environment['VSDEV_HOSTARCH'] = $HostArch
         $arguments = Get-VsDevShellArguments -Installation $installation -Architecture $Arch -HostArchitecture $HostArch -WorkingDirectory $location.Path

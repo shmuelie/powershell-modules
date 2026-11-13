@@ -6,7 +6,8 @@ Register-ArgumentCompleter -CommandName Start-DevShell -ParameterName Version -S
     param($commandName, $parameterName, $wordToComplete, $commandAst, $fakeBoundParameters)
 
     try {
-        Get-InstalledVsVersion |
+        $channel = if ($fakeBoundParameters.ContainsKey('Channel')) { $fakeBoundParameters['Channel'] } else { 'Release' }
+        Get-InstalledVsVersion -Channel $channel |
             Where-Object { "$_" -like "$wordToComplete*" } |
             ForEach-Object {
                 [System.Management.Automation.CompletionResult]::new("$_", "$_", 'ParameterValue', "Visual Studio $_")
