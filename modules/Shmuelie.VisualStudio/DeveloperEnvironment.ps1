@@ -16,8 +16,13 @@ function Test-VsEnvironmentIdentity {
     if ($present.Count -eq 0) { return $false }
 
     $activeVersion = $null
-    $matches = $present.Count -eq $markers.Count -and
-        [version]::TryParse([string]$Environment['VSCMD_VER'], [ref]$activeVersion) -and
+    $validVersion = [version]::TryParse([string]$Environment['VSCMD_VER'], [ref]$activeVersion)
+    if (-not $validVersion -and $Installation.PSObject.Properties['Channel'] -and $Installation.Channel -eq 'Preview') {
+        $previewVersion = $null
+        $validVersion = [System.Management.Automation.SemanticVersion]::TryParse([string]$Environment['VSCMD_VER'], [ref]$previewVersion)
+        if ($validVersion) { $activeVersion = $previewVersion }
+    }
+    $matches = $present.Count -eq $markers.Count -and $validVersion -and
         $activeVersion.Major -eq ([version]$Installation.Version).Major -and
         [IO.Path]::IsPathFullyQualified([string]$Environment['VSINSTALLDIR'])
     if ($matches) {
@@ -164,15 +169,21 @@ function Set-VsYearEnvironment {
         [Parameter(Mandatory)]
         [string]$HostArchitecture,
         [Parameter(Mandatory)]
+        [ValidateSet('Release', 'Preview')]
+        [string]$Channel,
+        [Parameter(Mandatory)]
         [System.Management.Automation.PSCmdlet]$Caller
     )
 
     Assert-WindowsOnly -CommandName "Set-VS$Year"
-    $installation = Get-VsDeveloperInstallation -Year $Year | Select-Object -First 1
-    if (-not $installation) {
-        throw "No complete, launchable Visual Studio $Year release installation with VsDevCmd.bat was found."
+    if (-not $Caller.MyInvocation.BoundParameters.ContainsKey('Channel') -and $env:VSDEV_CHANNEL) {
+        $Channel = $env:VSDEV_CHANNEL
     }
-    if ($Caller.ShouldProcess("$($installation.InstallationPath) ($Architecture, host $HostArchitecture)", 'Initialize current Visual Studio developer environment')) {
+    $installation = Get-VsDeveloperInstallation -Year $Year -Channel $Channel | Select-Object -First 1
+    if (-not $installation) {
+        throw "No complete, launchable Visual Studio $Year $Channel installation with VsDevCmd.bat was found."
+    }
+    if ($Caller.ShouldProcess("$($installation.InstallationPath) ($Channel, $Architecture, host $HostArchitecture)", 'Initialize current Visual Studio developer environment')) {
         Initialize-VsDeveloperEnvironment -Installation $installation -Architecture $Architecture -HostArchitecture $HostArchitecture
     }
 }

@@ -1,7 +1,8 @@
 function Invoke-VsWhere {
     [CmdletBinding()]
     param(
-        [switch]$MSBuild
+        [switch]$MSBuild,
+        [switch]$Prerelease
     )
 
     if ($MSBuild) {
@@ -37,7 +38,7 @@ function Invoke-VsWhere {
         throw 'Cannot discover Visual Studio developer environments: vswhere.exe was not found. Install or repair Visual Studio Installer.'
     }
 
-    $json = Invoke-DeveloperVsWhere -Path $vsWhere
+    $json = Invoke-DeveloperVsWhere -Path $vsWhere -Prerelease:$Prerelease
     if (-not $json) {
         throw 'Cannot discover Visual Studio developer environments: vswhere.exe returned no JSON.'
     }
@@ -52,11 +53,16 @@ function Invoke-DeveloperVsWhere {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]
-        [string]$Path
+        [string]$Path,
+        [switch]$Prerelease
     )
 
     $PSNativeCommandUseErrorActionPreference = $false
-    $output = & $Path -products '*' -format json -utf8 2>&1
+    $output = if ($Prerelease) {
+        & $Path -products '*' -format json -utf8 -prerelease 2>&1
+    } else {
+        & $Path -products '*' -format json -utf8 2>&1
+    }
     if ($LASTEXITCODE -ne 0) {
         throw "Cannot discover Visual Studio developer environments: vswhere.exe exited with code $LASTEXITCODE. $($output -join "`n")"
     }
@@ -67,10 +73,12 @@ function Get-VsDeveloperInstallation {
     [CmdletBinding()]
     param(
         [ValidateSet(2017, 2019, 2022, 2026)]
-        [int]$Year
+        [int]$Year,
+        [ValidateSet('Release', 'Preview')]
+        [string]$Channel = 'Release'
     )
 
-    $installations = foreach ($instance in @(Invoke-VsWhere -ErrorAction Stop)) {
+    $installations = foreach ($instance in @(Invoke-VsWhere -Prerelease:($Channel -eq 'Preview') -ErrorAction Stop)) {
         $version = $null
         if (-not [version]::TryParse([string]$instance.installationVersion, [ref]$version) -or
             -not $instance.installationPath -or
@@ -79,12 +87,14 @@ function Get-VsDeveloperInstallation {
         }
         $installedYear = ConvertTo-VsYear -InstallationVersion ([string]$instance.installationVersion)
         if (-not $installedYear -or ($Year -and $Year -ne $installedYear)) { continue }
-        if ($instance.isComplete -ne $true -or $instance.isLaunchable -ne $true -or $instance.isPrerelease -eq $true) { continue }
+        if ($instance.isComplete -ne $true -or $instance.isLaunchable -ne $true) { continue }
+        if (($instance.isPrerelease -eq $true) -ne ($Channel -eq 'Preview')) { continue }
 
         $scriptPath = Join-Path $instance.installationPath 'Common7' 'Tools' 'VsDevCmd.bat'
         if (-not (Test-Path -LiteralPath $scriptPath -PathType Leaf -ErrorAction Stop)) { continue }
         [pscustomobject]@{
             Year             = $installedYear
+            Channel          = $Channel
             Version          = $version.ToString()
             InstallationPath = [IO.Path]::GetFullPath([string]$instance.installationPath)
             ScriptPath       = $scriptPath
@@ -122,24 +132,36 @@ function Get-InstalledVsVersion {
         Lists installed Visual Studio years that can be loaded in PowerShell.
 
     .DESCRIPTION
-        Uses vswhere.exe to enumerate complete, launchable release installations,
+        Uses vswhere.exe to enumerate complete, launchable installations,
         including Build Tools, that contain Common7/Tools/VsDevCmd.bat. Returns
         sorted unique years for Visual Studio 2017, 2019, 2022, and 2026.
-        No PSVSEnv or Set-VS provider command is required. Preview installations
-        are excluded. Discovery errors terminate rather than hiding failures.
+        No PSVSEnv or Set-VS provider command is required. Only release
+        installations are returned by default. Use -Channel Preview to return
+        only Preview installations. Discovery errors terminate rather than
+        hiding failures.
 
         The catalog_productLineVersion field is intentionally ignored because it
         can be inconsistent across Visual Studio products.
 
+    .PARAMETER Channel
+        Installation channel to discover: Release (default) or Preview.
+
     .EXAMPLE
         Get-InstalledVsVersion
         Returns years such as 2022 or 2026 for eligible installed toolsets.
+
+    .EXAMPLE
+        Get-InstalledVsVersion -Channel Preview
+        Returns years with eligible Preview installations.
     #>
     [OutputType([int])]
     [CmdletBinding()]
-    param()
+    param(
+        [ValidateSet('Release', 'Preview')]
+        [string]$Channel = 'Release'
+    )
 
     Assert-WindowsOnly -CommandName $MyInvocation.MyCommand.Name
 
-    Get-VsDeveloperInstallation | Select-Object -ExpandProperty Year | Sort-Object -Unique
+    Get-VsDeveloperInstallation -Channel $Channel | Select-Object -ExpandProperty Year | Sort-Object -Unique
 }

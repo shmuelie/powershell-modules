@@ -1,6 +1,8 @@
 #Requires -Modules @{ ModuleName = 'Pester'; ModuleVersion = '6.2.0' }
 
 BeforeAll {
+    $script:SavedVsDevChannel = $env:VSDEV_CHANNEL
+    [Environment]::SetEnvironmentVariable('VSDEV_CHANNEL', $null, 'Process')
     $repoRoot = Split-Path (Split-Path $PSCommandPath -Parent) -Parent
     $script:ModuleManifest = [System.IO.Path]::Combine($repoRoot, 'modules', 'Shmuelie.VisualStudio', 'Shmuelie.VisualStudio.psd1')
     Import-Module $script:ModuleManifest -Force -ErrorAction Stop
@@ -108,6 +110,7 @@ public sealed class VsTestDecliningUI : PSHostUserInterface {
 }
 
 AfterAll {
+    [Environment]::SetEnvironmentVariable('VSDEV_CHANNEL', $script:SavedVsDevChannel, 'Process')
     Remove-Module Shmuelie.VisualStudio -Force -ErrorAction SilentlyContinue
 }
 
@@ -595,6 +598,194 @@ Describe 'Get-InstalledVsVersion' {
     }
 }
 
+Describe 'Visual Studio channel selection' {
+    BeforeAll {
+        $script:ChannelFixtures = @(
+            New-VsTestInstallation $TestDrive 'Release 2026' '18.30.100.1' 2026
+            New-VsTestInstallation $TestDrive 'Preview 2026 old' '18.9.100.1' 2026
+            New-VsTestInstallation $TestDrive 'Preview 2026 Z edition' '18.10.100.1' 2026
+            New-VsTestInstallation $TestDrive 'Preview 2026 A edition' '18.10.100.1' 2026
+            New-VsTestInstallation $TestDrive 'Preview 2022' '17.12.100.1' 2022
+        )
+        InModuleScope Shmuelie.VisualStudio -Parameters @{ Fixtures = $script:ChannelFixtures } {
+            param($Fixtures)
+            $script:ChannelInstances = @($Fixtures | ForEach-Object {
+                [pscustomobject]@{
+                    installationPath = $_.InstallationPath
+                    installationVersion = $_.Version
+                    isComplete = $true
+                    isLaunchable = $true
+                    isPrerelease = [IO.Path]::GetFileName($_.InstallationPath) -like 'Preview*'
+                }
+            })
+        }
+    }
+    BeforeEach {
+        InModuleScope Shmuelie.VisualStudio {
+            Mock Test-IsWindowsPlatform { $true }
+            Mock Invoke-VsWhere { $script:ChannelInstances }
+            Mock Invoke-DeveloperVsWhere { throw 'Unexpected native discovery.' }
+            Mock Invoke-VsEnvironmentCapture { throw 'Unexpected native initialization.' }
+            Mock Get-VsCleanChildEnvironment { @{ PATH = 'synthetic clean path' } }
+            $script:ChannelInitialization = $null
+            Mock Initialize-VsDeveloperEnvironment { $script:ChannelInitialization = $Installation }
+            $script:ChannelLaunch = $null
+            Mock Invoke-DevShellProcess { $script:ChannelLaunch = @{ Environment = $Environment; Arguments = $ArgumentList } }
+        }
+    }
+
+    It 'selects only <Channel> installations across discovery initialization and nested shells' -ForEach @(
+        @{ Channel = 'Release'; ExpectedIndex = 0; ExpectedYears = @(2026) }
+        @{ Channel = 'Preview'; ExpectedIndex = 3; ExpectedYears = @(2022, 2026) }
+    ) {
+        InModuleScope Shmuelie.VisualStudio -Parameters @{
+            Channel = $Channel; ExpectedIndex = $ExpectedIndex; ExpectedYears = $ExpectedYears
+        } {
+            param($Channel, $ExpectedIndex, $ExpectedYears)
+            $expected = $script:ChannelInstances[$ExpectedIndex]
+            $before = Get-VsEnvironmentSnapshot
+            @(Get-InstalledVsVersion -Channel $Channel) | Should -Be $ExpectedYears
+            Set-VS2026 -Channel $Channel -Arch arm64 -HostArch x86
+            $script:ChannelInitialization.InstallationPath | Should -BeExactly $expected.installationPath
+            $script:ChannelInitialization.Channel | Should -Be $Channel
+            Should -Invoke Initialize-VsDeveloperEnvironment -Times 1 -Exactly -ParameterFilter {
+                $Architecture -eq 'arm64' -and $HostArchitecture -eq 'x86'
+            }
+            Start-DevShell 2026 -Channel $Channel -Arch arm64 -HostArch x86
+            $script:ChannelLaunch.Environment.VSDEV_CHANNEL | Should -Be $Channel
+            $script:ChannelLaunch.Environment.VSDEV_VERSION | Should -Be '2026'
+            $script:ChannelLaunch.Environment.VSDEV_ARCH | Should -Be 'arm64'
+            $script:ChannelLaunch.Environment.VSDEV_HOSTARCH | Should -Be 'x86'
+            $bootstrap = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($script:ChannelLaunch.Arguments[-1]))
+            $data = [regex]::Match($bootstrap, "FromBase64String\('([^']+)'\)").Groups[1].Value
+            $request = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($data)) | ConvertFrom-Json
+            $request.Installation.InstallationPath | Should -BeExactly $expected.installationPath
+            $request.Installation.Version | Should -Be $expected.installationVersion
+            $request.Installation.Channel | Should -Be $Channel
+            Should -Invoke Invoke-VsWhere -Times 3 -Exactly -ParameterFilter { [bool]$Prerelease -eq ($Channel -eq 'Preview') }
+            $after = Get-VsEnvironmentSnapshot
+            $after.Count | Should -Be $before.Count
+            foreach ($key in $before.Keys) { $after[$key] | Should -BeExactly $before[$key] }
+        }
+    }
+
+    It 'orders Preview versions numerically with stable installation-path ties' {
+        InModuleScope Shmuelie.VisualStudio {
+            $installations = @(Get-VsDeveloperInstallation -Year 2026 -Channel Preview)
+            $installations.Version | Should -Be @('18.10.100.1', '18.10.100.1', '18.9.100.1')
+            $installations.InstallationPath | Should -Be @(
+                $script:ChannelInstances[3].installationPath
+                $script:ChannelInstances[2].installationPath
+                $script:ChannelInstances[1].installationPath
+            )
+        }
+    }
+
+    It 'uses healthy Preview with <Case> without changing release-only defaults' -ForEach @(
+        @{ Case = 'no release'; IncludeRelease = $false }
+        @{ Case = 'an incomplete release'; IncludeRelease = $true }
+    ) {
+        InModuleScope Shmuelie.VisualStudio -Parameters @{ IncludeRelease = $IncludeRelease } {
+            param($IncludeRelease)
+            $instances = @($script:ChannelInstances[3])
+            if ($IncludeRelease) {
+                $release = $script:ChannelInstances[0].PSObject.Copy()
+                $release.isComplete = $false
+                $instances += $release
+            }
+            Mock Invoke-VsWhere { $instances }
+            @(Get-InstalledVsVersion) | Should -HaveCount 0
+            { Set-VS2026 } | Should -Throw '*2026 Release installation*'
+            { Start-DevShell 2026 } | Should -Throw '*Release installations*'
+            @(Get-InstalledVsVersion -Channel Preview) | Should -Be @(2026)
+            Set-VS2026 -Channel Preview
+            Start-DevShell 2026 -Channel Preview
+            $script:ChannelInitialization.InstallationPath | Should -BeExactly $script:ChannelInstances[3].installationPath
+            $script:ChannelLaunch.Environment.VSDEV_CHANNEL | Should -Be 'Preview'
+            Should -Invoke Initialize-VsDeveloperEnvironment -Times 1 -Exactly
+            Should -Invoke Invoke-DevShellProcess -Times 1 -Exactly
+        }
+    }
+
+    It 'does not fall back to Release when Preview is unavailable' {
+        InModuleScope Shmuelie.VisualStudio {
+            Mock Invoke-VsWhere { @($script:ChannelInstances[0]) }
+            @(Get-InstalledVsVersion -Channel Preview) | Should -HaveCount 0
+            { Set-VS2026 -Channel Preview } | Should -Throw '*2026 Preview installation*'
+            { Start-DevShell -Channel Preview } | Should -Throw '*Preview installations*'
+            Should -Invoke Initialize-VsDeveloperEnvironment -Times 0
+            Should -Invoke Invoke-DevShellProcess -Times 0
+        }
+    }
+
+    It 'rejects Preview candidates with <Case>' -ForEach @(
+        @{ Case = 'incomplete setup'; Field = 'isComplete'; Value = $false }
+        @{ Case = 'unlaunchable setup'; Field = 'isLaunchable'; Value = $false }
+        @{ Case = 'missing completeness'; Field = 'isComplete'; Value = $null }
+        @{ Case = 'missing channel identity'; Field = 'isPrerelease'; Value = $null }
+        @{ Case = 'a missing initialization script'; Field = 'script'; Value = $null }
+    ) {
+        InModuleScope Shmuelie.VisualStudio -Parameters @{ Field = $Field; Value = $Value } {
+            param($Field, $Value)
+            $instance = $script:ChannelInstances[3].PSObject.Copy()
+            if ($Field -eq 'script') { Mock Test-Path { $false } }
+            else { $instance.$Field = $Value }
+            Mock Invoke-VsWhere { @($instance) }
+            @(Get-InstalledVsVersion -Channel Preview) | Should -HaveCount 0
+            { Set-VS2026 -Channel Preview } | Should -Throw '*2026 Preview installation*'
+            { Start-DevShell -Channel Preview } | Should -Throw '*Preview installations*'
+            Should -Invoke Initialize-VsDeveloperEnvironment -Times 0
+            Should -Invoke Invoke-DevShellProcess -Times 0
+        }
+    }
+
+    It 'keeps discovery and new-shell defaults release-only under an inherited Preview handoff' {
+        InModuleScope Shmuelie.VisualStudio {
+            $before = $env:VSDEV_CHANNEL
+            try {
+                $env:VSDEV_CHANNEL = 'Preview'
+                @(Get-InstalledVsVersion) | Should -Be @(2026)
+                Start-DevShell 2026
+                $script:ChannelLaunch.Environment.VSDEV_CHANNEL | Should -Be 'Release'
+            } finally {
+                [Environment]::SetEnvironmentVariable('VSDEV_CHANNEL', $before, 'Process')
+            }
+        }
+    }
+
+    It 'rejects invalid channels before discovery or initialization' {
+        InModuleScope Shmuelie.VisualStudio {
+            foreach ($command in @('Get-InstalledVsVersion', 'Start-DevShell', 'Set-VS2017', 'Set-VS2019', 'Set-VS2022', 'Set-VS2026')) {
+                { & $command -Channel Canary } | Should -Throw
+            }
+            $before = $env:VSDEV_CHANNEL
+            try {
+                $env:VSDEV_CHANNEL = 'Canary'
+                { Set-VS2026 } | Should -Throw
+            } finally {
+                [Environment]::SetEnvironmentVariable('VSDEV_CHANNEL', $before, 'Process')
+            }
+            Should -Invoke Invoke-VsWhere -Times 0
+            Should -Invoke Initialize-VsDeveloperEnvironment -Times 0
+            Should -Invoke Invoke-DevShellProcess -Times 0
+        }
+    }
+
+    It 'does not initialize or launch Preview under WhatIf' {
+        InModuleScope Shmuelie.VisualStudio {
+            $before = Get-VsEnvironmentSnapshot
+            Set-VS2026 -Channel Preview -WhatIf
+            Start-DevShell 2026 -Channel Preview -WhatIf
+            Should -Invoke Initialize-VsDeveloperEnvironment -Times 0
+            Should -Invoke Invoke-DevShellProcess -Times 0
+            Should -Invoke Get-VsCleanChildEnvironment -Times 0
+            $after = Get-VsEnvironmentSnapshot
+            $after.Count | Should -Be $before.Count
+            foreach ($key in $before.Keys) { $after[$key] | Should -BeExactly $before[$key] }
+        }
+    }
+}
+
 Describe 'Start-DevShell' {
     BeforeAll {
         $script:StartFixtures = @(
@@ -634,12 +825,43 @@ Describe 'Start-DevShell' {
                     param($Year)
                     $requestedYear = $Year
                     & "Set-VS$Year" -Confirm:$false
-                    Should -Invoke Get-VsDeveloperInstallation -Times 1 -Exactly -ParameterFilter { $Year -eq $requestedYear }
+                    Should -Invoke Get-VsDeveloperInstallation -Times 1 -Exactly -ParameterFilter {
+                        $Year -eq $requestedYear -and $Channel -eq 'Release'
+                    }
                     Should -Invoke Initialize-VsDeveloperEnvironment -Times 1 -Exactly -ParameterFilter {
                         $Installation.InstallationPath -eq $script:YearInstallation.InstallationPath -and
                         $Architecture -eq 'x86' -and $HostArchitecture -eq 'x86'
                     }
                     Should -Invoke Invoke-DevShellProcess -Times 0
+                }
+            }
+
+            It 'selects Preview explicitly for year <Year>' -ForEach @(
+                @{ Year = 2017 }, @{ Year = 2019 }, @{ Year = 2022 }, @{ Year = 2026 }
+            ) {
+                InModuleScope Shmuelie.VisualStudio -Parameters @{ Year = $Year } {
+                    param($Year)
+                    $requestedYear = $Year
+                    & "Set-VS$Year" -Channel Preview -Confirm:$false
+                    Should -Invoke Get-VsDeveloperInstallation -Times 1 -Exactly -ParameterFilter {
+                        $Year -eq $requestedYear -and $Channel -eq 'Preview'
+                    }
+                    Should -Invoke Initialize-VsDeveloperEnvironment -Times 1 -Exactly
+                }
+            }
+
+            It 'honors the profile channel handoff unless a channel is explicitly bound' {
+                InModuleScope Shmuelie.VisualStudio {
+                    $before = $env:VSDEV_CHANNEL
+                    try {
+                        $env:VSDEV_CHANNEL = 'Preview'
+                        Set-VS2026
+                        Should -Invoke Get-VsDeveloperInstallation -Times 1 -Exactly -ParameterFilter { $Channel -eq 'Preview' }
+                        Set-VS2026 -Channel Release
+                        Should -Invoke Get-VsDeveloperInstallation -Times 1 -Exactly -ParameterFilter { $Channel -eq 'Release' }
+                    } finally {
+                        [Environment]::SetEnvironmentVariable('VSDEV_CHANNEL', $before, 'Process')
+                    }
                 }
             }
 
@@ -728,9 +950,11 @@ Describe 'Start-DevShell' {
         }
 
         Describe 'Visual Studio confirmation gates' {
-            It 'declined Confirm for <Command> performs zero initialization and process launches' -ForEach @(
-                @{ Command = 'Set-VS2022' }
-                @{ Command = 'Start-DevShell' }
+            It 'declined Confirm for <Command> in <Channel> performs zero initialization and process launches' -ForEach @(
+                @{ Command = 'Set-VS2022'; Channel = 'Release' }
+                @{ Command = 'Start-DevShell'; Channel = 'Release' }
+                @{ Command = 'Set-VS2022'; Channel = 'Preview' }
+                @{ Command = 'Start-DevShell'; Channel = 'Preview' }
             ) {
                 $fixture = New-VsTestInstallation $TestDrive
                 $hostFixture = [VsTestDecliningHost]::new()
@@ -740,20 +964,20 @@ Describe 'Start-DevShell' {
                     $runspace.Open()
                     $pipeline.Runspace = $runspace
                     $null = $pipeline.AddScript({
-                        param($manifest, $installation, $command)
+                        param($manifest, $installation, $command, $channel)
                         $module = Import-Module $manifest -Force -PassThru
                         & $module {
                             param($installation)
                             $script:ConfirmationInstallation = $installation
-                            function script:Get-VsDeveloperInstallation { param($Year) $script:ConfirmationInstallation }
+                            function script:Get-VsDeveloperInstallation { param($Year, $Channel) $script:ConfirmationInstallation }
                             function script:Test-IsWindowsPlatform { $true }
                             function script:Get-VsCleanChildEnvironment { throw 'Declined launch built a child environment.' }
                             function script:Initialize-VsDeveloperEnvironment { throw 'Declined request initialized.' }
                             function script:Invoke-DevShellProcess { throw 'Declined request launched.' }
                             function script:Invoke-VsWhere { throw 'Unexpected discovery.' }
                         } $installation
-                        & $command -Confirm
-                    }).AddArgument($script:ModuleManifest).AddArgument($fixture).AddArgument($Command)
+                        & $command -Channel $channel -Confirm
+                    }).AddArgument($script:ModuleManifest).AddArgument($fixture).AddArgument($Command).AddArgument($Channel)
                     @($pipeline.Invoke()) | Should -HaveCount 0
                     $pipeline.HadErrors | Should -BeFalse -Because ($pipeline.Streams.Error -join '; ')
                     $hostFixture.Interface.Prompts | Should -Be 1
@@ -810,6 +1034,48 @@ Describe 'Start-DevShell' {
                     }
                     $environment[$Field] = $Value
                     { Test-VsEnvironmentIdentity $Installation amd64 x86 $environment } | Should -Throw '*fresh Start-DevShell*'
+                }
+            }
+
+            It 'accepts Preview identity with prerelease version <Case>' -ForEach @(
+                @{ Case = 'canary'; Version = '17.10.0-canary' }
+                @{ Case = 'preview with build metadata'; Version = '17.10.0-preview.1+build.2' }
+            ) {
+                InModuleScope Shmuelie.VisualStudio -Parameters @{ Installation = $script:IdentityInstallation; Version = $Version } {
+                    param($Installation, $Version)
+                    $installation = $Installation.PSObject.Copy()
+                    $installation | Add-Member -NotePropertyName Channel -NotePropertyValue Preview
+                    $environment = @{
+                        VSCMD_VER = $Version
+                        VSINSTALLDIR = $installation.InstallationPath
+                        VSCMD_ARG_TGT_ARCH = 'x64'
+                        VSCMD_ARG_HOST_ARCH = 'x86'
+                    }
+                    Test-VsEnvironmentIdentity $installation amd64 x86 $environment | Should -BeTrue
+                }
+            }
+
+            It 'rejects prerelease identity with <Case>' -ForEach @(
+                @{ Case = 'a release request'; Channel = 'Release'; Field = 'VSCMD_VER'; Value = '17.10.0-canary' }
+                @{ Case = 'a malformed label'; Channel = 'Preview'; Field = 'VSCMD_VER'; Value = '17.10.0-canary..1' }
+                @{ Case = 'a different major'; Channel = 'Preview'; Field = 'VSCMD_VER'; Value = '18.0.0-canary' }
+                @{ Case = 'a different instance'; Channel = 'Preview'; Field = 'VSINSTALLDIR'; Value = 'C:\different fixture' }
+                @{ Case = 'a different architecture'; Channel = 'Preview'; Field = 'VSCMD_ARG_TGT_ARCH'; Value = 'arm64' }
+            ) {
+                InModuleScope Shmuelie.VisualStudio -Parameters @{
+                    Installation = $script:IdentityInstallation; Channel = $Channel; Field = $Field; Value = $Value
+                } {
+                    param($Installation, $Channel, $Field, $Value)
+                    $installation = $Installation.PSObject.Copy()
+                    $installation | Add-Member -NotePropertyName Channel -NotePropertyValue $Channel
+                    $environment = @{
+                        VSCMD_VER = '17.10.0-canary'
+                        VSINSTALLDIR = $installation.InstallationPath
+                        VSCMD_ARG_TGT_ARCH = 'amd64'
+                        VSCMD_ARG_HOST_ARCH = 'x86'
+                    }
+                    $environment[$Field] = $Value
+                    { Test-VsEnvironmentIdentity $installation amd64 x86 $environment } | Should -Throw '*fresh Start-DevShell*'
                 }
             }
         }
@@ -954,6 +1220,7 @@ Describe 'Start-DevShell' {
                 $location = (Get-Location).Path
                 Start-DevShell -Version 2022
                 $script:SeenLaunch.Environment.VSDEV_VERSION | Should -Be '2022'
+                $script:SeenLaunch.Environment.VSDEV_CHANNEL | Should -Be 'Release'
                 $script:SeenLaunch.Environment.VSDEV_ARCH | Should -Be 'amd64'
                 $script:SeenLaunch.Environment.VSDEV_HOSTARCH | Should -Be 'amd64'
                 $script:SeenLaunch.Environment.PATH | Should -Be 'C:\clean;C:\installer'
@@ -980,7 +1247,7 @@ Describe 'Start-DevShell' {
                 $after.Count | Should -Be $before.Count
                 foreach ($key in $before.Keys) { $after[$key] | Should -BeExactly $before[$key] }
                 (Get-Location).Path | Should -Be $location
-                Should -Invoke Get-VsDeveloperInstallation -Times 1 -Exactly
+                Should -Invoke Get-VsDeveloperInstallation -Times 1 -Exactly -ParameterFilter { $Channel -eq 'Release' }
                 Should -Invoke Invoke-DevShellProcess -Times 1 -Exactly
                 Should -Invoke Invoke-VsEnvironmentCapture -Times 0
                 Should -Invoke Invoke-VsWhere -Times 0
@@ -1062,6 +1329,21 @@ Describe 'Start-DevShell' {
                 @(& $attribute.ScriptBlock 'Start-DevShell' 'Version' '202' $null @{}) | Should -Be @('2022', '2026')
             }
         }
+
+        It 'completes years only from the explicitly requested Preview channel' {
+            InModuleScope Shmuelie.VisualStudio {
+                Mock Get-InstalledVsVersion { 2022 } -ParameterFilter { $Channel -eq 'Release' }
+                Mock Get-InstalledVsVersion { 2026 } -ParameterFilter { $Channel -eq 'Preview' }
+                $attribute = (Get-Command Start-DevShell).Parameters.Version.Attributes |
+                    Where-Object { $_ -is [System.Management.Automation.ArgumentCompleterAttribute] }
+                @(& $attribute.ScriptBlock 'Start-DevShell' 'Version' '202' $null @{ Channel = 'Preview' }) | Should -Be @('2026')
+                @(& $attribute.ScriptBlock 'Start-DevShell' 'Version' '202' $null @{}) | Should -Be @('2022')
+                $inputScript = 'Start-DevShell -Channel Preview -Version 202'
+                @( (TabExpansion2 -InputScript $inputScript -CursorColumn $inputScript.Length).CompletionMatches.CompletionText ) | Should -Be @('2026')
+                $inputScript = 'Start-DevShell -Version 202'
+                @( (TabExpansion2 -InputScript $inputScript -CursorColumn $inputScript.Length).CompletionMatches.CompletionText ) | Should -Be @('2022')
+            }
+        }
     }
 
     Context 'when the platform is not Windows' {
@@ -1079,11 +1361,12 @@ Describe 'Start-DevShell' {
 
 Describe 'Developer bootstrap with controlled synthetic profiles' -Skip:(-not $IsWindows) {
     It 'runs profiles before bootstrap for <Scenario> with bounded native fixtures' -ForEach @(
-        @{ Scenario = 'uninitialized'; ProfileMode = 'none'; NativeExit = 0; ExpectedExit = 0 }
-        @{ Scenario = 'matching profile'; ProfileMode = 'matching'; NativeExit = 0; ExpectedExit = 0 }
-        @{ Scenario = 'conflicting architecture profile'; ProfileMode = 'conflict'; NativeExit = 0; ExpectedExit = 1 }
-        @{ Scenario = 'conflicting instance profile'; ProfileMode = 'instance'; NativeExit = 0; ExpectedExit = 1 }
-        @{ Scenario = 'native initialization failure'; ProfileMode = 'none'; NativeExit = 42; ExpectedExit = 1 }
+        @{ Scenario = 'uninitialized'; ProfileMode = 'none'; Channel = 'Release'; NativeExit = 0; ExpectedExit = 0 }
+        @{ Scenario = 'matching profile'; ProfileMode = 'matching'; Channel = 'Release'; NativeExit = 0; ExpectedExit = 0 }
+        @{ Scenario = 'Preview matching profile'; ProfileMode = 'matching'; Channel = 'Preview'; NativeExit = 0; ExpectedExit = 0 }
+        @{ Scenario = 'conflicting architecture profile'; ProfileMode = 'conflict'; Channel = 'Release'; NativeExit = 0; ExpectedExit = 1 }
+        @{ Scenario = 'conflicting instance profile'; ProfileMode = 'instance'; Channel = 'Release'; NativeExit = 0; ExpectedExit = 1 }
+        @{ Scenario = 'native initialization failure'; ProfileMode = 'none'; Channel = 'Release'; NativeExit = 42; ExpectedExit = 1 }
     ) {
         $root = New-Item -ItemType Directory -Path (Join-Path $TestDrive ([guid]::NewGuid().ToString('N')))
         $staged = New-Item -ItemType Directory -Path (Join-Path $root.FullName 'Staged module')
@@ -1091,11 +1374,12 @@ Describe 'Developer bootstrap with controlled synthetic profiles' -Skip:(-not $I
         $selected = New-VsTestInstallation $root.FullName 'Selected exact instance'
         $other = New-VsTestInstallation $root.FullName 'Other same-year instance'
         foreach ($installation in @($selected, $other)) {
+            $installation | Add-Member -NotePropertyName Channel -NotePropertyValue $Channel
             Set-Content -LiteralPath $installation.ScriptPath -Encoding ascii -Value @(
                 '@echo off'
                 ('if {0} NEQ 0 (echo synthetic bootstrap failure 1>&2 & exit /b {0})' -f $NativeExit)
                 'set /a SHMUELIE_TEST_INITIALIZATIONS+=1'
-                'set "VSCMD_VER=17.10.123.4"'
+                $(if ($Channel -eq 'Preview') { 'set "VSCMD_VER=17.10.0-canary"' } else { 'set "VSCMD_VER=17.10.123.4"' })
                 ('set "VSINSTALLDIR={0}"' -f $installation.InstallationPath)
                 # cmd batch parameters split unquoted equals signs; this is
                 # the same -arch=value spelling consumed by official VsDevCmd.
@@ -1110,7 +1394,8 @@ Describe 'Developer bootstrap with controlled synthetic profiles' -Skip:(-not $I
 
 $script:SyntheticInstallation = '__FIXTURE__' | ConvertFrom-Json
 function Get-VsDeveloperInstallation {
-    param($Year)
+    param($Year, $Channel)
+    if ($Channel -ne $script:SyntheticInstallation.Channel) { throw 'Profile selected the wrong installation channel.' }
     $script:SyntheticInstallation
 }
 function Invoke-VsWhere { throw 'Synthetic bootstrap must never use installed Visual Studio.' }
@@ -1159,6 +1444,7 @@ $script:ProfileEvents += 'interactive boundary'
     HostArchitecture = $env:VSCMD_ARG_HOST_ARCH
     Directory = (Get-Location).Path
     VersionHandoff = $env:VSDEV_VERSION
+    ChannelHandoff = $env:VSDEV_CHANNEL
 } | ConvertTo-Json -Compress
 '@
         $request = @{
@@ -1174,6 +1460,7 @@ $script:ProfileEvents += 'interactive boundary'
             SHMUELIE_TEST_INITIALIZATIONS = $null
             SHMUELIE_TEST_PROFILE_DIRECTORY = $staged.FullName
             VSDEV_VERSION = '2022'; VSDEV_ARCH = 'arm64'; VSDEV_HOSTARCH = 'amd64'
+            VSDEV_CHANNEL = $Channel
         } -WorkingDirectory $root.FullName
         $result.ExitCode | Should -Be $ExpectedExit -Because $result.Error
         if ($ExpectedExit -eq 0) {
@@ -1185,6 +1472,7 @@ $script:ProfileEvents += 'interactive boundary'
             $data.HostArchitecture | Should -Be 'amd64'
             $data.Directory | Should -BeExactly $root.FullName
             $data.VersionHandoff | Should -Be '2022'
+            $data.ChannelHandoff | Should -Be $Channel
             $result.Error | Should -BeNullOrEmpty
         } else {
             $result.Output | Should -Not -Match 'interactive boundary'
@@ -1349,7 +1637,7 @@ Describe 'Developer vswhere boundaries' {
             InModuleScope Shmuelie.VisualStudio {
                 function script:Invoke-DeveloperWhereFixture {
                     [CmdletBinding()]
-                    param($products, $format, [switch]$utf8)
+                    param($products, $format, [switch]$utf8, [switch]$prerelease)
                     throw 'Fixture must be mocked.'
                 }
             }
@@ -1374,10 +1662,22 @@ Describe 'Developer vswhere boundaries' {
             InModuleScope Shmuelie.VisualStudio {
                 Invoke-DeveloperVsWhere -Path Invoke-DeveloperWhereFixture | Should -Be '[]'
                 Should -Invoke Invoke-DeveloperWhereFixture -Times 1 -Exactly -ParameterFilter {
-                    $products -eq '*' -and $format -eq 'json' -and $utf8
+                    $products -eq '*' -and $format -eq 'json' -and $utf8 -and -not $prerelease
                 }
                 Mock Invoke-DeveloperWhereFixture { $global:LASTEXITCODE = 5; 'synthetic discovery failure' }
                 { Invoke-DeveloperVsWhere -Path Invoke-DeveloperWhereFixture } | Should -Throw '*code 5*synthetic discovery failure*'
+            }
+        }
+
+        It 'opts into native Preview discovery only when requested' {
+            InModuleScope Shmuelie.VisualStudio {
+                Invoke-DeveloperVsWhere -Path Invoke-DeveloperWhereFixture -Prerelease | Should -Be '[]'
+                Should -Invoke Invoke-DeveloperWhereFixture -Times 1 -Exactly -ParameterFilter {
+                    $products -eq '*' -and $format -eq 'json' -and $utf8 -and $prerelease
+                }
+                Mock Invoke-DeveloperVsWhere { '[]' }
+                @(Invoke-VsWhere -Prerelease) | Should -HaveCount 0
+                Should -Invoke Invoke-DeveloperVsWhere -Times 1 -Exactly -ParameterFilter { $Prerelease }
             }
         }
 
