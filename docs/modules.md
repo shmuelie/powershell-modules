@@ -221,7 +221,7 @@ Highlights:
 
 ## Shmuelie.VisualStudio
 
-Visual Studio discovery, MSBuild resolution, and developer shell helpers for PowerShell. **Version 0.3.0.**
+Visual Studio discovery, MSBuild resolution, and developer shell helpers for PowerShell. **Version 0.4.0.**
 [README](https://github.com/shmuelie/powershell-modules/blob/main/modules/Shmuelie.VisualStudio/README.md)
 
 Highlights:

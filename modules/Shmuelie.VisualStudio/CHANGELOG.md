@@ -6,6 +6,8 @@ Versions change only when a release is cut; unreleased work stays under
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-16
+
 ### Added
 - `Get-InstalledVsVersion`, the `Set-VS<year>` commands, and `Start-DevShell`
   support explicit `-Channel Release|Preview` selection. Release remains the
